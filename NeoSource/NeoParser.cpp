@@ -6714,6 +6714,9 @@ bool ParseMiddleArea(std::vector<SJumpValue>* pJumps, CArchiveRdWC& ar, SFunctio
 				return false;
 			if (bGlobalLocal) funs._cur->_name = GLOBAL_INIT_FUN_NAME;
 			break;
+		case TK_SEMICOLON:
+			// 빈 문장. 정적 프런트엔드가 switch 절이나 if 본문의 "동작 없음"으로 받아들이는 ';' 를 코드 없이 통과시킨다.
+			break;
 		default:
 			SetParserCompileError(ar, PCE_UNEXPECTED_TOKEN, tk1.c_str(), funs.GetCurFunName().c_str());
 			return false;
