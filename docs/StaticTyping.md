@@ -176,9 +176,16 @@ The host retains the callback value and caller instance ID, resolves its receive
 object ID at runtime, and owns dispatch, suspension scheduling and registration
 cleanup on reset or destruction.
 Nullable scalar, string, collection, and object locals can be refined by a local
-null guard. The non-null branch may use the underlying type. Reassignment invalidates
-the proof; globals, fields, and arbitrary expressions do not acquire such a proof.
-Unchecked nullable access remains a compilation error.
+null guard. The non-null branch may use the underlying type, and an early
+`if (value == null) return;` refines the rest of the enclosing block. Guards combine
+through `&&`, `||`, and `!` with short-circuit meaning: `a != null && b != null`
+refines both when true, `a == null || b == null` refines both when false, and the
+right operand of `&&`/`||` is checked under the left operand's guard, so
+`a != null && a.len() > 0` is accepted. A proof survives `for`, `while`, `foreach`,
+`switch`, and closure bodies unless that body assigns the variable; a captured
+closure value is a copy, so an unassigned capture keeps its proof. Reassignment
+invalidates the proof; globals, fields, and arbitrary expressions do not acquire
+such a proof. Unchecked nullable access remains a compilation error.
 
 `array32<int>` and `array32<float>` retain compact int32/float32 element storage
 while reads produce the ordinary int64/binary64 scalar types. Their constructors,
@@ -429,8 +436,9 @@ Pre/post-increments preserve their respective result values. Read-only and
 write-only restrictions are compile errors.
 Nullable native values can be stored, passed to nullable host parameters, and
 compared with null. A null comparison in `if` refines a named, unaliased native
-local or by-value parameter for member access in its non-null branch. Reassignment
-invalidates this proof. Globals, nullable fields,
+local or by-value parameter for member access in its non-null branch, including
+`&&`/`||` combinations and loop or closure bodies that do not assign the variable.
+Reassignment invalidates this proof. Globals, nullable fields,
 and general nullable scalar/vector unwrapping are not refined by this feature.
 Object liveness is still validated by the runtime resolver on every host call.
 

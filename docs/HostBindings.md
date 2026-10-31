@@ -355,8 +355,11 @@ the [frontend regression](../Tests/neocore_host_frontend.cpp) covers accepted an
 rejected binding syntax.
 
 Nullable native locals and by-value parameters can access members within a
-matching `if (value != null)` branch, or the non-null branch of `if (value == null)`.
-The compiler conservatively invalidates this proof when the variable is assigned. Globals, nullable
+matching `if (value != null)` branch, or the non-null branch of `if (value == null)`,
+including an early return. Guards combine with `&&`, `||`, and `!` under
+short-circuit rules, and the proof survives loop and closure bodies that do not
+assign the variable. The compiler conservatively invalidates this proof when the
+variable is assigned, including anywhere inside a loop body for the whole loop. Globals, nullable
 property chains, and general nullable-value unwrapping are outside this proof.
 The guard proves only that the stored ID is nonzero; each host callback still
 checks that the object is alive.

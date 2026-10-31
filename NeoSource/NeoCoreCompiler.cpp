@@ -1369,7 +1369,18 @@ private:
             ApplyNativeGuard(*condition.children[0], !whenTrue);
             return;
         }
-        if (condition.kind != ExprKind::Binary || (condition.op != "==" && condition.op != "!=")) return;
+        if (condition.kind != ExprKind::Binary) return;
+        // A && B 가 참이면 둘 다 참이고, A || B 가 거짓이면 둘 다 거짓이다. 반대 방향은 아무것도 증명하지 않는다.
+        if (condition.op == "&&" || condition.op == "||")
+        {
+            if (whenTrue == (condition.op == "&&"))
+            {
+                ApplyNativeGuard(*condition.children[0], whenTrue);
+                ApplyNativeGuard(*condition.children[1], whenTrue);
+            }
+            return;
+        }
+        if (condition.op != "==" && condition.op != "!=") return;
         if (whenTrue != (condition.op == "!=")) return;
         const Expr* value = condition.children[0].get();
         const Expr* other = condition.children[1].get();
@@ -1379,6 +1390,32 @@ private:
     }
 
     // 대입 대상보다 먼저 실행되는 우변이 지역 ID를 바꿀 수 있으면 이전 null 검사는 사용하지 않는다.
+    // 반복문·람다 본문에서 대입되는 이름을 모은다. 이름 기준이라 가려진 변수도 함께 들어가며 그만큼
+    // 보수적으로 증명을 지운다. 참조가 없으므로 호출은 지역 변수를 바꾸지 못하고 대입만 본다.
+    static void CollectAssignedNames(const Expr& expression, std::set<std::string>& names)
+    {
+        if (expression.kind == ExprKind::Assignment && !expression.children.empty() && expression.children[0]->kind == ExprKind::Name)
+            names.insert(expression.children[0]->op);
+        for (const auto& child : expression.children) CollectAssignedNames(*child, names);
+        if (expression.lambda) CollectAssignedNames(*expression.lambda, names);
+    }
+
+    static void CollectAssignedNames(const Statement& statement, std::set<std::string>& names)
+    {
+        for (const auto& expression : statement.expressions) CollectAssignedNames(*expression, names);
+        for (const auto& child : statement.children) CollectAssignedNames(*child, names);
+    }
+
+    // 다음 회차나 람다 호출 시점에 바뀔 수 있는 변수는 본문에서 대입되는 변수뿐이다. 그 증명만 지우고
+    // 나머지 지역 변수의 널 아님 증명은 유지한다.
+    void InvalidateAssigned(const Statement& statement)
+    {
+        std::set<std::string> names;
+        CollectAssignedNames(statement, names);
+        for (auto it = nonNullLocals_.begin(); it != nonNullLocals_.end();)
+            if (names.count((*it)->name.text)) it = nonNullLocals_.erase(it); else ++it;
+    }
+
     void InvalidateNativeWrites(const Expr& expression)
     {
         if (expression.kind == ExprKind::Assignment && expression.children[0]->kind == ExprKind::Name)
@@ -2111,7 +2148,8 @@ private:
             returnType_ = function.declared.type;
             loopDepth_ = 0;
             switchDepth_ = 0;
-            nonNullLocals_.clear();
+            // 클로저는 생성 시점의 값을 복사해 잡으므로 람다 안에서 대입하지 않는 변수의 증명은 유지된다.
+            InvalidateAssigned(function);
             ++functionDepth_;
             expression.fieldIndex = static_cast<std::size_t>(functionDepth_);
             activeLambdas_.push_back(&expression);
@@ -2156,7 +2194,23 @@ private:
             return;
         }
         case ExprKind::Binary:
-            CheckExpr(*expression.children[0]); CheckExpr(*expression.children[1]);
+            if (expression.op == "&&" || expression.op == "||")
+            {
+                // 단락 평가: 오른쪽은 왼쪽이 참(&&) 또는 거짓(||)일 때만 실행되므로 그 가드를 적용한 채 검사한다.
+                // 오른쪽 안의 대입으로 지워진 증명은 그대로 지워 둔다.
+                CheckExpr(*expression.children[0]);
+                const std::set<Symbol*> before = nonNullLocals_;
+                ApplyNativeGuard(*expression.children[0], expression.op == "&&");
+                CheckExpr(*expression.children[1]);
+                for (auto it = before.begin(); it != before.end(); ++it)
+                    if (!nonNullLocals_.count(*it)) nonNullLocals_.erase(*it);
+                for (auto it = nonNullLocals_.begin(); it != nonNullLocals_.end();)
+                    if (!before.count(*it)) it = nonNullLocals_.erase(it); else ++it;
+            }
+            else
+            {
+                CheckExpr(*expression.children[0]); CheckExpr(*expression.children[1]);
+            }
             expression.type = BinaryType(expression.token, expression.op, expression.children[0]->type, expression.children[1]->type);
             if (types_.Get(expression.type).kind == TypeKind::List && expression.op == "+")
             {
@@ -2548,20 +2602,23 @@ private:
         }
         case StatementKind::While:
         {
-            // 반복문의 다음 회차에는 본문에서 바뀐 ID가 들어올 수 있다. 조건에서 다시 확인한다.
-            nonNullLocals_.clear();
+            // 다음 회차에는 조건·본문에서 대입된 변수만 바뀔 수 있다. 그 증명만 지우고 조건 가드를 다시 적용한다.
+            InvalidateAssigned(statement);
+            const std::set<Symbol*> entry = nonNullLocals_;
             CheckExpr(*statement.expressions[0]); Require(*statement.expressions[0], types_.Bool(), "while condition");
             statement.expressions[0]->branchCondition = true;
             ApplyNativeGuard(*statement.expressions[0], true);
             ++loopDepth_;
             const int body = ScopedStatement(*statement.children[0]);
             --loopDepth_;
-            nonNullLocals_.clear();
+            // 0회 실행도 가능하므로 본문 안에서 얻은 증명은 반복문 뒤로 가져가지 않는다.
+            nonNullLocals_ = entry;
             return FallsThrough | (body & Returns);
         }
         case StatementKind::For:
         {
-            nonNullLocals_.clear();
+            InvalidateAssigned(statement);
+            const std::set<Symbol*> entry = nonNullLocals_;
             if (statement.declared.type != types_.Int()) Fail(statement.declared.first, "a range loop requires an int variable");
             for (const auto& expression : statement.expressions)
             {
@@ -2574,7 +2631,7 @@ private:
             const int body = CheckStatement(*statement.children[0]);
             --loopDepth_;
             scopes_.pop_back();
-            nonNullLocals_.clear();
+            nonNullLocals_ = entry;
             return FallsThrough | (body & Returns);
         }
         case StatementKind::Return:
@@ -2595,7 +2652,8 @@ private:
         case StatementKind::Foreach:
         {
             CheckExpr(*statement.expressions[0]);
-            nonNullLocals_.clear();
+            InvalidateAssigned(statement);
+            const std::set<Symbol*> entry = nonNullLocals_;
             const TypeId source = statement.expressions[0]->type;
             const TypeDesc& collection = types_.Get(source);
             std::vector<TypeId> expected;
@@ -2638,7 +2696,7 @@ private:
                 edits_.push_back(Edit(statement.children[0]->end, statement.children[0]->end, "}"));
             }
             scopes_.pop_back();
-            nonNullLocals_.clear();
+            nonNullLocals_ = entry;
             return FallsThrough | (body & Returns);
         }
         case StatementKind::Yield:

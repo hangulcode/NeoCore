@@ -62,7 +62,20 @@ int main()
         Expect("export int Probe(){int total=0;for(int i in 0,6){switch(i%3){case 0:continue;case 1:total+=10;break;default:int local=i*100;total+=local;}total+=1;}return total;}", 724, "switch break and continue inside a loop", debug);
         Expect("export int Probe(){int x=5;int seen=0;switch(x){case 1:seen=1;break;case 2:seen=2;break;}return seen;}", 0, "unmatched switch without default skips", debug);
         Expect("export int Probe(){list<int>? a=[4];int result=0;if(a!=null){switch(a[0]){case 4:a=null;break;default:result=a[0];}}return result;}", 0, "switch clause assignment invalidates nullable proof", debug);
+        Expect("string? Maybe(){return \"v\";}export int Probe(){string? s=Maybe();int total=0;if(s!=null){for(int i in 0,3)total+=s.len();}return total;}", 3, "range loop keeps nullable proof", debug);
+        Expect("export int Probe(){list<int>? a=[1,2];if(a==null)return -1;int total=0;int i=0;while(i<2){total+=a[i];i+=1;}foreach(int v in a)total+=v;return total;}", 6, "early return proof survives while and foreach", debug);
+        Expect("export int Probe(){string? s=\"ab\";if(s==null)return 0;fn()->int f=fn()->int{return s.len();};return f();}", 2, "captured copy keeps nullable proof", debug);
+        Expect("export int Probe(){string? a=\"ab\";string? b=\"c\";if(a!=null&&b!=null)return a.len()+b.len();return 0;}", 3, "conjunction refines both operands", debug);
+        Expect("export int Probe(){string? a=\"ab\";string? b=\"c\";if(a==null||b==null)return 0;return a.len()*10+b.len();}", 21, "disjunction early return refines both operands", debug);
+        Expect("export int Probe(){string? a=\"ab\";if(a!=null&&a.len()>1)return 1;if(a==null||a.len()>5)return 2;return 3;}", 1, "short-circuit refines the right operand", debug);
+        Expect("export int Probe(){string? a=\"ab\";string? b=\"c\";if(!(a!=null&&b!=null))return 0;return a.len()+b.len();}", 3, "negated conjunction refines in the false branch", debug);
     }
+    Reject("void F(){string? s=\"a\";if(s!=null){for(int i in 0,2){print(s.len());s=null;}}}", "loop body assignment drops proof for the next iteration");
+    Reject("void F(){string? s=\"a\";if(s!=null){int i=0;while(i<2){print(s.len());i+=1;s=null;}}}", "while body assignment drops proof");
+    Reject("void F(){string? s=\"a\";if(s!=null){fn()->int f=fn()->int{s=null;return s.len();};}}", "lambda assignment drops captured proof");
+    Reject("void F(){string? a=\"a\";string? b=null;if(a!=null||b!=null)print(a.len());}", "disjunction when true proves neither operand");
+    Reject("void F(){string? a=\"a\";string? b=null;if(a==null&&b==null)return;print(a.len());}", "negated conjunction proves neither operand");
+    Reject("void F(){string? a=\"a\";if(a==null&&a.len()>0)return;}", "conjunction right operand under false guard is not refined");
     Reject("float f=1.0;switch(f){case 1:print(1);}", "float switch selector");
     Reject("bool b=true;switch(b){case true:print(1);}", "bool switch selector");
     Reject("string s=\"a\";switch(s){case 1:print(1);}", "int label on string selector");
