@@ -75,9 +75,9 @@ struct Debugger::Impl : NeoScript::IDebugListener
         const TypeRegistry& types = program.checked.types;
         const TypeDesc& type = types.Get(id);
         value.type = types.DisplayName(id);
-        if (type.kind == TypeKind::Nullable)
-        { if (value.value != "null") Value(program, value, type.element, depth + 1); }
-        else if (type.kind == TypeKind::Struct)
+        // null 을 담을 수 있는 타입의 null 값은 자식 없이 그대로 보인다.
+        if (value.value == "null" && types.AllowsNull(id)) return;
+        if (type.kind == TypeKind::Struct)
         {
             value.type = Name(program, type.name); value.value = value.type;
             for (std::size_t i = 0; i < value.children.size() && i < type.fields.size(); ++i)

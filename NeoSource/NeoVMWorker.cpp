@@ -333,6 +333,8 @@ int CNeoVMWorker::ToSize(VarInfo* v1)
 	case VAR_BOOL:
 		return 0;
 	case VAR_NONE:
+		// null 참조의 길이는 0 이 아니라 오류다. 정적 프런트엔드가 len() 을 이 명령으로 내린다.
+		SetError(RTE_LENGTH_NULL);
 		return 0;
 	case VAR_VEC:
 		return v1->VectorComponentCount();

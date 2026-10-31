@@ -13,7 +13,7 @@ schemas and owning value handles. C consumers use
 handles and length-delimited UTF-8 strings. Check `NcGetAbiVersion` rather than
 assuming the old NeoScript ABI or result layout is unchanged.
 
-The supported boundary includes int64, binary64, bool, strings, nullable values,
+The supported boundary includes int64, binary64, bool, strings, null references,
 Vector2/3/4, quaternions, registered object IDs, typed collections, structs and
 function values. Unity vectors marshal through float32 components. Quaternion
 host values use w,x,y,z; the Unity conversion helpers reorder to/from Unity's

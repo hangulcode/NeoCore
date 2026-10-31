@@ -1854,6 +1854,15 @@ struct neo_libs
 		return true;
 	}
 
+	static bool core_fail(CNeoVMWorker* pN, VarInfo*, short args)
+	{
+		VarInfo* pArg1 = args >= 1 ? pN->GetStack(1) : nullptr;
+		if (pArg1 != nullptr && pArg1->GetType() == VAR_STRING)
+			pN->SetError(pArg1->_str->_str.c_str());
+		else
+			pN->SetError("script failure");
+		return false;
+	}
 	static bool io_print(CNeoVMWorker* pN, VarInfo* pVar, short args)
 	{
 		if (args == 1)
@@ -2431,6 +2440,8 @@ static void AddGlobalLibFun()
 		return;
 
 	AddDefaultNativeFun("print", &neo_libs::io_print);
+	// 정적 프런트엔드의 로우어링 헬퍼가 쓰는 런타임 오류 보고. 인자 문자열이 오류 메시지가 된다.
+	AddDefaultNativeFun("__neocore_fail", &neo_libs::core_fail);
 
 	g_sCurrentSystem = "math";
 	AddSystemFun("abs", &neo_libs::Math_abs, "float", "float x");
@@ -2542,7 +2553,7 @@ bool CNeoVM::IsGlobalLibFun(std::string& FunName)
 {
 	//InitLib();
 	//return g_sNeoFunLib_Default.IsKey(FunName);
-	return FunName == "print";
+	return FunName == "print" || FunName == "__neocore_fail";
 }
 const std::list< SystemFun>* CNeoVM::GetSystemModule(const std::string& module)
 {

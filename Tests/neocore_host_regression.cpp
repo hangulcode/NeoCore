@@ -76,16 +76,16 @@ struct Fixture
         objectType = schema.AddObject("Object");
         alienType = schema.AddObject("AlienObject");
         NeoCore::TypeRegistry& types = schema.Types();
-        const NeoCore::TypeId nullableObject = types.NullableOf(objectType);
-        const NeoCore::TypeId nullableInt = types.NullableOf(types.Int());
-        const NeoCore::TypeId nullableText = types.NullableOf(types.String());
+        // 호스트 객체와 문자열은 타입 자체가 null 을 담는다. 별도 nullable 타입은 없다.
+        const NeoCore::TypeId nullableObject = objectType;
+        const NeoCore::TypeId nullableText = types.String();
         Check(schema.AddProperty(objectType, "Value", types.Int()), "register integer property");
         Check(schema.AddProperty(objectType, "Amount", types.Float()), "register float property");
         Check(schema.AddProperty(objectType, "Enabled", types.Bool()), "register bool property");
         Check(schema.AddProperty(objectType, "Text", types.String()), "register string property");
         Check(schema.AddProperty(objectType, "ReadOnly", types.Int(), true, false), "register readonly property");
         Check(schema.AddProperty(objectType, "WriteOnly", types.Int(), false, true), "register writeonly property");
-        Check(schema.AddProperty(objectType, "Optional", nullableInt), "register nullable property");
+        Check(schema.AddProperty(objectType, "Optional", nullableText), "register string property that accepts null");
         Check(schema.AddProperty(objectType, "Child", objectType, true, false), "register native property");
         Check(schema.AddProperty(objectType, "MaybeChild", nullableObject, true, false), "register nullable native property");
         Method("EchoInt", types.Int(), {types.Int()});
@@ -96,8 +96,8 @@ struct Fixture
         Method("Join", types.Int(), {objectType, objectType});
         Method("Identity", objectType, {objectType});
         Method("AcceptNullable", types.Bool(), {nullableObject});
-        Method("NullableArgs", types.Bool(), {nullableInt, nullableText});
-        Method("NullableInt", nullableInt);
+        Method("NullableArgs", types.Bool(), {nullableText, nullableText});
+        Method("NullableInt", nullableText);
         Method("NullableReturn", nullableObject);
         Method("Target", objectType);
         Method("Rhs", types.Int());
@@ -179,7 +179,12 @@ struct Fixture
         else if (name == "EchoBool") call.ReturnBool(call.Bool(0));
         else if (name == "EchoText") call.ReturnString(call.String(0));
         else if (name == "ZeroText") call.ReturnString(std::string("a\0b", 3));
-        else if (name == "Join") call.ReturnInt(static_cast<Object*>(call.Object(0))->value + static_cast<Object*>(call.Object(1))->value);
+        else if (name == "Join")
+        {
+            // null 인자는 호스트가 판단한다. 모의 호스트는 두 객체를 모두 요구한다.
+            if (call.Object(0) == nullptr || call.Object(1) == nullptr) { call.Fail("Join requires two live objects"); return false; }
+            call.ReturnInt(static_cast<Object*>(call.Object(0))->value + static_cast<Object*>(call.Object(1))->value);
+        }
         else if (name == "Identity") { observedId = call.ObjectId(0).value; call.ReturnObject(call.ObjectId(0)); }
         else if (name == "AcceptNullable") call.ReturnBool(call.IsNull(0) && !call.ObjectId(0) && call.Object(0) == nullptr);
         else if (name == "NullableArgs") call.ReturnBool(call.IsNull(0) && call.IsNull(1));
@@ -247,6 +252,16 @@ void CheckScalarBindings(bool debug)
     ExpectInt(Invoke(fixture,
         "export int Probe(){Object.Optional=null;Object.WriteOnly=9;return Object.ReadOnly;}",
         "writeonly and nullable setters", debug), 9, "writeonly setter and readonly getter");
+    ExpectInt(Invoke(fixture, "export int Probe(){if(Maybe!=null)return Maybe.Value;return 5;}",
+        "null host global comparison", debug), 5, "a null host global compares without a nullable type");
+    ExpectInt(Invoke(fixture, "export int Probe(){Object other=null;if(other==null)return 5;return 0;}",
+        "null host local comparison", debug), 5, "a null host local compares without a nullable type");
+    ExpectInt(Invoke(fixture, "export int Probe(){Object other=Object;if(other!=null){int v=other.Value;int w=Object.Value;if(v==w)return 7;}return 0;}",
+        "nonnull host local comparison", debug), 7, "a bound host local compares and dereferences");
+    const NeoCore::Result nullReceiver = Invoke(fixture, "export int Probe(){return Maybe.Value;}", "null host object dereference", debug);
+    Check(!nullReceiver.ok() && nullReceiver.error.message.find("null host object") != std::string::npos, "dereferencing a null host object fails at runtime: " + nullReceiver.error.message);
+    const NeoCore::Result nullArgument = Invoke(fixture, "export int Probe(){return Object.Join(Object,null);}", "null object argument", debug);
+    Check(!nullArgument.ok(), "a null argument reaches the host, which rejects it: " + nullArgument.error.message);
     const NeoCore::Result text = Invoke(fixture,
         "export string Probe(){return Object.EchoText(Object.ZeroText());}", "embedded zero string", debug);
     Check(text.ok() && text.value.kind() == NeoCore::Scalar::Kind::String && text.value.asString() == std::string("a\0b", 3),
@@ -376,8 +391,10 @@ void CheckRebinding(bool debug)
     Check(first->SetHostObject("Object", NeoCore::ObjectHandle(2), error), "instance global rebind: " + error.message);
     ExpectInt(first->Call("Probe"), 20, "global is resolved from current instance binding on each call");
     ExpectInt(second->Call("Probe"), 10, "rebinding does not affect another compiled instance");
-    Check(!first->SetHostObject("Object", NeoCore::ObjectHandle(), error), "nonnull host global rejects null");
-    ExpectInt(first->Call("Probe"), 20, "failed rebind preserves old global");
+    Check(first->SetHostObject("Object", NeoCore::ObjectHandle(), error), "host global accepts null: " + error.message);
+    ExpectError(first->Call("Probe"), "null host global fails on member access", "null host object");
+    Check(first->SetHostObject("Object", NeoCore::ObjectHandle(2), error), "rebind after null: " + error.message);
+    ExpectInt(first->Call("Probe"), 20, "rebinding after null restores member access");
     Check(!first->SetHostObject("Unknown", NeoCore::ObjectHandle(1), error), "rebind rejects unknown global");
     Check(first->SetHostObject("Object", NeoCore::ObjectHandle(Fixture::HighId()), error), "rebind full-width unsigned object ID");
     ExpectInt(first->Call("Probe"), 70, "high ID receiver survives signed backend payload");
@@ -558,8 +575,11 @@ void CheckReturnContracts(bool debug)
     {
         Fixture fixture;
         fixture.Override("Identity", [](NeoCore::HostCall& call) { call.ReturnNull(); return true; });
-        ExpectError(Invoke(fixture, "export int Probe(){return Object.Identity(Object).Value;}", "nonnull object return contract", debug),
-            "nonnull native result rejects null", "signature");
+        ExpectInt(Invoke(fixture, "export int Probe(){if(Object.Identity(Object)==null)return 3;return 0;}", "null object return", debug),
+            3, "a host object result may be null");
+        const NeoCore::Result nullResult = Invoke(fixture, "export int Probe(){return Object.Identity(Object).Value;}", "null object return dereference", debug);
+        Check(!nullResult.ok() && nullResult.error.message.find("null host object") != std::string::npos,
+            "dereferencing a null host result fails at runtime: " + nullResult.error.message);
     }
     {
         Fixture fixture;
@@ -688,11 +708,7 @@ void CheckRejectedSource(bool debug)
         {"export int Probe(){Object.WriteOnly+=1;return 1;}", "writeonly property compound read"},
         {"export int Probe(){Object.Value=\"wrong\";return 1;}", "property assignment type"},
         {"export int Probe(){return Object.Join(Object,Alien);}", "native nominal argument type"},
-        {"export int Probe(){return Object.Join(Object,null);}", "nonnull object argument"},
-        {"export int Probe(){return Maybe.Value;}", "nullable object dereference"},
-        {"export int Probe(){if(Maybe!=null)return Maybe.Value;return 0;}", "nullable narrowing remains unsupported"},
-        {"export int Probe(){return Object.MaybeChild.Value;}", "nullable native property dereference"},
-        {"export int Probe(){int value=Object.NullableInt();return value;}", "nullable scalar return cannot unwrap"},
+        {"export int Probe(){int value=Object.NullableInt();return value;}", "string return does not convert to int"},
         {"export int Probe(){Object value=Object();return 1;}", "native types cannot be constructed"},
         {"export int Probe(){int value=Object;return value;}", "native opaque IDs do not become integers"},
         {"export int Probe(){return toint(Object);}", "native opaque ID numeric conversion"},

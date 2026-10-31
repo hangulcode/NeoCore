@@ -30,9 +30,8 @@ intended to improve execution and validation while preserving that convenience.
 
 The project follows these goals:
 
-- **Compile-time contracts:** explicit types, function signatures, nullability,
-  value semantics, and host schemas make invalid operations diagnosable before a script
-  runs. Unsupported features fail explicitly instead of silently becoming dynamic.
+- **Compile-time contracts:** explicit types, function signatures, value semantics,
+  and host schemas make invalid operations diagnosable before a script runs. Unsupported features fail explicitly instead of silently becoming dynamic.
 - **Efficient execution:** carry resolved type information into dedicated VM
   instructions and progressively remove transitional compiler and runtime helpers.
   Performance improvements must be measured; static typing alone is not evidence
@@ -55,9 +54,9 @@ or performance work is complete. The current implementation is described below.
 
 The frontend checks scalar/vector declarations, structs, typed arrays, nested lists/maps, sets, typed function values and closures, named functions,
 calls and returns, including forward calls and recursion. It rejects `var`, `fun`, undeclared types,
-and implicit dynamic fallback. Numeric defaults are initialized; non-null strings
-require an initializer. Nullable values do not implicitly unwrap; native object
-locals support member access inside an explicit non-null `if` branch.
+and implicit dynamic fallback. Numeric, bool, vector and struct values are never
+null and are initialized by default; strings, collections, function values and host
+objects may be null and default to null. Using a null reference is a runtime error.
 
 NeoCore does not support pointers or `T&` reference declarations, parameters, or
 returns. Structs and vectors copy by value; functions return modified values for
@@ -117,7 +116,7 @@ skeleton. Named scalar assignments, compound assignments, and prefix/postfix upd
 now carry their variable targets and flat struct-field paths in IR. Targets are
 resolved after the RHS; the stored value or old postfix value is retained as the
 expression result. Script calls carry resolved signatures and ordered argument
-roots, with explicit numeric/nullable conversions and struct value copies. Return
+roots, with explicit numeric conversions, null transfers and struct value copies. Return
 records retain the owning function, result type, and original source location.
 Structs store raw field values; clone helpers preserve nested value copies.
 Internal boxed vector locals still support component writes, without exposing
@@ -236,7 +235,7 @@ Run timed benchmarks without `--debug`.
 [Samples/bench/check.nc](Samples/bench/check.nc) checks small-input results for all
 eight benchmark algorithms without timers. [Samples/bench/bench.nc](Samples/bench/bench.nc)
 contains the full workloads with explicit conversions and `map.get(key, 0)` for
-nonnull reads. These preserve checksums, not identical bytecode. Current VM and
+reads that may miss. These preserve checksums, not identical bytecode. Current VM and
 helper costs remain part of the measurement; static typing alone is not a speed claim.
 
 The [first NeoCore benchmark snapshot](docs/FirstNcBenchmark.md) records seven
@@ -258,7 +257,7 @@ creates independent execution state while sharing compiled code. Hosts with many
 script assets use this runtime/program/instance hierarchy. Static `Program::Compile`
 remains a convenient isolated entry point. `Run`
 executes top-level code once; `Call` checks an exported function's declared
-signature before invoking the VM. Host values include scalars, nullable values,
+signature before invoking the VM. Host values include scalars, null references,
 vectors, typed native IDs, collections, structs, and function values. Structs and
 vectors copy by value; collections retain shared identity. Retained closures are
 bound to their creating instance and become invalid after its reset or destruction.

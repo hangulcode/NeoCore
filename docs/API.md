@@ -22,8 +22,8 @@ Strings support `len`, `sub(start, length)`, `codepoint(index)`, `find(text)`,
 
 Regular expressions use `regex_match(pattern, ignoreCase?)`,
 `regex_search(pattern, ignoreCase?)` and
-`regex_replace(pattern, replacement, ignoreCase?)`. Search returns a nullable
-`list<string>` containing the match/captures. PCRE2 enforces the backend's bounded
+`regex_replace(pattern, replacement, ignoreCase?)`. Search returns a
+`list<string>` containing the match/captures, or null when nothing matched. PCRE2 enforces the backend's bounded
 pattern, work and memory policies; errors remain runtime errors. This is PCRE2
 syntax, not a promise of JavaScript RegExp compatibility. See
 [regex.nc](../Samples/neocore/scripts/regex.nc) for checked examples.

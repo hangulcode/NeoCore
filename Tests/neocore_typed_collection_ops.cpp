@@ -366,7 +366,7 @@ void ListWrites(IRuntime& runtime, bool debug)
     {
         NeoCore::StaticCompileResult checked;
         Check(!NeoCore::CompileStaticSource(source, checked) && !checked.errorMessage.empty(),
-            "nullable map element cannot enter unchecked numeric compound arithmetic");
+            "map element compound arithmetic is rejected explicitly");
     }
 }
 

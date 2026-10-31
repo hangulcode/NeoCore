@@ -24,8 +24,11 @@ export int ReadCount() { return count; }
 `var`, `fun`, pointers, `T&`, and user-declared `int32`/`float32` scalars are not
 part of NeoCore. Functions always declare their result type, including `void`.
 Variables must be declared before use; functions can call later functions and
-recurse. Numeric, bool and vector variables have defined initial values.
-Nonnullable strings, collections, functions and native objects need initializers.
+recurse. Numeric, bool, vector and struct variables have defined initial values and
+can never be null. Strings, collections, function values and host objects may be null
+and start as null when declared without an initializer; there is no `T?` spelling.
+Compare them with `null` when a value may be missing; using a null reference is a
+runtime error.
 
 `public` exposes a file declaration to another module. `export` exposes supported
 functions or variables to the host. Neither keyword implies the other.
@@ -50,8 +53,9 @@ foreach (int value in values) print(value);
 
 Structs and vectors copy by value. Collections share storage: assigning a list
 or map does not deep-copy it. Element/key/value types are fixed; heterogeneous
-collections do not gain an implicit dynamic fallback. Map reads that can miss
-are nullable; use a typed fallback or supported null handling. Removal is explicit.
+collections do not gain an implicit dynamic fallback. A map read of a missing key
+returns null for reference values and fails at runtime for value types, so use
+`get(key, fallback)` or `contains(key)` when a key may be missing. Removal is explicit.
 An ordinary `array<float>` stores binary64 and `array<int>` stores int64.
 Compact storage remains a separate array type; it does not introduce public
 32-bit scalar declarations.

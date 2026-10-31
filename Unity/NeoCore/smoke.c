@@ -114,7 +114,7 @@ static void boundaries(void)
         "export int EchoInt(int x) { return x; }\n"
         "export string EchoString(string x) { return x; }\n"
         "export bool EchoBool(bool x) { return x; }\n"
-        "export int? Nothing() { return null; }\n"
+        "export string Nothing() { return null; }\n"
         "export int Wait(int x) { sleep(0); return x + 1; }\n"
         "export int Bad() { int zero = 0; return 1 / zero; }\n";
     const char* text = "UTF-8 \xe2\x98\x83";

@@ -221,8 +221,8 @@ static void CheckNativeModuleNames()
         return true;
     }) && bindings.BindGlobal("hostGlobal", NeoCore::ObjectHandle(1)), "native module bindings");
     Sources sources;
-    sources["native"] = "public int Read(){GlobalOnly copy=hostGlobal;ArgumentOnly? argument=null;"
-        "ReturnOnly? result=null;UnusedNative? unused=null;"
+    sources["native"] = "public int Read(){GlobalOnly copy=hostGlobal;ArgumentOnly argument=null;"
+        "ReturnOnly result=null;UnusedNative unused=null;"
         "if(copy==hostGlobal&&argument==null&&result==null&&unused==null)return 1;return 0;}";
     NeoCore::CompileOptions options;
     options.moduleLoader = Loader(sources);

@@ -76,10 +76,6 @@ bool HostSchema::IsSupportedType(TypeId type, bool allowVoid) const
         case TypeKind::Vector4:
         case TypeKind::Quaternion:
             break;
-        case TypeKind::Nullable:
-            if (types_.Get(descriptor.element).kind == TypeKind::Nullable) return false;
-            pending.push_back(std::make_pair(descriptor.element, false));
-            break;
         case TypeKind::Array:
         case TypeKind::Array32:
         case TypeKind::List:
@@ -229,7 +225,7 @@ HostBindingId HostSchema::AddEvent(TypeId owner, const std::string& eventName, T
     }
     if (types_.Get(callbackType).kind != TypeKind::Function || !IsSupportedType(callbackType, false))
     {
-        Fail("host event callback must be a nonnullable function type");
+        Fail("host event callback must be a function type");
         return InvalidHostBinding;
     }
     if (!CheckBindingCapacity(1)) return InvalidHostBinding;
@@ -291,10 +287,9 @@ bool HostSchema::AddGlobal(const std::string& name, TypeId nativeOrNullable)
     lastError_.clear();
     if (!IsNameAllowed(name)) return Fail("host global name must be a non-reserved identifier");
     if (FindGlobal(name) != nullptr) return Fail("host global name is already declared");
-    TypeId objectType = nativeOrNullable;
-    if (types_.Get(objectType).kind == TypeKind::Nullable) objectType = types_.Get(objectType).element;
+    const TypeId objectType = nativeOrNullable;
     if (types_.Get(objectType).kind != TypeKind::Native || !IsSupportedType(nativeOrNullable, false))
-        return Fail("host global type must be a registered native object or its nullable type");
+        return Fail("host global type must be a registered native object");
     HostGlobal global;
     global.name = name;
     global.type = nativeOrNullable;
@@ -435,8 +430,7 @@ bool HostSchema::Validate(std::string& error) const
     std::set<std::string> globalNames;
     for (const HostGlobal& global : globals_)
     {
-        TypeId objectType = global.type;
-        if (types_.Get(objectType).kind == TypeKind::Nullable) objectType = types_.Get(objectType).element;
+        const TypeId objectType = global.type;
         if (!IsNameAllowed(global.name) || !globalNames.insert(global.name).second ||
             types_.Get(objectType).kind != TypeKind::Native || !IsSupportedType(global.type, false))
         {

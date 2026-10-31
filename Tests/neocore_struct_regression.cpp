@@ -59,16 +59,16 @@ static void CheckExecution(bool debug)
 {
     ExpectFloat("struct S{int x;float y;};export float Probe(){S s=S(2,3);return s.x+s.y;}",
         5.0, "constructor field promotion", debug);
-    ExpectInt("struct S{int x;float y;bool active;int? number;string? name;};export int Probe(){S s;if(s.x==0&&s.y==0.0&&!s.active&&s.number==null&&s.name==null)return 1;return 0;}",
-        1, "scalar field defaults", debug);
+    ExpectInt("struct S{int x;float y;bool active;string name;list<int> values;};export int Probe(){S s;if(s.x==0&&s.y==0.0&&!s.active&&s.name==null&&s.values==null)return 1;return 0;}",
+        1, "scalar and reference field defaults", debug);
     ExpectInt("struct S{int x;float y;};export int Probe(){S s=S();s.x=3;return s.x+toint(s.y);}",
         3, "empty constructor defaults", debug);
     ExpectInt("struct Empty{};export int Probe(){Empty a;Empty b=Empty();a=b;return 1;}",
         1, "empty struct values", debug);
     ExpectInt("struct I{int x;};struct O{I inner;bool active;};export int Probe(){O o;o.inner.x=4;if(o.active)return 99;return o.inner.x;}",
         4, "recursive default construction", debug);
-    ExpectInt("struct S{int? number;float? fraction;string? name;};export int Probe(){S s=S(null,2,null);if(s.number==null&&s.fraction==2.0&&s.name==null)return 1;return 0;}",
-        1, "nullable scalar constructor fields", debug);
+    ExpectInt("struct S{string name;float fraction;list<int> values;};export int Probe(){S s=S(null,2,null);if(s.name==null&&s.fraction==2.0&&s.values==null)return 1;return 0;}",
+        1, "reference constructor fields accept null", debug);
     ExpectFloat("struct S{float x;};export float Probe(){S s=S(1);s.x=2;s.x+=3;return s.x;}",
         5.0, "field assignment materializes float", debug);
     ExpectInt("struct S{int x;};export int Probe(){S s=S(2);int a=s.x++;int b=++s.x;s.x*=3;s.x-=1;return a*100+b*10+s.x;}",
@@ -136,8 +136,8 @@ static void CheckExecution(bool debug)
         44, "field target resolved after whole assignment RHS", debug);
     ExpectInt("struct I{int x;int y;};struct O{I inner;};export int Probe(){O o=O(I(1,2));I t=I(3,4);o.inner.x=(o.inner=t).y;return o.inner.x*10+o.inner.y;}",
         44, "nested field target resolved after RHS", debug);
-    ExpectInt("struct S{int? x;};export int Probe(){S s=S(1);s=S(2);s.x=null;if(s.x==null)return 1;return 0;}",
-        1, "nullable field write after replacement", debug);
+    ExpectInt("struct S{string x;};export int Probe(){S s=S(\"a\");s=S(\"b\");s.x=null;if(s.x==null)return 1;return 0;}",
+        1, "reference field write after replacement", debug);
     ExpectString("struct S{string text;};export string Probe(){S s=S(\"a\");string copy=s.text;s=S(\"b\");s.text=\"c\";return copy..s.text;}",
         "ac", "string field copy survives root replacement", debug);
     ExpectFloat("struct Position{float x;float y;};struct Particle{Position position;int age;};Particle Advance(Particle p,float dt){p.position.x+=dt;p.age+=1;return p;}export float Probe(){Particle p=Particle(Position(1,2),0);Particle copy=p;p=Particle(Position(10,20),3);p.position.x+=2;p=Advance(p,0.5);if(p.age!=4||copy.position.x!=1.0)return -1.0;return p.position.x;}",
@@ -157,7 +157,7 @@ static void CheckRejections(bool debug)
         {"struct A{int x;};struct B{int x;};A F(){return B(1);}", "nominal return mismatch"},
         {"struct S{S child;};", "direct recursive values"},
         {"struct A{B child;};struct B{A child;};", "mutual recursive values"},
-        {"struct S{S? child;};", "recursive nullable struct"},
+        {"struct S{S? child;};", "nullable marker in a field"},
         {"struct S{int x;int x;};", "duplicate field"},
         {"struct S{int x;};struct S{float y;};", "duplicate struct definition"},
         {"struct S{void x;};", "void field"},
@@ -171,9 +171,6 @@ static void CheckRejections(bool debug)
         {"struct S{int Method(){return 1;}};", "struct method"},
         {"void F(){struct S{int x;};}", "local struct definition"},
         {"struct S{int x;};S? s=null;", "nullable struct declaration"},
-        {"struct S{string text;};S s;", "string field has no implicit default"},
-        {"struct S{string text;};S s=S();", "string field has no empty constructor"},
-        {"struct I{string text;};struct O{I inner;};O o;", "nested string prevents default"},
         {"struct S{int x;int y;};S s=S(1);", "constructor missing argument"},
         {"struct S{int x;};S s=S(1,2);", "constructor excess argument"},
         {"struct S{int x;};S s=S(1.5);", "constructor narrowing"},

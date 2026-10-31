@@ -147,7 +147,7 @@ public:
             {schema.Types().Float()})) != NeoCore::InvalidHostBinding, schema.LastError());
         Require(schema.AddMethod(serviceType_, "Log", schema.Types().Void(),
             {schema.Types().String()}) != NeoCore::InvalidHostBinding, schema.LastError());
-        Require(schema.AddGlobal("GameObject", objectType_), schema.LastError());
+        Require(schema.AddGlobal("this", objectType_), schema.LastError());
         Require(schema.AddGlobal("Services", serviceType_), schema.LastError());
         bindings.reset(new NeoCore::HostBindings(schema, &Resolve, this));
         for (const NeoCore::HostBinding& binding : schema.Bindings())
@@ -190,7 +190,7 @@ public:
                 });
             Require(bound, "cannot bind " + binding.name);
         }
-        Require(bindings->BindGlobal("GameObject", NeoCore::ObjectHandle(1)), "default GameObject binding");
+        Require(bindings->BindGlobal("this", NeoCore::ObjectHandle(1)), "default GameObject binding");
         Require(bindings->BindGlobal("Services", NeoCore::ObjectHandle(ServiceId)), "Services binding");
         NeoCore::Error error;
         runtime = NeoCore::Runtime::Create(*bindings, error);
@@ -216,7 +216,7 @@ public:
         {
             body.instance = program->CreateInstance(error);
             Require(bool(body.instance), "cannot create instance: " + error.message);
-            Require(body.instance->SetHostObject("GameObject", NeoCore::ObjectHandle(body.id), error), error.message);
+            Require(body.instance->SetHostObject("this", NeoCore::ObjectHandle(body.id), error), error.message);
             Complete(body.instance->Run(), body.name + " initialization");
             Require(body.onUpdate.kind() == NeoCore::Scalar::Kind::Function && body.callerId == body.instance->Id(),
                 body.name + " did not register OnUpdate");

@@ -117,13 +117,20 @@ static void CheckMaps(bool debug)
         "false map value is not treated as a missing key", debug);
     ExpectString("export string Probe(){map<string,string> m={};m[\"x\"]=\"\";return m.get(\"x\",\"bad\")..m.get(\"missing\",\"ok\");}", "ok",
         "empty string map value is not a missing key", debug);
-    ExpectInt("export int Probe(){map<string,int> m={};m[\"x\"]=4;int? present=m[\"x\"];int? missing=m[\"absent\"];if(present==4&&missing==null)return 1;return 0;}", 1,
-        "raw map reads have nullable value type", debug);
-    const NeoCore::Result missing = Invoke("export int? Probe(){map<string,int> m={};return m[\"missing\"];}",
-        "missing raw map result", debug);
-    Check(missing.ok() && missing.value.kind() == NeoCore::Scalar::Kind::Null,
-        "missing raw map value reaches host as null");
-    const NeoCore::Result present = Invoke("export int? Probe(){map<string,int> m={};m[\"x\"]=8;return m[\"x\"];}",
+    ExpectInt("export int Probe(){map<string,int> m={};m[\"x\"]=4;int present=m[\"x\"];if(present==4&&!m.contains(\"absent\"))return 1;return 0;}", 1,
+        "raw map reads produce the value type", debug);
+    ExpectInt("export int Probe(){map<string,string> m={};m[\"x\"]=\"v\";string present=m[\"x\"];string missing=m[\"absent\"];if(present==\"v\"&&missing==null)return 1;return 0;}", 1,
+        "missing reference map reads are null", debug);
+    {
+        NeoCore::Error error;
+        std::unique_ptr<NeoCore::Program> program = NeoCore::Program::Compile(
+            "export int Probe(){map<string,int> m={};return m[\"missing\"];}", error, "missing raw map result", debug);
+        Check(program != nullptr, "missing raw map result compile: " + error.message);
+        const NeoCore::Result missing = program ? program->Call("Probe") : NeoCore::Result();
+        Check(program && !missing.ok() && missing.error.message.find("map key not found") != std::string::npos,
+            "missing value-typed map read fails at runtime: " + missing.error.message);
+    }
+    const NeoCore::Result present = Invoke("export int Probe(){map<string,int> m={};m[\"x\"]=8;return m[\"x\"];}",
         "present raw map result", debug);
     Check(present.ok() && present.value.kind() == NeoCore::Scalar::Kind::Int && present.value.asInt() == 8,
         "present raw map value retains scalar storage");
@@ -178,10 +185,8 @@ static void CheckRejections(bool debug)
         {"list<int> a=[];a.resize(1.5);", "resize requires integer length"},
         {"list<int> a=[];a.resize();", "resize requires one length"},
         {"list<int> a=[1];int n=a.len(1);", "list length takes no arguments"},
-        {"list<string> a=[];a.resize(1);", "string growth requires an explicit fill policy"},
         {"list<int> a=[];a.resize(1,2.5);", "resize fill narrowing"},
-        {"list<string> a=[];a.resize(1,null);", "resize fill cannot violate nonnull element type"},
-        {"list<int?> a=[];", "nullable list elements are deferred"},
+        {"list<int?> a=[];", "nullable marker on list elements"},
         {"list<int> a=[1];list<float> b=a;", "lists are invariant"},
         {"list<int> a=[1];int& r=a[0];", "list element reference is not implemented"},
         {"void Set(int& r){}list<int> a=[1];Set(a[0]);", "list element reference argument is not implemented"},
@@ -189,15 +194,13 @@ static void CheckRejections(bool debug)
         {"map<int,int> m={};m[\"x\"]=2;", "integer map key does not accept string"},
         {"map<string,int> m={};m[\"x\"]=2.5;", "map write narrowing"},
         {"map<string,int> m={};m[\"x\"]=null;", "nonnull map value cannot be null"},
-        {"map<string,int> m={};int n=m[\"x\"];", "raw map read requires nullable handling"},
-        {"map<string,int> m={};int n=m[\"x\"]+1;", "raw map read is not nonnull arithmetic"},
         {"map<string,int> m={};int n=m.get(1,0);", "get key type"},
         {"map<string,int> m={};int n=m.get(\"x\",1.5);", "get fallback narrowing"},
         {"map<string,int> m={};int n=m.get(\"x\",null);", "get requires nonnull fallback"},
         {"map<string,int> m={};int n=m.get(\"x\");", "get requires explicit fallback"},
         {"map<string,int> m={};int n=m.get(\"x\",0,1);", "get rejects extra argument"},
         {"map<string,int> m={};map<string,float> other=m;", "maps are invariant"},
-        {"map<string,int?> m={};", "nullable map values are deferred"},
+        {"map<string,int?> m={};", "nullable marker on map values"},
         {"map<float,int> m={};", "floating map keys are deferred"},
         {"map<string,int> m={};int& r=m[\"x\"];", "map element reference is not implemented"},
         {"string s=\"a\";int n=s.len(1);", "string length takes no arguments"},

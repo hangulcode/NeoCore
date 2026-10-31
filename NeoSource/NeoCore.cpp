@@ -883,8 +883,7 @@ Result Instance::Invoke(const std::string& name, const Scalar* function, const s
         return result;
     }
     const TypeRegistry& types = impl_->checked.types;
-    TypeId hostReturn = signature->returnType;
-    if (types.IsNullable(hostReturn)) hostReturn = types.Get(hostReturn).element;
+    const TypeId hostReturn = signature->returnType;
     const TypeKind hostKind = types.Get(hostReturn).kind;
     if (hostKind != TypeKind::Void && hostKind != TypeKind::Int && hostKind != TypeKind::Float &&
         hostKind != TypeKind::Bool && hostKind != TypeKind::String &&
@@ -932,8 +931,7 @@ Result Instance::Invoke(const std::string& name, const Scalar* function, const s
     }
     for (std::size_t i = 0; i < arguments.size(); ++i)
     {
-        TypeId target = signature->parameterTypes[i];
-        if (types.IsNullable(target)) target = types.Get(target).element;
+        const TypeId target = signature->parameterTypes[i];
         const Scalar& argument = arguments[i];
         switch (argument.kind())
         {
@@ -1005,7 +1003,6 @@ Result Instance::Impl::ReadResult(NeoScript::Invocation& call, const StaticFunct
     result.error.sourceName = sourceName;
     const TypeRegistry& types = checked.types;
     TypeId expected = signature.returnType;
-    if (types.IsNullable(expected)) expected = types.Get(expected).element;
     const TypeKind expectedKind = types.Get(expected).kind;
     if (expectedKind == TypeKind::Array || expectedKind == TypeKind::Array32 || expectedKind == TypeKind::List ||
         expectedKind == TypeKind::Map || expectedKind == TypeKind::Set || expectedKind == TypeKind::Function || expectedKind == TypeKind::Struct)
@@ -1057,8 +1054,7 @@ Result Instance::Impl::ReadResult(NeoScript::Invocation& call, const StaticFunct
     TypeId actual = result.value.kind() == Scalar::Kind::Object
         ? types.LookupNamed(result.value.objectType()) : ScalarType(types, result.value.kind());
     expected = signature.returnType;
-    if (types.IsNullable(expected) && actual != types.Null()) expected = types.Get(expected).element;
-    if (expected != actual && !(types.IsNullable(expected) && actual == types.Null()))
+    if (expected != actual && !(types.AllowsNull(expected) && actual == types.Null()))
         result.error.message = "backend result type disagrees with the static signature of " + name;
     result.status = result.error.ok() ? ExecutionStatus::Completed : ExecutionStatus::Failed;
     return result;

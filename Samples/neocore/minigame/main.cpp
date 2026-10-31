@@ -61,7 +61,7 @@ public:
             {})) != NeoCore::InvalidHostBinding, schema.LastError());
         Require(schema.AddMethod(serviceType_, "Record", schema.Types().Void(),
             {schema.Types().Int(), schema.Types().String()}) != NeoCore::InvalidHostBinding, schema.LastError());
-        Require(schema.AddGlobal("GameObject", objectType_), schema.LastError());
+        Require(schema.AddGlobal("this", objectType_), schema.LastError());
         Require(schema.AddGlobal("Services", serviceType_), schema.LastError());
         bindings.reset(new NeoCore::HostBindings(schema, &Resolve, this));
         for (const NeoCore::HostBinding& binding : schema.Bindings())
@@ -104,7 +104,7 @@ public:
             Require(bound, "bind " + binding.name);
         }
         // 각 인스턴스는 실행 전에 GameObject를 자기 ID로 덮어쓴다. 서비스 ID만 공유한다.
-        Require(bindings->BindGlobal("GameObject", NeoCore::ObjectHandle(1)), "default object binding");
+        Require(bindings->BindGlobal("this", NeoCore::ObjectHandle(1)), "default object binding");
         Require(bindings->BindGlobal("Services", NeoCore::ObjectHandle(ServiceId)), "service binding");
         NeoCore::Error error;
         runtime = NeoCore::Runtime::Create(*bindings, error);
@@ -227,7 +227,7 @@ void Verify(const std::string& filename)
     {
         std::unique_ptr<NeoCore::Instance> instance = program->CreateInstance(error);
         Require(bool(instance), "create instance: " + error.message);
-        Require(instance->SetHostObject("GameObject", NeoCore::ObjectHandle(ids[i]), error), error.message);
+        Require(instance->SetHostObject("this", NeoCore::ObjectHandle(ids[i]), error), error.message);
         Complete(instance->Run(), "global initialization");
         Require(ReadInt(*instance, "UpdateCount") == 0, "registration must not invoke callbacks during initialization");
         const NeoCore::Result origin = instance->Call("OriginX");
@@ -268,7 +268,7 @@ void Verify(const std::string& filename)
     world.Destroy(ids[2]);
     Require(!world.Dispatch(ids[2], "OnUpdate", {NeoCore::Scalar::Float(0.25)}).ok(), "destroyed object has no retained callbacks");
     const std::uint64_t replacement = world.Create(90.0f);
-    Require(instances[2]->SetHostObject("GameObject", NeoCore::ObjectHandle(replacement), error), error.message);
+    Require(instances[2]->SetHostObject("this", NeoCore::ObjectHandle(replacement), error), error.message);
     const NeoCore::Result destroyed = instances[2]->Resume(0.25);
     Require(!destroyed.ok() && !instances[2]->IsSuspended(), "saved object ID fails after destruction");
     Require(destroyed.error.line > 0 && destroyed.error.sourceName == filename, "resume error retains script location");
@@ -286,7 +286,7 @@ void Verify(const std::string& filename)
     Require(instances[0]->Reset(error), "reset instance: " + error.message);
     Require(instances[0]->Id() == resetId, "reset keeps instance identity");
     Require(!world.Dispatch(ids[1], "OnEvent", {NeoCore::Scalar::Int(7)}).ok(), "reset unregisters old callbacks");
-    Require(instances[0]->SetHostObject("GameObject", NeoCore::ObjectHandle(ids[0]), error), error.message);
+    Require(instances[0]->SetHostObject("this", NeoCore::ObjectHandle(ids[0]), error), error.message);
     Complete(instances[0]->Run(), "register callbacks after reset");
     Complete(world.Dispatch(ids[0], "OnUpdate", {NeoCore::Scalar::Float(0.25)}), "fresh callback after reset");
     Require(ReadInt(*instances[0], "UpdateCount") == 1 && ReadInt(*instances[0], "EventCount") == 0,

@@ -81,7 +81,7 @@ void Values(bool debug)
         "export string EchoText(string x) { calls += 1; return x; }\n"
         "export bool EchoBool(bool x) { calls += 1; return x; }\n"
         "export int Count() { return calls; }\n"
-        "export int? Nothing() { return null; }\n"
+        "export string Nothing() { return null; }\n"
         "export void NoResult() {}\n", debug);
     Instance instance = Create(program.get());
     for (int64_t value : { (std::numeric_limits<int64_t>::min)(), INT64_C(-1), INT64_C(0),
@@ -129,7 +129,7 @@ void RejectBeforeExecution(bool debug)
     Program program = Compile(
         "int calls = 0; export int Accept(int x) { calls += 1; return x; }\n"
         "export int Count() { return calls; }\n"
-        "export int? Nullable(int? x) { return x; }\n"
+        "export string Nullable(string x) { return x; }\n"
         "int Private() { return 17; }\n", debug);
     Instance instance = Create(program.get());
     Result missing = Call(instance.get(), "Accept");
@@ -145,10 +145,10 @@ void RejectBeforeExecution(bool debug)
     Arguments null(NcArgumentsCreate(), &NcArgumentsDestroy);
     Require(NcArgumentsNull(null.get()) != 0, "append null");
     Result notNullable = Call(instance.get(), "Accept", null.get());
-    Reject(notNullable.get(), "nonnullable argument");
+    Reject(notNullable.get(), "null into an int argument");
     Result nullable = Call(instance.get(), "Nullable", null.get());
-    Status(nullable.get(), NC_COMPLETED, "nullable argument");
-    Require(NcResultKind(nullable.get()) == NC_NULL, "nullable result kind");
+    Status(nullable.get(), NC_COMPLETED, "null string argument");
+    Require(NcResultKind(nullable.get()) == NC_NULL, "null string result kind");
     Result unknown = Call(instance.get(), "Missing");
     Reject(unknown.get(), "unknown function");
     Result privateFunction = Call(instance.get(), "Private");

@@ -367,7 +367,7 @@ static void Comparisons(IRuntime* runtime, bool debug)
         "export int Probe(){if(A()>B())trace=trace*10+3;return trace;}",
         Int(123), nullptr, 0, debug, "fused reversed branch preserves call order");
     Compare(runtime,
-        "export bool Probe(){bool a=true;bool b=false;string x=\"a\";string y=\"b\";int? n=null;"
+        "export bool Probe(){bool a=true;bool b=false;string x=\"a\";string y=\"b\";string n=null;"
         "return a!=b&&x<y&&n==null;}",
         Bool(true), nullptr, 0, debug, "nonnumeric comparisons remain generic");
     Compare(runtime,
@@ -631,7 +631,7 @@ static void ComparisonShapes(IRuntime* runtime, bool debug)
     const char* genericSources[] = {
         "export bool Probe(bool a,bool b){return a==b;}",
         "export bool Probe(string a,string b){return a<b;}",
-        "export bool Probe(int? a,int? b){return a==b;}"
+        "export bool Probe(list<int> a,list<int> b){return a==b||a==null;}"
     };
     for (const char* source : genericSources)
     {
@@ -647,7 +647,7 @@ static void ComparisonShapes(IRuntime* runtime, bool debug)
         std::vector<uint8_t> image;
         const Error error = runtime->CompileToBytecode(desc, image);
         Check(error.ok() && CountTyped(Operations(image)) == 0,
-            "bool string and nullable equality retain generic operations");
+            "bool string and reference equality retain generic operations");
     }
 
     struct RangeShape { const char* condition; bool fused; };

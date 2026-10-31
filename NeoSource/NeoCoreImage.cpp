@@ -12,7 +12,8 @@ namespace Image
 {
 namespace
 {
-const std::uint32_t Version = 1;
+// 2: nullable 타입 종류를 제거했다. null 가능성은 타입 종류가 정한다.
+const std::uint32_t Version = 2;
 const char Magic[] = {'N', 'E', 'O', 'C', 'O', 'R', 'E', '\0'};
 
 struct Writer
@@ -195,7 +196,6 @@ void ReadTypes(Reader& reader, TypeRegistry& types)
         {
             switch (type.kind)
             {
-            case TypeKind::Nullable: created = types.NullableOf(type.element); break;
             case TypeKind::Array: created = types.ArrayOf(type.element); break;
             case TypeKind::Array32: created = types.Array32Of(type.element); break;
             case TypeKind::List: created = types.ListOf(type.element); break;
@@ -220,7 +220,6 @@ void ReadTypes(Reader& reader, TypeRegistry& types)
         std::vector<TypeId> dependencies;
         switch (type.kind)
         {
-        case TypeKind::Nullable:
         case TypeKind::Array:
         case TypeKind::Array32:
         case TypeKind::List: dependencies.push_back(type.element); break;

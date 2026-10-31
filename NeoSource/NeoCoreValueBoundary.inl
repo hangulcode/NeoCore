@@ -8,7 +8,7 @@
 };
 
 static TypeId Underlying(const TypeRegistry& types, TypeId type)
-{ return types.IsNullable(type) ? types.Get(type).element : type; }
+{ (void)types; return type; }
 
 std::string Scalar::typeName() const
 {
@@ -21,7 +21,7 @@ std::string Scalar::typeName() const
 bool BoundaryAccess::Accepts(const TypeRegistry& types, TypeId type, const Scalar& value)
 {
     if (value.kind() == Scalar::Kind::Void) return type == types.Void();
-    if (value.kind() == Scalar::Kind::Null) return types.IsNullable(type);
+    if (value.kind() == Scalar::Kind::Null) return types.AllowsNull(type);
     type = Underlying(types, type);
     if (value.bound_) return value.typeName() == types.DisplayName(type);
     if (value.kind() == Scalar::Kind::Object)
@@ -76,6 +76,7 @@ static Scalar DefaultBoundaryValue(NeoScript::IRuntime& runtime, const TypeRegis
 {
     const TypeDesc& desc = types.Get(type);
     float vector[4] = {};
+    if (types.AllowsNull(type)) return Scalar::Null();
     switch (desc.kind)
     {
     case TypeKind::Int: return Scalar::Int(0);
@@ -85,7 +86,6 @@ static Scalar DefaultBoundaryValue(NeoScript::IRuntime& runtime, const TypeRegis
     case TypeKind::Vector3: return Scalar::Vector(Scalar::Kind::Vector3,vector);
     case TypeKind::Vector4: return Scalar::Vector(Scalar::Kind::Vector4,vector);
     case TypeKind::Quaternion: vector[0] = 1; return Scalar::Vector(Scalar::Kind::Quaternion,vector);
-    case TypeKind::Nullable: return Scalar::Null();
     case TypeKind::Struct:
     {
         const auto result = NewCollection(runtime,types,type,lifetime);
@@ -97,7 +97,7 @@ static Scalar DefaultBoundaryValue(NeoScript::IRuntime& runtime, const TypeRegis
         }
         return BoundaryAccess::Wrap(runtime,types,type,lifetime,result);
     }
-    default: throw std::invalid_argument("nonnullable reference requires an explicit initial value");
+    default: throw std::invalid_argument("this type has no default boundary value");
     }
 }
 
@@ -160,7 +160,7 @@ Scalar BoundaryAccess::Wrap(NeoScript::IRuntime& runtime, const TypeRegistry& ty
     if (type == types.Void()) return Scalar();
     if (data.kind == ValueKind::Null)
     {
-        if (!types.IsNullable(type)) throw std::runtime_error("nonnullable script result is null");
+        if (!types.AllowsNull(type)) throw std::runtime_error("script result is null for a type that cannot be null");
         return Scalar::Null();
     }
     type = Underlying(types,type);
@@ -354,8 +354,8 @@ static NeoCoreBackend::ValuePtr ConvertJsonValue(NeoScript::IRuntime& runtime, c
     if(!ReadValue(value,data)) throw std::invalid_argument("invalid JSON boundary value");
     if(data.kind==ValueKind::Null)
     {
-        if(!types.IsNullable(type) && types.Get(type).kind != TypeKind::Null)
-            throw std::invalid_argument("null requires a nullable JSON target");
+        if(!types.AllowsNull(type))
+            throw std::invalid_argument("JSON null requires a target type that can be null");
         return value;
     }
     type=Underlying(types,type);

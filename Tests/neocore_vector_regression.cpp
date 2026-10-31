@@ -78,10 +78,6 @@ static void CheckValues(bool debug)
         12, "component compound arithmetic", debug);
     ExpectFloat("export float Probe(){Vector2 v=Vector2(2,0);float a=v.x++;float b=++v.x;float c=v.x--;float d=--v.x;return a*10000+b*1000+c*100+d*10+v.x;}",
         24422, "component prefix and postfix results", debug);
-    ExpectBool("export bool Probe(){Vector3? v=null;Quaternion? q=Quaternion();return v==null&&q!=null;}",
-        true, "nullable vector values compare with null", debug);
-    ExpectBool("export bool Probe(){Vector3? v=null;Quaternion? q=Quaternion();return null==v&&null!=q;}",
-        true, "null comparisons with nullable vectors are symmetric", debug);
 }
 
 static void CheckCopiesAndReferences(bool debug)
@@ -275,12 +271,9 @@ static void CheckRejections(bool debug)
         {"Quaternion q;Quaternion r=-q;", "quaternion unary arithmetic remains unsupported"},
         {"Quaternion q;Quaternion r=+q;", "quaternion unary plus remains unsupported"},
         {"Vector4 v;Quaternion q;v+=q;", "vector4 cannot consume quaternion in arithmetic"},
-        {"Vector3? v=null;float x=v.x;", "nullable vector requires unwrap"},
-        {"Vector3? v=Vector3();Vector3 result=v+Vector3();", "nullable vector addition requires unwrap"},
-        {"Vector4? v=Vector4();Vector4 result=v*2;", "nullable vector scaling requires unwrap"},
-        {"Vector3? v=Vector3();v+=Vector3();", "nullable vector compound requires unwrap"},
-        {"Vector3? a=Vector3();Vector3? b=Vector3();bool equal=a==b;", "nullable vector equality deferred"},
-        {"Quaternion? a=Quaternion();Quaternion? b=Quaternion();bool different=a!=b;", "nullable quaternion inequality deferred"},
+        {"Vector3? v=null;", "vectors cannot carry a nullable marker"},
+        {"Vector3 v=Vector3();bool b=v==null;", "vectors cannot be compared with null"},
+        {"Quaternion q=Quaternion();bool b=null!=q;", "quaternions cannot be compared with null"},
         {"Vector3 v=null;", "nonnull vector rejects null"},
         {"const Vector3 v=Vector3();", "vector const construction deferred"},
         {"float32 x=1.0;", "no float32 scalar declaration"},

@@ -46,7 +46,7 @@ void Defines(bool debug)
         "export float Zero(){return ZERO;}\n"
         "export string Text(){return TEXT;}\n"
         "export bool Flag(){return FLAG;}\n"
-        "export int? Empty(){return NIL;}\n";
+        "export string Empty(){return NIL;}\n";
     std::unique_ptr<Program> program = Program::Compile(source, error, "defines.nc", debug, options);
     Check(program != nullptr, "define compilation: " + error.message);
     if (!program) return;

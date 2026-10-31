@@ -223,7 +223,7 @@ NEOS_NOINLINE bool handle_PTRCALL_native(const SVMOperation& OP, VarInfo* pVar1,
             pFunName = pFunNamePre ? pFunNamePre : GetVarPtr2(OP);
             if (pFunName->GetType() == VAR_STRING)
             {
-                SetErrorFormat(RTE_CALL_NAMED, pFunName->_str->_str.c_str());
+                SetErrorFormat(pVar1->GetType() == VAR_NONE ? RTE_CALL_NULL_RECEIVER : RTE_CALL_NAMED, pFunName->_str->_str.c_str());
                 break;
             }
         }

@@ -32,9 +32,7 @@ static void CheckInvalidTypes()
     rejected.push_back(std::numeric_limits<TypeId>::max());
     rejected.push_back(types.Null());
     rejected.push_back(structure);
-    rejected.push_back(types.NullableOf(structure));
     rejected.push_back(foreign);
-    rejected.push_back(types.NullableOf(foreign));
     rejected.push_back(types.ListOf(foreign));
     rejected.push_back(types.MapOf(types.String(), foreign));
     rejected.push_back(types.FunctionOf(foreign, std::vector<TypeId>()));
@@ -59,8 +57,8 @@ static void CheckInvalidTypes()
     Check(schema.AddMethod(foreign, "Call", types.Void(), std::vector<TypeId>()) == InvalidHostBinding,
         "unregistered native cannot own a method");
     Check(!schema.AddProperty(types.Int(), "Value", types.Int()), "scalar cannot own a property");
-    Check(!schema.AddProperty(types.NullableOf(object), "Value", types.Int()),
-        "nullable native does not define a separate member namespace");
+    Check(types.NullableOf(object) == object && types.AllowsNull(object),
+        "host objects hold null without a separate type");
     Check(schema.AddMethod(object, "Success", types.Void(), std::vector<TypeId>()) == 1,
         "failed additions do not consume binding ids");
     Check(schema.LastError().empty(), "successful addition clears the previous diagnostic");
@@ -135,15 +133,8 @@ int main()
     supported.push_back(types.Vector4());
     supported.push_back(types.Quaternion());
     supported.push_back(entity);
-    supported.push_back(types.NullableOf(types.Int()));
-    supported.push_back(types.NullableOf(types.Float()));
-    supported.push_back(types.NullableOf(types.Bool()));
-    supported.push_back(types.NullableOf(types.String()));
-    supported.push_back(types.NullableOf(types.Vector2()));
-    supported.push_back(types.NullableOf(types.Vector3()));
-    supported.push_back(types.NullableOf(types.Vector4()));
-    supported.push_back(types.NullableOf(types.Quaternion()));
-    supported.push_back(nullableEntity);
+    Check(nullableEntity == entity && types.NullableOf(types.Int()) == InvalidType && types.NullableOf(types.Vector3()) == InvalidType,
+        "the compatibility nullable constructor keeps reference types and rejects value types");
     supported.push_back(types.ArrayOf(types.Int()));
     supported.push_back(types.Array32Of(types.Float()));
     supported.push_back(types.ListOf(types.String()));
@@ -156,7 +147,7 @@ int main()
     fields.push_back(StructField("owner", nullableEntity));
     Check(types.DefineStructFields(record, fields, &error), "complete host struct fields");
     supported.push_back(record);
-    supported.push_back(types.NullableOf(record));
+    Check(types.NullableOf(record) == InvalidType, "host structs never hold null");
     supported.push_back(types.ListOf(record));
     supported.push_back(types.FunctionOf(record, std::vector<TypeId>(1, types.ListOf(record))));
     const HostBindingId first = schema.AddMethod(service, "Invoke", types.Void(), supported);
@@ -165,7 +156,7 @@ int main()
     Check(method != nullptr && method->id == first && method->ownerType == service &&
         method->name == "Invoke" && method->kind == HostBindingKind::Method &&
         method->returnType == types.Void() && method->parameters == supported,
-        "method contract preserves exact owner, argument order, nullability and result");
+        "method contract preserves exact owner, argument order and result");
     Check(schema.AddProperty(entity, "Count", types.Int()), "read-write property succeeds");
     const HostProperty* property = schema.FindProperty(entity, "Count");
     Check(property != nullptr && property->getter == 2 && property->setter == 3,
@@ -178,7 +169,7 @@ int main()
     Check(setter != nullptr && setter->kind == HostBindingKind::Setter && setter->parameters.size() == 1 &&
         setter->parameters[0] == types.Int() && setter->returnType == types.Void() && setter->ownerType == entity,
         "setter contract takes its exact property type and returns void");
-    Check(schema.AddProperty(entity, "Parent", nullableEntity, true, false), "nullable read-only object property succeeds");
+    Check(schema.AddProperty(entity, "Parent", nullableEntity, true, false), "read-only object property succeeds");
     Check(schema.AddProperty(entity, "Label", types.String(), false, true), "write-only string property succeeds");
     property = schema.FindProperty(entity, "Parent");
     Check(property != nullptr && property->getter == 4 && property->setter == InvalidHostBinding,
@@ -193,12 +184,12 @@ int main()
     {
         const std::string name = "Result" + std::to_string(i);
         Check(schema.AddMethod(service, name, supported[i], std::vector<TypeId>()) != InvalidHostBinding,
-            "all supported nonvoid and nullable result types are accepted");
+            "all supported nonvoid result types are accepted");
     }
     Check(schema.AddGlobal("Current", entity) && schema.AddGlobal("Optional", nullableEntity),
-        "required and nullable native globals are accepted");
+        "native globals are accepted");
     Check(schema.FindGlobal("Current")->type == entity && schema.FindGlobal("Optional")->type == nullableEntity,
-        "global descriptors preserve nullability");
+        "global descriptors preserve the object type");
     Check(!schema.AddGlobal("Scalar", types.Int()) && !schema.AddGlobal("NullableScalar", types.NullableOf(types.Int())),
         "host globals in this slice must be native objects");
     for (std::size_t i = 0; i < schema.Bindings().size(); ++i)

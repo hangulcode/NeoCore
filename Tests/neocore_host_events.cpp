@@ -53,7 +53,7 @@ void SchemaContracts()
     Check(schema.AddEvent(entity, "OnUpdate", update) == InvalidHostBinding &&
         schema.Bindings().size() == 2, "duplicate event fails without adding a binding");
     Check(schema.AddEvent(entity, "Bad", types.Int()) == InvalidHostBinding &&
-        schema.AddEvent(entity, "Bad", types.NullableOf(update)) == InvalidHostBinding &&
+        schema.AddEvent(entity, "Bad", types.NullableOf(types.Int())) == InvalidHostBinding &&
         schema.AddEvent(entity, "Bad", InvalidType) == InvalidHostBinding &&
         schema.AddEvent(entity, "", update) == InvalidHostBinding &&
         schema.AddEvent(entity, std::string("bad\0name", 8), update) == InvalidHostBinding &&

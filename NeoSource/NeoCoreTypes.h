@@ -28,7 +28,6 @@ enum class TypeKind : std::uint8_t
     Vector3,
     Vector4,
     Quaternion,
-    Nullable,
     Array,
     Array32,
     List,
@@ -88,7 +87,8 @@ public:
     bool IsNumeric(TypeId id) const;
     // JSON 경계에서 표현 가능한 타입인지 중첩 필드와 원소까지 검사한다.
     bool IsJsonType(TypeId id) const;
-    bool IsNullable(TypeId id) const { return Get(id).kind == TypeKind::Nullable; }
+    // null 을 담을 수 있는 타입: 문자열, 컬렉션, 함수값, 코루틴, 호스트·내장 객체. 숫자·bool·벡터·구조체는 담을 수 없다.
+    bool AllowsNull(TypeId id) const;
     bool IsStorable(TypeId id) const
     {
         const TypeKind kind = Get(id).kind;
@@ -97,6 +97,7 @@ public:
     bool CanAssign(TypeId target, TypeId source) const;
     TypeId CommonNumericType(TypeId left, TypeId right) const;
 
+    // 호환용. null 을 담을 수 있는 타입은 그 타입 자체를, 아니면 InvalidType 을 돌려준다.
     TypeId NullableOf(TypeId element);
     TypeId ArrayOf(TypeId element);
     TypeId Array32Of(TypeId element);

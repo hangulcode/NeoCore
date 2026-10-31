@@ -92,7 +92,7 @@ int Removal()
     m[2] = 10;
     m[7] = 20;
     if (!m.remove(2)) return -1;
-    if (m.len() != 1 || m[2] != null) return -2;
+    if (m.len() != 1 || m.contains(2)) return -2;
     if (m.remove(2)) return -3;
     if (!m.remove(7)) return -4;
     if (m.len() != 0) return -5;

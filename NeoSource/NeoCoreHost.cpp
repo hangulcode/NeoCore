@@ -35,11 +35,6 @@ bool HostBindings::BindGlobal(const std::string& name, ObjectHandle object)
     for (std::size_t i = 0; i < globals.size(); ++i)
     {
         if (globals[i].name != name) continue;
-        if (!object && !schema_.Types().IsNullable(globals[i].type))
-        {
-            error_ = "non-null host global requires an object ID: " + name;
-            return false;
-        }
         globals_[i] = object;
         globalBound_[i] = true;
         return true;
@@ -216,8 +211,7 @@ Scalar HostCall::Argument(std::size_t i) const
     const HostArgument& argument = impl_->arguments.at(i);
     if (argument.null) return Scalar::Null();
     const TypeRegistry& types = impl_->entry->state->bindings.Schema().Types();
-    TypeId type = impl_->entry->binding->parameters.at(i);
-    if (types.IsNullable(type)) type = types.Get(type).element;
+    const TypeId type = impl_->entry->binding->parameters.at(i);
     switch (types.Get(type).kind)
     {
     case TypeKind::Int: return Scalar::Int(argument.integer);
@@ -390,6 +384,12 @@ bool HostRuntimeAccess::Dispatch(NeoScript::CallContext& ctx, NeoScript::StringV
             ctx.fail(0, "invalid internal host argument count");
             return false;
         }
+        // 호스트 객체 값은 null 일 수 있다. null 수신자의 슬롯은 ID 로 읽을 수 없으므로 먼저 거부한다.
+        if (NeoCoreBackend::IsNull(ctx, 0))
+        {
+            ctx.fail(0, "cannot access '" + entry.binding->name + "' on a null host object");
+            return false;
+        }
         std::unique_ptr<HostCall::Impl> impl(new HostCall::Impl());
         impl->entry = &entry;
         impl->instance = instance->owner;
@@ -441,15 +441,14 @@ bool HostRuntimeAccess::Link(State& state, NeoScript::IRuntime& runtime, const s
             entry.binding = &schema.Bindings()[i];
             name += "b" + std::to_string(entry.binding->id);
             TypeId result = entry.binding->returnType;
-            entry.nullableReturn = types.IsNullable(result);
-            if (entry.nullableReturn) result = types.Get(result).element;
+            entry.nullableReturn = types.AllowsNull(result);
             entry.returnKind = types.Get(result).kind;
             for (TypeId parameter : entry.binding->parameters)
             {
                 ArgumentPlan plan;
                 plan.type = parameter;
-                plan.nullable = types.IsNullable(parameter);
-                if (plan.nullable) parameter = types.Get(parameter).element;
+                // null 을 담을 수 있는 타입의 인자는 null 을 그대로 호스트에 넘긴다. 호스트가 판단한다.
+                plan.nullable = types.AllowsNull(parameter);
                 switch (types.Get(parameter).kind)
                 {
                 case TypeKind::Int: plan.read = &ReadInteger; break;
@@ -520,11 +519,6 @@ bool HostInstance::SetGlobal(const std::string& name, ObjectHandle object, std::
     for (std::size_t i = 0; i < globals.size(); ++i)
     {
         if (globals[i].name != name) continue;
-        if (!object && !schema.Types().IsNullable(globals[i].type))
-        {
-            error = "non-null host global requires an object ID: " + name;
-            return false;
-        }
         impl_->state.globals[i] = object;
         return true;
     }

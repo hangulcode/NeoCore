@@ -3108,8 +3108,8 @@ class CoreIRValidator
             break;
         }
         case IROp::NullableConvert:
-            valid = ir_.types.IsNullable(node.typeId) &&
-                (inputType == ir_.types.Null() || inputType == ir_.types.Get(node.typeId).element); break;
+            valid = ir_.types.AllowsNull(node.typeId) &&
+                (inputType == ir_.types.Null() || inputType == node.typeId); break;
         case IROp::CopyStruct:
             valid = ir_.types.Get(node.typeId).kind == NeoCore::TypeKind::Struct &&
                 node.typeId == inputType && AbleBackendName(ar_, node.backendName); break;

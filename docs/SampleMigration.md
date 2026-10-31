@@ -64,7 +64,7 @@ the inherited dynamic-language compiler-error corpus.
 uses the existing runtime pool API; it includes allocation loads, a hold-time wait,
 and trimming timing. `--bench-check` exercises the same nine workload sources with
 small inputs and checks their results without measuring performance. The typed map
-workloads use `get(key, 0)` to produce nonnullable values. This preserves their
+workloads use `get(key, 0)` for reads that may miss. This preserves their
 calculations and expected checksums, but their typed instructions differ from the
 inherited dynamic bytecode.
 
@@ -128,7 +128,7 @@ The legacy misspelling `contailer` is retained as the sample name.
 | coroutine | Signature-bound creation, resume, yield and sleep |
 | module | Typed mod1/mod2/dump imports and separately checked source compilation |
 | http | Deterministic injected GET/POST transport; no external network |
-| regex | Typed match/search/replace, including nullable search results |
+| regex | Typed match/search/replace, including null search results |
 | time | UTC round trips, TimeSpan and Stopwatch |
 | performance | Full workload preserved; compilation only in automatic tests |
 | regression, literal_totype, cycle | Typed compiler, literal-conversion and cycle checks |
@@ -187,7 +187,7 @@ the full workloads but do not run them as performance measurements.
 
 The [typed mini game](../Samples/neocore/minigame/README.md) keeps its shared-program
 instance acceptance scenario and adds the original movement/replay demonstration.
-Both modes register private callbacks with `GameObject.AddEvent("OnUpdate", OnUpdate)`;
+Both modes register private callbacks with `this.AddEvent("OnUpdate", OnUpdate)`;
 host schema event signatures are checked at compile time. The host retains each
 callback with its registering instance ID and dispatches it through the shared
 runtime. The replay reuses the existing browser viewer format.

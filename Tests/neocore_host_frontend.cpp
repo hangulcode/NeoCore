@@ -34,7 +34,7 @@ static void CheckGlobalInitialization(const HostSchema& schema)
         "string earlier=\"ok\"; string text=Make(); string Make(){Object.Name=earlier;return earlier;}",
         "string text=Make(); string Make(){string text=\"local\";Object.Name=text;return text;}",
         "Object item=Get(); Object Get(){return Object;}",
-        "Object? item=Get(); Object? Get(){return Optional;}",
+        "Object item=Get(); Object Get(){return Optional;}",
         "int count=Recurse(3); int Recurse(int n){if(n==0)return 1;return Recurse(n-1);}",
         "int count=First(3); int First(int n){if(n==0)return 1;return Second(n-1);} int Second(int n){return First(n);}",
         "int count; int Get(){return count;} int copied=Get();",
@@ -137,7 +137,7 @@ int main()
     Check(schema.AddGlobal("Object", object), "type and host global may share a name");
     Check(schema.AddGlobal("OtherObject", other), "second native global");
     Check(schema.AddGlobal("Services", service), "service global");
-    Check(schema.AddGlobal("Optional", types.NullableOf(object)), "nullable global");
+    Check(schema.AddGlobal("Optional", object), "second global of the same object type");
     Check(schema.AddProperty(object, "Value", types.Float()), "float property");
     Check(schema.AddProperty(object, "Count", types.Int()), "int property");
     Check(schema.AddProperty(object, "Name", types.String()), "string property");
@@ -146,9 +146,9 @@ int main()
     Check(schema.AddProperty(object, "WriteOnly", types.Int(), false, true), "write-only property");
     Check(schema.AddMethod(object, "Scale", types.Float(), { types.Float() }) != 0, "numeric method");
     Check(schema.AddMethod(object, "Take", types.Void(), { object }) != 0, "native parameter");
-    Check(schema.AddMethod(object, "Maybe", types.NullableOf(object), {}) != 0, "nullable return");
+    Check(schema.AddMethod(object, "Maybe", object, {}) != 0, "object return that may be null");
     Check(schema.AddMethod(service, "Find", object, { types.String() }) != 0, "native return");
-    Check(schema.AddMethod(service, "Accept", types.Void(), { types.NullableOf(object) }) != 0, "nullable parameter");
+    Check(schema.AddMethod(service, "Accept", types.Void(), { object }) != 0, "object parameter that accepts null");
     CheckGlobalInitialization(schema);
     CheckPropertySourceLines(schema);
     CheckInternalNames(schema);
@@ -165,10 +165,10 @@ int main()
         "Object.Child=Services.Find(\"child\"); Object o=(Object.Child=Object);",
         "float x=Object.Scale(2); Object.Take(Object.Child);",
         "Object Id(Object value){return value;} Object o=Id(Object);",
-        "Object? Maybe(Object? value){return value;} Object? o=Maybe(null);",
-        "Object? o=Object.Maybe(); bool b=o==null; bool c=o==Object;",
+        "Object Maybe(Object value){return value;} Object o=Maybe(null);",
+        "Object o=Object.Maybe(); bool b=o==null; bool c=o==Object;",
         "Services.Accept(null); Services.Accept(Object); Services.Accept(Object.Maybe());",
-        "Object? o; bool a=Object==Object.Child; bool b=Optional!=null;",
+        "Object o; bool a=Object==Object.Child; bool b=Optional!=null; Object.Take(null); Optional.Count=2; Object p=Optional;",
         "struct Holder{Object item;}; Holder h=Holder(Object); h.item.Count=2;",
         "Object o=Object; Object copy=o; copy=Object.Child;",
         "int f(){Object.Child.Count=7;return 2;} Object.Child.Count+=f();",
@@ -191,12 +191,12 @@ int main()
         "Object=Object.Child;", "Object& x=Object;",
         "Object o=Object; Object& alias=o; alias=Object.Child;",
         "void Set(Object& value){}", "Object& Get(){return Object;}",
-        "Object o;", "Object o=null;", "Object o=5;", "Object o=OtherObject;",
+        "Object o=5;", "Object o=OtherObject;",
         "Object o=Object();", "Object? o=Object; o.Count=2;", "Object? o=Object; o.Take(Object);",
-        "Optional.Count=2;", "Object o=Optional;", "int x=Object;", "int x=toint(Object);",
+        "int x=Object;", "int x=toint(Object);",
         "float x=tofloat(Object);", "string x=tostring(Object);", "print(Object);", "print(Optional);",
         "bool x=Object==OtherObject;", "bool x=Object==5;", "bool x=Object< Object.Child;",
-        "Object.Take(OtherObject);", "Object.Take(null);", "Object o=Object.Maybe();",
+        "Object.Take(OtherObject);",
         "Object.Count+=0.5;", "Object.Count=0.5;", "Object.Scale(Object);",
         "int Object=1;", "int Object(){return 1;}", "void f(int Services){}",
         "struct Services{int n;};", "void f(){int Services=1;}", "Object.Child& x=Object;"

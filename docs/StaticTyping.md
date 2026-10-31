@@ -44,8 +44,8 @@ instructions complete the 30 numeric typed instructions.
 An int/int comparison remains an exact signed 64-bit comparison. A mixed int/float
 comparison converts the integer to binary64, matching the existing generic comparison
 rule; integers above 2^53 can round before comparison. This is not a new exact
-integer-versus-float comparison policy. Bool, string, and nullable comparisons continue
-to use their existing generic instructions.
+integer-versus-float comparison policy. Bool, string, reference and null comparisons
+continue to use their existing generic instructions.
 
 Negation inverts the comparison result rather than replacing an ordered comparison
 with its apparent opposite. Thus `!(nan < x)` is true while `nan >= x` is false.
@@ -79,8 +79,8 @@ Named `int`, `float`, `bool`, and `string` assignments have explicit storage tar
 in IR. Numeric compound assignments and prefix/postfix increment/decrement use the
 same path. A target records a resolved variable and an ordered flat struct-field
 path. This includes local/file variables and parameters,
-and scalar fields of named structs; nullable scalars, host properties, vector
-components, and collection elements retain their existing write paths.
+and scalar fields of named structs; host properties, vector components, and
+collection elements retain their existing write paths.
 
 The RHS finishes before the target path is resolved or a compound assignment reads
 the old target value. Explicit numeric widening precedes the operation. Assignment
@@ -93,7 +93,7 @@ remain only for component writes.
 
 Named script calls carry resolved function signatures and ordered argument nodes.
 Arguments finish left to right before being moved to the shared call window.
-Struct copy and nullable adaptation are explicit IR operations. Return records
+Struct copy and the transfer of `null` into a reference-typed slot are explicit IR operations. Return records
 carry their owner function, value and source location; the emitter verifies their
 types and reuses the existing call/return instructions. Void fallthrough and
 generated helper bodies still use the transitional statement compiler.
@@ -129,7 +129,10 @@ revalidate the saved receiver ID. Bool/string conversions remain checked generic
 conversions. Numeric expressions now emit from structured IR; the remaining
 compile-only intrinsics and compatibility leaves are explicit migration boundaries,
 not a complete typed-AST-to-bytecode backend replacement.
-NeoCore bytecode images use version `0150` and must be regenerated. The five generic `NOP_TABLE_*` arithmetic-write instructions, their handlers and
+NeoCore bytecode images use version `0151` and must be regenerated; the NeoCore
+image container that carries the static type table is at version 2 after the
+nullable type kind was removed. The five generic `NOP_TABLE_*` arithmetic-write
+instructions, their handlers and
 unused table-update helpers have been removed. Compound collection writes now
 emit a read, arithmetic operation and ordinary write; WREF pairs only with
 `CLT_MOV`. Vector compound RHS values round to float32 on storage, not before arithmetic.
@@ -147,7 +150,7 @@ shift, XOR, AND, and OR forms), generic compound arithmetic (`NOP_ADD2` through
 dispatch. The frontend always emits the checked typed path; its generic lowering
 mode has been removed. Literal folding uses compiler semantic operations rather
 than generic VM opcode numbers. Comparisons still needed for bool, string, and
-nullable values, and other unmigrated operations, remain available.
+reference values, and other unmigrated operations, remain available.
 
 CMake links `NeoCore::Runtime` to `neocore_backend`. Dynamic NeoScript library
 targets and their separate test distribution have been removed from this checkout.
@@ -176,17 +179,11 @@ compilation. The existing host-call instruction invokes the selected binding.
 The host retains the callback value and caller instance ID, resolves its receiver
 object ID at runtime, and owns dispatch, suspension scheduling and registration
 cleanup on reset or destruction.
-Nullable scalar, string, collection, and object locals can be refined by a local
-null guard. The non-null branch may use the underlying type, and an early
-`if (value == null) return;` refines the rest of the enclosing block. Guards combine
-through `&&`, `||`, and `!` with short-circuit meaning: `a != null && b != null`
-refines both when true, `a == null || b == null` refines both when false, and the
-right operand of `&&`/`||` is checked under the left operand's guard, so
-`a != null && a.len() > 0` is accepted. A proof survives `for`, `while`, `foreach`,
-`switch`, and closure bodies unless that body assigns the variable; a captured
-closure value is a copy, so an unassigned capture keeps its proof. Reassignment
-invalidates the proof; globals, fields, and arbitrary expressions do not acquire
-such a proof. Unchecked nullable access remains a compilation error.
+Host object values may be null: an unbound global, a host result such as a failed
+lookup, or a variable that was never assigned. The compiler does not track null
+guards. Compare with `null` wherever it is useful; a member access or method call on a
+null host object fails at runtime with "cannot access ... on a null host object",
+in the same class as access to a destroyed object.
 
 `array32<int>` and `array32<float>` retain compact int32/float32 element storage
 while reads produce the ordinary int64/binary64 scalar types. Their constructors,
@@ -286,9 +283,17 @@ these identity or lifetime rules.
 | `int` | Signed 64-bit integer | `0` |
 | `float` | IEEE binary64 floating-point value | `0.0` |
 | `bool` | Boolean | `false` |
-| `string` | Non-null string reference | Initializer required |
-| `T?` | A value of `T` or null | `null` |
+| `string` | String reference; may be null | `null` |
 | `void` | No returned value | Not a variable or parameter type |
+
+Nullability is a property of the type category rather than a per-declaration marker.
+`int`, `float`, `bool`, `Vector2/3/4`, `Quaternion` and structs can never hold null;
+assigning `null` to them or comparing them with `null` is a compile error.
+Strings, lists, arrays, maps, sets, function values, coroutines and host objects can
+always hold null, default to null when declared without an initializer, and may be
+compared with `null`. The `T?` spelling is rejected with a message that names the
+rule. Using a null reference (`s.len()`, `items[0]`, `f()`, `go.Position`) is a
+runtime error, not a compile-time proof obligation.
 
 The compiler may infer the type of an intermediate expression, but never changes
 the declared type of a variable after an assignment. Assigning an integer to a
@@ -301,8 +306,6 @@ The scalar intrinsics `print`, `tostring`, `toint`, and `tofloat` are checked us
 their frontend signatures. `int(value)` and `float(value)` are explicit conversion
 spellings for `toint` and `tofloat`. This does not expose arbitrary backend native functions.
 Use an explicit conversion when assigning a floating-point value to an integer.
-Nullable values require a supported explicit access mechanism before use as `T`;
-they are never silently treated as a non-null value.
 
 `math`, `system`, and `coroutine` are built-in imports. Numeric math calls currently
 include `sin`, `cos`, `sqrt`, `abs`, `floor`, `ceil`, and `pow`; integer arguments
@@ -339,7 +342,7 @@ targets are supported. Type checks and conversions must not reorder side effects
 once and jumps through a per-switch table, so matching does not grow into a
 comparison chain. The selector must be `int` or `string`. `float` is rejected
 because exact comparison is unreliable, `bool` is rejected because `if` already
-expresses a two-way choice, and nullable values must be unwrapped first. The
+expresses a two-way choice, and a null `string` selector falls to `default`. The
 selector type is known at compile time, so each `case` must list compile-time
 constants of exactly that type, including `const` names and constant arithmetic;
 a label of another type, a duplicate value, and a second `default` are compile errors.
@@ -383,7 +386,7 @@ independent execution states with `Program::CreateInstance(error)`. Each instanc
 owns its script globals, host-global IDs, and pending invocation while retaining
 the shared code. `Program::Call` and the other convenience methods delegate to one
 default instance. Instances sharing a program execute serially on the host thread.
-Nullable parameters and results accept null; nonnullable types reject it.
+Reference-typed parameters and results accept null; value types reject it.
 Host-initiated script reentry is rejected while top-level initialization is still
 running. Initialization runs at most once, and a failed initialization remains a
 failure on subsequent `Run`/`Call` requests.
@@ -410,13 +413,13 @@ The separate script-to-host direction uses `HostSchema` and `HostBindings` from
 `NeoCoreHost.h`. `Program::Compile(source, bindings, error, ...)` copies the binding
 configuration, checks the source against its schema, and links each member to a
 fixed callback. It supports `int`, `float`, `bool`, `string`, declared native object
-types, vectors/quaternions, nullable forms of those types, and `void` results. Host structs,
+types, vectors/quaternions, and `void` results. Host structs,
 collections, overloads, and default arguments are deferred.
 See [the host binding contract](HostBindings.md) for setup, object ownership,
 callback failures, and reentry rules.
 
 Native types have nominal identity and reference semantics. A native variable
-requires an initializer unless its type is nullable. A native type and a host
+declared without an initializer is null. A native type and a host
 global may have the same name; their expression/declaration contexts distinguish
 them. Scripts cannot construct native objects, convert their handles to numbers
 or strings, or print their internal representation. Equality compares compatible
@@ -435,18 +438,16 @@ side before the complete target object path; compound assignments then call the
 getter, compute the result, and call the setter. The receiver is evaluated once.
 Pre/post-increments preserve their respective result values. Read-only and
 write-only restrictions are compile errors.
-Nullable native values can be stored, passed to nullable host parameters, and
-compared with null. A null comparison in `if` refines a named, unaliased native
-local or by-value parameter for member access in its non-null branch, including
-`&&`/`||` combinations and loop or closure bodies that do not assign the variable.
-Reassignment invalidates this proof. Globals, nullable fields,
-and general nullable scalar/vector unwrapping are not refined by this feature.
-Object liveness is still validated by the runtime resolver on every host call.
+Native values can be null, can be stored and passed to host parameters as null, and
+can be compared with null. The host adapter rejects a null receiver before the
+callback runs and passes null arguments through to the host callback, which decides
+whether null is acceptable. Object liveness is still validated by the runtime
+resolver on every host call.
 
 This implementation uses private fixed binding objects and generated property
 helpers over the inherited call machinery and value slots. Host argument readers
 are selected from the schema, but the entire VM is not tagless. Host result
-validation, nullable checks, and object-lifetime resolution remain runtime work.
+validation, null-receiver checks, and object-lifetime resolution remain runtime work.
 With debug metadata enabled, generated property-helper locations are mapped to
 their original property operation's source line. Internal helper frames can still
 appear in the call stack. No performance claim follows from this binding milestone.
@@ -489,10 +490,9 @@ The [complete sample](../Samples/neocore/scripts/structs.nc) prints
 
 `Position(x, y)` is a positional constructor with one argument per field. Ordinary
 numeric conversion rules apply to each field. `Position()` and `Position p;` use
-recursive defaults when every field supports one: numeric zero, `false`, nullable
-scalar null, or a nested struct whose fields have defaults. A nonnullable string
-field requires the full constructor; no uninitialized string is introduced.
-Collection and function fields are supported and require explicit constructor values.
+recursive defaults: numeric zero, `false`, zero vectors, null for string,
+collection, function and host-object fields, or a nested struct whose fields have
+defaults. The positional constructor still requires one argument per field.
 Default field initializer expressions, methods, and `const` struct declarations
 remain deferred. Copying a struct copies its nested struct values, while its
 collection fields keep their shared-container identities.
@@ -507,8 +507,8 @@ before replacing the destination value.
 The backend stores a struct as a flat field list. Nested structs occupy nested
 field lists; individual fields and the root are not boxed into alias cells.
 The clone helper recursively copies nested structs. There is no in-place assignment
-helper to preserve field aliases. Recursive by-value layouts, nullable structs and
-struct `==`/`!=` are rejected. Nullable scalar fields remain supported.
+helper to preserve field aliases. Recursive by-value layouts and struct `==`/`!=`
+are rejected. A struct value itself can never be null.
 
 The owning host-call API marshals structs against their exact registered fields.
 Host schemas can declare nominal structs and use them in properties, method
@@ -638,14 +638,12 @@ timing the workload.
 ## Lists, maps, sets, and iteration
 
 The collection forms are `list<T>`, `map<K, V>`, and `set<T>`. Lists and map
-values can contain nonnullable scalar, vector, struct, collection, function, or
-object values. Map keys and set elements follow the same rule: only `int` or
-`string`, because the backend hashes and compares them by value. Nested
-collections and collection fields in structs are supported. Nonnullable collection
-variables require initializers;
-`list<T>?`, `map<K,V>?`, `set<T>?`, and `array<T>?` can represent null. Nullable
-elements and language element references remain unsupported. Mutable collection
-types are invariant.
+values can contain scalar, vector, struct, collection, function, or object values.
+Map keys and set elements follow the same rule: only `int` or `string`, because the
+backend hashes and compares them by value. Nested collections and collection fields
+in structs are supported. A collection variable declared without an initializer is
+null; reference-typed elements may hold null while value-typed elements cannot.
+Language element references remain unsupported. Mutable collection types are invariant.
 
 ```cpp
 list<float> values = [1, 2.5];
@@ -660,9 +658,9 @@ int? missing = counts["missing"];
 
 List literals check every element and materialize numeric widening. Indices are
 integers. `list.resize(size)` preserves retained elements and initializes newly
-added numeric/bool elements with zero/false. `list.resize(size, fill)` uses an
-explicit fill value evaluated once; string lists require that form. Regrowth does
-not expose stale or null entries. Lists support indexed assignment, compatible
+added numeric/bool elements with zero/false and reference elements with null.
+`list.resize(size, fill)` uses an explicit fill value evaluated once. Regrowth does
+not expose stale entries. Lists support indexed assignment, compatible
 compound assignment, and increments/decrements. Numeric compound writes and
 increments/decrements lower through checked `ci64write`/`cf64write` intrinsics.
 They emit element reads, typed arithmetic, and ordinary writes without generic
@@ -670,11 +668,15 @@ compound-arithmetic instructions or runtime numeric type dispatch. Receiver, ind
 and RHS evaluation retain their existing order, including prefix/postfix results.
 
 Maps accept `{}` or typed key/value literals, and gain entries through `m[key] = value`. Direct
-`m[key]` reads have type `V?`; an absent key produces null. `m.get(key, fallback)`
-returns `V` and requires an explicit compatible fallback. The receiver, key, and
-fallback are evaluated left to right before lookup; fallback evaluation is eager,
-even for a present key. Null is not a valid stored value or a removal operation.
-`m.remove(key)` explicitly removes an entry and returns whether it existed.
+`m[key]` reads have type `V`. When `V` is a reference type an absent key reads as
+null; when `V` is a value type such as `int` an absent key is a runtime error
+("map key not found"), so prefer `m.get(key, fallback)` or `m.contains(key)` for
+reads that may miss. `m.get(key, fallback)` returns `V` and requires an explicit
+compatible fallback. The receiver, key, and fallback are evaluated left to right
+before lookup; fallback evaluation is eager, even for a present key. Compound
+assignment and increments on a map element (`m[key] += 1`) are rejected; read, compute
+and assign instead. `m.remove(key)` explicitly removes an entry and returns whether
+it existed.
 
 Lists support `len`, `resize`, `reserve`, `append(value[, index])`,
 `insert(index, value)`, `remove(index)`, `remove_swap(index)`, `pop`, `find`,
@@ -757,10 +759,10 @@ Strings expose `len`, `sub(start,count)`, `codepoint(index)`, `find`, `upper`,
 `split` produces `list<string>`. String lengths and substring positions count
 Unicode code points; inherited case-conversion and trimming behavior is unchanged.
 `regex_match(pattern[, ignoreCase])` returns bool,
-`regex_search(pattern[, ignoreCase])` returns `list<string>?`, and
+`regex_search(pattern[, ignoreCase])` returns `list<string>`, and
 `regex_replace(pattern,replacement[, ignoreCase])` returns string. A successful
 search includes the complete match at index zero followed by captured groups;
-no match returns null and must be guarded. Regex character classes retain their
+no match returns null, so compare the result with `null` before indexing it. Regex character classes retain their
 inherited byte-oriented behavior.
 
 `system.time`, `time_ms`, `utc_date`, `utc_time_ms`, `utc_parts`, `utc_format_ms`,
@@ -842,7 +844,8 @@ describe their measured snapshots, not the current NeoCore build.
 
 `int32` and `float32` are not public scalar types. Compact storage belongs to
 `array32<int>`, `array32<float>` and vector components. Mutable collection types
-are invariant. Missing map values are nullable; removal is explicit. Heterogeneous
+are invariant. Missing map values read as null for reference types and fail for value
+types; removal is explicit. Heterogeneous
 collections and implicit dynamic fallback remain excluded. Script JSON decoding
 uses `jsonDecode<T>` and host decoding uses an explicit registered target rather
 than exposing an untyped script object.

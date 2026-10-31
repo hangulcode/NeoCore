@@ -415,8 +415,11 @@ struct Expr
     bool indirectCall = false;
     const HostProperty* hostProperty = nullptr;
     bool vectorComponent = false;
-    bool nativeNonNull = false;
     bool writeTarget = false;
+    // 대입 대상(복합 대입 포함)인 색인 식은 읽기 검사 헬퍼로 감싸지 않는다.
+    bool assignmentTarget = false;
+    // 값 타입이 null 을 담을 수 없는 맵 읽기. 없는 키는 런타임 오류다.
+    bool checkedMapRead = false;
     std::string hostWriteHelper;
     std::string typedWriteIntrinsic;
     bool typedWriteFloat = false;
@@ -580,8 +583,8 @@ private:
             }
             else if (result.first.text == "list")
             {
-                if (!types_.IsStorable(first.type) || types_.IsNullable(first.type))
-                    Fail(first.first, "list elements must have a non-null value type");
+                if (!types_.IsStorable(first.type))
+                    Fail(first.first, "list elements must have a value type");
                 result.type = types_.ListOf(first.type);
             }
             else if (result.first.text == "set")
@@ -596,8 +599,8 @@ private:
                 if (first.type != types_.Int() && first.type != types_.String()) Fail(first.first, "map keys must be int or string");
                 Expect(",");
                 const TypeSyntax value = ParseType();
-                if (!types_.IsStorable(value.type) || types_.IsNullable(value.type))
-                    Fail(value.first, "map values must have a non-null value type");
+                if (!types_.IsStorable(value.type))
+                    Fail(value.first, "map values must have a value type");
                 result.type = types_.MapOf(first.type, value.type);
             }
             result.end = TypeClose().end;
@@ -607,14 +610,12 @@ private:
         const TypeKind kind = types_.Get(result.type).kind;
         if (kind != TypeKind::Void && !types_.IsStorable(result.type))
             Fail(result.first, "type '" + result.first.text + "' is not supported by this compiler stage");
+        // null 가능성은 타입이 정한다: 문자열·컬렉션·함수값·호스트 객체는 항상 null 을 담을 수 있고
+        // 숫자·bool·벡터·구조체는 담을 수 없다. 별도 표기는 받지 않는다.
         if (At("?"))
-        {
-            const Token nullable = Take();
-            if (kind == TypeKind::Struct) Fail(nullable, "nullable structures are not supported by this compiler stage");
-            result.end = nullable.end;
-            result.type = types_.NullableOf(result.type);
-            if (result.type == InvalidType) Fail(nullable, "this type cannot be nullable");
-        }
+            Fail(Peek(), types_.AllowsNull(result.type)
+                ? "nullability is implied by the type; remove '?'"
+                : "'" + types_.DisplayName(result.type) + "' can never be null; remove '?'");
         if (At("&"))
             Fail(Peek(), "reference types are not supported; pass and return values instead");
         return result;
@@ -1139,13 +1140,12 @@ private:
     int switchDepth_ = 0;
     bool checkingConstant_ = false;
     const std::string internalPrefix_ = InternalSymbolPrefix();
-    bool resizeHelper_ = false, getHelper_ = false;
+    bool resizeHelper_ = false, getHelper_ = false, mapReadHelper_ = false;
     bool concatHelper_ = false, unionHelper_ = false, intersectionHelper_ = false, differenceHelper_ = false;
     std::set<TypeId> structListClones_, structMapClones_, structMapValues_, structListResizes_, structListConcats_;
     int functionDepth_ = 0;
     std::vector<Expr*> activeLambdas_;
     std::vector<Expr*> lambdas_;
-    std::set<Symbol*> nonNullLocals_;
     mutable std::map<TypeId, bool> defaultable_;
     mutable std::map<const Symbol*, std::size_t> irSymbols_;
     struct HostWrite
@@ -1194,7 +1194,6 @@ private:
     bool IsStruct(TypeId type) const { return types_.Get(type).kind == TypeKind::Struct; }
     bool IsScalarValue(TypeId type) const
     {
-        if (types_.IsNullable(type)) type = types_.Get(type).element;
         return type == types_.Int() || type == types_.Float() || type == types_.Bool() || type == types_.String() || type == types_.Null();
     }
     bool IsVector(TypeId type) const
@@ -1202,7 +1201,7 @@ private:
         const TypeKind kind = types_.Get(type).kind;
         return kind == TypeKind::Vector2 || kind == TypeKind::Vector3 || kind == TypeKind::Vector4 || kind == TypeKind::Quaternion;
     }
-    bool IsVectorValue(TypeId type) const { return IsVector(type) || (types_.IsNullable(type) && IsVector(types_.Get(type).element)); }
+    bool IsVectorValue(TypeId type) const { return IsVector(type); }
     bool IsArithmeticVector(TypeId type) const { return IsVector(type) && type != types_.Quaternion(); }
     int VectorSize(TypeId type) const { return type == types_.Vector2() ? 2 : type == types_.Vector3() ? 3 : 4; }
     std::string VectorConstructor(TypeId type, int line = 1) const
@@ -1220,7 +1219,7 @@ private:
         return "v" + std::to_string(VectorSize(type));
     }
     bool IsNative(TypeId type) const { return types_.Get(type).kind == TypeKind::Native; }
-    bool IsNativeValue(TypeId type) const { return IsNative(type) || (types_.IsNullable(type) && IsNative(types_.Get(type).element)); }
+    bool IsNativeValue(TypeId type) const { return IsNative(type); }
     bool IsArray(TypeId type) const { return types_.Get(type).kind == TypeKind::Array || types_.Get(type).kind == TypeKind::Array32; }
     bool IsCollection(TypeId type) const { return types_.Get(type).kind == TypeKind::List || types_.Get(type).kind == TypeKind::Map || types_.Get(type).kind == TypeKind::Set || IsArray(type); }
     std::string Helper(const char* operation, TypeId type) const { return internalPrefix_ + operation + "_" + std::to_string(type); }
@@ -1313,7 +1312,7 @@ private:
 
     bool Defaultable(TypeId type) const
     {
-        if (type == types_.Int() || type == types_.Float() || type == types_.Bool() || IsVector(type) || types_.IsNullable(type)) return true;
+        if (type == types_.Int() || type == types_.Float() || type == types_.Bool() || IsVector(type) || types_.AllowsNull(type)) return true;
         if (!IsStruct(type)) return false;
         // 반복 필드가 같은 구조체를 가리켜도 기본값 가능 여부를 타입마다 한 번만 계산한다.
         std::vector<TypeId> pending(1, type);
@@ -1332,7 +1331,7 @@ private:
                     if (found == defaultable_.end()) { pending.push_back(field.type); complete = false; break; }
                     value = value && found->second;
                 }
-                else value = value && (field.type == types_.Int() || field.type == types_.Float() || field.type == types_.Bool() || IsVector(field.type) || types_.IsNullable(field.type));
+                else value = value && (field.type == types_.Int() || field.type == types_.Float() || field.type == types_.Bool() || IsVector(field.type) || types_.AllowsNull(field.type));
             }
             if (complete) { defaultable_[current] = value; pending.pop_back(); }
         }
@@ -1344,7 +1343,7 @@ private:
         if (type == types_.Int()) return "0";
         if (type == types_.Float()) return "0.0";
         if (type == types_.Bool()) return "false";
-        if (types_.IsNullable(type)) return "null";
+        if (types_.AllowsNull(type)) return "null";
         if (IsVector(type))
         {
             std::string result = VectorConstructor(type) + "(";
@@ -1369,78 +1368,16 @@ private:
         return nullptr;
     }
 
-    bool CanRefineNative(const Symbol* symbol) const
-    {
-        return symbol && !symbol->fileGlobal && !symbol->hostGlobal && !symbol->boxed
-            && types_.IsNullable(symbol->type);
-    }
 
-    void ApplyNativeGuard(const Expr& condition, bool whenTrue)
-    {
-        if (condition.kind == ExprKind::Unary && condition.op == "!")
-        {
-            ApplyNativeGuard(*condition.children[0], !whenTrue);
-            return;
-        }
-        if (condition.kind != ExprKind::Binary) return;
-        // A && B 가 참이면 둘 다 참이고, A || B 가 거짓이면 둘 다 거짓이다. 반대 방향은 아무것도 증명하지 않는다.
-        if (condition.op == "&&" || condition.op == "||")
-        {
-            if (whenTrue == (condition.op == "&&"))
-            {
-                ApplyNativeGuard(*condition.children[0], whenTrue);
-                ApplyNativeGuard(*condition.children[1], whenTrue);
-            }
-            return;
-        }
-        if (condition.op != "==" && condition.op != "!=") return;
-        if (whenTrue != (condition.op == "!=")) return;
-        const Expr* value = condition.children[0].get();
-        const Expr* other = condition.children[1].get();
-        if (value->kind == ExprKind::Literal && value->op == "null") std::swap(value, other);
-        if (value->kind == ExprKind::Name && other->kind == ExprKind::Literal && other->op == "null"
-            && CanRefineNative(value->symbol)) nonNullLocals_.insert(value->symbol);
-    }
 
-    // 대입 대상보다 먼저 실행되는 우변이 지역 ID를 바꿀 수 있으면 이전 null 검사는 사용하지 않는다.
-    // 반복문·람다 본문에서 대입되는 이름을 모은다. 이름 기준이라 가려진 변수도 함께 들어가며 그만큼
-    // 보수적으로 증명을 지운다. 참조가 없으므로 호출은 지역 변수를 바꾸지 못하고 대입만 본다.
-    static void CollectAssignedNames(const Expr& expression, std::set<std::string>& names)
-    {
-        if (expression.kind == ExprKind::Assignment && !expression.children.empty() && expression.children[0]->kind == ExprKind::Name)
-            names.insert(expression.children[0]->op);
-        for (const auto& child : expression.children) CollectAssignedNames(*child, names);
-        if (expression.lambda) CollectAssignedNames(*expression.lambda, names);
-    }
 
-    static void CollectAssignedNames(const Statement& statement, std::set<std::string>& names)
-    {
-        for (const auto& expression : statement.expressions) CollectAssignedNames(*expression, names);
-        for (const auto& child : statement.children) CollectAssignedNames(*child, names);
-    }
 
-    // 다음 회차나 람다 호출 시점에 바뀔 수 있는 변수는 본문에서 대입되는 변수뿐이다. 그 증명만 지우고
-    // 나머지 지역 변수의 널 아님 증명은 유지한다.
-    void InvalidateAssigned(const Statement& statement)
-    {
-        std::set<std::string> names;
-        CollectAssignedNames(statement, names);
-        for (auto it = nonNullLocals_.begin(); it != nonNullLocals_.end();)
-            if (names.count((*it)->name.text)) it = nonNullLocals_.erase(it); else ++it;
-    }
 
-    void InvalidateNativeWrites(const Expr& expression)
-    {
-        if (expression.kind == ExprKind::Assignment && expression.children[0]->kind == ExprKind::Name)
-            nonNullLocals_.erase(Lookup(expression.children[0]->op));
-        for (const auto& child : expression.children) InvalidateNativeWrites(*child);
-    }
 
     TypeId NativeReceiverType(const Expr& expression) const
     {
         if (IsNative(expression.type)) return expression.type;
-        if (expression.nativeNonNull && types_.IsNullable(expression.type)) return types_.Get(expression.type).element;
-        Fail(expression.token, "a nullable host object cannot be dereferenced without a local null guard");
+        Fail(expression.token, "member access requires a host object value");
         return InvalidType;
     }
 
@@ -1526,8 +1463,7 @@ private:
     {
         if (!types_.CanAssign(target, source.type))
             Fail(source.token, "cannot convert '" + types_.DisplayName(source.type) + "' to '" + types_.DisplayName(target) + "'");
-        TypeId concrete = types_.IsNullable(target) ? types_.Get(target).element : target;
-        if (source.type == types_.Int() && concrete == types_.Float())
+        if (source.type == types_.Int() && target == types_.Float())
         {
             source.widen = true;
             source.constantWiden = checkingConstant_;
@@ -1537,7 +1473,6 @@ private:
 
     void Contextualize(Expr& expression, TypeId expected)
     {
-        if (types_.IsNullable(expected)) expected = types_.Get(expected).element;
         if ((expression.kind == ExprKind::List && types_.Get(expected).kind == TypeKind::List)
             || (expression.kind == ExprKind::Map && types_.Get(expected).kind == TypeKind::Map)) expression.type = expected;
     }
@@ -1569,12 +1504,15 @@ private:
         if (left == right && types_.Get(left).kind == TypeKind::List && op == "+") return left;
         if (left == right && types_.Get(left).kind == TypeKind::Set && (op == "|" || op == "&" || op == "-")) return left;
         if (IsStruct(left) || IsStruct(right)) Fail(token, "structure operators and equality are not supported by this compiler stage");
+        if ((op == "==" || op == "!=") && (left == types_.Null() || right == types_.Null()))
+        {
+            // null 비교는 null 을 담을 수 있는 타입에만 의미가 있다. 값 타입과의 비교는 항상 거짓이라 거부한다.
+            const TypeId other = left == types_.Null() ? right : left;
+            if (other == types_.Null() || types_.AllowsNull(other)) return types_.Bool();
+            Fail(token, "'" + types_.DisplayName(other) + "' can never be null; remove the null comparison");
+        }
         if (IsVectorValue(left) || IsVectorValue(right))
         {
-            const bool nullComparison = (op == "==" || op == "!=") &&
-                ((types_.IsNullable(left) && IsVectorValue(left) && right == types_.Null()) ||
-                    (left == types_.Null() && types_.IsNullable(right) && IsVectorValue(right)));
-            if (nullComparison) return types_.Bool();
             if (IsArithmeticVector(left) && left == right && (op == "+" || op == "-")) return left;
             if (IsArithmeticVector(left) && types_.IsNumeric(right) && (op == "*" || op == "/")) return left;
             if (types_.IsNumeric(left) && IsArithmeticVector(right) && op == "*") return right;
@@ -1608,7 +1546,7 @@ private:
         }
         if (op == "==" || op == "!=")
         {
-            if (left != types_.Void() && right != types_.Void() && (left == right || numeric != InvalidType || types_.CanAssign(left, right) || types_.CanAssign(right, left)))
+            if (left != types_.Void() && right != types_.Void() && (left == right || numeric != InvalidType))
                 return types_.Bool();
             Fail(token, "equality operands have incompatible types");
         }
@@ -1676,6 +1614,9 @@ private:
                 const std::string eventName = EventLiteralName(name.token);
                 binding = hostSchema_->FindEvent(ownerType, member.op, eventName);
                 if (!binding) Fail(name.token, "unknown host event '" + eventName + "' for '" + member.op + "'");
+                // 함수값은 null 을 담을 수 있지만 이벤트 등록에 null 리터럴을 넘기는 것은 의미가 없다.
+                const Expr& callback = *expression.children[count];
+                if (callback.kind == ExprKind::Literal && callback.op == "null") Fail(callback.token, "a host event callback cannot be null");
             }
             for (std::size_t i = 0; i < count; ++i) Convert(*expression.children[i + 1], binding->parameters[i]);
             expression.callName = HostCall(binding->id);
@@ -1835,8 +1776,6 @@ private:
     void CheckCall(Expr& expression)
     {
         Expr& callee = *expression.children[0];
-        // 뒤의 인자가 nullable 지역을 덮어쓰면 저장된 수신자 증명을 재사용하지 않는다.
-        for (std::size_t i = 1; i < expression.children.size(); ++i) InvalidateNativeWrites(*expression.children[i]);
         if ((callee.kind == ExprKind::Name && Lookup(callee.op)) ||
             (callee.kind != ExprKind::Name && callee.kind != ExprKind::Member))
         {
@@ -2127,8 +2066,6 @@ private:
             expression.type = symbol->type;
             expression.constant = symbol->constant;
             expression.symbol = symbol;
-            expression.nativeNonNull = CanRefineNative(symbol) && nonNullLocals_.count(symbol) != 0;
-            if (expression.nativeNonNull && !expression.writeTarget) expression.type = types_.Get(symbol->type).element;
             if (!symbol->fileGlobal && !symbol->hostGlobal)
                 for (std::size_t i = 0; i < activeLambdas_.size(); ++i)
                 {
@@ -2156,13 +2093,11 @@ private:
             const std::string savedFunction = currentFunction_;
             const int savedLoop = loopDepth_;
             const int savedSwitch = switchDepth_;
-            const std::set<Symbol*> savedNonNull = nonNullLocals_;
             currentFunction_ = expression.callName;
             returnType_ = function.declared.type;
             loopDepth_ = 0;
             switchDepth_ = 0;
             // 클로저는 생성 시점의 값을 복사해 잡으므로 람다 안에서 대입하지 않는 변수의 증명은 유지된다.
-            InvalidateAssigned(function);
             ++functionDepth_;
             expression.fieldIndex = static_cast<std::size_t>(functionDepth_);
             activeLambdas_.push_back(&expression);
@@ -2182,7 +2117,6 @@ private:
             currentFunction_ = savedFunction;
             loopDepth_ = savedLoop;
             switchDepth_ = savedSwitch;
-            nonNullLocals_ = savedNonNull;
             return;
         }
         case ExprKind::Unary:
@@ -2199,6 +2133,8 @@ private:
                 expression.type = value.type;
                 if (expression.op == "++" || expression.op == "--" || expression.op == "post++" || expression.op == "post--")
                 {
+                    if (value.kind == ExprKind::Index && types_.Get(value.children[0]->type).kind == TypeKind::Map)
+                        Fail(expression.token, "increments on a map element are not supported; read with get and assign the result");
                     Writable(value);
                     HostWriteHelper(expression, value, expression.op, value.type);
                 }
@@ -2207,23 +2143,7 @@ private:
             return;
         }
         case ExprKind::Binary:
-            if (expression.op == "&&" || expression.op == "||")
-            {
-                // 단락 평가: 오른쪽은 왼쪽이 참(&&) 또는 거짓(||)일 때만 실행되므로 그 가드를 적용한 채 검사한다.
-                // 오른쪽 안의 대입으로 지워진 증명은 그대로 지워 둔다.
-                CheckExpr(*expression.children[0]);
-                const std::set<Symbol*> before = nonNullLocals_;
-                ApplyNativeGuard(*expression.children[0], expression.op == "&&");
-                CheckExpr(*expression.children[1]);
-                for (auto it = before.begin(); it != before.end(); ++it)
-                    if (!nonNullLocals_.count(*it)) nonNullLocals_.erase(*it);
-                for (auto it = nonNullLocals_.begin(); it != nonNullLocals_.end();)
-                    if (!before.count(*it)) it = nonNullLocals_.erase(it); else ++it;
-            }
-            else
-            {
-                CheckExpr(*expression.children[0]); CheckExpr(*expression.children[1]);
-            }
+            CheckExpr(*expression.children[0]); CheckExpr(*expression.children[1]);
             expression.type = BinaryType(expression.token, expression.op, expression.children[0]->type, expression.children[1]->type);
             if (types_.Get(expression.type).kind == TypeKind::List && expression.op == "+")
             {
@@ -2262,9 +2182,12 @@ private:
         {
             Expr& target = *expression.children[0];
             Expr& source = *expression.children[1];
-            InvalidateNativeWrites(source);
             target.writeTarget = expression.op == "=";
+            target.assignmentTarget = true;
             CheckExpr(target); Writable(target);
+            // 맵 원소의 읽기-수정-쓰기는 없는 키의 의미가 정해져 있지 않아 명시적으로 거부한다.
+            if (expression.op != "=" && target.kind == ExprKind::Index && types_.Get(target.children[0]->type).kind == TypeKind::Map)
+                Fail(expression.token, "compound assignment on a map element is not supported; read with get and assign the result");
             TypeId writeType = target.type;
             if (expression.op == "=" && target.kind == ExprKind::Index && types_.Get(target.children[0]->type).kind == TypeKind::Map)
                 writeType = types_.Get(target.children[0]->type).value;
@@ -2280,7 +2203,6 @@ private:
                 if (!types_.CanAssign(target.type, computed)) Fail(expression.token, "compound assignment would narrow its result");
             }
             expression.type = writeType;
-            if (target.kind == ExprKind::Name) nonNullLocals_.erase(target.symbol);
             HostWriteHelper(expression, target, expression.op, source.type);
             return;
         }
@@ -2321,7 +2243,6 @@ private:
         {
             Expr& owner = *expression.children[0];
             Expr& key = *expression.children[1];
-            InvalidateNativeWrites(key);
             CheckExpr(owner); CheckExpr(key);
             const TypeDesc& type = types_.Get(owner.type);
             if (type.kind == TypeKind::List || type.kind == TypeKind::Array || type.kind == TypeKind::Array32)
@@ -2332,7 +2253,10 @@ private:
             else if (type.kind == TypeKind::Map)
             {
                 Require(key, type.key, "map key");
-                expression.type = types_.NullableOf(type.value);
+                expression.type = type.value;
+                // 값이 null 을 담을 수 없는 맵은 없는 키를 null 로 돌려줄 수 없으므로 읽기 헬퍼가 런타임 오류를 낸다.
+                expression.checkedMapRead = !expression.writeTarget && !expression.assignmentTarget && !types_.AllowsNull(type.value);
+                if (expression.checkedMapRead) mapReadHelper_ = true;
             }
             else Fail(expression.token, "indexing requires a typed array, list, or map");
             return;
@@ -2440,9 +2364,7 @@ private:
         if (key == types_.Float()) Fail(selector.token, "float is not allowed as a switch value because exact comparison is unreliable; use int or string");
         if (key != types_.Int() && key != types_.String())
             Fail(selector.token, "switch requires an int or string value, not '" + types_.DisplayName(key) + "'");
-        const std::set<Symbol*> before = nonNullLocals_;
-        std::set<Symbol*> after;
-        bool reachesEnd = false, hasDefault = false;
+        bool hasDefault = false;
         std::vector<CaseKey> seen;
         int flow = 0;
         ++switchDepth_;
@@ -2474,7 +2396,6 @@ private:
             checkingConstant_ = savedConstant;
             // fallthrough 가 없어 빈 본문은 조용히 아무 일도 하지 않는 함정이 된다. 의도를 명시하게 한다.
             if (clause.children.empty()) Fail(clause.token, "a switch clause needs a body; combine labels as 'case a, b:' or write ';' for no action");
-            nonNullLocals_ = before;
             scopes_.push_back(std::map<std::string, Symbol*>());
             int body = FallsThrough;
             for (const auto& inner : clause.children)
@@ -2483,25 +2404,12 @@ private:
                 if (body & FallsThrough) body = (body & ~FallsThrough) | next;
             }
             scopes_.pop_back();
-            if (body & (FallsThrough | Breaks))
-            {
-                // 절의 끝과 break 는 모두 switch 다음으로 이어진다. 널 아님 증명은 모든 경로의 교집합만 남긴다.
-                if (!reachesEnd) after = nonNullLocals_;
-                else for (auto it = after.begin(); it != after.end();) if (!nonNullLocals_.count(*it)) it = after.erase(it); else ++it;
-                reachesEnd = true;
-                flow |= FallsThrough;
-            }
+            // 절의 끝과 break 는 모두 switch 다음으로 이어진다.
+            if (body & (FallsThrough | Breaks)) flow |= FallsThrough;
             flow |= body & (Returns | Continues);
         }
         --switchDepth_;
-        if (!hasDefault)
-        {
-            if (!reachesEnd) after = before;
-            else for (auto it = after.begin(); it != after.end();) if (!before.count(*it)) it = after.erase(it); else ++it;
-            reachesEnd = true;
-            flow |= FallsThrough;
-        }
-        nonNullLocals_ = reachesEnd ? after : before;
+        if (!hasDefault) flow |= FallsThrough;
         return flow;
     }
 
@@ -2552,7 +2460,7 @@ private:
             }
             else
             {
-                if (!Defaultable(statement.declared.type)) Fail(statement.name, "this non-null type requires an initializer");
+                if (!Defaultable(statement.declared.type)) Fail(statement.name, "this type requires an initializer");
                 initial = DefaultValue(statement.declared.type);
             }
             checkingConstant_ = savedConstant;
@@ -2569,8 +2477,6 @@ private:
             ReplaceModifiers(statement);
             const TypeId previousReturn = returnType_;
             const std::string previousFunction = currentFunction_;
-            const std::set<Symbol*> previousNonNull = nonNullLocals_;
-            nonNullLocals_.clear();
             returnType_ = statement.declared.type;
             currentFunction_ = statement.name.text;
             ++functionDepth_;
@@ -2587,7 +2493,6 @@ private:
             if (returnType_ != types_.Void() && (flow & FallsThrough)) Fail(statement.name, "not all paths return a value");
             returnType_ = previousReturn;
             currentFunction_ = previousFunction;
-            nonNullLocals_ = previousNonNull;
             return FallsThrough;
         }
         case StatementKind::Expression:
@@ -2597,41 +2502,21 @@ private:
         {
             CheckExpr(*statement.expressions[0]); Require(*statement.expressions[0], types_.Bool(), "if condition");
             statement.expressions[0]->branchCondition = true;
-            const std::set<Symbol*> before = nonNullLocals_;
-            ApplyNativeGuard(*statement.expressions[0], true);
             const int yes = ScopedStatement(*statement.children[0]);
-            const std::set<Symbol*> yesFacts = nonNullLocals_;
-            nonNullLocals_ = before;
-            ApplyNativeGuard(*statement.expressions[0], false);
             const int no = statement.children.size() == 2 ? ScopedStatement(*statement.children[1]) : FallsThrough;
-            if (yes & FallsThrough)
-            {
-                if (!(no & FallsThrough)) nonNullLocals_ = yesFacts;
-                else
-                    for (auto it = nonNullLocals_.begin(); it != nonNullLocals_.end();)
-                        if (!yesFacts.count(*it)) it = nonNullLocals_.erase(it); else ++it;
-            }
             return yes | no;
         }
         case StatementKind::While:
         {
-            // 다음 회차에는 조건·본문에서 대입된 변수만 바뀔 수 있다. 그 증명만 지우고 조건 가드를 다시 적용한다.
-            InvalidateAssigned(statement);
-            const std::set<Symbol*> entry = nonNullLocals_;
             CheckExpr(*statement.expressions[0]); Require(*statement.expressions[0], types_.Bool(), "while condition");
             statement.expressions[0]->branchCondition = true;
-            ApplyNativeGuard(*statement.expressions[0], true);
             ++loopDepth_;
             const int body = ScopedStatement(*statement.children[0]);
             --loopDepth_;
-            // 0회 실행도 가능하므로 본문 안에서 얻은 증명은 반복문 뒤로 가져가지 않는다.
-            nonNullLocals_ = entry;
             return FallsThrough | (body & Returns);
         }
         case StatementKind::For:
         {
-            InvalidateAssigned(statement);
-            const std::set<Symbol*> entry = nonNullLocals_;
             if (statement.declared.type != types_.Int()) Fail(statement.declared.first, "a range loop requires an int variable");
             for (const auto& expression : statement.expressions)
             {
@@ -2644,7 +2529,6 @@ private:
             const int body = CheckStatement(*statement.children[0]);
             --loopDepth_;
             scopes_.pop_back();
-            nonNullLocals_ = entry;
             return FallsThrough | (body & Returns);
         }
         case StatementKind::Return:
@@ -2665,8 +2549,6 @@ private:
         case StatementKind::Foreach:
         {
             CheckExpr(*statement.expressions[0]);
-            InvalidateAssigned(statement);
-            const std::set<Symbol*> entry = nonNullLocals_;
             const TypeId source = statement.expressions[0]->type;
             const TypeDesc& collection = types_.Get(source);
             std::vector<TypeId> expected;
@@ -2680,7 +2562,7 @@ private:
                 if (statement.parameters.size() != 1) Fail(statement.token, "this foreach requires one iteration variable");
                 if (source == types_.String()) expected.push_back(types_.String());
                 else if (collection.kind == TypeKind::List || collection.kind == TypeKind::Array || collection.kind == TypeKind::Array32 || collection.kind == TypeKind::Set) expected.push_back(collection.element);
-                else Fail(statement.token, "foreach requires a non-null string or collection");
+                else Fail(statement.token, "foreach requires a string or collection");
             }
             scopes_.push_back(std::map<std::string, Symbol*>());
             std::vector<Symbol*> variables;
@@ -2709,12 +2591,10 @@ private:
                 edits_.push_back(Edit(statement.children[0]->end, statement.children[0]->end, "}"));
             }
             scopes_.pop_back();
-            nonNullLocals_ = entry;
             return FallsThrough | (body & Returns);
         }
         case StatementKind::Yield:
             if (returnType_ == InvalidType) Fail(statement.token, "yield is only allowed in a function");
-            nonNullLocals_.clear();
             return FallsThrough;
         case StatementKind::Switch:
             return CheckSwitch(statement);
@@ -2932,11 +2812,9 @@ private:
             if (expression.kind == ExprKind::Assignment)
             {
                 std::size_t value = BuildValueIR(*expression.children[1]);
-                if (node.type == IRValueType::Float)
-                {
-                    const IRSourceSpan origin = result_.typedIR.nodes[value].source;
-                    value = WidenIR(value, origin);
-                }
+                // float 승격과 참조형 변수에 들어가는 null 은 모두 명시적 변환 노드를 거친다.
+                const IRSourceSpan origin = result_.typedIR.nodes[value].source;
+                value = ConvertIR(value, node.typeId, origin);
                 node.inputs.push_back(value);
             }
         }
@@ -3175,6 +3053,9 @@ private:
                 text = Intrinsic("a" + ArrayStorage(owner.type) + "get", expression.token.line) + "("
                     + Lines(expression.begin, owner.begin) + RenderExpr(owner) + Lines(owner.end, expression.token.begin) + ","
                     + Lines(expression.token.end, key.begin) + RenderExpr(key) + Lines(key.end, expression.end) + ")";
+            else if (expression.checkedMapRead)
+                text = internalPrefix_ + "mapread(" + Lines(expression.begin, owner.begin) + RenderExpr(owner) + Lines(owner.end, expression.token.begin) + ","
+                    + Lines(expression.token.end, key.begin) + RenderExpr(key) + Lines(key.end, expression.end) + ")";
             else text = Lines(expression.begin, owner.begin) + RenderExpr(owner) + Lines(owner.end, expression.token.begin) + "["
                     + Lines(expression.token.end, key.begin) + RenderExpr(key) + Lines(key.end, expression.end) + "]";
             break;
@@ -3338,6 +3219,8 @@ private:
             result += "\nfun " + internalPrefix_ + "resize(var a,var n,var fill){if(n<0)n=0;var old=tosize(a);a.reserve(n);if(n<old){a.resize(n);}else{for(var i in old,n){a.append(fill);}}}";
         }
         if (getHelper_) result += "\nfun " + internalPrefix_ + "get(var m,var k,var fallback){var v=m[k];if(v==null)return fallback;return v;}";
+        // 값 타입이 null 을 담을 수 없는 맵의 색인 읽기. 없는 키는 조용히 null 이 되는 대신 런타임 오류를 낸다.
+        if (mapReadHelper_) result += "\nfun " + internalPrefix_ + "mapread(var m,var k){var v=m[k];if(v==null)__neocore_fail(\"map key not found: \"..tostring(k));return v;}";
         if (concatHelper_) result += "\nfun " + internalPrefix_ + "concat(var a,var b){var r=a.clone();foreach(var v in b)r.append(v);return r;}";
         if (unionHelper_) result += "\nfun " + internalPrefix_ + "union(var a,var b){var r=a.clone();foreach(var v in b)r.add(v);return r;}";
         if (intersectionHelper_) result += "\nfun " + internalPrefix_ + "intersection(var a,var b){var r=a.clone();foreach(var v in a)if(!b.contains(v))r.remove(v);return r;}";
@@ -3515,7 +3398,6 @@ void CollectStaticDeclarations(const std::string& source, std::vector<StaticDecl
                 last += 2;
             }
         }
-        if (last < tokens.size() && tokens[last].text == "?") ++last;
         return source.substr(tokens[first].begin, tokens[last - 1].end - tokens[first].begin);
     };
     for (std::size_t i = 0; i + 1 < tokens.size(); ++i)

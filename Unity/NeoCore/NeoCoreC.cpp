@@ -176,9 +176,7 @@ NeoCore::TypeKind ArgumentKind(NcHostCall* call, uint32_t index)
 {
     if (!call || !call->value || !call->binding || index >= call->binding->parameters.size())
         throw std::invalid_argument("host argument index is out of range");
-    NeoCore::TypeId type = call->binding->parameters[index];
-    if (call->types->IsNullable(type)) type = call->types->Get(type).element;
-    return call->types->Get(type).kind;
+    return call->types->Get(call->binding->parameters[index]).kind;
 }
 void RequireArgument(NcHostCall* call, uint32_t index, NeoCore::TypeKind expected)
 {
@@ -923,8 +921,7 @@ int32_t NcSchemaGlobal(NcOptions* options, const char* name, uint32_t length, ui
         if (!options) return 0;
         const std::string globalName = ReadText(name, length);
         NeoCore::HostSchema schema = options->state.schema;
-        if (!schema.AddGlobal(globalName, type) || (!id && !schema.Types().IsNullable(type)))
-        { options->error = schema.LastError().empty() ? "nonnullable host global needs a nonzero ID" : schema.LastError(); return 0; }
+        if (!schema.AddGlobal(globalName, type)) { options->error = schema.LastError(); return 0; }
         options->state.globals[globalName] = id;
         options->state.schema = std::move(schema);
         options->error.clear();

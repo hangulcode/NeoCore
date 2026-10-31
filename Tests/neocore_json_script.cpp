@@ -43,7 +43,7 @@ struct Header { int id; string label; };
 struct Payload {
     Header meta;
     list<int> scores;
-    int? missing;
+    string missing;
     array32<float> weights;
     Vector3 point;
     Quaternion rotation;
@@ -76,11 +76,12 @@ export bool Storage() {
     array32<int> compact = system.jsonDecode<array32<int>>("[-2147483648,2147483647]");
     Vector2 v2 = system.jsonDecode<Vector2>("[2,3]");
     Vector4 v4 = system.jsonDecode<Vector4>("[1,2,3,4]");
-    int? missing = system.jsonDecode<int?>("null");
-    int? present = system.jsonDecode<int?>("7");
+    string missing = system.jsonDecode<string>("null");
+    string present = system.jsonDecode<string>("\"7\"");
+    list<int> absent = system.jsonDecode<list<int>>("null");
     return flags[0] && !flags[1] && numbers[1] == 2.5
         && compact[0] == -2147483648 && compact[1] == 2147483647
-        && v2.y == 3.0 && v4.w == 4.0 && missing == null && present == 7
+        && v2.y == 3.0 && v4.w == 4.0 && missing == null && present == "7" && absent == null
         && system.jsonEncode(missing) == "null";
 }
 export string Sorted() {
@@ -96,13 +97,13 @@ void RoundTrips(bool debug)
     Check(program && error.ok(), "compile JSON roundtrip: " + error.message);
     Boolean(program->Call("RoundTrip"), "struct JSON roundtrip");
     Integer(program->Call("Nested"), 5, "nested generic decode target");
-    Boolean(program->Call("Storage"), "nullable, compact, vector and typed array decoding");
+    Boolean(program->Call("Storage"), "null reference, compact, vector and typed array decoding");
     const Result encoded = program->Call("Encode");
     Completed(encoded, "encoded struct");
     Check(encoded.value.asString().find("\"meta\":{\"id\":9007199254740993,\"label\":\"roundtrip\"}") != std::string::npos,
         "structs encode named fields instead of positional backend lists");
     Check(encoded.value.asString().find("\"missing\":null") != std::string::npos,
-        "nullable struct field remains present during encoding");
+        "null reference field remains present during encoding");
     const Result sorted = program->Call("Sorted");
     Completed(sorted, "sorted object");
     Check(sorted.value.asString() == "{\"a\":1,\"z\":2}", "sortKeys orders object keys");
@@ -185,7 +186,7 @@ void Failures(bool debug)
         "export int Shape(string text){Exact value=system.jsonDecode<Exact>(text);return value.n;}\n"
         "export int Compact(string text){array32<int> value=system.jsonDecode<array32<int>>(text);return value[0];}\n"
         "export float Vector(string text){Vector3 value=system.jsonDecode<Vector3>(text);return value.x;}\n"
-        "struct Optional{int? n;};\n"
+        "struct Optional{string n;};\n"
         "struct NestedOptional{Optional child;int version;};\n"
         "export string OptionalData(string text){NestedOptional value=system.jsonDecode<NestedOptional>(text);return system.jsonEncode(value,true);}\n";
     auto program = runtime->Compile(source, error, "json-failures.nc", debug);
@@ -194,7 +195,7 @@ void Failures(bool debug)
     Check(instance && error.ok(), "JSON failure instance");
     Debugger* debugger = runtime->GetDebugger();
     if (debug) Check(debugger->Attach(*instance, error), "attach JSON error debugger");
-    for (const char* invalid : {"{", "[1,\"bad\"]", "[9223372036854775808]", "[1.5]", "null"})
+    for (const char* invalid : {"{", "[1,\"bad\"]", "[9223372036854775808]", "[1.5]"})
     {
         const Result failed = instance->Call("Outer", {Scalar::String(invalid)});
         Check(!failed.ok() && !failed.error.message.empty(), std::string("reject invalid JSON: ") + invalid);
@@ -214,16 +215,17 @@ void Failures(bool debug)
         }
         Integer(instance->ReadGlobal("completed"), 0, "failed decode cannot execute following statement");
     }
+    Check(!instance->Call("Outer", {Scalar::String("null")}).ok(), "a decoded null list fails on its first use");
     Integer(instance->Call("Outer", {Scalar::String("[9]")}), 9, "JSON failure leaves fresh calls usable");
     for (const char* invalid : {"{}", "{\"n\":1,\"extra\":2}", "{\"n\":false}", "[7]"})
         Check(!instance->Call("Shape", {Scalar::String(invalid)}).ok(), "struct shape is checked");
     Check(!instance->Call("Compact", {Scalar::String("[2147483648]")}).ok(), "compact integer range is checked");
     Check(!instance->Call("Vector", {Scalar::String("[1e100,0,0]")}).ok(), "vector float32 range is checked");
     Check(!instance->Call("Encode", {Scalar::Float(std::numeric_limits<double>::infinity())}).ok(), "nonfinite JSON output is rejected");
-    for (const char* text : {"{\"child\":{\"n\":null},\"version\":1}", "{\"child\":{\"n\":7,\"n\":null},\"version\":1}"})
+    for (const char* text : {"{\"child\":{\"n\":null},\"version\":1}", "{\"child\":{\"n\":\"x\",\"n\":null},\"version\":1}"})
     {
         const Result optional = instance->Call("OptionalData", {Scalar::String(text)});
-        Completed(optional, "nested nullable field roundtrip");
+        Completed(optional, "nested null reference field roundtrip");
         Check(optional.value.asString() == "{\"child\":{\"n\":null},\"version\":1}",
             "explicit null is preserved, including a final duplicate key");
     }

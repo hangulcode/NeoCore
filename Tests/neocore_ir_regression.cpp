@@ -592,8 +592,8 @@ void ScalarWriteErrors(IRuntime& runtime, bool debug)
 void CallStructure()
 {
     const char* source = "struct Box{int x;};\nBox Copy(Box value){return value;}\n"
-        "int? Optional(int value){return value;}\nvoid Empty(){}\n"
-        "export float Probe(){int x=1;Box box=Copy(Box(2));Touch(x,box.x);Empty();int? n=Optional(x);return Sum(x,2);}\n"
+        "string Optional(string value){return value;}\nvoid Empty(){}\n"
+        "export float Probe(){int x=1;Box box=Copy(Box(2));Touch(x,box.x);Empty();string n=Optional(null);return Sum(x,2);}\n"
         "void Touch(int left,int right){left+=right;return;}\nfloat Sum(float left,float right){return left+right;}";
     NeoCore::StaticCompileResult checked;
     Check(NeoCore::CompileStaticSource(source, checked), "call metadata frontend: " + checked.errorMessage);
@@ -622,8 +622,8 @@ void CallStructure()
         else if (node.op == NeoCore::IROp::NullableConvert)
         {
             ++nullable;
-            Check(node.type == NeoCore::IRValueType::Value && ir.types.IsNullable(node.typeId) && node.inputs.size() == 1,
-                "nullable transfer is represented explicitly");
+            Check(ir.types.AllowsNull(node.typeId) && node.inputs.size() == 1,
+                "null transfer into a reference type is represented explicitly");
         }
         else if (node.op == NeoCore::IROp::CopyStruct)
         {
@@ -633,7 +633,7 @@ void CallStructure()
         }
     }
     Check(calls == 5 && copies >= 2 && nullable >= 1,
-        "calls retain scalar widening, struct copies and nullable returns");
+        "calls retain scalar widening, struct copies and null transfers");
     bool voidReturn = false, valueReturn = false;
     for (const auto& statement : ir.returns)
     {
@@ -699,7 +699,7 @@ void RejectReferences()
         "export float Probe(){float x=1;float & alias=x;return alias;}",
         "export bool Probe(){bool x=false;bool& alias=x;return alias;}",
         "export string Probe(){string x=\"x\";string& alias=x;return alias;}",
-        "export void Probe(){int? x=null;int?& alias=x;}",
+        "export void Probe(){string x=null;string& alias=x;}",
         "void Change(int& value){value=2;}export void Probe(){int value=1;Change(value);}",
         "int value=1;int& Read(){return value;}",
         "struct S{int value;};export void Probe(){S value=S(1);S& alias=value;}",
@@ -758,9 +758,9 @@ void CallTransfers(IRuntime& runtime, bool debug)
         {"string source=\"old\";string Read(){return source;}int Change(){source=\"new\";return 0;}string Relay(string text,int unused){return text..\"!\";}"
             "export int Probe(){string result=Relay(Read(),Change());if(result==\"old!\"&&source==\"new\")return 1;return 0;}",
             1, "string return survives later call and concatenation"},
-        {"int? Maybe(bool present){if(present)return 7;return null;}string? Text(bool present){if(present)return \"ok\";return null;}"
-            "export int Probe(){int? number=Maybe(true);string? text=Text(true);if(number==7&&Maybe(false)==null&&text==\"ok\"&&Text(false)==null)return 1;return 0;}",
-            1, "nullable result transfers retain null and nonnull alternatives"},
+        {"list<int> Maybe(bool present){if(present)return [7];return null;}string Text(bool present){if(present)return \"ok\";return null;}"
+            "export int Probe(){list<int> number=Maybe(true);string text=Text(true);if(number[0]==7&&Maybe(false)==null&&text==\"ok\"&&Text(false)==null)return 1;return 0;}",
+            1, "reference result transfers retain null and nonnull alternatives"},
         {"list<string> Make(){list<string> value=[\"old\"];return value;}list<string> Relay(list<string> value){value[0]=\"new\";return value;}"
             "export int Probe(){list<string> a=Make();list<string> b=Relay(a);b.resize(2,\"tail\");if(a[0]==\"new\"&&a[1]==\"tail\")return a.len();return 0;}",
             2, "returned list lifetime and shared identity survive local release"},
@@ -819,11 +819,11 @@ void CallReturnKinds(IRuntime& runtime, bool debug)
         const Value direct = Run(runtime, text, debug, image, "owned string return IR");
         Check(direct.status == RunStatus::Completed && direct.type == ValueType::String && direct.text == "return",
             "returned string remains alive until copied across the host boundary");
-        const char* nullable = "int? Maybe(){return null;}int? Relay(){return Maybe();}export int? Probe(){return Relay();}";
+        const char* nullable = "string Maybe(){return null;}string Relay(){return Maybe();}export string Probe(){return Relay();}";
 
         const Value directNull = Run(runtime, nullable, debug, image, "null return IR");
         Check(directNull.status == RunStatus::Completed && directNull.type == ValueType::None,
-            "nullable return is null at the host boundary");
+            "null reference return is null at the host boundary");
     }
 }
 

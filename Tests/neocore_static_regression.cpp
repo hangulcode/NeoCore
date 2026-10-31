@@ -57,8 +57,8 @@ static void CheckExecution(bool debug)
         35, "left operand snapshot", debug);
     ExpectInt("int x=1; int Change(){x=5;return 2;} int Pair(int a,int b){return a*10+b;} export int Probe(){return Pair(x,Change());}",
         12, "argument snapshot", debug);
-    ExpectInt("export int Probe(){int? x; string? s=null; if(x==null && s==null)return 1;return 0;}",
-        1, "nullable defaults", debug);
+    ExpectInt("export int Probe(){string x; list<int> s=null; if(x==null && s==null)return 1;return 0;}",
+        1, "reference defaults are null", debug);
     ExpectInt("export int Probe(){return toint(3.75);}", 3, "explicit narrowing", debug);
     ExpectInt("export int Probe(){string s=\"a\"..\"b\"; if(s==\"ab\")return 1;return 0;}",
         1, "typed strings", debug);
@@ -114,10 +114,9 @@ int main()
         {"int x=1.5;", "no implicit narrowing"},
         {"int x=true;", "bool is not int"},
         {"float x=false;", "bool is not float"},
-        {"string x;", "nonnullable string initializer"},
         {"int x=null;", "nonnull int"},
-        {"int? x=1; int y=x;", "no nullable unwrap"},
-        {"int? x=1; int y=x+1;", "no nullable arithmetic"},
+        {"int? x=1;", "no nullable marker"},
+        {"string? s=null;", "no nullable marker on references"},
         {"void x;", "no void variable"},
         {"int F(){int x=1;}", "nonvoid missing return"},
         {"int F(bool b){if(b)return 1;}", "partial return"},
@@ -189,7 +188,7 @@ int main()
     }
     NeoCore::Scalar retained;
     {
-        auto values = NeoCore::Program::Compile("export string Text(){return \"owned\";} export void Empty(){} export int? Missing(){return null;} export float? Present(){return 2;} export int Fail(){int zero=0;return 1/zero;}", error);
+        auto values = NeoCore::Program::Compile("export string Text(){return \"owned\";} export void Empty(){} export string Missing(){return null;} export float Present(){return 2;} export int Fail(){int zero=0;return 1/zero;}", error);
         Check(values != nullptr, "return boundary program compiles");
         if (values)
         {
@@ -199,10 +198,10 @@ int main()
             NeoCore::Result empty = values->Call("Empty");
             Check(empty.ok() && empty.value.kind() == NeoCore::Scalar::Kind::Void, "void result");
             NeoCore::Result missing = values->Call("Missing");
-            Check(missing.ok() && missing.value.kind() == NeoCore::Scalar::Kind::Null, "nullable null result");
+            Check(missing.ok() && missing.value.kind() == NeoCore::Scalar::Kind::Null, "null reference result");
             NeoCore::Result present = values->Call("Present");
             Check(present.ok() && present.value.kind() == NeoCore::Scalar::Kind::Float && present.value.asFloat() == 2.0,
-                "nullable float result promotion");
+                "float result promotion");
             Check(!values->Call("Fail").ok(), "execution failure reported");
             Check(values->Call("Text").ok(), "call after failure");
         }

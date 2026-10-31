@@ -30,6 +30,18 @@ static void Reject(const char* source, const char* label)
     Check(!program && !error.message.empty(), std::string(label) + " must reject");
 }
 
+// 컴파일은 통과하지만 실행이 지정한 메시지로 실패해야 하는 경우.
+static void FailsAtRuntime(const char* source, const char* messagePart, const char* label, bool debug)
+{
+    NeoCore::Error error;
+    std::unique_ptr<NeoCore::Program> program = NeoCore::Program::Compile(source, error, label, debug);
+    Check(program != nullptr, std::string(label) + " compile: " + error.message);
+    if (!program) return;
+    NeoCore::Result result = program->Call("Probe");
+    Check(!result.ok() && result.error.message.find(messagePart) != std::string::npos,
+        std::string(label) + " runtime failure: " + result.error.message);
+}
+
 int main()
 {
     for (int mode = 0; mode != 2; ++mode)
@@ -54,8 +66,9 @@ int main()
         Reject("const struct S{int x;};export int Probe(){return 1;}", "const struct rejected");
         Reject("export int Probe(){public struct S{int x;};return 1;}", "public struct inside a function rejected");
         Expect("export int Probe(){list<list<int>> m=[[1,2],[3]];m.append([4,5]);int sum=0;foreach(list<int> row in m)foreach(int x in row)sum+=x;return sum;}", 15, "nested lists and foreach", debug);
-        Expect("export int Probe(){map<string,list<int>> m={\"a\":[1,2]};list<int>? a=m[\"a\"];if(a!=null)return a[1];return 0;}", 2, "nullable collection refinement", debug);
-        Expect("export int Probe(){list<int>? a=[1,2,3];int total=0;if(a!=null)foreach(int value in a)total+=value;return total;}", 6, "guarded nullable foreach", debug);
+        Expect("export int Probe(){map<string,list<int>> m={\"a\":[1,2]};list<int> a=m[\"a\"];if(a!=null)return a[1];return 0;}", 2, "collection map read without a nullable type", debug);
+        Expect("export int Probe(){map<string,list<int>> m={};list<int> a=m[\"missing\"];if(a==null)return 7;return 0;}", 7, "missing collection map read is null", debug);
+        Expect("export int Probe(){list<int> a=[1,2,3];int total=0;if(a!=null)foreach(int value in a)total+=value;return total;}", 6, "null comparison on a collection", debug);
         Expect(u8"export int Probe(){int count=0;foreach(string c in \"A한글\"){count+=c.len();}return count;}", 3, "foreach characters are strings", debug);
         Expect("struct S{int x;};export int Probe(){list<S> values=[S(3)];foreach(S item in values)item.x=7;S original=values[0];return original.x;}", 3, "foreach struct values copy", debug);
         Expect("struct S{int x;};export int Probe(){list<S> a=[S(3)];list<S> b=a.clone();b[0].x=9;list<S> c=a+b;c[0].x=8;return a[0].x*100+b[0].x*10+c[0].x;}", 398, "struct list clone and concatenation copy", debug);
@@ -77,21 +90,31 @@ int main()
         Expect("int Code(string command){int code=0;switch(command){case \"start\",\"resume\":code=1;break;case \"stop\":code=2;break;default:code=9;}return code;}export int Probe(){return Code(\"resume\")*100+Code(\"stop\")*10+Code(\"x\");}", 129, "string switch dispatch", debug);
         Expect("export int Probe(){int total=0;for(int i in 0,6){switch(i%3){case 0:continue;case 1:total+=10;break;default:int local=i*100;total+=local;}total+=1;}return total;}", 724, "switch break and continue inside a loop", debug);
         Expect("export int Probe(){int x=5;int seen=0;switch(x){case 1:seen=1;break;case 2:seen=2;break;}return seen;}", 0, "unmatched switch without default skips", debug);
-        Expect("export int Probe(){list<int>? a=[4];int result=0;if(a!=null){switch(a[0]){case 4:a=null;break;default:result=a[0];}}return result;}", 0, "switch clause assignment invalidates nullable proof", debug);
-        Expect("string? Maybe(){return \"v\";}export int Probe(){string? s=Maybe();int total=0;if(s!=null){for(int i in 0,3)total+=s.len();}return total;}", 3, "range loop keeps nullable proof", debug);
-        Expect("export int Probe(){list<int>? a=[1,2];if(a==null)return -1;int total=0;int i=0;while(i<2){total+=a[i];i+=1;}foreach(int v in a)total+=v;return total;}", 6, "early return proof survives while and foreach", debug);
-        Expect("export int Probe(){string? s=\"ab\";if(s==null)return 0;fn()->int f=fn()->int{return s.len();};return f();}", 2, "captured copy keeps nullable proof", debug);
-        Expect("export int Probe(){string? a=\"ab\";string? b=\"c\";if(a!=null&&b!=null)return a.len()+b.len();return 0;}", 3, "conjunction refines both operands", debug);
-        Expect("export int Probe(){string? a=\"ab\";string? b=\"c\";if(a==null||b==null)return 0;return a.len()*10+b.len();}", 21, "disjunction early return refines both operands", debug);
-        Expect("export int Probe(){string? a=\"ab\";if(a!=null&&a.len()>1)return 1;if(a==null||a.len()>5)return 2;return 3;}", 1, "short-circuit refines the right operand", debug);
-        Expect("export int Probe(){string? a=\"ab\";string? b=\"c\";if(!(a!=null&&b!=null))return 0;return a.len()+b.len();}", 3, "negated conjunction refines in the false branch", debug);
+        // 참조형은 선언만 하면 null 이고, null 비교는 어디서나 가능하며, 가드 없는 접근은 런타임에 실패한다.
+        Expect("export int Probe(){string s;list<int> a;map<string,int> m;fn()->int f;int n=0;if(s==null)n+=1;if(a==null)n+=10;if(m==null)n+=100;if(f==null)n+=1000;return n;}", 1111, "reference declarations default to null", debug);
+        Expect("string Maybe(bool present){if(present)return \"v\";return null;}export int Probe(){string s=Maybe(true);string t=Maybe(false);int total=0;if(s!=null)total+=s.len();if(t==null)total+=10;return total;}", 11, "string results carry null", debug);
+        Expect("export int Probe(){list<int> a=[1,2];int total=0;int i=0;while(i<2){total+=a[i];i+=1;}foreach(int v in a)total+=v;a=null;if(a==null)total+=100;return total;}", 106, "collections accept null after use", debug);
+        Expect("export int Probe(){string a=\"ab\";string b=null;if(a!=null&&b!=null)return 1;if(a==null||b==null)return 2;return 3;}", 2, "null comparisons combine with logical operators", debug);
+        Expect("struct S{int x;string name;list<int> values;};export int Probe(){S s;if(s.name==null&&s.values==null&&s.x==0)return 1;return 0;}", 1, "struct reference fields default to null", debug);
+        FailsAtRuntime("export int Probe(){string s;return s.len();}", "len", "method call on a null string fails at runtime", debug);
+        FailsAtRuntime("export int Probe(){list<int> a;return a[0];}", "null", "index read on a null list fails at runtime", debug);
+        FailsAtRuntime("export int Probe(){fn()->int f;return f();}", "null", "calling a null function value fails at runtime", debug);
+        FailsAtRuntime("export int Probe(){map<string,int> m={\"a\":1};return m[\"b\"];}", "map key not found", "missing key read on a value map fails at runtime", debug);
+        Expect("export int Probe(){map<string,int> m={\"a\":1};m[\"b\"]=2;return m[\"a\"]*10+m[\"b\"]+m.get(\"c\",100);}", 112, "value map reads writes and get fallback", debug);
     }
-    Reject("void F(){string? s=\"a\";if(s!=null){for(int i in 0,2){print(s.len());s=null;}}}", "loop body assignment drops proof for the next iteration");
-    Reject("void F(){string? s=\"a\";if(s!=null){int i=0;while(i<2){print(s.len());i+=1;s=null;}}}", "while body assignment drops proof");
-    Reject("void F(){string? s=\"a\";if(s!=null){fn()->int f=fn()->int{s=null;return s.len();};}}", "lambda assignment drops captured proof");
-    Reject("void F(){string? a=\"a\";string? b=null;if(a!=null||b!=null)print(a.len());}", "disjunction when true proves neither operand");
-    Reject("void F(){string? a=\"a\";string? b=null;if(a==null&&b==null)return;print(a.len());}", "negated conjunction proves neither operand");
-    Reject("void F(){string? a=\"a\";if(a==null&&a.len()>0)return;}", "conjunction right operand under false guard is not refined");
+    Reject("string? s=null;", "nullable marker on a reference type");
+    Reject("int? x=null;", "nullable marker on a value type");
+    Reject("int x=null;", "null into an int");
+    Reject("Vector3 v=null;", "null into a vector");
+    Reject("struct S{int x;};S s=null;", "null into a struct");
+    Reject("int x=1;bool b=x==null;", "int compared with null");
+    Reject("float f=1.0;bool b=null!=f;", "float compared with null");
+    Reject("Vector3 v=Vector3();bool b=v==null;", "vector compared with null");
+    Reject("struct S{int x;};S s;bool b=s!=null;", "struct compared with null");
+    Reject("list<int?> a=[];", "nullable list element");
+    Reject("map<string,int?> m={};", "nullable map value");
+    Reject("map<string,int> m={};m[\"a\"]+=1;", "compound assignment on a map element");
+    Reject("map<string,int> m={};m[\"a\"]++;", "increment on a map element");
     Reject("float f=1.0;switch(f){case 1:print(1);}", "float switch selector");
     Reject("bool b=true;switch(b){case true:print(1);}", "bool switch selector");
     Reject("string s=\"a\";switch(s){case 1:print(1);}", "int label on string selector");
@@ -101,26 +124,20 @@ int main()
     Reject("int x=1;switch(x){case 1:print(1);default:print(2);default:print(3);}", "duplicate default");
     Reject("int x=1;switch(x){case 1:case 2:print(1);}", "empty switch clause");
     Reject("int x=1;int y=2;switch(x){case y:print(1);}", "non-constant case label");
-    Reject("int? x=1;switch(x){case 1:print(1);}", "nullable switch selector");
+    Reject("string s=null;switch(s){case 1:print(1);}", "switch label type must match a string selector");
     Reject("case 1:print(1);", "case outside switch");
     Reject("int F(int x){switch(x){case 1:return 1;default:break;}}", "switch break path must still return");
     Reject("int x=1;switch(x){case 1:continue;}", "continue needs a loop even inside switch");
     Reject("int x=1;switch(x){case 1:int local=1;}print(local);", "switch clause scope");
-    Reject("list<int>? a=[4];if(a!=null){switch(a[0]){case 4:a=null;break;default:break;}print(a[0]);}", "nullable proof does not survive switch assignment");
     Reject("int F(int x){return x;}fn(string)->int f=F;", "incompatible function assignment");
     Reject("int F(int x){return x;}fn(int)->int f=F;f(\"wrong\");", "indirect argument type");
     Reject("fn()->int f=fn()->int{};", "missing lambda return");
     Reject("fn()->int f=fn()->int{return \"wrong\";};", "lambda return type");
     Reject("list<int> a=[];a.sort(fn(string a,string b)->bool{return a<b;});", "sort comparator type");
     Reject("import system;TimeSpan a=system.time_span_ms(1);a.add(system.stopwatch());", "opaque object mismatch");
-    Reject("TimeSpan a;", "uninitialized opaque object");
-    Reject("TimeSpan? a=null;print(a);", "nullable opaque values cannot be printed");
+    Reject("TimeSpan a=null;print(a);", "opaque values cannot be printed");
     Reject("list<int> a=[];a.append(\"wrong\");", "list append element type");
     Reject("\"abc\".regex_match(1);", "regex argument type");
-    Reject("list<string>? a=\"abc\".regex_search(\"a\");print(a[0]);", "unguarded nullable collection");
-    Reject("void F(){list<int>? a=[1];if(a!=null){a=null;print(a[0]);}}", "invalidated collection proof");
-    Reject("int Index(list<int>? ignored){return 0;}export int Probe(){list<int>? a=[7];if(a==null)return 0;return a[Index(a=null)];}", "index arguments invalidate nullable receiver proof");
-    Reject("int Value(list<int>? ignored){return 3;}void Probe(){list<int>? a=[7];if(a!=null)a.append(Value(a=null));}", "method arguments invalidate nullable receiver proof");
     Reject("import coroutine;void F(int x){}coroutine<fn(int)->void> c=coroutine.create(F);coroutine.resume(c,\"wrong\");", "coroutine argument type");
     Reject("import coroutine;int F(){return 1;}coroutine.create(F);", "coroutine return signature");
     Reject("import system;AsyncRequest a=system.async_create();a.get(1,\"url\",fn(int x,string s)->void{});", "http callback signature");

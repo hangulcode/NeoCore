@@ -22,7 +22,7 @@ map<string, list<int>> groups = system.jsonDecode<map<string, list<int>>>("{\"co
 list<int> coins = groups.get("coins", []);
 print(coins[2]);
 
-int? absent = system.jsonDecode<int?>("null");
+string absent = system.jsonDecode<string>("null");
 print(system.jsonEncode(absent));
 
 export bool CheckPassed()

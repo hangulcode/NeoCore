@@ -4,7 +4,7 @@ print("ignore case: " .. tostring("NEOCORE".regex_match("neocore", true)));
 
 void SearchExamples()
 {
-    list<string>? parts = "Order: item42".regex_search("([a-z]+)([0-9]+)");
+    list<string> parts = "Order: item42".regex_search("([a-z]+)([0-9]+)");
     if (parts != null)
     {
         print("match: " .. parts[0]);
@@ -12,7 +12,7 @@ void SearchExamples()
         print("number: " .. parts[2]);
     }
     print("no match: " .. tostring("abc".regex_search("[0-9]+") == null));
-    list<string>? digits = "id=123".regex_search("\\d+");
+    list<string> digits = "id=123".regex_search("\\d+");
     if (digits != null) print("digits: " .. digits[0]);
 }
 SearchExamples();

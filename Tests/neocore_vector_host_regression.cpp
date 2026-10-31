@@ -68,14 +68,13 @@ struct Fixture
     {
         objectType = schema.AddObject("GameObject");
         TypeRegistry& types = schema.Types();
-        Property("Parent", types.NullableOf(objectType), true, false);
+        Property("Parent", objectType, true, false);
         Property("Position", types.Vector3());
         Property("UV", types.Vector2());
         Property("Color", types.Vector4());
         Property("Rotation", types.Quaternion());
         Property("ReadOnly", types.Vector3(), true, false);
         Property("WriteOnly", types.Vector3(), false, true);
-        Property("Optional", types.NullableOf(types.Vector3()));
         Method("Target", objectType);
         Method("Rhs", types.Float());
         Method("Reparent", types.Void());
@@ -85,8 +84,7 @@ struct Fixture
         Method("Echo3", types.Vector3(), {types.Vector3()});
         Method("Echo4", types.Vector4(), {types.Vector4()});
         Method("EchoQ", types.Quaternion(), {types.Quaternion()});
-        Method("Maybe", types.NullableOf(types.Vector3()));
-        Method("AcceptMaybe", types.Bool(), {types.NullableOf(types.Vector3())});
+        Check(types.NullableOf(types.Vector3()) == InvalidType, "vectors never hold null");
         Method("Reenter3", types.Vector3(), {types.Vector3()});
         Method("Reenter4", types.Vector4(), {types.Vector4()});
         Check(schema.AddGlobal("GameObject", objectType), "register primary global");
@@ -140,7 +138,6 @@ struct Fixture
             if (name == "UV") object->uv = call.Vector2(0);
             else if (name == "Color") object->color = call.Vector4(0);
             else if (name == "Rotation") object->rotation = call.Quaternion(0);
-            else if (name == "Optional") Check(call.IsNull(0), "nullable vector setter receives null");
             else object->position = call.Vector3(0);
             return true;
         }
@@ -216,18 +213,13 @@ void RoundTrips(bool debug)
         "return GameObject.UV.x+GameObject.Position.y+GameObject.Color.w+GameObject.Rotation.w;}", debug),
         40, "all vector dimensions and quaternion roundtrip");
     Check(fixture.objects[1].rotation.x == 15 && fixture.objects[1].rotation.z == 17, "quaternion wxyz ordering");
-    Fixture nullable;
-    Result result = Run(nullable,
-        "export bool Probe(){Vector3? v=GameObject.Maybe();GameObject.Optional=null;"
-        "return GameObject.AcceptMaybe(v)&&GameObject.Optional==null;}", debug);
-    Check(result.ok() && result.value.kind() == Scalar::Kind::Bool && result.value.asBool(), "nullable vector whole-value transport");
 }
 
 void StoredParent(bool debug)
 {
     Fixture fixture;
     ExpectFloat(Run(fixture,
-        "export float Probe(){GameObject? pr=GameObject.Parent;"
+        "export float Probe(){GameObject pr=GameObject.Parent;"
         "if(pr!=null){GameObject.Reparent();pr.Position.x=3.0;return pr.Position.x;}return -1.0;}", debug),
         3, "stored parent survives relationship change");
     Check(fixture.objects[1].parent.value == 3 && fixture.objects[2].position.x == 3 && fixture.objects[3].position.x == 70,
@@ -236,12 +228,12 @@ void StoredParent(bool debug)
     Fixture empty;
     empty.objects[1].parent = ObjectHandle();
     ExpectFloat(Run(empty,
-        "export float Probe(){GameObject? pr=GameObject.Parent;if(pr!=null){pr.Position.x=3.0;}return 9.0;}", debug),
+        "export float Probe(){GameObject pr=GameObject.Parent;if(pr!=null){pr.Position.x=3.0;}return 9.0;}", debug),
         9, "absent parent guard");
     Check(empty.setters.empty() && empty.reads == 0, "null parent never reaches vector callbacks");
     Fixture dead;
     Result result = Run(dead,
-        "export float Probe(){\nGameObject? pr=GameObject.Parent;\n"
+        "export float Probe(){\nGameObject pr=GameObject.Parent;\n"
         "if(pr!=null){GameObject.DestroyParent();\npr.Position.x=3.0;}return 0.0;}", debug);
     ExpectError(result, "no longer valid", "stored parent invalidated before component access");
     Check(dead.setters.empty() && dead.reads == 0, "destroyed parent rejected before getter");
@@ -338,7 +330,7 @@ void WholeVectorArithmetic(bool debug)
     Check(dimensions.objects[1].color.w == 8, "local host vector arithmetic does not mutate getter source");
     Fixture parent;
     ExpectFloat(Run(parent,
-        "export float Probe(){GameObject? pr=GameObject.Parent;if(pr!=null){GameObject.Reparent();"
+        "export float Probe(){GameObject pr=GameObject.Parent;if(pr!=null){GameObject.Reparent();"
         "pr.Position+=Vector3(1,2,3);return pr.Position.z;}return -1.0;}", debug),
         63, "whole-vector compound on saved parent ID");
     Check(parent.setters.size() == 1 && parent.setters[0] == 2 && parent.objects[3].position.z == 90,
@@ -410,16 +402,10 @@ void CompileRejections()
         "export void Probe(){GameObject.Position*=Vector3(1,2,3);}",
         "export void Probe(){GameObject.Rotation+=Quaternion();}",
         "export void Probe(){GameObject.Rotation*=2;}",
-        "export void Probe(){GameObject.Parent.Position.x=3.0;}",
-        "export void Probe(){GameObject? pr=GameObject.Parent;if(pr!=null){pr=null;pr.Position.x=3.0;}}",
-        "void Clear(GameObject?& value){value=null;}"
-        "export void Probe(){GameObject? pr=GameObject.Parent;if(pr!=null){Clear(pr);pr.Position.x=3.0;}}",
-        "float Clear(GameObject?& value){value=null;return 3.0;}"
-        "export void Probe(){GameObject? pr=GameObject.Parent;if(pr!=null){pr.Position.x=Clear(pr);}}",
-        "export void Probe(){GameObject? pr=GameObject.Parent;bool again=true;"
-        "if(pr!=null){while(again){pr.Position.x=3.0;pr=null;}}}",
-        "export void Probe(){GameObject? pr=GameObject.Parent;GameObject?& alias=pr;"
-        "if(pr!=null){alias=null;pr.Position.x=3.0;}}"
+        "void Clear(GameObject& value){value=null;}"
+        "export void Probe(){GameObject pr=GameObject.Parent;if(pr!=null){Clear(pr);pr.Position.x=3.0;}}",
+        "export void Probe(){GameObject? pr=GameObject.Parent;}",
+        "export void Probe(){Vector3? v=GameObject.Position;}"
     };
     for (const char* source : sources)
     {

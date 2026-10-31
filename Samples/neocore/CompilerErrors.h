@@ -33,7 +33,7 @@ inline int RunCompilerErrorRegression(bool debug)
         {"vector_dimensions", "Vector3 v=Vector2(1,2);", false},
         {"function_signature", "int F(int x){return x;}fn(string)->int f=F;", false},
         {"explicit_numeric_values", "int count;float value=1;int whole=toint(1.5);bool ready=true;if(ready)count+=whole;", true},
-        {"nullable_values", "int? value=null;string? text=null;bool absent=value==null&&text==null;", true},
+        {"nullable_values", "string text=null;list<int> items;bool absent=text==null&&items==null;", true},
         {"typed_functions", "void Empty(){return;}int F(bool b){if(b)return 1;else return 2;}int value=F(true);Empty();", true},
         {"ordered_const_use", "const int X=1;int y=X;int Read(){return y;}int result=Read();", true},
         {"typed_array", "array<int> a=array<int>(1);a[0]=2;a.append(3);int value=a[0];", true},

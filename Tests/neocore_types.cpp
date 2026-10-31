@@ -45,21 +45,22 @@ int main()
     Check(types.CommonNumericType(types.Float(), types.Int()) == types.Float(), "promotion is independent of operand order");
     Check(types.CommonNumericType(types.Bool(), types.Int()) == InvalidType, "bool is not arithmetic");
 
-    const TypeId optionalInt = types.NullableOf(types.Int());
-    const TypeId optionalFloat = types.NullableOf(types.Float());
-    const TypeId optionalString = types.NullableOf(types.String());
-    Check(optionalInt == types.NullableOf(types.Int()), "nullable type is interned");
-    Check(types.Get(optionalInt).element == types.Int(), "nullable retains the underlying type");
+    // null 가능성은 타입 종류가 정한다. 값 타입은 null 을 담지 못하고 참조형은 항상 담을 수 있다.
+    Check(!types.AllowsNull(types.Int()) && !types.AllowsNull(types.Float()) && !types.AllowsNull(types.Bool()),
+        "numeric and bool values never hold null");
+    Check(!types.AllowsNull(types.Vector3()) && !types.AllowsNull(types.Quaternion()), "vectors never hold null");
+    Check(types.AllowsNull(types.String()) && types.AllowsNull(types.ListOf(types.Int())) && types.AllowsNull(types.MapOf(types.String(), types.Int())),
+        "strings and collections hold null");
+    Check(types.AllowsNull(types.Null()), "the null literal type holds null");
+    Check(types.CanAssign(types.String(), types.Null()), "null may initialize a string");
+    Check(types.CanAssign(types.ListOf(types.Int()), types.Null()), "null may initialize a collection");
+    Check(!types.CanAssign(types.Int(), types.Null()) && !types.CanAssign(types.Vector2(), types.Null()), "value types reject null");
+    Check(types.NullableOf(types.String()) == types.String(), "the compatibility nullable constructor returns the same reference type");
+    Check(types.NullableOf(types.Int()) == InvalidType && types.NullableOf(types.Vector3()) == InvalidType,
+        "the compatibility nullable constructor rejects value types");
     Check(types.NullableOf(types.Void()) == InvalidType, "void cannot be nullable");
     Check(types.NullableOf(types.Null()) == InvalidType, "bare null cannot be nullable");
-    Check(types.NullableOf(optionalInt) == InvalidType, "nested nullable declaration is rejected");
-    Check(types.CanAssign(optionalInt, types.Null()), "null may initialize a nullable value");
-    Check(types.CanAssign(optionalString, types.String()), "nonnull reference may initialize nullable reference");
-    Check(types.CanAssign(optionalFloat, types.Int()), "integer promotes before nullable wrapping");
-    Check(!types.CanAssign(types.String(), types.Null()), "nonnull reference rejects null");
-    Check(!types.CanAssign(types.Int(), optionalInt), "nullable value cannot implicitly unwrap");
-    Check(!types.CanAssign(optionalFloat, optionalInt), "nullable numeric conversion requires explicit handling");
-    Check(types.CommonNumericType(optionalInt, types.Int()) == InvalidType, "nullable arithmetic requires unwrapping");
+    Check(types.CommonNumericType(types.Null(), types.Int()) == InvalidType, "null is not arithmetic");
 
     const TypeId arrayInt = types.ArrayOf(types.Int());
     const TypeId arrayFloat = types.ArrayOf(types.Float());
@@ -68,7 +69,6 @@ int main()
     Check(arrayInt != packedInt && arrayFloat != packedFloat, "storage widths are distinct array types");
     Check(types.Array32Of(types.Bool()) == InvalidType, "array32 does not support bool");
     Check(types.Array32Of(types.Vector3()) == InvalidType, "array32 does not support vectors");
-    Check(types.Array32Of(optionalInt) == InvalidType, "array32 does not support nullable elements");
     Check(types.ArrayOf(types.Void()) == InvalidType, "void cannot be stored in an array");
     Check(!types.CanAssign(arrayFloat, arrayInt), "mutable arrays are invariant");
     Check(!types.CanAssign(arrayInt, packedInt) && !types.CanAssign(packedInt, arrayInt),
@@ -83,8 +83,7 @@ int main()
     Check(!types.CanAssign(types.MapOf(types.String(), types.Float()), mapInt), "map values are invariant");
     Check(types.MapOf(types.Void(), types.Int()) == InvalidType, "map keys must be storable");
     Check(types.MapOf(types.Int(), types.Void()) == InvalidType, "map values must be storable");
-    Check(types.Get(types.NullableOf(arrayInt)).element == arrayInt, "nullable array differs from nullable elements");
-    Check(types.NullableOf(arrayInt) != types.ArrayOf(optionalInt), "nullable array and nullable element identities differ");
+    Check(types.NullableOf(arrayInt) == arrayInt && types.AllowsNull(arrayInt), "arrays hold null without a separate type");
 
     Check(!types.CanAssign(types.Vector3(), types.Vector2()), "vector dimensions are distinct");
     Check(!types.CanAssign(types.Vector4(), types.Quaternion()), "quaternion is not a Vector4 alias");
@@ -113,7 +112,7 @@ int main()
     Check(types.LookupNamed("geometry.Position") == position && types.LookupBuiltin("geometry.Position") == InvalidType,
         "nominal and builtin lookup remain distinct");
     Check(types.DisplayName(packedFloat) == "array32<float>", "array32 diagnostics use the exposed scalar name");
-    Check(types.DisplayName(types.NullableOf(object)) == "host.GameObject?", "nullable nominal diagnostics");
+    Check(types.NullableOf(object) == object && types.AllowsNull(object), "host objects hold null without a separate type");
     Check(types.DisplayName(unaryInt) == "int function(int)", "function signature diagnostics");
 
     Check(types.LookupNamed("int&") == InvalidType && types.LookupNamed("geometry.Position&") == InvalidType,
@@ -145,8 +144,7 @@ int main()
         "identical field layouts remain nominally distinct");
     Check(types.FindStructField(position, "missing", &fieldIndex) == nullptr && fieldIndex == InvalidFieldIndex,
         "missing field lookup invalidates an old index");
-    Check(types.FindStructField(types.NullableOf(position), "x") == nullptr,
-        "nullable receivers must be resolved explicitly by the checker");
+    Check(!types.AllowsNull(position) && types.NullableOf(position) == InvalidType, "structs never hold null");
     Check(!types.DefineStructFields(types.Int(), coordinates) && !types.DefineStructFields(object, coordinates) &&
         !types.DefineStructFields(InvalidType, coordinates), "only nominal structs accept field definitions");
 
@@ -174,16 +172,16 @@ int main()
     const TypeId nestedStruct = types.DeclareStruct("NestedStruct");
     std::vector<StructField> nestedFields;
     nestedFields.push_back(StructField("position", position));
-    nestedFields.push_back(StructField("weight", optionalFloat));
+    nestedFields.push_back(StructField("weight", types.Float()));
     nestedFields.push_back(StructField("name", types.String()));
-    Check(types.DefineStructFields(nestedStruct, nestedFields), "nested values and nullable scalar fields are valid");
+    Check(types.DefineStructFields(nestedStruct, nestedFields), "nested values and reference fields are valid");
     Check(types.FindStructField(nestedStruct, "position")->type == position,
         "a struct field retains its nominal value identity");
     const TypeId self = types.DeclareStruct("Self");
     Check(!types.DefineStructFields(self, std::vector<StructField>(1, StructField("next", self))),
         "direct recursive values are rejected");
-    Check(!types.DefineStructFields(self, std::vector<StructField>(1, StructField("next", types.NullableOf(self)))),
-        "nullable wrapping does not permit a recursive value layout");
+    Check(types.DefineStructFields(self, std::vector<StructField>(1, StructField("next", types.ListOf(self)))),
+        "a collection field breaks the recursive value layout");
 
     const TypeId first = types.DeclareStruct("First");
     const TypeId second = types.DeclareStruct("Second");
@@ -201,8 +199,8 @@ int main()
     for (std::size_t i = 0; i + 1 < chain.size(); ++i)
         chainDefined = types.DefineStructFields(chain[i], std::vector<StructField>(1, StructField("next", chain[i + 1]))) && chainDefined;
     Check(chainDefined && !types.DefineStructFields(chain.back(),
-        std::vector<StructField>(1, StructField("next", types.NullableOf(chain.front())))),
-        "deep indirect nullable cycles are rejected without recursive traversal");
+        std::vector<StructField>(1, StructField("next", chain.front()))),
+        "deep indirect cycles are rejected without recursive traversal");
     Check(types.DefineStructFields(chain.back(), coordinates), "deep forward value chains can be completed without a cycle");
     const TypeId tree = types.DeclareStruct("Tree");
     Check(types.DefineStructFields(tree, std::vector<StructField>(1, StructField("children", types.ListOf(tree)))),

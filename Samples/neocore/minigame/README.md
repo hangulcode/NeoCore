@@ -77,7 +77,7 @@ The typed script uses the original registration shape:
 
 ```nc
 void OnUpdate(float dt) { /* update this instance */ }
-GameObject.AddEvent("OnUpdate", OnUpdate);
+this.AddEvent("OnUpdate", OnUpdate);
 ```
 
 The host declares `OnUpdate` with `HostSchema::AddEvent` and a
@@ -98,7 +98,8 @@ ctest --test-dir Build/neocore -C Release -R '^neocore_minigame' --output-on-fai
 ## One program, several instances
 
 [main.cpp](main.cpp) declares `GameObject` and `Services` in a `HostSchema`, then
-connects their members with `HostBindings`. Compilation resolves the member names,
+connects their members with `HostBindings`. The owning `GameObject` of each instance
+is exposed to its script as the global `this`; `Services` is shared. Compilation resolves the member names,
 argument types, and result types before execution. Registration selects each
 concrete member callback once; execution has no member-name switch.
 
@@ -106,7 +107,7 @@ concrete member callback once; execution has no member-name switch.
 `Runtime::Compile(source, error, sourceName, true)` compiles once.
 `Program::CreateInstance(error)` creates each independent execution state. Before
 `Instance::Run()` initializes file globals, the host calls
-`Instance::SetHostObject("GameObject", id, error)` for that instance. Consequently,
+`Instance::SetHostObject("this", id, error)` for that instance. Consequently,
 `origin`, counters, speed, and saved script variables are independent even though
 all three instances share one compiled program and one service implementation.
 The instances retain the compiled program after the `Program` factory is destroyed.
@@ -118,7 +119,7 @@ create a separate VM or runtime for each game object.
 ## Frame calls, events, and suspension
 
 The script registers private `OnUpdate(float dt)`, `OnEvent(int strength)`, and
-`DelayedEvent()` functions with `GameObject.AddEvent`. Their signatures are
+`DelayedEvent()` functions with `this.AddEvent`. Their signatures are
 declared separately in the host schema, so an event name or callback signature
 mismatch is a compile error. Event names in these calls must be string literals;
 the language does not assume particular names such as `OnUpdate`.
@@ -165,7 +166,7 @@ property write resolves its receiver for the getter and setter independently.
 Compilation fixes the signature, not whether that particular object is still alive.
 
 The sample destroys an object during suspension, creates another with a fresh ID,
-and rebinds the instance's `GameObject` global. The saved `target` local still holds
+and rebinds the instance's `this` global. The saved `target` local still holds
 the old ID: accessing it after resume reports a script error with its source
 location instead of touching the replacement object. Destroying a suspended script
 instance also leaves its neighbors' counters and invocation state intact.

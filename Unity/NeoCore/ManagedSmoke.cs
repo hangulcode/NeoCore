@@ -285,7 +285,7 @@ internal static class ManagedSmoke
                 + "export float F(float x) { return x; }\n"
                 + "export string S(string x) { return x; }\n"
                 + "export bool B(bool x) { return x; }\n"
-                + "export int? N() { return null; }\n"
+                + "export string N() { return null; }\n"
                 + "export int Wait() { sleep(0); return 42; }\n"
                 + "export int Bad() { int zero = 0; return 1 / zero; }\n";
             using (var program = NeoCore.Unity.Program.Compile(source, "boundary.nc"))
@@ -297,7 +297,7 @@ internal static class ManagedSmoke
                 Require(retained.RequireCompleted().AsString() == "UTF-8 \u2603", "UTF-8 string round trip");
                 Require(instance.Call("B", Scalar.Bool(true)).RequireCompleted().AsBool(), "bool round trip");
                 Require(retained.Value.AsString() == "UTF-8 \u2603", "string survives next call");
-                Require(instance.Call("N").RequireCompleted().Kind == ScalarKind.Null, "nullable scalar result");
+                Require(instance.Call("N").RequireCompleted().Kind == ScalarKind.Null, "null reference result");
                 Require(instance.Call("Wait").Status == ExecutionStatus.Suspended, "suspended status");
                 Require(instance.Resume().RequireCompleted().AsInt() == 42, "resumed scalar result");
                 Result error = instance.Call("Bad");

@@ -85,7 +85,7 @@ Event callbacks do not have to be exported. Register their signatures with
 
 ```cpp
 void OnUpdate(float dt) { /* update script state */ }
-GameObject.AddEvent("OnUpdate", OnUpdate);
+this.AddEvent("OnUpdate", OnUpdate);
 ```
 
 The compiler resolves the literal event name and checks the function signature.

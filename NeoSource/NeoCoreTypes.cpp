@@ -58,17 +58,8 @@ bool TypeRegistry::CanAssign(TypeId target, TypeId source) const
         return true;
     if (target == Float() && source == Int())
         return true;
-
-    const TypeDesc& destination = Get(target);
-    if (destination.kind == TypeKind::Nullable)
-    {
-        if (source == Null())
-            return true;
-        // null을 포함하는 숫자의 승격에는 조건부 변환이 필요하므로 정확히 같은 nullable만 허용한다.
-        if (IsNullable(source))
-            return false;
-        return CanAssign(destination.element, source);
-    }
+    if (source == Null())
+        return AllowsNull(target);
     // 가변 컬렉션의 원소 승격과 함수 시그니처의 변형은 허용하지 않는다.
     return false;
 }
@@ -97,7 +88,6 @@ TypeId TypeRegistry::Intern(TypeKind kind, const std::vector<TypeId>& arguments,
     desc.name = name;
     switch (kind)
     {
-    case TypeKind::Nullable:
     case TypeKind::Array:
     case TypeKind::Array32:
     case TypeKind::List:
@@ -139,11 +129,30 @@ TypeId TypeRegistry::Unary(TypeKind kind, TypeId element)
     return Intern(kind, std::vector<TypeId>(1, element), std::string());
 }
 
+bool TypeRegistry::AllowsNull(TypeId id) const
+{
+    switch (Get(id).kind)
+    {
+    case TypeKind::String:
+    case TypeKind::Null:
+    case TypeKind::Array:
+    case TypeKind::Array32:
+    case TypeKind::List:
+    case TypeKind::Map:
+    case TypeKind::Set:
+    case TypeKind::Function:
+    case TypeKind::Native:
+    case TypeKind::BuiltinObject:
+    case TypeKind::Coroutine:
+        return true;
+    default:
+        return false;
+    }
+}
+
 TypeId TypeRegistry::NullableOf(TypeId element)
 {
-    if (IsNullable(element))
-        return InvalidType;
-    return Unary(TypeKind::Nullable, element);
+    return AllowsNull(element) && element != Null() ? element : InvalidType;
 }
 
 TypeId TypeRegistry::ArrayOf(TypeId element)
@@ -246,7 +255,6 @@ bool TypeRegistry::IsJsonType(TypeId id) const
         case TypeKind::Vector4:
         case TypeKind::Quaternion:
             break;
-        case TypeKind::Nullable:
         case TypeKind::Array:
         case TypeKind::Array32:
         case TypeKind::List:
@@ -284,9 +292,7 @@ bool TypeRegistry::ContainsStructValue(TypeId value, TypeId structure) const
         if (current == structure) return true;
         if (!visited.insert(current).second) continue;
         const TypeDesc& type = Get(current);
-        if (type.kind == TypeKind::Nullable)
-            pending.push_back(type.element);
-        else if (type.kind == TypeKind::Struct)
+        if (type.kind == TypeKind::Struct)
         {
             for (const StructField& field : type.fields)
                 pending.push_back(field.type);
@@ -372,8 +378,6 @@ std::string TypeRegistry::DisplayName(TypeId id) const
     case TypeKind::Vector4:
     case TypeKind::Quaternion:
         return type.name;
-    case TypeKind::Nullable:
-        return DisplayName(type.element) + "?";
     case TypeKind::Array:
         return "array<" + DisplayName(type.element) + ">";
     case TypeKind::Array32:

@@ -17,8 +17,9 @@ The schema contains no live object pointers or executable function addresses.
 
 Supported parameter/property types are `int` (int64), `float` (binary64), `bool`,
 `string`, `Vector2`, `Vector3`, `Vector4`, `Quaternion`, registered native object
-types, typed lists/maps/sets/arrays, structs, function values, and nullable forms.
-Methods also support `void` results. Ordinary methods have one exact signature;
+types, typed lists/maps/sets/arrays, structs and function values. Strings, collections,
+function values and object types may carry null; value types never do. Methods also
+support `void` results. Ordinary methods have one exact signature;
 event registration selects a declared callback signature by a literal event name.
 Scripts receive ordinary int-to-float widening before the call. The language has
 no reference parameters.
@@ -59,8 +60,9 @@ int previous = saved.Count++;
 `HostBindings::Bind(id, callback)` connects a `bool(HostCall&)` adapter.
 Inside an adapter, use the accessor required by its declared signature:
 `Int`, `Float`, `Bool`, `String`, `Vector2`, `Vector3`, `Vector4`, `Quaternion`,
-or `Object`/`ObjectId`. For nullable parameters,
-check `IsNull` before accessing the payload. These accessors are not dynamic
+or `Object`/`ObjectId`. For string, collection, function and object parameters,
+check `IsNull` before accessing the payload: a script may pass null, and the adapter
+decides whether that is acceptable. These accessors are not dynamic
 conversions; matching them to the registered signature is the adapter's contract.
 `Receiver()` supplies the already-resolved object for the member's owner type.
 
@@ -71,8 +73,9 @@ values are rejected. Collections retain fixed types and shared identity; structs
 copy by value across the host boundary.
 
 Use the matching `Return*` method for a non-void result, or `ReturnNull` for a
-nullable result. Return `true` without a result for a void method/setter.
-An omitted/wrong result kind or a null nonnullable result fails the host call.
+reference-typed result that has no object. Return `true` without a result for a void
+method/setter. An omitted/wrong result kind, or a null result for a value type, fails
+the host call.
 `Fail(message)`, a `false` callback result, and thrown C++ exceptions also become
 script runtime errors. Object results are IDs; their liveness is checked when
 they are subsequently resolved for use.
@@ -80,7 +83,7 @@ they are subsequently resolved for use.
 ## Typed event registration
 
 Use `HostSchema::AddEvent(owner, eventName, callbackType, registrationMethod)` to
-declare an event whose callback is a nonnullable function type. The final argument
+declare an event whose callback is a function type; a script cannot register a `null` literal. The final argument
 defaults to `"AddEvent"`. Each event returns its own binding ID; connect that ID
 through `HostBindings::Bind` just like an ordinary method. Registration itself
 returns `void` and accepts `(string, callbackType)`. Callback results may have any
@@ -170,8 +173,8 @@ a complete schema, value adapters, object-ID resolver, and mutation/error cases.
 
 ## Object IDs and ownership
 
-`ObjectHandle` is an opaque unsigned 64-bit ID. `0` denotes null and is only valid
-where the schema allows null. Scripts cannot convert IDs to integers, manufacture
+`ObjectHandle` is an opaque unsigned 64-bit ID. `0` denotes null; any object-typed
+global, argument or result may carry it. Scripts cannot convert IDs to integers, manufacture
 objects, or inspect pointer bits. Compatible native handles support equality.
 Script variables copy IDs; they do not own or retain the corresponding C++ object.
 
@@ -181,10 +184,10 @@ the requested nominal type. Use a registry/generation scheme that prevents stale
 IDs from silently referring to replacement objects. A stored ID is not proof that
 the object is still alive.
 
-Before a member adapter runs, NeoCore resolves its receiver and all non-null
-native object arguments. An invalid one fails the call before the adapter starts,
-even if the adapter would not have accessed that argument. Nullable null arguments
-remain null without calling the resolver. The resolver must be a side-effect-free
+Before a member adapter runs, NeoCore rejects a null receiver, then resolves the
+receiver and all non-null native object arguments. An invalid one fails the call
+before the adapter starts, even if the adapter would not have accessed that argument.
+Null arguments remain null without calling the resolver. The resolver must be a side-effect-free
 lookup: do not reenter scripts, destroy objects/programs, or invalidate pointers
 while another argument is being resolved.
 
@@ -203,8 +206,9 @@ instance without recompiling or changing its siblings. Set it before `Run` when
 file initializers must observe the instance-specific object. The next access reads
 the new ID; a script variable that previously copied the global still holds its
 previous ID. `Program::SetHostObject` targets only the program's default instance.
-Nonnullable globals reject ID zero. The host validates actual object state when
-the ID is resolved for a later member call.
+Globals accept ID zero; a script then reads the global as null, and a member access
+on it fails at runtime. The host validates actual object state when a nonzero ID
+is resolved for a later member call.
 
 ## Shared runtime, programs and execution instances
 
@@ -296,7 +300,7 @@ change; they are not pinned resources.
 
 Use `HostCall::CallScript(name, arguments)` for a synchronous nested call. It uses
 the checked `Instance::Call` boundary of the invoking instance. Typed native,
-nullable and aggregate arguments follow their registered signatures. A shared service callback
+null and aggregate arguments follow their registered signatures. A shared service callback
 therefore reenters its caller's instance. Reentry while that instance's top-level
 initialization is incomplete is rejected. It invalidates the host call's cached object
 pointers before and after execution. Reacquire them through `Receiver`/`Object`
@@ -336,7 +340,7 @@ member table by name. The transitional backend still uses private binding object
 generic VM call frames/value slots, and generated property-write helpers. It is
 not fully tagless. With debug metadata enabled, generated property-helper source
 locations map back to the original property operation, while internal helper
-frames may still appear in the call stack. Nullable checks, result validation, and lifetime
+frames may still appear in the call stack. Null-receiver checks, result validation, and lifetime
 resolution remain intentional runtime checks. This milestone adds no benchmark
 claim.
 
@@ -354,28 +358,23 @@ connections, property effects, ID resolution, and synchronous reentry;
 the [frontend regression](../Tests/neocore_host_frontend.cpp) covers accepted and
 rejected binding syntax.
 
-Nullable native locals and by-value parameters can access members within a
-matching `if (value != null)` branch, or the non-null branch of `if (value == null)`,
-including an early return. Guards combine with `&&`, `||`, and `!` under
-short-circuit rules, and the proof survives loop and closure bodies that do not
-assign the variable. The compiler conservatively invalidates this proof when the
-variable is assigned, including anywhere inside a loop body for the whole loop. Globals, nullable
-property chains, and general nullable-value unwrapping are outside this proof.
-The guard proves only that the stored ID is nonzero; each host callback still
-checks that the object is alive.
+Native locals, parameters, properties and results can be null. The compiler does not
+require a guard; a null check is an ordinary `if`, and an unguarded member access on
+a null value fails at runtime. A nonzero ID is not proof that the object is alive;
+each host callback still resolves it.
 
 ```cpp
 void UpdateParent()
 {
-    GameObject? pr = GameObject.Parent;
+    GameObject pr = GameObject.Parent;
     if (pr != null) {
         pr.Position.x = 3.0;
     }
 }
 ```
 
-Here the host must register the `GameObject` type/global, nullable `Parent`, and
-read/write `Position: Vector3` property. `pr` keeps the returned parent ID even
+Here the host must register the `GameObject` type/global, the `Parent` object
+property, and a read/write `Position: Vector3` property. `pr` keeps the returned parent ID even
 if the parent relationship later changes. The saved parent object is resolved
 from that saved ID rather than by reevaluating `GameObject.Parent`.
 

@@ -30,7 +30,7 @@ map<string, list<int>> groups =
   element types. `sortKeys` is a bool; true sorts JSON object keys.
 - `system.jsonDecode<T>(text)` returns exactly `T`. Its string argument is checked
   at compile time; the JSON contents are checked at runtime. `T` can be a nested
-  collection, a declared struct, a nullable type or another supported JSON type.
+  collection, a declared struct or another supported JSON type.
   The target cannot be omitted or supplied as a runtime string.
 - Malformed JSON, a mismatched field or element, an invalid numeric value, and
   excessive nesting cause a script runtime error. Decoding does not return a
@@ -38,7 +38,7 @@ map<string, list<int>> groups =
 
 `jsonDecode<T>` is a built-in typed operation, not general user-defined generic
 function support. The [console sample](../Samples/neocore/scripts/json.nc) shows
-struct, vector, nested collection and nullable round trips.
+struct, vector, nested collection and null reference round trips.
 
 ## Host API
 
@@ -71,7 +71,7 @@ fixed return contract.
 | NeoCore type | JSON representation |
 | --- | --- |
 | int / float / bool / string | Corresponding scalar |
-| nullable T | null or the T representation |
+| string / collection (reference types) | null or the representation |
 | list / array / compact array / set | Array of checked elements |
 | map<string,T> | Object whose values have type T |
 | struct | Object with exactly the declared fields |
@@ -98,6 +98,7 @@ or an explicit host copy, not by moving a live value handle.
 For an old heterogeneous save object, declare a struct with the required fields
 and use typed lists/maps for repeated data. JSON field names remain the declared
 struct field names; the VM's positional struct storage is not the file format.
-Nullable fields must still be present in an object and can contain JSON null.
+Reference-typed fields must still be present in an object and can contain JSON null;
+value-typed fields reject JSON null.
 JSON exchange creates independent data and does not preserve live shared-state
 identity between programs.
