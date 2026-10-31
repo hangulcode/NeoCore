@@ -586,8 +586,9 @@ private:
             }
             else if (result.first.text == "set")
             {
-                if (first.type != types_.Int() && first.type != types_.Float() && first.type != types_.Bool() && first.type != types_.String())
-                    Fail(first.first, "set elements must be non-null scalar types");
+                // 집합 원소는 맵 키와 같은 규칙이다: 해시·동등 비교가 안정적인 int 와 string 만 허용한다.
+                if (first.type != types_.Int() && first.type != types_.String())
+                    Fail(first.first, "set elements must be int or string");
                 result.type = types_.SetOf(first.type);
             }
             else
@@ -2059,7 +2060,7 @@ private:
             if (count != 1 || types_.Get(expression.children[1]->type).kind != TypeKind::List)
                 Fail(callee.token, "system.set requires one typed list");
             const TypeId element = types_.Get(expression.children[1]->type).element;
-            if (element != types_.Int() && element != types_.Float() && element != types_.Bool() && element != types_.String()) Fail(callee.token, "set elements must be non-null scalar types");
+            if (element != types_.Int() && element != types_.String()) Fail(callee.token, "set elements must be int or string");
             expression.type = types_.SetOf(element);
             return;
         }

@@ -58,6 +58,11 @@ int main()
         Expect("struct S{int x;};export int Probe(){list<S> a=[];S fill=S(2);a.resize(2,fill);a[0].x=9;return fill.x*100+a[0].x*10+a[1].x;}", 292, "struct resize fill copies each element", debug);
         Expect("struct S{int x;};export int Probe(){map<string,S> a={\"x\":S(3)};map<string,S> b=a.clone();list<S> c=a.values();c[0].x=9;S x=b.get(\"x\",S(0));return x.x*10+c[0].x;}", 39, "struct map materialization copies", debug);
         Expect("import system;export int Probe(){set<int> a=set<int>([1,2]);set<int> b=set<int>([2,3]);set<int> c=a|b;set<int> d=a&b;set<int> e=a-b;return c.len()*100+d.len()*10+e.len();}", 311, "set algebra and typed constructors", debug);
+        Expect("import system;export int Probe(){set<string> names=set<string>([\"a\",\"b\",\"a\"]);names.add(\"c\");return names.len();}", 3, "string set elements", debug);
+        Reject("import system;export int Probe(){set<float> s=set<float>();return s.len();}", "float set elements rejected");
+        Reject("import system;export int Probe(){set<bool> s=set<bool>();return s.len();}", "bool set elements rejected");
+        Reject("import system;export int Probe(){list<float> values=[1.0];set<float> s=system.set(values);return s.len();}", "system.set with float list rejected");
+        Reject("struct S{int id;};import system;export int Probe(){set<S> s=set<S>();return s.len();}", "struct set elements rejected");
         Expect("export int Probe(){list<int> a=[3,1,2];a.sort(fn(int x,int y)->bool{return x<y;});return a[0]*100+a[1]*10+a[2];}", 123, "typed sort comparator", debug);
         Expect("import coroutine;int total=0;void Task(int x){total+=x;yield;total+=2;yield;total+=3;}export int Probe(){coroutine<fn(int)->void> c=coroutine.create(Task);coroutine.resume(c,4);int first=total;coroutine.resume(c,4);coroutine.resume(c,4);return first*10+total;}", 49, "typed coroutine suspension", debug);
         Expect("import system;export int Probe(){TimeSpan a=system.time_span_ms(5);TimeSpan b=a.add(system.time_span_ms(7));return b.total_milliseconds();}", 12, "opaque builtin methods", debug);

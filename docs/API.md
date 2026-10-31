@@ -94,6 +94,8 @@ removal, copies and iteration. Lists provide append/insert/pop/remove/remove_swa
 resize/reserve and sorting where supported by their comparator contract.
 Maps provide `contains`, `get(key, fallback)`, `remove`, `clear` and typed keys/
 values. Sets provide membership changes and union/intersection/difference.
+Map keys and set elements must be `int` or `string`; `array` and `array32` keep
+their fixed element rules, and `list<T>` accepts any element type.
 The compiler checks operation names, argument counts and element types.
 
 `array32<int>(count, fill)` and `array32<float>(count, fill)` use four-byte elements;

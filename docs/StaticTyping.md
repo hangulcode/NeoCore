@@ -639,9 +639,10 @@ timing the workload.
 
 The collection forms are `list<T>`, `map<K, V>`, and `set<T>`. Lists and map
 values can contain nonnullable scalar, vector, struct, collection, function, or
-object values. Map keys must be `int` or `string`; set elements are nonnullable
-`int`, `float`, `bool`, or `string`. Nested collections and collection fields in
-structs are supported. Nonnullable collection variables require initializers;
+object values. Map keys and set elements follow the same rule: only `int` or
+`string`, because the backend hashes and compares them by value. Nested
+collections and collection fields in structs are supported. Nonnullable collection
+variables require initializers;
 `list<T>?`, `map<K,V>?`, `set<T>?`, and `array<T>?` can represent null. Nullable
 elements and language element references remain unsupported. Mutable collection
 types are invariant.
