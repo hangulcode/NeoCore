@@ -353,6 +353,10 @@ struct SFunctionInfo
 	// Push_OP2 의 인접 peephole 과 함수 호출 인자 융합(지연 복사 패치)이 공유한다.
 	static bool IsRetargetableProducerOP(eNOperation op)
 	{
+		const TypedOpInfo* typed = GetTypedOpInfo(op);
+		if (typed != nullptr) return !typed->jump;
+		// 집합 명령도 항상 n1에 결과를 쓴다. 입력은 핸들러가 결과 저장 전에 확보한다.
+		if (GetAggregateOpInfo(op) != nullptr) return true;
 		switch (op)
 		{
 		case NOP_MOV:
@@ -368,8 +372,6 @@ struct SFunctionInfo
 		case NOP_PERSENT3:
 		case NOP_LSHIFT3:
 		case NOP_RSHIFT3:
-		case NOP_AND3:
-		case NOP_OR3:
 		case NOP_XOR3:
 		case NOP_GREAT:		// >
 		case NOP_GREAT_EQ:	// >=
@@ -459,11 +461,11 @@ struct SFunctionInfo
 
 		(*_pDebugData)[iOff] = debug_info(ar.CurFile(), iDebugLoopLine != -1 ? iDebugLoopLine : ar.CurLine());
 	}
-	void	Push_OP(CArchiveRdWC& ar, eNOperation op, int r, int a1, int a2)
+	void	Push_OP(CArchiveRdWC& ar, eNOperation op, int r, int a1, int a2, int debugLine = -1)
 	{
 		OperandTemps temps(*this);
 		a1 = ReadOperand(ar, a1); a2 = ReadOperand(ar, a2);
-		AddDebugData(ar);
+		AddDebugData(ar, debugLine);
 		_iLastOPOffset = _code->GetBufferOffset();
 
 		OpType optype = GetOpTypeFromOp(op);

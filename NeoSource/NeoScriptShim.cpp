@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include "NeoScript.h"
+#include "NeoCoreHostBridge.h"
 
 // 내부 헤더 (공개 헤더는 이걸 include 하지 않는다 — 여기서만)
 #include "NeoVM.h"
@@ -16,9 +17,11 @@
 #include "NeoArchive.h"   // CNArchive (CompileToBytecode: 소스→바이트코드)
 
 #include <atomic>
+#include <cassert>
 #include <cstring>
 #include <deque>
 #include <functional>
+#include <limits>
 #include <mutex>
 #include <new>
 #include <type_traits>
@@ -88,6 +91,7 @@ private:
 struct ProgramRec
 {
     CNeoVMProgram* program = nullptr; // refcount 공유 불변 이미지
+    std::vector<std::string> sourceNames;
 };
 
 struct DefineSetRec
@@ -219,6 +223,7 @@ struct InstanceRec
     RuntimeImpl*  runtime = nullptr;   // 글로벌 훅에서 복원(스택 지역변수 dangling 방지)
     InstanceHandle handle;             // 자기 핸들(CreateInstance 에서 채움; 중첩 바인딩이 사용)
     ProgramHandle program;
+    std::vector<std::string> sourceNames;
     void* instanceUserData = nullptr;
     bool lifecycleBusy = false;
     unsigned nativeCallbackDepth = 0;
@@ -511,6 +516,7 @@ static bool PropertyTrampoline(INeoVMWorker* N, void* pUserData, const VMString*
 struct NeoScriptInternal
 {
     static CallContext ctx (void* i)        { CallContext c;  c.m_impl = i; return c; }
+    static CallContextImpl* ctxImpl(const CallContext& c) { return static_cast<CallContextImpl*>(c.m_impl); }
     static MapBuilder  mapB(void* i)        { MapBuilder b;   b.m_impl = i; return b; }
     static ListBuilder listB(void* i)       { ListBuilder b;  b.m_impl = i; return b; }
     static MapReader   mapR(const void* i)  { MapReader r;    r.m_impl = i; return r; }
@@ -570,6 +576,8 @@ struct LoaderAdapter : INeoLoader
 class RuntimeImpl final : public IRuntime
 {
     friend class DebuggerImpl;
+    friend bool NeoCoreBackend::RemapSourceLines(NeoScript::IRuntime& runtime, NeoScript::ProgramHandle program,
+        const std::vector<std::pair<int, int>>& mappings);
 public:
     explicit RuntimeImpl(const RuntimeDesc& desc);
     ~RuntimeImpl() override;
@@ -799,6 +807,8 @@ void RuntimeImpl::SetupCompilerParam(const CompileDesc& desc, NeoCompilerParam& 
     param.sourceName = desc.sourceName.str();
     param.debug = desc.includeDebugInfo;
     param.putASM = desc.emitAsm;   // ASM 덤프(진단): 내부 컴파일러가 OutAsm 으로 stdout 출력
+    param.coreIntrinsicPrefix = desc.coreIntrinsicPrefix.str();
+    param.coreTypedIR = desc.coreTypedIR;
     gtab = NeoGlobalSymbolTable{ m_globalSymbols.data(), static_cast<int>(m_globalSymbols.size()) };
     param.globalSymbols = m_globalSymbols.empty() ? nullptr : &gtab;
     if (desc.defineSet)
@@ -841,6 +851,8 @@ CompileResult RuntimeImpl::Compile(const CompileDesc& desc)
     SetupCompilerParam(desc, param, err, gtab, inlineDefines, dbgPath);
     NeoCompileDiagnostic diagnostic;
     param.diagnostic = &diagnostic;
+    std::vector<std::string> localSourceNames;
+    if (param.debugSourceFiles == nullptr) param.debugSourceFiles = &localSourceNames;
 
     CNeoVMProgram* prog = NeoVMSystem::CompileToProgram(param);
     if (prog == nullptr)
@@ -854,6 +866,7 @@ CompileResult RuntimeImpl::Compile(const CompileDesc& desc)
     }
     ProgramRec* rec = new ProgramRec();
     rec->program = prog; // refCount==1, 소유
+    rec->sourceNames = *param.debugSourceFiles;
     uint32_t id = m_programs.add(rec);
     r.program = ProgramHandle{ id, m_programs.generationOf(id) };
     return r;
@@ -966,6 +979,7 @@ InstanceHandle RuntimeImpl::CreateInstance(ProgramHandle programHandle, const In
     InstanceRec* inst = new InstanceRec();
     inst->runtime = this;
     inst->program = programHandle;
+    inst->sourceNames = prog->sourceNames;
     inst->instanceUserData = desc.userData;
     inst->runGlobalInit = desc.runGlobalInit;
     inst->lifecycleBusy = true;
@@ -1500,6 +1514,13 @@ void RuntimeImpl::CaptureCallError(InstanceRec* inst, RunStatus status)
     const char* detail = (m_vm && m_vm->IsLastErrorMsg()) ? m_vm->GetLastErrorMsg() : nullptr;
     inst->callError.message = detail ? detail : "script call failed";
     inst->callError.code = (inst->failCode != 0) ? inst->failCode : 1;   // 1 = 일반 런타임 에러
+    if (status == RunStatus::Failed && inst->worker)
+    {
+        const NeoDebugLocation location = static_cast<CNeoVMWorker*>(inst->worker)->GetLastErrorLocation();
+        if (location.line > 0) inst->callError.line = static_cast<uint32_t>(location.line);
+        if (location.file >= 0 && static_cast<std::size_t>(location.file) < inst->sourceNames.size())
+            inst->callError.sourceName = inst->sourceNames[location.file];
+    }
 }
 
 void RuntimeImpl::NativeFail(InstanceHandle h, int32_t code, StringView message)
@@ -1507,6 +1528,8 @@ void RuntimeImpl::NativeFail(InstanceHandle h, int32_t code, StringView message)
     // VM 에 사유를 남긴다. 네이티브가 이어서 false 를 반환하면 CallNative/PropertyNative 가
     // 에러 opcode 로 점프하고, handle_ERROR 가 이 메시지에 IP/Line/스택트레이스를 붙여 상세를 만든다.
     // (VM 의 SetError 는 first-wins 라 중첩 실패에서도 가장 안쪽 원인이 보존된다.)
+    if (InstanceRec* instance = resolveInstance(h))
+        if (instance->worker) static_cast<CNeoVMWorker*>(instance->worker)->RememberErrorLocation();
     if (m_vm)
         m_vm->SetLastErrorMsg(message.empty() ? "native call failed" : message.str().c_str());
     if (code != 0)
@@ -2481,3 +2504,95 @@ int RuntimeImpl::GetTrimPagesPerCall() const
 static void DestroyDebugger(DebuggerImpl* d) { delete d; }
 
 } // namespace NeoScript
+
+namespace NeoCoreBackend
+{
+namespace
+{
+// 인자 범위만 점검한다. 타입은 정적 검사기가 보장하며 네이티브 호출 프레임은 기존 경로가 관리한다.
+const NeoScript::VarInfo& Argument(const NeoScript::CallContext& context, std::size_t index)
+{
+    NeoScript::CallContextImpl* impl = NeoScript::NeoScriptInternal::ctxImpl(context);
+    assert(impl != nullptr);
+    const NeoScript::VarInfo* value = NeoScript::CtxArgVar(impl, index);
+    assert(value != nullptr);
+    return *value;
+}
+}
+
+std::int64_t ReadInt(const NeoScript::CallContext& context, std::size_t index)
+{
+    return Argument(context, index)._int;
+}
+
+double ReadFloat(const NeoScript::CallContext& context, std::size_t index)
+{
+    return Argument(context, index)._float;
+}
+
+bool ReadBool(const NeoScript::CallContext& context, std::size_t index)
+{
+    return Argument(context, index)._bl;
+}
+
+std::string ReadString(const NeoScript::CallContext& context, std::size_t index)
+{
+    const NeoScript::VarInfo& value = Argument(context, index);
+    assert(value._str != nullptr);
+    return value._str->_str;
+}
+
+bool IsNull(const NeoScript::CallContext& context, std::size_t index)
+{
+    return Argument(context, index).GetType() == NeoScript::VAR_NONE;
+}
+
+void ReadVector(const NeoScript::CallContext& context, std::size_t index, float out[4])
+{
+    // 차원과 값 타입은 정적 서명에서 확정된다. 동적 변환 없이 재진입 전에 성분을 복사한다.
+    Argument(context, index).CopyVectorComponents(out);
+}
+
+bool RemapSourceLines(NeoScript::IRuntime& runtime, NeoScript::ProgramHandle program,
+    const std::vector<std::pair<int, int>>& mappings)
+{
+    // NeoCore가 CreateRuntime으로 만든 구현에만 연결하는 내부 브리지다.
+    NeoScript::RuntimeImpl& impl = static_cast<NeoScript::RuntimeImpl&>(runtime);
+    NeoScript::ProgramRec* record = impl.resolveProgram(program);
+    if (record == nullptr || record->program == nullptr) return false;
+    bool inUse = false;
+    impl.m_instances.forEachLive([&](NeoScript::InstanceRec* instance) {
+        if (instance->program.id == program.id && instance->program.generation == program.generation)
+            inUse = true;
+    });
+    if (inUse) return false;
+
+    // 모두 검사한 뒤 변경하여 잘못된 매핑 때문에 디버그 정보 일부만 바뀌지 않도록 한다.
+    std::unordered_map<int, int> lines;
+    const int maximum = (std::numeric_limits<NeoScript::u16>::max)();
+    for (const std::pair<int, int>& mapping : mappings)
+    {
+        if (mapping.first <= 0 || mapping.first > maximum || mapping.second <= 0 || mapping.second > maximum)
+            return false;
+        const auto inserted = lines.emplace(mapping.first, mapping.second);
+        if (!inserted.second && inserted.first->second != mapping.second) return false;
+    }
+    // 루트 파일 번호는 0이다. 가져온 다른 파일에 우연히 같은 행 번호가 있어도 바꾸지 않는다.
+    for (NeoScript::debug_info& info : record->program->debugData)
+    {
+        if (info._fileseq != 0) continue;
+        const auto found = lines.find(info._lineseq);
+        if (found != lines.end()) info._lineseq = static_cast<NeoScript::u16>(found->second);
+    }
+    return true;
+}
+
+bool ReadLastCallError(NeoScript::IRuntime& runtime, NeoScript::InstanceHandle instance, NeoScript::Error& error)
+{
+    NeoScript::RuntimeImpl& impl = static_cast<NeoScript::RuntimeImpl&>(runtime);
+    NeoScript::InstanceRec* record = impl.resolveInstance(instance);
+    if (record == nullptr || record->callError.ok()) return false;
+    error = record->callError;
+    return true;
+}
+}

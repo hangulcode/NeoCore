@@ -1,6 +1,7 @@
 ﻿#pragma once
 #include "NeoJson.h"
 #include "NeoHttp.h"
+namespace NeoCore { struct TypedIR; }
 //==============================================================================
 // NeoScript 공개 API v2 — Runtime / Program / Instance 3-개념 파사드
 //------------------------------------------------------------------------------
@@ -502,6 +503,10 @@ struct CompileDesc
     StringView sourceName;
     bool includeDebugInfo = false;
     bool emitAsm = false;   // true 면 컴파일 시 디스어셈블(ASM)을 stdout 으로 덤프(진단용)
+    // NeoCore가 타입 검사한 내부 표현식에만 쓰는 컴파일 전용 접두사. 일반 소스는 비워 둔다.
+    StringView coreIntrinsicPrefix;
+    // 컴파일 동안만 빌려 쓰는 타입 검증 IR. 일반 NeoScript 소스에서는 nullptr이다.
+    const NeoCore::TypedIR* coreTypedIR = nullptr;
     // define 은 둘 중 하나로. 재사용이면 defineSet(빌드 1회), 매번 다르면 defines(인라인).
     Span<const CompileDefine> defines;   // 인라인(적은 수/매번 다를 때)
     DefineSetHandle           defineSet; // 미리 만든 집합(우선). 있으면 defines 무시.

@@ -84,6 +84,8 @@ private:
 	const u8 *				_pCodeBegin = nullptr;   // = _pProgram->GetCodeBegin()
 
 	int					_isErrorOPIndex = 0;
+	// 오류 핸들러가 IP와 스택을 비운 뒤에도 호출 결과에 가장 안쪽 원인 위치를 전달한다.
+	int					m_iLastErrorOPIndex = -1;
 
 	bool					_isInitialized = false;
 	int						_iRemainSleep = 0;
@@ -391,12 +393,14 @@ private:
 	// 해제 코드를 핫 경로에 인라인하면 MSVC 가 저장 블록을 멀리 흩어 놓아 실수 산술이 느려졌다(dumpbin 확인).
 	void StoreNumberInt(VarInfo* r, NS_INT v);
 	void StoreNumberFloat(VarInfo* r, NS_FLOAT v);
+	void StoreNumberBool(VarInfo* r, bool v);
 	NEOS_NOINLINE void ReleaseBeforeNumber(VarInfo* r);
 	void Add2(VarInfo* r, VarInfo* v2);
 	void Sub2(VarInfo* r, VarInfo* v2);
 	void Mul2(VarInfo* r, VarInfo* v2);
 	bool CheckIntegerDivision(NS_INT dividend, NS_INT divisor);
 	bool CheckIntegerDivisionOverflow(NS_INT dividend);
+	void DivI64(VarInfo* r, const VarInfo* left, const VarInfo* right);
 	bool CheckShiftCount(NS_INT count);
 	void Div2(VarInfo* r, VarInfo* v2);
 	void Per2(VarInfo* r, VarInfo* v2);
@@ -433,8 +437,6 @@ private:
 	void RSh3(VarInfo* r, VarInfo* v1, VarInfo* v2);
 	void LSh3Rare(VarInfo* r, VarInfo* v1, VarInfo* v2);
 	void RSh3Rare(VarInfo* r, VarInfo* v1, VarInfo* v2);
-	void And3(VarInfo* r, VarInfo* v1, VarInfo* v2);
-	void Or3(VarInfo* r, VarInfo* v1, VarInfo* v2);
 	void Xor3(VarInfo* r, VarInfo* v1, VarInfo* v2);
 
 	void Inc(VarInfo* v1);
@@ -504,7 +506,6 @@ private:
 	VarInfo* GetTableItemValid(VarInfo *pTable, int Array);
 
 
-	bool VerifyType(VarInfo *p, VAR_TYPE t);
 	bool ChangeNumber(VarInfo* p);
 
 
@@ -550,6 +551,8 @@ public:
 	bool StartCoroutione(int argSP_Vars, int n3);
 
 	void SetError(const char* pErrMsg);
+	void RememberErrorLocation();
+	NeoDebugLocation GetLastErrorLocation() const;
 	void SetErrorUnsupport(const char* pErrMsg, VarInfo* p);
 	void SetErrorFormat(const char* pErrMsg, ...);
 	// 런타임 에러 테이블(NeoVMError.h) 기반. 새 코드는 이쪽을 쓴다.
@@ -608,6 +611,7 @@ public:
 	}
 
 #include "NeoVMWorker_Handlers.inl"
+#include "NeoVMWorker_Typed.inl"
 
 	// 파괴 재진입 방지와 순환 후보 intrusive FIFO 링크. 전역/실행 컨텍스트가
 	// 컨테이너를 들 수 있으므로 worker는 보수적으로 후보 가능으로 초기화한다.

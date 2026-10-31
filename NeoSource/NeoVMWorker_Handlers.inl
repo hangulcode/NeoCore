@@ -602,11 +602,6 @@ NEOS_NOINLINE bool handle_LIST_ALLOC_L(const SVMOperation& OP) {
     return false;
 }
 
-NEOS_NOINLINE bool handle_VERIFY_TYPE(const SVMOperation& OP) {
-    VerifyType(GetVarPtrF1(OP), (VAR_TYPE)OP.n2);
-    return false;
-}
-
 NEOS_FORCEINLINE bool handle_CHANGE_INT(const SVMOperation& OP) {
     ChangeNumber(GetVarPtrF1(OP));
     return false;

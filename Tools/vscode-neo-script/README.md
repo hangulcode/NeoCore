@@ -1,13 +1,15 @@
 # Neo Script VS Code Extension
 
 This extension adds `.ns` language support, IntelliSense, and a Debug Adapter Protocol client for Neo Script.
+It uses the inherited NeoScript runner. The NeoCore `.nc` console does not provide
+this language server or debug adapter; see the [NeoCore build guide](../../ReadMe.md#build-and-run).
 
 ## Debugging
 
-Build the console sample first so the adapter executable exists:
+Build the legacy console project directly so the adapter executable exists:
 
 ```powershell
-& "C:\Program Files (x86)\Microsoft Visual Studio\18\BuildTools\MSBuild\Current\Bin\amd64\MSBuild.exe" Samples\console\console.sln /p:Configuration=Release /p:Platform=x64 /m
+& "C:\Program Files (x86)\Microsoft Visual Studio\18\BuildTools\MSBuild\Current\Bin\amd64\MSBuild.exe" Samples\console\console.vcxproj /p:Configuration=Release /p:Platform=x64 /m
 ```
 
 Then use this launch configuration:

@@ -7,9 +7,12 @@ Start with [ScriptAuthoring.md](ScriptAuthoring.md) for runnable examples, decla
 module rules, collection semantics, and practical checks before writing script.
 
 - The **host** side (`IRuntime`, `CallContext`, `FunctionHandle`, binding native objects) lives in
-  [`ReadMe.md`](../ReadMe.md). This file never describes C++ API.
-- Language syntax (`for`, `foreach`, `switch`, operators, `const`, compile-time defines) also lives
-  in `ReadMe.md`. This file only describes *callables*.
+  [Embedding.md](Embedding.md). This file never describes C++ API.
+- Language syntax (`for`, `foreach`, `switch`, operators, `const`) lives in
+  [ScriptAuthoring.md](ScriptAuthoring.md); host compile-time defines are covered in
+  [Embedding.md](Embedding.md#compile-time-defines). This file describes *callables*.
+- These APIs belong to the inherited NeoScript backend. For typed `.nc` programs,
+  consult the [NeoCore implementation status](StaticTyping.md).
 
 **Source of truth.** Regenerate this file from these when they change:
 
@@ -613,8 +616,8 @@ when searched; `fill(1.5)` stores `1` under normal numeric assignment rules.
 - Comparator errors abort immediately. Sorting is synchronous and rejects yield, sleep, async waits,
   coroutine switching, and execution with a host time limit, as list sorting does.
 - A **capturing** comparator writes back into its own capture storage, not into the enclosing
-  function, so counting hits inside a comparator does not work. See *Captured anonymous functions*
-  in `ReadMe.md`.
+  function, so counting hits inside a comparator does not work. See
+  [anonymous-function captures](ScriptAuthoring.md#8-function-values-and-anonymous-function-captures).
 
 Access with `m["key"]` or `m.key`. Assigning to a missing key inserts it.
 `remove(key)` is the explicit equivalent of deleting via `m[key] = null`, with a boolean result.
@@ -685,11 +688,11 @@ Create the object with `system.aysnc_create()`.
   text.
 - `get` / `post` require the object to be in the `READY` state - freshly created. `close()` is currently a no-op; create a new object for each request.
 - `get`, `post`, and `wait` are all rejected inside a nested native -> script call
-  (`RTE_NESTED_NOT_ALLOWED`), together with `sleep` and `yield`. See *Synchronous native-to-script
-  callbacks* in `ReadMe.md`.
+  (`RTE_NESTED_NOT_ALLOWED`), together with `sleep` and `yield`. See
+  [synchronous native-to-script callbacks](Embedding.md#synchronous-native-to-script-callbacks).
 - The core delegates transport to the host's `IHttpTransport`; it contains no HTTP/TLS implementation.
   Without a transport, the callback receives `false, "HTTP transport is not configured"`.
-- The console connects libcurl and accepts `http://` and `https://`, with certificate and hostname
+- The legacy `.ns` console connects libcurl and accepts `http://` and `https://`, with certificate and hostname
   verification enabled. It returns the response body for all HTTP status codes (including 4xx/5xx);
   `ok` describes transport success, not HTTP status. Redirects are not followed automatically.
 - Host callbacks execute on the VM thread after the background transport completes. Runtime destruction
@@ -755,7 +758,10 @@ getter's pause or coroutine-transfer request takes effect after the arithmetic. 
 such as `x = c[k] + y` or `e[i] = c[k] + y` stay as separate instructions: measured on this VM,
 fusing them costs more than the dispatch they save.
 
-There is no separate vector write-back opcode. Regenerate images older than bytecode version 0143 for the internal vector type split and the fused compound-assignment read opcodes, exact float32 immediates widened to double and to preserve assignments before return, 64-bit integers, local initialization, ordered operand evaluation, deferred assignment paths, and the earlier signed-zero and foreach fixes.
+There is no separate vector write-back opcode. This checkout uses bytecode version
+0147; regenerate older images because typed instructions were added and unused
+opcodes were removed. The earlier inline-vector storage, fused read/arithmetic,
+numeric-precision, evaluation-order, and assignment fixes remain in effect.
 A selector immediately following an indexed assignment keeps the assigned slot writable:
 `(a[0][0] = math.Vector3(1,2,3))[1] = 9` updates `a[0][0]` to `(1,9,3)`.
 Reading that result into a local still makes an independent vector value.
@@ -829,8 +835,9 @@ produced, so `!= null` is the presence test to use.
   Left shifts retain the low 64 bits, and right shifts extend the sign bit, including for negative operands.
 - **`..` concatenates, `+` adds.** `1 .. 2` is `"12"`.
 - **`elif` is removed**; use `else if`.
-- **Lambdas capture by value.** Read *Captured anonymous functions* in `ReadMe.md` before relying on
-  shared state, recursion, or writes reaching the enclosing frame.
+- **Lambdas capture by value.** Read
+  [anonymous-function captures](ScriptAuthoring.md#8-function-values-and-anonymous-function-captures)
+  before relying on shared state, recursion, or writes reaching the enclosing frame.
 - **Reference cycles need the host.** Nothing in script reclaims a cycle; the host must call
   `CollectCycles`. A map holding a lambda that captured that map is a cycle.
 

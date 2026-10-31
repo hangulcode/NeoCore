@@ -72,14 +72,12 @@
   <PropertyGroup Label="UserMacros" />
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">
     <LinkIncremental>true</LinkIncremental>
-    <IncludePath>D:\Project\1_sdk\9_Etc\zlib-1.2.8;$(IncludePath)</IncludePath>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
     <LinkIncremental>true</LinkIncremental>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">
     <LinkIncremental>false</LinkIncremental>
-    <IncludePath>D:\Project\1_sdk\9_Etc\zlib-1.2.8;$(IncludePath)</IncludePath>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
     <LinkIncremental>false</LinkIncremental>
@@ -168,21 +166,6 @@
       <LinkTimeCodeGeneration Condition="'$(NeoLtcgMode)'!=''">$(NeoLtcgMode)</LinkTimeCodeGeneration>
       <GenerateDebugInformation>true</GenerateDebugInformation>
     </Link>
-    <PostBuildEvent>
-      <!-- Copy the release console into GameDesign (sibling repository) so content machines without Visual Studio can run headless tests.
-           Skipped when GameDesign is not next to this repository; a failed copy (file in use) only warns. -->
-      <Command>set "NEO_BACKUP=$(ProjectDir)..\..\..\GameDesign\PDev\backup\Tools"
-if exist "%NEO_BACKUP%\" (
-  copy /Y "$(TargetPath)" "%NEO_BACKUP%\console.exe" &gt;nul
-  copy /Y "$(ProjectDir)..\..\THIRD_PARTY_NOTICES.txt" "%NEO_BACKUP%\NEOSCRIPT_THIRD_PARTY_NOTICES.txt" &gt;nul
-  copy /Y "$(ProjectDir)..\..\LICENSE" "%NEO_BACKUP%\NEOSCRIPT_LICENSE.txt" &gt;nul
-  if errorlevel 1 (echo warning: could not copy console.exe to %NEO_BACKUP%) else (echo console.exe copied to %NEO_BACKUP%)
-) else (
-  echo GameDesign backup folder not found - console.exe not copied
-)
-exit /b 0</Command>
-      <Message>Copy console.exe to GameDesign/PDev/backup/Tools</Message>
-    </PostBuildEvent>
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClInclude Include="HttpTransport.h" />

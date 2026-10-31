@@ -726,6 +726,7 @@ void CNeoVMWorker::ResetFaultStateForNewExecution()
 	// (= 가장 안쪽 원인 보존), 여기서 안 지우면 다음 실행의 에러가 이전 에러의 함수/라인/스택으로
 	// 보고된다. 이 함수는 새 실행 시작 지점(ExecuteTop/BeginHostCall)에서만 불린다.
 	_isErrorOPIndex = 0;
+	m_iLastErrorOPIndex = -1;
 }
 const char* g_sNeoRuntimeErrors[RTE_COUNT] =
 {
@@ -736,10 +737,32 @@ const char* g_sNeoRuntimeErrors[RTE_COUNT] =
 
 void CNeoVMWorker::SetError(const char* pErrMsg)
 {
-	if(_isErrorOPIndex == 0)
-		_isErrorOPIndex = int((u8*)_pCodeCurrent - _pCodeBegin - 1) / sizeof(SVMOperation);
+	RememberErrorLocation();
 	SetCodePtr(0); // Jump To Error
 	GetVM()->SetError(std::string(pErrMsg));
+}
+void CNeoVMWorker::RememberErrorLocation()
+{
+	if (m_iLastErrorOPIndex >= 0)
+	{
+		// 중첩 오류 뒤 바깥 native가 다시 실패해도 최초 원인 IP를 덮지 않는다.
+		if (_isErrorOPIndex == 0) _isErrorOPIndex = m_iLastErrorOPIndex;
+		return;
+	}
+	if (_isErrorOPIndex == 0 && _pCodeBegin != nullptr && _pCodeCurrent != nullptr)
+		_isErrorOPIndex = int((const u8*)_pCodeCurrent - _pCodeBegin - 1) / sizeof(SVMOperation);
+	m_iLastErrorOPIndex = _isErrorOPIndex;
+}
+NeoDebugLocation CNeoVMWorker::GetLastErrorLocation() const
+{
+	NeoDebugLocation location;
+	location.opIndex = m_iLastErrorOPIndex;
+	if (_pProgram == nullptr || m_iLastErrorOPIndex < 0 || m_iLastErrorOPIndex >= (int)DebugData().size())
+		return location;
+	const debug_info& info = DebugData()[m_iLastErrorOPIndex];
+	location.file = info._fileseq;
+	location.line = info._lineseq;
+	return location;
 }
 void CNeoVMWorker::SetError(ENeoRuntimeError e)
 {
@@ -1165,6 +1188,7 @@ bool CNeoVMWorker::CancelExecution()
 	m_bDebugPauseRequested = false;
 	m_bDebugFaulted = false;
 	_isErrorOPIndex = 0;
+	m_iLastErrorOPIndex = -1;
 	_isInitialized = false;
 	return true;
 }
@@ -2137,8 +2161,6 @@ bool	CNeoVMWorker::RunInternal(int iBreakingCallStack)
 		case NOP_PERSENT3:      Per3(GetVarPtrF1(OP), GetVarPtr2(OP), GetVarPtr3(OP)); break;
 		case NOP_LSHIFT3:       LSh3(GetVarPtrF1(OP), GetVarPtr2(OP), GetVarPtr3(OP)); break;
 		case NOP_RSHIFT3:       RSh3(GetVarPtrF1(OP), GetVarPtr2(OP), GetVarPtr3(OP)); break;
-		case NOP_AND3:          And3(GetVarPtrF1(OP), GetVarPtr2(OP), GetVarPtr3(OP)); break;
-		case NOP_OR3:           Or3(GetVarPtrF1(OP), GetVarPtr2(OP), GetVarPtr3(OP)); break;
 		case NOP_XOR3:          Xor3(GetVarPtrF1(OP), GetVarPtr2(OP), GetVarPtr3(OP)); break;
 		case NOP_GREAT:         handle_GREAT_cold(OP); break;
 		case NOP_GREAT_EQ:      handle_GREAT_EQ_cold(OP); break;
@@ -2212,7 +2234,6 @@ bool	CNeoVMWorker::RunInternal(int iBreakingCallStack)
 		case NOP_TABLE_PERSENT2:handle_TABLE_PERSENT2(OP); break;
 		case NOP_LIST_ALLOC:    handle_LIST_ALLOC(OP); break;
 		case NOP_LIST_ALLOC_L:  handle_LIST_ALLOC_L(OP); break;
-		case NOP_VERIFY_TYPE:   handle_VERIFY_TYPE(OP); break;
 		case NOP_CHANGE_INT:    handle_CHANGE_INT(OP); break;
 		case NOP_CHANGE_INT_L:  handle_CHANGE_INT_L(OP); break;
 		case NOP_YIELD:
@@ -2233,6 +2254,65 @@ bool	CNeoVMWorker::RunInternal(int iBreakingCallStack)
 		case NOP_READ_SUB:      handle_READ_SUB(OP); break;
 		case NOP_READ_MUL:      handle_READ_MUL(OP); break;
 		case NOP_READ_DIV:      handle_READ_DIV(OP); break;
+		case NOP_I64_ADD:       StoreNumberInt(GetVarPtrF1(OP), NeoIntAdd(GetVarPtr2(OP)->_int, GetVarPtr3(OP)->_int)); break;
+		case NOP_I64_SUB:       StoreNumberInt(GetVarPtrF1(OP), NeoIntSub(GetVarPtr2(OP)->_int, GetVarPtr3(OP)->_int)); break;
+		case NOP_I64_MUL:       StoreNumberInt(GetVarPtrF1(OP), NeoIntMul(GetVarPtr2(OP)->_int, GetVarPtr3(OP)->_int)); break;
+		case NOP_I64_DIV:       DivI64(GetVarPtrF1(OP), GetVarPtr2(OP), GetVarPtr3(OP)); break;
+		case NOP_I64_MOD:       TypedIntegerRemainder(OP); break;
+		case NOP_I64_AND:       StoreNumberInt(GetVarPtrF1(OP), GetVarPtr2(OP)->_int & GetVarPtr3(OP)->_int); break;
+		case NOP_I64_OR:        StoreNumberInt(GetVarPtrF1(OP), GetVarPtr2(OP)->_int | GetVarPtr3(OP)->_int); break;
+		case NOP_I64_XOR:       StoreNumberInt(GetVarPtrF1(OP), GetVarPtr2(OP)->_int ^ GetVarPtr3(OP)->_int); break;
+		case NOP_I64_SHL:       TypedIntegerShift<true>(OP); break;
+		case NOP_I64_SHR:       TypedIntegerShift<false>(OP); break;
+		case NOP_F64_ADD:       StoreNumberFloat(GetVarPtrF1(OP), GetVarPtr2(OP)->_float + GetVarPtr3(OP)->_float); break;
+		case NOP_F64_SUB:       StoreNumberFloat(GetVarPtrF1(OP), GetVarPtr2(OP)->_float - GetVarPtr3(OP)->_float); break;
+		case NOP_F64_MUL:       StoreNumberFloat(GetVarPtrF1(OP), GetVarPtr2(OP)->_float * GetVarPtr3(OP)->_float); break;
+		case NOP_F64_DIV:       StoreNumberFloat(GetVarPtrF1(OP), GetVarPtr2(OP)->_float / GetVarPtr3(OP)->_float); break;
+		case NOP_I64_TO_F64:    StoreNumberFloat(GetVarPtrF1(OP), static_cast<NS_FLOAT>(GetVarPtr2(OP)->_int)); break;
+		case NOP_F64_TO_I64:    StoreNumberInt(GetVarPtrF1(OP), NeoFloatToInt(GetVarPtr2(OP)->_float)); break;
+		case NOP_I64_EQ:        StoreNumberBool(GetVarPtrF1(OP), ((OP.argFlag & NEOS_OP_COMPARE_INVERT) == 0) == (GetVarPtr2(OP)->_int == GetVarPtr3(OP)->_int)); break;
+		case NOP_I64_LT:        StoreNumberBool(GetVarPtrF1(OP), ((OP.argFlag & NEOS_OP_COMPARE_INVERT) == 0) == (GetVarPtr2(OP)->_int < GetVarPtr3(OP)->_int)); break;
+		case NOP_I64_LE:        StoreNumberBool(GetVarPtrF1(OP), ((OP.argFlag & NEOS_OP_COMPARE_INVERT) == 0) == (GetVarPtr2(OP)->_int <= GetVarPtr3(OP)->_int)); break;
+		case NOP_F64_EQ:        StoreNumberBool(GetVarPtrF1(OP), ((OP.argFlag & NEOS_OP_COMPARE_INVERT) == 0) == (GetVarPtr2(OP)->_float == GetVarPtr3(OP)->_float)); break;
+		case NOP_F64_LT:        StoreNumberBool(GetVarPtrF1(OP), ((OP.argFlag & NEOS_OP_COMPARE_INVERT) == 0) == (GetVarPtr2(OP)->_float < GetVarPtr3(OP)->_float)); break;
+		case NOP_F64_LE:        StoreNumberBool(GetVarPtrF1(OP), ((OP.argFlag & NEOS_OP_COMPARE_INVERT) == 0) == (GetVarPtr2(OP)->_float <= GetVarPtr3(OP)->_float)); break;
+		case NOP_JMP_I64_EQ:    if (((OP.argFlag & NEOS_OP_COMPARE_INVERT) == 0) == (GetVarPtr2(OP)->_int == GetVarPtr3(OP)->_int)) SetComparisonJump(OP.n1); break;
+		case NOP_JMP_I64_LT:    if (((OP.argFlag & NEOS_OP_COMPARE_INVERT) == 0) == (GetVarPtr2(OP)->_int < GetVarPtr3(OP)->_int)) SetComparisonJump(OP.n1); break;
+		case NOP_JMP_I64_LE:    if (((OP.argFlag & NEOS_OP_COMPARE_INVERT) == 0) == (GetVarPtr2(OP)->_int <= GetVarPtr3(OP)->_int)) SetComparisonJump(OP.n1); break;
+		case NOP_JMP_F64_EQ:    if (((OP.argFlag & NEOS_OP_COMPARE_INVERT) == 0) == (GetVarPtr2(OP)->_float == GetVarPtr3(OP)->_float)) SetComparisonJump(OP.n1); break;
+		case NOP_JMP_F64_LT:    if (((OP.argFlag & NEOS_OP_COMPARE_INVERT) == 0) == (GetVarPtr2(OP)->_float < GetVarPtr3(OP)->_float)) SetComparisonJump(OP.n1); break;
+		case NOP_JMP_F64_LE:    if (((OP.argFlag & NEOS_OP_COMPARE_INVERT) == 0) == (GetVarPtr2(OP)->_float <= GetVarPtr3(OP)->_float)) SetComparisonJump(OP.n1); break;
+		// 큰 벡터·배열 본문은 밖에 두고 타입별 명령에서 고정 저장형 구현을 호출한다.
+#define NEOCORE_VECTOR_DISPATCH(D) \
+		case NOP_V##D##_MAKE: TypedVectorMake<D>(OP); break; \
+		case NOP_V##D##_ADD: TypedVectorArithmetic<D, 0>(OP); break; \
+		case NOP_V##D##_SUB: TypedVectorArithmetic<D, 1>(OP); break; \
+		case NOP_V##D##_MUL: TypedVectorArithmetic<D, 2>(OP); break; \
+		case NOP_V##D##_DIV: TypedVectorArithmetic<D, 3>(OP); break; \
+		case NOP_V##D##_GET: TypedVectorGet<D>(OP); break; \
+		case NOP_V##D##_SET: TypedVectorSet<D>(OP); break;
+		NEOCORE_VECTOR_DISPATCH(2)
+		NEOCORE_VECTOR_DISPATCH(3)
+		NEOCORE_VECTOR_DISPATCH(4)
+#undef NEOCORE_VECTOR_DISPATCH
+		case NOP_CELL_NEW: TypedCellNew(OP); break;
+		case NOP_CELL_GET: TypedCellGet(OP); break;
+		case NOP_CELL_SET: TypedCellSet(OP); break;
+#define NEOCORE_ARRAY_DISPATCH(NAME, ELEMENT) \
+		case NOP_ARRAY_##NAME##_NEW: TypedArrayNew<NeoArrayElementType::ELEMENT>(OP); break; \
+		case NOP_ARRAY_##NAME##_GET: TypedArrayGet<NeoArrayElementType::ELEMENT>(OP); break; \
+		case NOP_ARRAY_##NAME##_SET: TypedArraySet<NeoArrayElementType::ELEMENT>(OP); break; \
+		case NOP_ARRAY_##NAME##_APPEND: TypedArrayAppend<NeoArrayElementType::ELEMENT>(OP); break;
+		NEOCORE_ARRAY_DISPATCH(I64, Int)
+		NEOCORE_ARRAY_DISPATCH(F64, Float)
+		NEOCORE_ARRAY_DISPATCH(BOOL, Bool)
+		NEOCORE_ARRAY_DISPATCH(V2, Vector2)
+		NEOCORE_ARRAY_DISPATCH(V3, Vector3)
+		NEOCORE_ARRAY_DISPATCH(V4, Vector4)
+#undef NEOCORE_ARRAY_DISPATCH
+		case NOP_ARRAY_LEN: StoreNumberInt(GetVarPtrF1(OP), GetVarPtr2(OP)->_array->_count); break;
+		case NOP_ARRAY_RESIZE: TypedArrayResize(OP); break;
+		case NOP_ARRAY_RESERVE: TypedArrayReserve(OP); break;
 		case NOP_NONE:          handle_NONE(OP); break;
 		case NOP_ERROR:
 			handle_ERROR(OP);
@@ -2899,21 +2979,6 @@ bool CNeoVMWorker::FinishPropertyTransfer(int argSP_Vars)
 	}
 
 	return true;
-}
-
-bool CNeoVMWorker::VerifyType(VarInfo *p, VAR_TYPE t)
-{
-	if (p->GetType() == t)
-		return true;
-	char ch[256];
-#ifdef _WIN32
-	snprintf(ch, _countof(ch), "VerifyType (%s != %s)", GetDataType(p->GetType()).c_str(), GetDataType(t).c_str());
-#else
-	sprintf(ch, "VerifyType (%s != %s)", GetDataType(p->GetType()).c_str(), GetDataType(t).c_str());
-#endif
-
-	SetError(ch);
-	return false;
 }
 
 bool CNeoVMWorker::ChangeNumber(VarInfo* p)

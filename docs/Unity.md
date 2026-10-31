@@ -1,7 +1,7 @@
 # NeoScript × Unity
 
 Running the NeoScript VM from Unity. For the language itself see
-[../ReadMe.md](../ReadMe.md), for the functions a script can call see
+[ScriptAuthoring.md](ScriptAuthoring.md), for the functions a script can call see
 [API.md](API.md), and for the C++ host API see [Embedding.md](Embedding.md).
 
 ## Layers

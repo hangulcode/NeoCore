@@ -11,6 +11,7 @@
 #include "NeoVMMemoryPool.h"
 #include "NeoQueue.h"
 #include "NeoRegex.h"
+#include "NeoVMTypedOps.h"
 
 #include "NeoVMMap.h"
 #include "NeoVMSet.h"
@@ -190,8 +191,6 @@ enum eNOperation : OpType
 	NOP_PERSENT3,
 	NOP_LSHIFT3,
 	NOP_RSHIFT3,
-	NOP_AND3,
-	NOP_OR3,
 	NOP_XOR3,
 	//NOP_NOT3,
 
@@ -271,7 +270,6 @@ enum eNOperation : OpType
 	NOP_LIST_ALLOC,
 	NOP_LIST_ALLOC_L,
 
-	NOP_VERIFY_TYPE,
 	NOP_CHANGE_INT,
 	NOP_CHANGE_INT_L,
 	NOP_YIELD,
@@ -303,11 +301,63 @@ enum eNOperation : OpType
 	NOP_READ_SUB,
 	NOP_READ_MUL,
 	NOP_READ_DIV,
+	// 정적 프런트엔드가 입력 타입을 보증한다. 목적지 슬롯의 기존 값 정리는 유지한다.
+#define NEOCORE_TYPED_ENUM(op, name, suffix, arity, slots, writes, comparison, jump, branchOp) op,
+	NEOCORE_TYPED_OPS(NEOCORE_TYPED_ENUM)
+#undef NEOCORE_TYPED_ENUM
+#define NEOCORE_AGGREGATE_ENUM(op, name, suffix, arity, shape, dimension, controlMax) op,
+	NEOCORE_AGGREGATE_OPS(NEOCORE_AGGREGATE_ENUM)
+#undef NEOCORE_AGGREGATE_ENUM
 	NOP_NONE,
 	NOP_ERROR,
 
 	NOP_MAX,
 }; // Operation length
+
+inline const TypedOpInfo* GetTypedOpInfo(eNOperation op)
+{
+	static const TypedOpInfo operations[] = {
+#define NEOCORE_TYPED_INFO(op, name, suffix, arity, slots, writes, comparison, jump, branchOp) { op, name, suffix, arity, slots, writes, comparison, jump, branchOp },
+		NEOCORE_TYPED_OPS(NEOCORE_TYPED_INFO)
+#undef NEOCORE_TYPED_INFO
+	};
+	const unsigned index = static_cast<unsigned>(op) - static_cast<unsigned>(operations[0].op);
+	return index < sizeof(operations) / sizeof(operations[0]) ? &operations[index] : nullptr;
+}
+
+inline const AggregateOpInfo* GetAggregateOpInfo(eNOperation op)
+{
+	static const AggregateOpInfo operations[] = {
+#define NEOCORE_AGGREGATE_INFO(op, name, suffix, arity, shape, dimension, controlMax) { op, name, suffix, arity, AggregateOpShape::shape, dimension, controlMax },
+		NEOCORE_AGGREGATE_OPS(NEOCORE_AGGREGATE_INFO)
+#undef NEOCORE_AGGREGATE_INFO
+	};
+	const unsigned index = static_cast<unsigned>(op) - static_cast<unsigned>(operations[0].op);
+	return index < sizeof(operations) / sizeof(operations[0]) ? &operations[index] : nullptr;
+}
+
+inline eNOperation GetTypedGenericArithmetic(eNOperation op)
+{
+	// 상수 접기는 기존 숫자 계산 규칙을 재사용하며 실행 시 타입 분기는 다시 넣지 않는다.
+	switch (op)
+	{
+	case NOP_I64_ADD: return NOP_ADD3;
+	case NOP_I64_SUB: return NOP_SUB3;
+	case NOP_I64_MUL: return NOP_MUL3;
+	case NOP_I64_DIV: return NOP_DIV3;
+	case NOP_I64_MOD: return NOP_PERSENT3;
+	case NOP_I64_AND: return NOP_AND;
+	case NOP_I64_OR: return NOP_OR;
+	case NOP_I64_XOR: return NOP_XOR3;
+	case NOP_I64_SHL: return NOP_LSHIFT3;
+	case NOP_I64_SHR: return NOP_RSHIFT3;
+	case NOP_F64_ADD: return NOP_ADD3;
+	case NOP_F64_SUB: return NOP_SUB3;
+	case NOP_F64_MUL: return NOP_MUL3;
+	case NOP_F64_DIV: return NOP_DIV3;
+	default: return NOP_NONE;
+	}
+}
 
 inline bool IsReadArithOp(eNOperation op) { return op >= NOP_READ_ADD && op <= NOP_READ_DIV; }
 

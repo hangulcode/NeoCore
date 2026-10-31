@@ -1,141 +1,241 @@
-<p align="center">
-  <img src="/docs/img/Neo_Icon.png" alt="NeoScript logo">
-</p>
+# NeoCore — statically typed scripting
 
-# NeoScript — scripting for C++ and Unity games
+NeoCore is an independent scripting-language project derived from
+[NeoScript](https://github.com/hangulcode/NeoScript). It keeps the existing VM as an
+initial execution backend while adding explicit variable types, C-style function
+declarations, and compile-time checking. The static language is under active development.
 
-Embed a C-like scripting language in your game. Keep native objects in C++ or C#,
-expose the methods and properties your scripts need, and drive game behavior from
-your own update loop. NeoScript includes a compiler, bytecode VM, and VS Code tooling.
+**NeoCore source files use `.nc`.** Existing `.ns` files are NeoScript backend samples
+and regression fixtures. The inherited `.ns` editor tooling has not been repurposed
+as a typed NeoCore language service.
 
-**Requirements:** a C++11-compatible compiler or newer. The core, public C++ API,
-C ABI, console, and mini game host support C++11. The vendored PCRE2 engine also requires
-a C99 compiler. CMake builds require CMake 3.21+
-and default to C++11 unless the embedding project selects a newer standard.
-MSVC has no C++11 mode and uses its default C++14 mode on Windows; this does not
-raise NeoScript's source requirement. C++11 compatibility is checked separately
-with Clang/GCC. See Microsoft's [language-standard options](https://learn.microsoft.com/en-us/cpp/build/reference/std-specify-language-standard-version).
+**[Language design and implementation status](docs/StaticTyping.md)** ·
+**[Typed host bindings](docs/HostBindings.md)** ·
+**[Source repository](https://github.com/hangulcode/NeoCore)**
 
-- **Native game objects:** bind C++ methods, properties, and script callbacks through
-  a public Runtime / Program / Instance API. Compile once, create independent instances.
-- **Game-oriented math and execution:** value-type vectors and quaternions,
-  coroutines, and host-controlled execution budgets for time-sliced work.
-- **Time APIs:** UTC calendar conversion and ISO timestamp parsing, int64 Unix milliseconds, pausable monotonic stopwatches,
-  and immutable millisecond durations. See the [time reference](docs/API.md#41-durations-and-elapsed-time)
-  and [console sample](TestScript/time.ns).
-- **Unity from C#:** a flat C ABI and UPM package for Windows, Android, and iOS.
-  See the [Unity setup and sample](docs/Unity.md).
-- **Debug your scripts:** VS Code completion, signature help, breakpoints, stepping,
-  call stacks, and variable inspection. See [extension setup](Tools/vscode-neo-script/README.md).
+## Why NeoCore
 
-**[Run the mini game host](Samples/minigame/README.md)** ·
-**[C++ embedding guide](docs/Embedding.md)** ·
-**[Write scripts](docs/ScriptAuthoring.md)** ·
-**[API reference](docs/API.md)** ·
-**[Releases](https://github.com/hangulcode/NeoScript/releases)**
+NeoCore started from NeoScript to pursue higher execution performance and more
+reliable scripts through static typing. Its compiler aims to resolve types,
+function signatures, member access, and applicable operations before execution.
+This moves errors that can be detected from the program and host declarations to
+compile time and reduces repeated runtime type checks and name lookups.
 
-## Try it: two objects, one script
+Automatic memory management remains part of the design, retaining the backend's
+reference counting and cycle-collection capabilities. Script authors should be able
+to use managed values and containers without manually allocating and freeing their
+storage. Hosts still control safe points for cycle collection. Static typing is
+intended to improve execution and validation while preserving that convenience.
 
-![Recorded 3D positions from the native C++ mini game host](docs/img/minigame.png)
+The project follows these goals:
 
-*Offline replay of positions calculated by the C++ host; NeoScript runs natively.*
+- **Compile-time contracts:** explicit types, function signatures, nullability,
+  references, and host schemas make invalid operations diagnosable before a script
+  runs. Unsupported features fail explicitly instead of silently becoming dynamic.
+- **Efficient execution:** carry resolved type information into dedicated VM
+  instructions and progressively remove transitional compiler and runtime helpers.
+  Performance improvements must be measured; static typing alone is not evidence
+  that NeoCore already runs faster than NeoScript.
+- **Safe host integration:** resolve member names and signatures during compilation,
+  while validating object IDs and current object capabilities during execution.
+  Engine objects remain owned by the host; script garbage collection does not
+  replace the host's lifetime rules.
+- **Defined behavior:** preserve evaluation order, numeric rules, value/reference
+  semantics, and useful error locations as the compiler and VM evolve. Bounds,
+  allocation failures, and other conditions that depend on runtime state still
+  require runtime handling.
+- **Portable embedding:** retain the bytecode VM execution model and C++11-compatible
+  core, with a clear boundary between the scripting language and its host engine.
 
-The [mini game host](Samples/minigame) is a complete C++11 project with no engine
-checkout or graphics SDK required. Two native objects share compiled code, keep
-separate script state, and call this behavior every tick:
+These are development goals, not a claim that the static compiler, host integrations,
+or performance work is complete. The current implementation is described below.
+
+## Current milestone
+
+The frontend checks scalar/vector declarations, structs, typed arrays, scalar lists/maps, named functions,
+calls and returns, including forward calls and recursion. It rejects `var`, `fun`, undeclared types,
+and implicit dynamic fallback. Numeric defaults are initialized; non-null strings
+require an initializer. Nullable values do not implicitly unwrap; native object
+locals support member access inside an explicit non-null `if` branch.
+
+Mutable `T&` references bind once to named variables, parameters, or struct fields.
+Assignment writes the referenced value; it cannot rebind the reference. Struct
+copies are independent, and existing field aliases survive whole-struct assignment.
+See the [struct sample](Samples/neocore/scripts/structs.nc) and
+[vector sample](Samples/neocore/scripts/vectors.nc). Vectors have float32 components,
+value copies, and checked named component writes; Quaternion uses `w, x, y, z` order.
+Vector2/3/4 support same-dimension addition/subtraction and scalar multiplication/
+division. Typed arrays keep a fixed element type and support vector element updates;
+the [particles sample](Samples/neocore/scripts/particles.nc) checks them against a
+scalar reference without timers.
+The limited built-in
+imports currently expose `math.sin`, `math.cos`, and `system.clock` only.
+
+Typed host schemas now declare nominal object types, globals, methods, and
+read/write properties before compilation. The frontend resolves members and
+checks scalar/vector/native arguments; execution calls a fixed binding without a
+per-member name lookup. Hosts retain ownership and resolve object IDs when a
+member call begins. See the [binding contract and current limits](docs/HostBindings.md).
 
 ```cpp
-import math;
-
-var elapsed = 0.0;
-fun OnUpdate(var dt)
+int Fib(int n)
 {
-    elapsed += dt;
-    GameObject.Position = math.Vector3(math.sin(elapsed), 0.0, 0.0);
+    if (n < 2)
+        return n;
+    return Fib(n - 1) + Fib(n - 2);
 }
-GameObject.AddEvent("OnUpdate", OnUpdate);
+
+int result = Fib(12);
+print(result);
 ```
 
-`GameObject` is supplied by the example host; it is not a standard-library global.
-The full example also shows host logging, native argument validation, per-instance
-globals, and resource cleanup. It can record positions for an offline browser replay.
+`int` is a signed 64-bit integer and `float` is a 64-bit floating-point value.
+**`int32` and `float32` are not scalar types that scripts can declare.** The agreed
+32-bit support is limited to compact-array storage and vector components; compact
+arrays remain a later frontend milestone.
 
-From the repository root, with **CMake 3.21+ and a C++11-compatible toolchain** installed:
+Checked numeric expressions now use a typed intermediate representation (IR),
+retaining literal values, resolved symbols, operand types, and original source
+locations. The bytecode emitter reads that IR directly instead of reparsing
+numeric operation strings. Arithmetic, integer bit operations, int/float conversions,
+comparisons, and comparison branches use 28 dedicated I64/F64 bytecode operations.
+Another 51 instructions cover vector arithmetic/construction/components,
+typed array storage/methods, and internal reference cells. Array/vector compound
+writes expand into instructions at compile time, without runtime helper calls.
+Conditions use fused comparison branches, and numeric `!` preserves unordered
+comparisons through result inversion.
+The dispatch loop, call frames, eight-byte instructions, and 16-byte value slots
+remain in place. Declarations and control flow still use a transitional textual
+skeleton. Calls, assignments, and selectors inside numeric IR are emitted through
+ordered compatibility leaves; they are not evaluated before preceding IR operations.
+Scalar compound assignments, lists/maps, struct helpers and host property write
+composition retain inherited paths; the typed VM is not complete.
+An early numeric-VM snapshot measured on 2026-10-31 showed a 7.5% increase in the
+sum of eight case medians versus its paired generic-op control. That historical
+[measurement report](docs/TypedVmBenchmark.md) predates the current IR and aggregate
+instructions; it is not a measurement of this build.
+Typed sets, compact arrays, nested collections,
+script imports, richer host signatures, closures, and coroutine integration remain
+future work. See the [status and roadmap](docs/StaticTyping.md).
+
+This NeoCore build uses bytecode image version `0147`; regenerate cached images.
+Three unused instructions were removed, changing subsequent opcode numbers;
+older images are rejected instead of interpreting their instructions incorrectly.
+Rebuild C++ hosts against the matching headers and library, because the internal
+backend compile descriptor now carries typed-lowering metadata. This does not
+change the legacy C ABI structures or make that API a typed NeoCore host surface.
+
+## Build and run
+
+Requirements: **CMake 3.21+, a C++11-compatible compiler, and a C99 compiler** for
+the inherited PCRE2 source. MSVC's default C++14 mode does not raise the source
+requirement; non-Windows checks use strict C++11.
 
 ```sh
-cmake -S Samples/minigame -B build/minigame
-cmake --build build/minigame --config Release --parallel
-ctest --test-dir build/minigame -C Release --output-on-failure
+cmake -S . -B Build/neocore -DNEOSCRIPT_BUILD_EXAMPLES=OFF
+cmake --build Build/neocore --config Release --parallel
+ctest --test-dir Build/neocore -C Release --output-on-failure
 ```
+
+The `NEOSCRIPT_*` CMake options configure the inherited backend. C++ hosts can link
+the `NeoCore::Runtime` target for the new entry point.
+
+For a multi-configuration CMake build such as Visual Studio:
 
 ```powershell
-# Windows: run the sample, then open build/minigame/bin/viewer.html
-.\build\minigame\bin\neoscript_minigame.exe --record build/minigame/bin/scene-data.js
+Build/neocore/bin/Release/neocore.exe --check Samples/neocore/scripts/fibonacci.nc
+Build/neocore/bin/Release/neocore.exe --file Samples/neocore/scripts/fibonacci.nc
 ```
 
-```sh
-# Linux
-./build/minigame/bin/neoscript_minigame --record build/minigame/bin/scene-data.js
+For the checked-in Visual Studio projects, open **[NeoCore.sln](NeoCore.sln)** at
+the repository root. Select `NeoCoreConsole` as the startup project. The existing
+`Samples/console/console.sln` path opens the same NeoCore library and `.nc` console
+projects. For the library alone, open **[Windows/NeoCore.sln](Windows/NeoCore.sln)**.
+From a Visual Studio developer prompt, run these commands at the root:
+
+```bat
+MSBuild NeoCore.sln /p:Configuration=Release /p:Platform=x64 /m
+Build\Windows\bin\x64\Release\neocore.exe --check Samples\neocore\scripts\fibonacci.nc
+Build\Windows\bin\x64\Release\neocore.exe --file Samples\neocore\scripts\fibonacci.nc
 ```
 
-The test checks **one shared program, two independent instances, and 120 updates
-per instance**. Edit the `.ns` file beside the executable and rerun to change behavior.
-See the [sample guide](Samples/minigame/README.md) for expected output, source-script
-overrides, the offline viewer, and ZIP packaging. CI prepares a Windows ZIP artifact;
-release assets, when published, appear on the [releases page](https://github.com/hangulcode/NeoScript/releases).
+[`Windows/NeoCore.vcxproj`](Windows/NeoCore.vcxproj) builds the frontend and its
+execution backend into one static library. Reference it from a C++ host and include
+`NeoCore.h`; do not also link the inherited `NeoScript` library into that executable.
 
-## See it in use
+| Configuration | Library under `Build/Windows/lib` | CRT |
+| --- | --- | --- |
+| Release x64 | `NeoCore64.lib` | `/MT` |
+| Debug x64 | `NeoCore64-d.lib` | `/MTd` |
+| Release x86 | `NeoCore32.lib` | `/MT` |
+| Debug x86 | `NeoCore32-d.lib` | `/MTd` |
 
-[Watch NeoScript driving a game-engine tech demo](https://www.youtube.com/watch?v=Wi3EgWx38Vs).
+Console output is `Build/Windows/bin/<platform>/<configuration>/neocore.exe`, using
+`Win32` for the x86 project platform. Match the host's platform, CRT, and toolset.
+The `.nc` console does not install an HTTP transport or build libcurl. The inherited
+`.ns` runner and debugger remain in the `Samples/console/console.vcxproj` project; their
+`console.exe` output and command-line options are separate.
 
-![NeoScript debugging tools](docs/img/code_debugger.png)
+`--check <file>` checks and compiles without executing top-level code.
+`--file <file>` runs a checked program. `--emit-backend <file>` prints the checked,
+lowered statement skeleton for diagnostics. Its private compiler intrinsics and
+numeric IR markers require the matching compile metadata, including
+`StaticCompileResult::typedIR`; this output is not standalone NeoScript source.
 
-## Choose your integration
+Execution omits debug metadata by default. Add `--debug` before the mode, for example
+`neocore --debug --file source.nc`, to include runtime source-line information.
+Frontend compilation errors identify their source location in either mode.
+Run timed benchmarks without `--debug`.
 
-| Goal | Start here |
+[Samples/bench/check.nc](Samples/bench/check.nc) checks small-input results for all
+eight benchmark algorithms without timers. [Samples/bench/bench.nc](Samples/bench/bench.nc)
+contains the full workloads with explicit conversions and `map.get(key, 0)` for
+nonnull reads. These preserve checksums, not identical bytecode. Current VM and
+helper costs remain part of the measurement; static typing alone is not a speed claim.
+
+The [first NeoCore benchmark snapshot](docs/FirstNcBenchmark.md) records seven
+rotated serial rounds against NeoScript, Lua, and C++, with all eight checksums
+matching. It measures the initial source-lowering backend before typed VM instructions.
+The historical [typed numeric VM comparison](docs/TypedVmBenchmark.md) records an
+early typed/generic comparison in the same executable, alongside NeoScript, Lua,
+and C++. Both reports identify their measured snapshots; neither reports current
+build performance.
+
+For embedding, `NeoSource/NeoCore.h` is the new static entry point in namespace
+`NeoCore`. `Program::Compile` creates a checked program; `Run` executes its top-level
+code once, and `Call` validates an exported function's scalar signature before
+invoking the VM. This C++-to-script scalar entry point currently rejects reference
+parameters, native-object arguments/results, and null arguments; nullable scalar
+return values are supported. To expose C++ objects to scripts, include
+`NeoSource/NeoCoreHost.h` and use the `Program::Compile` overload accepting
+`HostBindings`. That separate script-to-host boundary supports declared scalar
+and native-object signatures, including nullable values.
+The underlying NeoScript API remains implementation infrastructure.
+It is not a substitute for the NeoCore type-checking boundary.
+
+## Documentation during migration
+
+| Document or tool | Status |
 | --- | --- |
-| See a small, complete C++ game host | [Mini game project](Samples/minigame/README.md) |
-| Embed into an existing C++ engine or application | [Embedding and lifetimes](docs/Embedding.md) |
-| Run from C# / Unity | [Unity setup, platforms, and sample](docs/Unity.md) |
-| Learn the language and standard library | [Script authoring](docs/ScriptAuthoring.md), [API reference](docs/API.md) |
-| Run standalone scripts or debug in VS Code | [Console runner](#console-runner), [VS Code setup](#vs-code-debugger-setup) |
+| [Static language](docs/StaticTyping.md) | NeoCore rules, current scope, and remaining work |
+| [Typed host bindings](docs/HostBindings.md) | C++ schema, object IDs, property calls, and lifetime/reentry contract |
+| `NeoSource/NeoCore.h`, `neocore` | Static frontend entry points |
+| [Script authoring](docs/ScriptAuthoring.md), [API](docs/API.md) | Inherited NeoScript backend references; dynamic examples are not NeoCore syntax |
+| [Embedding](docs/Embedding.md), [Unity](docs/Unity.md) | Inherited host integration; typed C ABI and Unity bindings remain work to do |
+| [Legacy console guide](docs/ScriptAuthoring.md#13-run-scripts-in-the-console-and-locate-errors), [VS Code extension](Tools/vscode-neo-script/README.md), existing `.ns` samples | Legacy backend tools and regression fixtures |
 
-NeoScript is intended for hosts that want explicit native bindings, a C-like syntax,
-and control over per-instance execution. The benchmarks below describe specific
-workloads and their methodology; they are not a general performance guarantee.
+The inherited [NeoScript engine demo](https://www.youtube.com/watch?v=Wi3EgWx38Vs)
+shows the original engine integration, not a completed NeoCore port.
 
-### Author and contact
+## Author and contact
 
 - **Author:** JRoot
 - **Email:** [hangulcode@gmail.com](mailto:hangulcode@gmail.com)
 
-### Script authoring guide
+## License and provenance
 
-**[docs/ScriptAuthoring.md](docs/ScriptAuthoring.md)** — the practical guide for people and AI
-writing scripts. Read it first for declaration order, imports and public constants, and for
-worked examples of collections, strings, closures, vectors and coroutines with their error
-checks; look up full function signatures in the API reference below.
-
-### Script API reference
-
-**[docs/API.md](docs/API.md)**
-
-Every function a script can call — the keyword intrinsics, `print`, the `math` / `system` /
-`coroutine` modules, and the `string` / `list` / `map` / `async` method sets — with exact
-signatures, argument types and return types. Look there first when you need a function; this
-file covers the language itself and the C++ host API.
-
-### Unity
-
-**[docs/Unity.md](docs/Unity.md)**
-
-Running the VM from C#. A flat C ABI (`Unity/Native/NeoScriptC.h`) plus a P/Invoke binding
-shipped as a UPM package (`Unity/com.neoscript.unity`): compile and run scripts, expose C#
-objects to script, and slice long-running scripts across frames. Windows, Android and iOS.
-
-### License
-
-NeoScript is licensed under the [MIT license](LICENSE), Copyright (c) 2018-2026 NeoScript contributors.
+NeoCore is derived from NeoScript and distributed under the [MIT license](LICENSE).
+The original Copyright (c) 2018-2026 NeoScript contributors attribution is retained.
 
 JSON parsing and serialization include **[yyjson 0.13.0](https://github.com/ibireme/yyjson)**,
 Copyright (c) 2020 YaoYuan, under the **MIT license**. The unmodified source is in
@@ -146,517 +246,14 @@ that use the bundled JSON implementation. See [JSON API and build notes](docs/JS
 Redistributed copies must retain the applicable copyright and license notices.
 
 The core has no HTTP/TLS library dependency. Hosts provide `IHttpTransport` through
-`RuntimeDesc::httpTransport`; the console connects [libcurl](https://curl.se/libcurl/) for HTTP/HTTPS.
-The Windows console build downloads pinned libcurl 8.23.0 (SHA-256 verified) using a CMake release supporting Visual Studio 2026,
-links it statically, and uses Schannel with the Windows certificate store. Core-only builds do not
-fetch curl. See [transport integration](docs/Embedding.md#http-and-https-transport).
-Include `THIRD_PARTY_NOTICES.txt` when distributing the console.
-String regular expressions use the C++11 standard library; see [the API](docs/API.md#6-string-methods).
-
-### VS Code extension
-	- Extension source: Tools/vscode-neo-script
-	- Supports .ns syntax highlighting, IntelliSense completion and signature help, and Debug Adapter Protocol debugging.
-	- The debugger runs the currently selected .ns file as a top-level script.
-	- Put the code you want to debug in the script body. If you want to debug an exported function, call it from top-level script code.
-	- Build Samples/console in x64 Release, then use the "Debug Neo Script" launch configuration.
-	- If the adapter executable is not in the default sample path, set neoScript.debugAdapterPath or add adapterPath to launch.json.
-	- Set libPath in launch.json when the Neo Script Lib directory is outside the workspace folder.
-	- IntelliSense is served by console.exe --lsp. Set neoScript.languageServerPath to that executable when it is not found automatically; it may use the same console.exe as the debugger.
-	  Example: "neoScript.languageServerPath": "${workspaceFolder}\\..\\Samples\\console\\x64\\Release\\console.exe"
-
-### Console runner
-`Samples/console` is the main sample executable. It can run built-in samples, benchmarks, the VS Code debug adapter, or an arbitrary script file.
-
-Build:
-```powershell
-& "C:\Program Files\Microsoft Visual Studio\18\Community\MSBuild\Current\Bin\amd64\MSBuild.exe" Samples\console\console.sln /p:Configuration=Release /p:Platform=x64 /m
-```
-
-The solution builds the shared Windows static-library project,
-[`Windows/NeoScript.vcxproj`](Windows/NeoScript.vcxproj), and links its `.lib`.
-The console no longer compiles the VM sources itself. Other Visual Studio hosts
-can reference the same project; see [Windows static linking](docs/Embedding.md#windows-static-linking).
-
-The Visual Studio console and library projects enable Microsoft code analysis warning `C26433`
-for missing C++ `override` specifiers in Debug/Release, Win32/x64 configurations.
-The shared settings are in `BuildConfig/MsvcOverrideWarnings.props` and its ruleset.
-Reload the project after updating; rebuild once to check unchanged source files.
-Only this analysis rule is enabled; compiler warning levels remain unchanged.
-Code analysis can increase build time.
-
-Run a script file:
-```powershell
-Samples\console\x64\Release\console.exe --file TestScript\module.ns
-```
-
-Other useful commands:
-```powershell
-Samples\console\x64\Release\console.exe --list
-Samples\console\x64\Release\console.exe --run performance
-Samples\console\x64\Release\console.exe --bench
-Samples\console\x64\Release\console.exe --dap
-```
-
-The old standalone `Samples/Neo` runner has been removed. Use `console.exe --file <script.ns>` for the same simple compile-and-run workflow.
-
-#### VS Code debugger setup
-1. Build the debug adapter:
-```powershell
-& "C:\Program Files\Microsoft Visual Studio\18\Community\MSBuild\Current\Bin\amd64\MSBuild.exe" Samples\console\console.sln /p:Configuration=Release /p:Platform=x64 /m
-```
-
-2. Open a folder that contains .ns files in VS Code.
-
-3. Create .vscode/launch.json:
-```json
-{
-  "version": "0.2.0",
-  "configurations": [
-    {
-      "type": "neo-script",
-      "request": "launch",
-      "name": "Debug Neo Script",
-      "program": "${file}",
-      "cwd": "${workspaceFolder}",
-      "libPath": "${workspaceFolder}\\Lib"
-    }
-  ]
-}
-```
-
-4. Open a .ns file, set breakpoints, and start "Debug Neo Script".
-
-The VS Code debugger currently supports:
-	- Breakpoints
-	- Continue, pause
-	- Step into, step over, step out
-	- Call stack
-	- Local variables
-	- Watch expressions for visible local variables
-	- print output in the Debug Console
-	- Runtime exception stop and exceptionInfo
-
-### Collection and text conveniences
-
-- Lists support `insert(index, value)`, `remove(index)` (returns the removed value), and
-  stable `sort(comparator)`. The existing `append(value, index)` insertion form is retained.
-  List sorting rejects execution with an enabled time limit before invoking the comparator.
-- Sets support `len()` as well as `tosize(set)`; unknown method calls are errors.
-- String literals, string consts and parenthesized expressions support postfix selectors:
-  `"text".len()`, `TEXT.len()`, and `("a" .. "b").len()`.
-- String literals decode `\uXXXX`, including paired surrogate escapes. Malformed escapes and
-  embedded NUL (`\u0000`) are compile errors.
-- `format(pattern, ...)` and `pattern.format(...)` support `%d`, `%f`, `%s`, `%%`, width,
-  left alignment, numeric zero padding, and float/string precision. Width is capped at 4,096,
-  float precision at 1,024, and the full result at 1 MiB. See [API.md](docs/API.md#21-string-formatting).
-
-### Numeric precision
-
-Integer literals now use 64-bit widths: `0xffffffff` is `4294967295`, and `0x80000000` is
-`2147483648`. Use `-1` (or `0xffffffffffffffff`) for an all-bits-set signed mask. Regenerate cached
-bytecode; older return optimizations could omit assignments to globals and closure captures.
-Use `regex_match`, `regex_search`, `regex_replace`, and `remove_swap`; their previous camelCase
-spellings are no longer registered. See the [API migration notes](docs/API.md#boundary-and-ownership-rules).
-
-The default `int` type is a signed **64-bit integer**, from `-9223372036854775808` to
-`9223372036854775807`. Integer addition, subtraction, multiplication, negation, and
-increment/decrement wrap to the low 64 bits. Shift counts must be in `0..63`. Integer
-division or remainder by zero, and `INT64_MIN / -1` or `INT64_MIN % -1`, are errors.
-
-Host integer values use C++/C `int64_t` and C# `long`; integer arrays use eight bytes per
-element. On 64-bit targets the general value slot remains 16 bytes; on 32-bit targets it
-is also 16 bytes, including targets with four-byte integer alignment. Rebuild native hosts
-and Unity plugins for **C ABI 7**, and regenerate cached
-bytecode for image format **0143**. Container lengths, indices, and host handles keep
-their existing widths and limits. Mixing an int with a float uses float64 arithmetic,
-so large integers can lose precision.
-
-NeoScript uses **double (64-bit)** scalar `float` values and ordinary dense float
-arrays (eight bytes per element). General value slots retain their int64-era size.
-Vector2/3/4 and Quaternion components and vector arithmetic remain **float32**.
-Constructing or writing a vector narrows scalar values; reading a component widens it
-to double. Vector arrays store float32 components directly.
-
-Host scalar APIs use C++/C `double` and C# `double`; float array views expose `double*`
-and `Span<double>`. Vector buffers remain `float*` and Unity vectors remain unchanged.
-Rebuild consumers: this changes the scalar host API and native ABI.
-
-### Integer arithmetic follows C, not the scripting-language convention
-`int / int` yields an `int`, so `1 / 100` is `0`. Division promotes to float only when at
-least one side already is one.
-
-```
-var a = 1 / 100;        // 0
-var b = 1.0 / 100;      // 0.01
-var c = (n * 1.0) / m;  // float, whatever n and m are
-```
-
-This is what C, C++, Java and Go do, but it differs from Lua 5.3+, Python 3 and JavaScript,
-where `/` always produces a float. Nothing reports the difference: the result is a valid
-number, so there is no error to catch and no warning to read — a ratio meant to be
-fractional simply comes out as `0` and whatever it drives stays at its starting value.
-
-Multiply one side by `1.0` when a fraction is intended, particularly when the operands come
-from `len()` or a `const`, which are integers and easy to miss.
-
-### Vector value types
-`math.Vector2`, `math.Vector3`, `math.Vector4`, and `math.Quaternion` create dedicated
-value types. They are not Lists and are passed directly to native engine APIs that read
-vectors through `VarInfo::GetVec*`.
-
-```cpp
-var position = math.Vector3(1.0, 2.0, 3.0);
-var direction = math.Normalize3(position, math.Vector3(0.0, 1.0, 0.0));
-var moved = position + direction * 2.0;
-```
-
-- Components can be read and written with indexing (`position[0]`, `position[1] = 5.0`).
-	- Component `+=`, `-=`, `*=`, and `/=` accept numeric operands and preserve value-copy semantics. `%=` is unsupported for float components.
-	- Component writes through a container element or a native property (`list[0][1] = n`, `obj.Position[0] += n`) reach that element or property.
-- Vector assignment is a value copy; assigning `b = a` does not alias `a`.
-- Vector arithmetic supports component-wise `+`, `-`, `*`, `/` and scalar multiplication/division.
-- `tosize(vector)` returns the component count. List operations (`append`, `insert`, `len`,
-  `foreach`) are not supported for vector values.
-- The `math` vector and quaternion functions require vector value types, not `[x, y, z]` List
-  literals. Full list: [`docs/API.md`](docs/API.md#35-vector-math).
-- Quaternion component order is `w, x, y, z`: `math.Quaternion(w, x, y, z)`.
-- **Vectors retain their component counts and value semantics.** Internally, Vector2/3 use
-  inline `VAR_VEC` values in a 16-byte slot; Vector4 uses `VAR_VEC4` with shared storage
-  and copy-on-write. Vector components remain float32. A
-  quaternion is a 4-component vector — the VM does not track "this is a rotation", and `w,x,y,z`
-  is a convention between the script and the engine, not a type. Two consequences: `type()`
-  reports `"Vector4"` for a quaternion, and `q1 + q2` is a component-wise add rather than an error
-  (quaternion multiplication is `math.quat_*`, which is what you want for composing rotations).
-  Arithmetic between different component counts is still rejected.
-
-### Dense arrays
-`system.array32(initial, size)` provides four-byte int32 or float32 storage; only numeric
-initializers are accepted. Reads widen to the usual int64/double scalar values. Int32
-writes require integers in `-2147483648..2147483647`; float32 writes round numeric values.
-Use `system.array` for ordinary int64/double arrays or bool/vector elements.
-
-`system.array(initial, size)` creates a reference array for bool, int, float, or Vector2/3/4 data.
-The type of `initial` selects the element type and fills the initial elements:
-
-```cpp
-import system;
-
-var visible = system.array(false, 1024); // packed bool array
-var ids = system.array(0, 1024);         // int array
-var weights = system.array(0.0, 1024);   // float array
-```
-
-- Arrays have List-style reference semantics: `var other = ids` shares the same storage.
-- Indexes must be integers and must be in range. Invalid reads and writes are runtime errors.
-- Integer and float arrays convert between `int` and `float` on assignment; float-to-int truncates
-  toward zero. Bool arrays accept only bool values.
-- Elements support assignment; numeric elements also support compound assignments and increment/decrement.
-- Vector arrays require the exact component count. Reading an element produces a vector value;
-  changing that local vector does not change the array. `a[i][j] = n`, `+=`, `-=`, `*=`, `/=`,
-  `++`, and `--` write through to the stored component. Whole-vector compound assignments remain
-  unsupported; use `a[i] = a[i] + delta` for vector addition.
-- For example, `system.array(math.Vector3(0, 0, 0), 1000)` stores 1000 vectors (requires `import math;`).
-  Elements are 16-byte `VarInfo` values. Vector2/3 components live directly in each slot;
-  Vector4 values share reference-counted storage and detach on writes. Reads preserve vector
-  value semantics, just like list elements. `resize` fills new elements with
-  the vector value captured when the array was created.
-- `a.append(value)` adds one value at the tail. `a.resize(size)` changes the length; growth fills
-  new elements with the `initial` value used to create the array, and shrinking drops the tail.
-  A negative resize becomes zero, matching List. There is no middle insertion, remove, or slice.
-- `a.len()` and `tosize(a)` both return the current element count. `foreach(var v in a)` yields a
-  value copy, just like List foreach; the two-variable form is not supported. Structural changes
-  (`append` or a size-changing `resize`) during foreach raise a runtime error.
-- Bool arrays are bit-packed internally. The implementation detail is invisible to script code.
-
-### Embedding the engine
-
-The public v2 C++ host API in `NeoScript.h` — Runtime / Program / Instance, host↔script calls,
-captured lambdas, cycle collection, and the internal execution-context pool — has its own document:
-
-**[docs/Embedding.md](docs/Embedding.md)**
-
-### Script `const` (compile-time constants)
-Scripts can declare their own compile-time constants with `const`.
-Like host defines, a `const` is resolved during tokenization: it creates no runtime
-variable, costs nothing at runtime, and participates in constant folding.
-Because the name is replaced at compile time, a `const` can never be modified.
-Floating-point constant expressions and runtime scalar arithmetic both use double precision. Non-finite const results
-are compile errors. See [evaluation and numeric rules](docs/ScriptAuthoring.md#basics).
-
-```cpp
-const BTN_START_GAME = 10;
-const GREETING = "Hello";
-const HALF = 1.5;
-const MY_KEY = KEY_SPACE;                       // alias of a host define
-const ATTACK_MASK = GAMEPAD_A | GAMEPAD_B;      // constant expressions are evaluated at compile time
-
-GameObject.AddEvent("OnButtonClick", BTN_START_GAME, StartNewGame);
-```
-
-Rules:
-	- Allowed only at file scope (the top level of a script, outside any block or
-	  function). The same restriction applies to `import`, `public` and `export`;
-	  the compiler reports `'<keyword>' is only allowed at file scope`.
-	- Value must be a compile-time constant expression: literals (`int`, `float`,
-	  `string`, `true`, `false`, `null`), other defines/consts, unary `-` `~`,
-	  binary `+ - * / % << >> & ^ |`, and parentheses.
-	- A plain `const` is local to its script file. `public const` makes the value
-	  available through an imported module alias; host defines remain visible everywhere.
-	  `export const` is a compile error: a constant has no runtime slot for the host to read.
-	- Redeclaring a name that is already a const, host define, global variable,
-	  function, or module alias is a compile error.
-
-```cpp
-// settings.ns
-public const TEXT_SPEED = 22;
-const INTERNAL_LIMIT = 100; // private to this file
-```
-
-```cpp
-import settings as cfg;
-const DOUBLE_SPEED = cfg.TEXT_SPEED * 2;
-var speed = cfg.TEXT_SPEED;
-switch (speed) { case cfg.TEXT_SPEED: print("matched"); }
-```
-
-The import must precede the reference. Only `public` constants are exposed;
-their names are not injected into the importing file. References are compile-time values,
-including in `const` initializers and `case` expressions. Assignments and increments are
-compile errors. Changing a public constant requires recompiling its consumers.
-An imported constant may be re-published with `public const COPY = cfg.TEXT_SPEED;`.
-`public` exposes a declaration to script modules only; `export` exposes a variable or
-function to the C++ host only (see "Visibility" under the module rules below).
-
-
-### Performance test results
-
-Sources: [`Samples/bench/bench.ns`](Samples/bench/bench.ns) · [`bench.lua`](Samples/bench/bench.lua) ·
-[`bench.cpp`](Samples/bench/bench.cpp) — all three implement the **same algorithm**, statement for statement.
-
-```
-CPU   : Intel Core i7-12700F (12C/20T)      RAM : 64 GB
-OS    : Windows 11 Pro 64-bit (build 26200)
-Neo   : NeoScript (console.exe, Release x64)
-Lua   : Lua 5.5.0 (official Win64 binary)
-C++   : MSVC 19.51 /O2 /std:c++17 (x64)
-```
-
-These settings describe the recorded benchmark run, including its C++ reference build.
-NeoScript's minimum supported C++ standard is C++11.
-
-Lower is better. **ms**, best of 5 in-process repetitions, minimum across 7 interleaved runs of the
-three languages. `x Neo` = how many times faster than Neo (so `1.22x` means Lua finished in 82% of
-Neo's time; `0.88x` means it was slower than Neo).
-
-| Benchmark | What it stresses | Neo (ms) | Lua (ms) | C++ (ms) | Lua vs Neo | C++ vs Neo |
-| :-------- | :--------------- | -------: | -------: | -------: | ---------: | ---------: |
-| `loop_sum`      | integer loop, VM dispatch floor | **159** | 185 |  12.1 | 0.86x | 13.1x |
-| `float_math`    | float mul/add/sub chain         | **203** | 294 |  55.9 | 0.69x |  3.6x |
-| `func_call`     | script function call overhead   | **123** | 151 |   4.1 | 0.81x | 29.9x |
-| `fib_recursive` | recursion, fib(32)              |  **84** |  86 |   6.6 | 0.98x | 12.8x |
-| `array_rw`      | sequential array write + read   |  **39** |  44 |   2.3 | 0.89x | 16.7x |
-| `map_str`       | string-key hash lookup          |  **32** |  37 |  56.4 | 0.86x |  0.6x |
-| `string_ops`    | string build + length           |  **54** | 137 |  13.0 | 0.39x |  4.2x |
-| `particles`     | game-style float + array sim    |  **45** |  47 |   3.3 | 0.96x | 13.7x |
-| **total**       |                                 | **739** |  981 | 153.7 | 0.75x |  4.8x |
-
-- Neo leads on all 8 benchmarks. `particles` has the next-smallest margin after `fib_recursive`.
-- `fib_recursive` is where the lead is thinnest — 0.98x here against 0.75x overall. Almost all of
-  its work is call and return, so there is no loop body for Neo's cheaper dispatch to win back.
-- C++ is a reference ceiling, not a peer. The exception is `map_str`, where
-  `std::unordered_map<std::string,…>` is slower than both VMs — the interpreters cache the string
-  hash; the C++ map rehashes on every lookup.
-- These are ordinary `/LTCG` figures, the same build anyone gets by default.
-
-**Method.** The three files implement the same algorithm and each returns a checksum that must match
-across languages — that is what proves they did the same work. Each language times only the measured
-region with its own clock, so start-up and compilation are excluded. Figures are best-of-5 in-process
-repetitions, minimum across 7 runs, with the three languages interleaved inside each run.
-
-Two rules follow from how noisy this suite is. **Compare within one session, not across sessions** —
-machine load moved *Lua's* numbers 20-30% with its source untouched. And **A/B every change**:
-build-to-build variation is code layout, not measurement noise, so a move under ~10% on `float_math`,
-`particles` or `map_str` is layout rather than a real regression.
-
-Layout moves for reasons that have nothing to do with the code being measured — moving a function
-between translation units, or marking one cold, reshuffles block placement across the whole
-interpreter. Those three rows react and `loop_sum` / `array_rw` do not, which is the signature to
-look for before calling something a regression. The durable fix is PGO, since `/LTCG` places blocks
-from heuristics while it has no idea which branches actually run.
-
-All compiler and VM changes are covered by the regression suites: `console.exe --smoke` (2,828
-compiler cases) and `console.exe --v2smoke` (host API, closure lifetime, leak counters).
-
-### var data structure
-	- null: represents no value; uninitialized variables are null
-	- bool: stores true or false
-	- int: stores a 4-byte integer
-	- float: stores an 8-byte double-precision float (`NS_FLOAT` is `typedef double`).
-	  `type()` reports "float"; there is no double type
-	- string: stores UTF-8 text; length and index positions count characters, not bytes
-	- list: an array-like container
-	- map: a key/value container
-	- set: a key-only container, built with `system.set(list)`
-	- Vector2 / Vector3 / Vector4 / Quaternion: inline value types, not lists
-	  - see "Vector value types" above
-	- function: a named function or a captured anonymous function
-	- coroutine / module / async: engine object handles
-	- native object: a symbol the host bound with `RegisterObject`/`BindObject`
-	  (`GameObject`, `Host`, ...). `type()` reports "null", but a bound value is not equal to null.
-
-`==` / `!=` compare list/map/set/array storage identity, named-function identity, and
-closure/coroutine/runtime-module/async instance identity. Separately allocated containers
-with equal contents are unequal. Native objects compare by registered type and host handle,
-not by the allocation of their return wrappers. Reference map keys and set elements share
-these identity rules. See [reference comparison](docs/ScriptAuthoring.md#reference-comparison-and-reference-keys).
-Host `BindObject` rebinding replaces the global slot; existing aliases and map keys retain
-the previous object rather than changing identity in place.
-
-
-### Neo Script reserved words
-	- var: declares a variable
-	- const: declares a compile-time constant - see "Script `const`" above
-	- fun: declares a function. `fun(...) { ... }` without a name is an anonymous function; it
-	  captures the enclosing function's locals **by value** — see "Captured anonymous functions"
-	  in [docs/Embedding.md](docs/Embedding.md) for what that does and does not share
-	- import: imports a module from the Lib directory
-	- public: makes a top-level variable, constant or function visible to other modules
-	  through their import alias
-	- export: makes a variable or function available to C++ by name. It does not make the
-	  declaration visible to other modules; write `export public` when both are needed
-	- tostring (x) / toint (x) / tofloat (x) / tosize (x) / type (x) / sleep (x):
-	  built-in intrinsics. Return types and exact semantics:
-	  [`docs/API.md`](docs/API.md) section 1
-	- return [x]: returns from the current function, optionally with x
-	- break: exits the current loop
-	- yield: suspends the current coroutine; execution resumes at the next
-	  `coroutine.resume`
-	- continue: starts the next loop iteration
-	- if (x) / else / else if: C-style conditional chain; the legacy `elif` syntax is removed.
-	  **x must be a bool** - only `true` takes the branch. `if (1)`, `if ("a")` and
-	  `if (someMap)` are all false; there is no truthiness conversion. Same for `while`
-	- switch / case / default: see "switch statement" below
-	- for: `for (var a in start, end [, step])` — see "for loop" below. `end` is **exclusive**
-	  and `step` is optional (defaults to 1)
-	- foreach: iterates a map, list, array, or set
-		- map: `foreach (var key, value in map)` or `foreach (var key in map)`
-		- list / array / set: single variable only, `foreach (var value in list)`
-		  (two-variable form is not supported and reports a runtime error)
-	- while: `while (condition) { ... }`, C semantics. There is no `do ... while`
-	- true / false: boolean values
-	- null: no value
-	- __LINE__: the current source line, substituted at compile time
-	- ++ / --: increments or decrements a variable by one
-	- && / ||: logical operators, equivalent to C semantics (short-circuit evaluation:
-	  the right operand is not evaluated when the result is already decided)
-	- & / | / ^ / << / >>: bitwise operators, equivalent to C semantics and precedence
-	  (`&` binds tighter than `^`, which binds tighter than `|`)
-	- > / < / >= / <=: comparison operators, equivalent to C semantics
-	- x..y: converts x and y to strings and concatenates them
-
-### Function and variable declaration order
-
-The compiler collects named function signatures within each module before compiling
-its bodies. Calls and function references may precede the definition, and mutually
-recursive functions need no extra declarations. The old `fun F(var x);` forward
-declaration syntax is a compile error; keep only `fun F(var x) { ... }`.
-
-Variables (including globals) and `const` still **must be declared before use**.
-A function body cannot read a global declared farther down the file. Initializers
-and imports retain their source order; anonymous functions retain their capture rules.
-Visibility has two independent keywords. `public` makes a top-level `var`, `const` or
-`fun` visible to other modules through their import alias; `export` makes a `var` or `fun`
-visible to the C++ host by name. Neither implies the other: `export fun F()` is not
-callable through an alias, and `public var x` is not a host global. Write `export public`
-(or `public export`) when both are needed; repeating a keyword, or `export const`, is a
-compile error. `import`, `const`, `public` and `export` are accepted only at file scope,
-never inside a block or a function. `alias.name` on a `public var` reads and writes the variable's global slot
-directly (selectors, compound assignment and increment work as on a local global, with no
-call cost). Constants, including public ones, must precede their use in their own file.
-
-Top-level `var` is private to its file. Two modules can declare the same name;
-reading or writing another module's variable by an unqualified name is a compile error,
-and a non-public variable or function is not visible through an alias either.
-Export names must be unique within a compiled program. Globals registered by the host
-remain visible in all modules. Getter-returned lists, maps and arrays share their storage;
-returning one does not make it immutable or automatically copy it.
-
-For standalone headless hosts, `console --file test.ns --globals Host,Input` explicitly
-registers host symbols before compilation. Initialize them with `Host = {...};` in the
-test root, before importing consumers. Do not redeclare these names with `var`.
-
-### for loop
-```cpp
-for (var i in 0, n)        // step omitted -> 1
-    total += i;
-
-for (var i in 0, n, 2)     // every other element
-    total += i;
-
-for (var i in n, 0, -1)    // counts down: n, n-1, ... 1
-    total += i;
-```
-
-- `end` is **exclusive**: `for (var i in 0, 5)` runs with `i` = 0,1,2,3,4.
-- `step` is optional and defaults to `1`, matching Lua/Python. Both `for (var i in 0, n)` and
-  `for (var i in 0, n, 1)` are accepted and compile identically.
-- `step` may be **negative** to count down. Direction is decided at run time from the sign of
-  `step`, so `begin`/`end`/`step` can all be runtime values (function arguments, fields, …),
-  which the compiler cannot inspect.
-- If the direction contradicts the range the loop simply **runs zero times** — `for (var i in 0, 5, -1)`
-  does not spin forever.
-- `step == 0` raises the runtime error `'for' step is zero` instead of looping forever. This is
-  checked for variables too, not just literals.
-
-### switch statement
-`switch` dispatches on a value through a compile-time table, so matching cost does not
-grow with the number of cases.
-
-```cpp
-switch (command)
-{
-case CMD_FIRE:          // const / compile-time constant expressions are allowed
-    Fire();
-case 2, 3:              // one body can match several values
-    MoveTo(command);
-case "reload":
-    Reload();
-default:
-    Idle();
-}
-```
-
-Rules:
-	- `case` values must be compile-time constants of type `bool`, `int` or `string`.
-	  Constant expressions and `const` / host defines are allowed (`case 1 + 2:`, `case CMD_FIRE:`).
-	- **`float` is not allowed as a case value** and is a compile error, because matching would
-	  depend on exact floating-point equality. Use `int` or `string` keys instead.
-	- Matching is a **strict type match**: `true != 1`, `"1" != 1`.
-	- Strings compare as exact UTF-8 bytes.
-	- Duplicate case values and a duplicate `default` are compile errors.
-	- `default` is optional and may appear anywhere. With no match and no `default`,
-	  execution continues after the switch.
-	- **There is no fallthrough.** Each case body jumps to the end of the switch when it finishes.
-	- `break` exits the innermost switch only; inside a loop it does not exit the loop.
-	- `continue` still applies to the innermost loop, and `return` behaves as usual.
-	- If the switch value is a type that cannot be a case key (float, map, list, vector, null, ...),
-	  the `default` branch is taken.
-
-### Built-in functions
-See **[`docs/API.md`](docs/API.md)** — the full list with signatures and argument types, kept in
-step with `NeoSource/NeoLib.cpp`. It is deliberately not repeated here.
-
-### Comment
-	- //: single-line comment
-	- /* */: multi-line comment
-
-### Benchmark code
-
-All three files run the **same eight benchmarks with the same algorithm**; only the syntax differs.
-Each returns a checksum that must match across languages.
-
-- [`Samples/bench/bench.ns`](Samples/bench/bench.ns) — NeoScript
-- [`Samples/bench/bench.lua`](Samples/bench/bench.lua) — Lua
-- [`Samples/bench/bench.cpp`](Samples/bench/bench.cpp) — C++ (build with `build_cpp.bat`)
-
-Run: `console.exe --file Samples/bench/bench.ns`
+`RuntimeDesc::httpTransport` in the inherited backend. Only the legacy `.ns` console
+connects [libcurl](https://curl.se/libcurl/) for HTTP/HTTPS; the NeoCore `.nc` console
+does not build curl or register an HTTP transport. The Windows legacy-console build
+downloads pinned libcurl 8.23.0 (SHA-256 verified) using a CMake release supporting
+Visual Studio 2026, links it statically, and uses Schannel with the Windows
+certificate store. Core-only builds do not fetch curl. See
+[transport integration](docs/Embedding.md#http-and-https-transport). Include
+`THIRD_PARTY_NOTICES.txt` when distributing the legacy console.
+The inherited backend uses bundled [PCRE2](ThirdParty/pcre2) for regular expressions;
+retain its license notices when distributing it. HTTP and regex APIs are not yet
+exposed by the static frontend. See the [legacy API](docs/API.md#6-string-methods).

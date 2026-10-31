@@ -5,6 +5,7 @@
 #include "NeoNumeric.h"
 #include "NeoVMHash.h"
 #include <memory>
+namespace NeoCore { struct TypedIR; }
 
 namespace NeoScript
 {
@@ -809,6 +810,8 @@ struct NeoCompilerParam
 
 	std::string* err = nullptr;
 	std::string sourceName;
+	std::string coreIntrinsicPrefix; // 타입 검사한 NeoCore 식의 컴파일 전용 명령 이름.
+	const NeoCore::TypedIR* coreTypedIR = nullptr;
 	NeoCompileDiagnostic* diagnostic = nullptr;
 	bool putASM = false;
 	bool debug = false;

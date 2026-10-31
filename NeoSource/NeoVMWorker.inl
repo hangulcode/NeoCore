@@ -889,6 +889,12 @@ NEOS_FORCEINLINE void CNeoVMWorker::StoreNumberFloat(VarInfo* r, NS_FLOAT v)
 	r->SetType(VAR_FLOAT);
 	r->_float = v;
 }
+NEOS_FORCEINLINE void CNeoVMWorker::StoreNumberBool(VarInfo* r, bool v)
+{
+	if (r->IsAllocType()) ReleaseBeforeNumber(r);
+	r->SetType(VAR_BOOL);
+	r->_bl = v;
+}
 // 산술 결과가 참조형 값을 덮어쓰는 드문 경우만 여기로 온다. 핫 경로에서 해제 코드를 떼어 두는 것이 목적이다.
 NEOS_NOINLINE void CNeoVMWorker::ReleaseBeforeNumber(VarInfo* r)
 {
@@ -1076,6 +1082,14 @@ NEOS_NOINLINE bool CNeoVMWorker::CheckIntegerDivisionOverflow(NS_INT dividend)
 	return true;
 }
 
+NEOS_FORCEINLINE void CNeoVMWorker::DivI64(VarInfo* r, const VarInfo* left, const VarInfo* right)
+{
+	// 목적지가 입력과 같은 슬롯이어도 오류 검사와 계산을 끝낸 뒤 결과를 저장한다.
+	const NS_INT dividend = left->_int, divisor = right->_int;
+	if (CheckIntegerDivision(dividend, divisor))
+		StoreNumberInt(r, dividend / divisor);
+}
+
 // 정수·실수 조합을 fall-through 직선 코드로 둔다. VAR_INT=0, VAR_FLOAT=1 이라 (t1|t2)==0 이면 정수끼리,
 // (t1|t2)<=1 이면 숫자끼리다. 문자열/벡터/메타/에러는 Div3Rare 로 분리 — 디스패치 루프에 인라인되므로 본문 크기가 성능이다.
 NEOS_FORCEINLINE void CNeoVMWorker::Div3(VarInfo* r, VarInfo* v1, VarInfo* v2)
@@ -1237,56 +1251,6 @@ NEOS_NOINLINE void CNeoVMWorker::RSh3Rare(VarInfo* r, VarInfo* v1, VarInfo* v2)
 		break;
 	}
 	SetErrorOperator(">>", v1, v2);
-}
-NEOS_FORCEINLINE void CNeoVMWorker::And3(VarInfo* r, VarInfo* v1, VarInfo* v2)
-{
-	switch (v1->GetType())
-	{
-	case VAR_INT:
-		if (v2->GetType() == VAR_INT)
-		{
-			Var_SetInt(r, v1->_int & v2->_int);
-			return;
-		}
-		break;
-	case VAR_FLOAT:
-		break;
-	case VAR_STRING:
-		break;
-	case VAR_MAP:
-		break;
-	case VAR_LIST:
-		break;
-	case VAR_SET:
-		break;
-	default:
-		break;
-	}
-	SetErrorOperator("&", v1, v2);
-}
-NEOS_FORCEINLINE void CNeoVMWorker::Or3(VarInfo* r, VarInfo* v1, VarInfo* v2)
-{
-	switch (v1->GetType())
-	{
-	case VAR_INT:
-		if (v2->GetType() == VAR_INT)
-		{
-			Var_SetInt(r, v1->_int | v2->_int);
-			return;
-		}
-		break;
-	case VAR_FLOAT:
-		break;
-	case VAR_STRING:
-		break;
-	case VAR_MAP:
-		break;
-	case VAR_LIST:
-		break;
-	default:
-		break;
-	}
-	SetErrorOperator("|", v1, v2);
 }
 NEOS_FORCEINLINE void CNeoVMWorker::Xor3(VarInfo* r, VarInfo* v1, VarInfo* v2)
 {

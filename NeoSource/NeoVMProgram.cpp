@@ -720,8 +720,6 @@ bool CNeoVMProgram::VerifyCode(const std::vector<int>& owners, std::string* err)
         case NOP_PERSENT3:
         case NOP_LSHIFT3:
         case NOP_RSHIFT3:
-        case NOP_AND3:
-        case NOP_OR3:
         case NOP_XOR3:
         case NOP_GREAT:
         case NOP_GREAT_EQ:
@@ -790,7 +788,6 @@ bool CNeoVMProgram::VerifyCode(const std::vector<int>& owners, std::string* err)
         case NOP_TABLE_DIV2:
         case NOP_TABLE_PERSENT2: slots = 7; writes = 1; break;
         case NOP_LIST_ALLOC: slots = writes = 1; break;
-        case NOP_VERIFY_TYPE: slots = 1; break;
         case NOP_CHANGE_INT: slots = writes = 1; break;
         case NOP_YIELD: break;
         case NOP_JMP_RANGE_INSIDE:
@@ -805,7 +802,27 @@ bool CNeoVMProgram::VerifyCode(const std::vector<int>& owners, std::string* err)
             slots = 7; writes = 4; break;
         case NOP_NONE: break;
         case NOP_ERROR: terminal = true; break;
-        default: return reject("Invalid saved instruction opcode");
+        default:
+        {
+            const TypedOpInfo* typed = GetTypedOpInfo(op.op);
+            const AggregateOpInfo* aggregate = GetAggregateOpInfo(op.op);
+            if (typed == nullptr && aggregate == nullptr) return reject("Invalid saved instruction opcode");
+            slots = typed ? typed->slots : aggregate->shape == AggregateOpShape::Binary ? 7 : 3;
+            writes = typed ? typed->writes : 1;
+            jump = typed && typed->jump;
+            const u8 allowedFlags = static_cast<u8>(((slots & 1) ? L1 : 0) | ((slots & 2) ? L2 : 0) | ((slots & 4) ? L3 : 0)
+                | (typed && typed->comparison ? NEOS_OP_COMPARE_INVERT : 0));
+            if (op.argFlag & ~allowedFlags) return reject("Invalid typed instruction flags");
+            if (aggregate && aggregate->shape != AggregateOpShape::Binary)
+            {
+                if (op.n3 < 0 || op.n3 > aggregate->controlMax) return reject("Invalid typed aggregate control");
+                if (aggregate->shape == AggregateOpShape::Window &&
+                    (!(op.argFlag & L2) || op.n2 < 0 ||
+                        static_cast<int64_t>(op.n2) + aggregate->arity > fun._stackSlotCount))
+                    return reject("Invalid typed aggregate argument window");
+            }
+            break;
+        }
         }
         if ((op.op == NOP_CALL || op.op == NOP_PTRCALL || op.op == NOP_PTRCALL2) && argumentCount < 0)
             return reject("Invalid call argument count");
@@ -1181,14 +1198,6 @@ bool FormatDebugOperation(const DebugInstructionFormatContext& context, std::str
 		byteCount = OpFlagByteChars + 2 * 3;
 		outAssembly = FormatAsm("RSHF  %s = %s >> %s", context.operand(1).c_str(), context.operand(2).c_str(), context.operand(3).c_str());
 		break;
-	case NOP_AND3:
-		byteCount = OpFlagByteChars + 2 * 3;
-		outAssembly = FormatAsm("AND  %s = %s & %s", context.operand(1).c_str(), context.operand(2).c_str(), context.operand(3).c_str());
-		break;
-	case NOP_OR3:
-		byteCount = OpFlagByteChars + 2 * 3;
-		outAssembly = FormatAsm("OR   %s = %s | %s", context.operand(1).c_str(), context.operand(2).c_str(), context.operand(3).c_str());
-		break;
 	case NOP_XOR3:
 		byteCount = OpFlagByteChars + 2 * 3;
 		outAssembly = FormatAsm("XOR  %s = %s ^ %s", context.operand(1).c_str(), context.operand(2).c_str(), context.operand(3).c_str());
@@ -1428,10 +1437,6 @@ bool FormatDebugOperation(const DebugInstructionFormatContext& context, std::str
 		byteCount = OpFlagByteChars + 2 * 3;
 		outAssembly = FormatAsm("List Alloc %s, %d", context.operand(1).c_str(), v.n23);
 		break;
-	case NOP_VERIFY_TYPE:
-		byteCount = OpFlagByteChars + 2 * 2;
-		outAssembly = FormatAsm("Verify %s %s", context.operand(1).c_str(), GetDataType((VAR_TYPE)v.n2).c_str());
-		break;
 	case NOP_CHANGE_INT:
 		byteCount = OpFlagByteChars + 2 * 1;
 		outAssembly = FormatAsm("Change Int %s", context.operand(1).c_str());
@@ -1480,8 +1485,35 @@ bool FormatDebugOperation(const DebugInstructionFormatContext& context, std::str
 		outAssembly = FormatAsm("Begin");
 		break;
 	default:
-		{ outAssembly = FormatAsm("?? op(%d)", (int)v.op); known = false; }
+	{
+		const TypedOpInfo* typed = GetTypedOpInfo(v.op);
+		const AggregateOpInfo* aggregate = GetAggregateOpInfo(v.op);
+		if (typed != nullptr)
+		{
+			byteCount = OpFlagByteChars + 2 * (typed->arity + 1);
+			const char* invert = typed->comparison && (v.argFlag & NEOS_OP_COMPARE_INVERT) ? ".NOT" : "";
+			if (typed->jump)
+				outAssembly = FormatAsm("%s%s %d%s, %s, %s", typed->name, invert, v.n1,
+					context.jumpLabel(context.opIndex + 1 + v.n1).c_str(), context.operand(2).c_str(), context.operand(3).c_str());
+			else if (typed->arity == 2)
+				outAssembly = FormatAsm("%s%s %s = %s, %s", typed->name, invert, context.operand(1).c_str(), context.operand(2).c_str(), context.operand(3).c_str());
+			else outAssembly = FormatAsm("%s %s = %s", typed->name, context.operand(1).c_str(), context.operand(2).c_str());
+		}
+		else if (aggregate != nullptr)
+		{
+			byteCount = static_cast<int>(sizeof(SVMOperation));
+			if (aggregate->shape == AggregateOpShape::Binary)
+				outAssembly = FormatAsm("%s %s = %s, %s", aggregate->name, context.operand(1).c_str(), context.operand(2).c_str(), context.operand(3).c_str());
+			else if (aggregate->shape == AggregateOpShape::Window)
+				outAssembly = FormatAsm("%s %s = window(%s, %d), control(%d)", aggregate->name, context.operand(1).c_str(), context.operand(2).c_str(), aggregate->arity, v.n3);
+			else if (aggregate->controlMax)
+				outAssembly = FormatAsm("%s %s = %s[%d]", aggregate->name, context.operand(1).c_str(), context.operand(2).c_str(), v.n3);
+			else
+				outAssembly = FormatAsm("%s %s = %s", aggregate->name, context.operand(1).c_str(), context.operand(2).c_str());
+		}
+		else { outAssembly = FormatAsm("?? op(%d)", (int)v.op); known = false; }
 		break;
+	}
 	}
 
 	if (outByteCount != nullptr)

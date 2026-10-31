@@ -1,13 +1,17 @@
 # Embedding NeoScript in a C++ host
 
+This document covers the inherited NeoScript backend. For typed NeoCore programs,
+use [NeoCore.h and the current build instructions](../ReadMe.md#build-and-run) and
+the [typed host binding guide](HostBindings.md).
+
 For a complete buildable project, start with the
 [mini game host](../Samples/minigame/README.md). It registers native objects,
 compiles once, creates two independent instances, dispatches script callbacks,
 and cleans up handles. The snippets below explain the API in more detail.
 
 The public host API (`NeoScript.h`) and the internal engine surface behind it.
-For the language see [../ReadMe.md](../ReadMe.md); for script-callable functions
-see [API.md](API.md).
+For the inherited language see [ScriptAuthoring.md](ScriptAuthoring.md); for
+script-callable functions see [API.md](API.md).
 
 For dimension-aware Vec2/3/4 and quaternion marshaling, see [Sized native vector access](native-vector-api.md).
 
@@ -20,11 +24,12 @@ Remove `NeoSource/*.cpp` from the host's compile items to avoid duplicate defini
 An intermediate static library may reference the project with **Link Library Dependencies**
 disabled; the final executable must still reference and link NeoScript directly.
 
-`Windows/NeoScript.sln` builds the library by itself. `Samples/console/console.sln`
-uses the same project and output files. From a Visual Studio developer prompt:
+`Windows/NeoScript.vcxproj` builds the legacy library directly. The inherited console project,
+`Samples/console/console.vcxproj`, uses the same library project and output files.
+Build that project directly when maintaining the `.ns` runner. From a Visual Studio developer prompt:
 
 ```bat
-MSBuild Windows\NeoScript.sln /p:Configuration=Release /p:Platform=x64 /m
+MSBuild Windows\NeoScript.vcxproj /p:Configuration=Release /p:Platform=x64 /m
 ```
 
 | Configuration | Output under `Build/Windows/lib` | Host CRT |
@@ -545,7 +550,13 @@ result before it can return to Script A, so Script B does not own a resumable ex
 
 ### Compiled image capacity
 
-The current image format is **0143**, separating inline Vector2/3 from heap-backed Vector4 internally. Rebuild native hosts and regenerate older images. Public C++/C vector APIs and C ABI layouts are unchanged. The format also retains the fused compound-assignment read opcodes (`READ_ADD/SUB/MUL/DIV`), storing scalar floating-point constants as double and retaining signed 64-bit integer values.
+The current image format is **0147**. Typed instructions were added and unused
+opcodes removed, changing instruction numbers; rebuild native hosts and regenerate
+older images. The earlier 0143 format introduced the inline Vector2/3 versus
+heap-backed Vector4 split. Public C++/C vector APIs and C ABI layouts remain
+unchanged by these opcode changes. The format retains fused compound-assignment
+read opcodes (`READ_ADD/SUB/MUL/DIV`), double scalar floating-point constants, and
+signed 64-bit integer values.
 Recompile older cached images; they are rejected rather than interpreted using the new layout.
 `MOVI` retains a signed 32-bit immediate, sign-extended to 64 bits. Larger integer literals
 use the constant pool, with `LOADK` when needed; instructions remain eight bytes.
@@ -558,7 +569,7 @@ slow path that reproduces the separate READ and arithmetic instructions, includi
 messages. A host getter's pause or coroutine-transfer request takes effect after the
 arithmetic. Three-operand and store shapes (`x = a[i] op b[j]`, `e[i] = a[k] op y`) are not
 fused: measured on this VM, either as an out-of-line call or inlined into the dispatch loop they
-ran slower than the separate instructions. Recompile images older than format 0143.
+ran slower than the separate instructions. Recompile images older than format 0147.
 
 Public scalar integer arguments, results, globals, map/list values, and integer array
 elements use `int64_t`. C# exposes them as `long` through C ABI 7. Rebuild hosts and plugins
@@ -693,7 +704,7 @@ size. PCRE2 additionally enforces work, backtracking, heap and text limits, and 
 see the [regex limits and syntax](API.md#6-string-methods). These resource limits do not promise a
 wall-clock deadline; regex remains unavailable inside time-limited VM invocations.
 
-`Samples/console/HttpTransport.cpp` is the portable libcurl adapter. The Windows console project
+`Samples/console/HttpTransport.cpp` is the portable libcurl adapter. The legacy Windows `.ns` console project
 builds static libcurl through `BuildConfig/ConsoleCurl.targets`; its cached source and libraries live
 under `Build/curl-<Platform>`. A CMake release supporting Visual Studio 2026 (tested with 4.3.2) and network access are needed
 on the first build.
@@ -702,8 +713,9 @@ certificate store; no extra TLS DLL or CA bundle is shipped. Peer and hostname v
 HTTP error status codes still count as completed transfers; redirects are not followed.
 The adapter can also be compiled by another host against libcurl 7.85+ built with HTTPS support.
 Non-Windows builds use that libcurl installation's TLS backend and CA configuration.
-On Windows, the console initializes libcurl on the first HTTP request, so scripts that do not use
+On Windows, the legacy console initializes libcurl on the first HTTP request, so scripts that do not use
 HTTP avoid network initialization at startup. Concurrent first requests share one initialization.
 
-Core-only CMake and Visual Studio builds do not download or link libcurl. Redistribute the curl
-copyright notice in `THIRD_PARTY_NOTICES.txt` with console binaries.
+Core-only CMake and Visual Studio builds and the NeoCore `.nc` console do not download
+or link libcurl. Redistribute the curl copyright notice in `THIRD_PARTY_NOTICES.txt`
+with legacy console binaries.

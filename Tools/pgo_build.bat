@@ -21,7 +21,7 @@ REM that matters, otherwise the optimizer places code from a stale profile.
 REM ---------------------------------------------------------------------------
 
 set ROOT=%~dp0..
-set SLN=%ROOT%\Samples\console\console.sln
+set PROJECT=%ROOT%\Samples\console\console.vcxproj
 set OUTDIR=%ROOT%\Samples\console\x64\Release
 set EXE=%OUTDIR%\console.exe
 set VS=C:\Program Files\Microsoft Visual Studio\18\Community
@@ -30,7 +30,7 @@ set MSBUILD=%VS%\MSBuild\Current\Bin\amd64\MSBuild.exe
 call "%VS%\VC\Auxiliary\Build\vcvars64.bat" >nul || goto :fail
 
 echo [1/3] instrumented build
-"%MSBUILD%" "%SLN%" /t:Rebuild /p:Configuration=Release /p:Platform=x64 ^
+"%MSBUILD%" "%PROJECT%" /t:Rebuild /p:Configuration=Release /p:Platform=x64 ^
     /p:NeoLtcgMode=PGInstrument /m /v:quiet || goto :fail
 
 echo [2/3] training run
@@ -50,7 +50,7 @@ echo [3/3] merge and optimize
 pgomgr /merge "%OUTDIR%\console.pgd" >nul || goto :fail
 REM Delete objects only - console.pgd has to stay for the optimizing link.
 del /q "%OUTDIR%\*.obj" "%OUTDIR%\*.pgc" "%OUTDIR%\*.iobj" "%OUTDIR%\*.ipdb" "%EXE%" 2>nul
-"%MSBUILD%" "%SLN%" /p:Configuration=Release /p:Platform=x64 ^
+"%MSBUILD%" "%PROJECT%" /p:Configuration=Release /p:Platform=x64 ^
     /p:NeoLtcgMode=PGOptimization /m /v:quiet || goto :fail
 
 echo.

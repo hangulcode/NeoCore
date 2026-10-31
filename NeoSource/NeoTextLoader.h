@@ -145,6 +145,9 @@ public:
 	std::list<SToken> m_sTokenQueue;
 	std::string m_sErrorString;
 	std::string m_sSourceName;
+	std::string m_coreIntrinsicPrefix; // 현재 소스에만 허용하며 import로 전파하지 않는다.
+	const NeoCore::TypedIR* m_coreTypedIR = nullptr;
+	const std::vector<unsigned char>* m_coreIREffects = nullptr;
 	NeoCompileDiagnostic m_errorLocation;
 //	std::set<std::string> m_sImports; // Document Load State
 	std::string	m_sModuleName;

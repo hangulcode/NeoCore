@@ -1,80 +1,76 @@
-﻿# NeoScript — 작업 규칙
+# NeoCore — working rules
 
-> 이 파일이 유일한 진입점이다. CLAUDE.md / GEMINI.md 는 여기를 가리킨다. 80줄을 넘기지 않는다. 스크립트 작성 전 [ScriptAuthoring.md](docs/ScriptAuthoring.md)를 먼저 읽고, 세부는 `ReadMe.md`와 `docs/`를 확인한다.
+This is the single entry point; `CLAUDE.md` and `GEMINI.md` refer here. Keep this file within 80 lines.
+Read [StaticTyping.md](docs/StaticTyping.md) before changing the language. The inherited NeoScript documents describe the backend, not the current NeoCore frontend.
 
-## 함께 쓰는 트리
+## Repository and shared work
 
-이 저장소는 **공개**다. 사내 저장소 이름·경로·게임 프로젝트 이름을 여기에 적지 않는다.
+- This repository is public. Do not record private repository names, engine paths, or game-project names here.
+- Work in the NeoCore checkout. The original NeoScript checkout and engine/content repositories are separate projects.
+- Preserve other agents' and the user's edits. Do not reset shared files with `git checkout --`; isolate or back up measurement changes.
+- Resource names are lowercase. Code comments are Korean; documents and commit messages are English.
+- Source files containing Korean must use UTF-8 BOM for MSVC. Preserve existing line endings.
 
-| 트리 | 성격 |
-| :--- | :--- |
-| `D:\Git\NeoScript` | 스크립트 VM · 컴파일러 (**git**) — 여기 |
-| 엔진 저장소 | 이 VM 을 쓰는 호스트. Windows는 공통 정적 라이브러리를 링크한다 (**별도 git**) |
-| 콘텐츠 저장소 | 게임 리소스와 스크립트 (**SVN**) |
+## Commits
 
-## 절대 규칙
+- Use `[Tool] English subject`, with an English body describing the change and reason. Do not put performance numbers in commit messages.
+- Use `[Claude]`, `[Codex]`, or `[Gemini]` for the agent making the commit. Preserve the configured author/committer identity.
+- Codex-authored changes require a blank line followed by `Co-authored-by: Codex <codex@openai.com>`.
+- Commit only when requested. Push only when the user explicitly requests a push.
 
-1. 커밋 메시지는 `[도구이름] 영문 제목`. 본문도 영문으로 쓴다. **커밋한 주체를 앞에 밝힌다.**
-   - Claude 가 커밋하면 `[Claude]`
-   - Codex 가 커밋하면 `[Codex]` + 본문 끝 `Co-authored-by: Codex <codex@openai.com>`
-   - Gemini 가 커밋하면 `[Gemini]`
-   **성능 수치는 넣지 않는다.** 수정 항목과 이유만 쓴다.
-2. **푸쉬는 하지 않는다.** 커밋까지만.
-3. 코드 주석은 **한글**, 문서는 **영문**으로 쓴다. 한글이 든 소스는 **UTF-8 BOM**. 없으면 MSVC 가 CP949 로 읽어 주석이 다음 줄을 삼킨다.
-4. 리소스 이름은 소문자로 쓴다.
-5. 워킹트리를 되돌릴 때 `git checkout --` 로 남의 수정을 날리지 않는다. 계측용 수정은 백업 후 진행한다.
-6. **`switch`의 `case`는 반드시 값의 오름차순으로 배치한다.** enum은 실제 열거값 순서를 따르며, `default`는 마지막에 둔다. 재배치할 때 fallthrough 동작을 보존한다.
-7. **코어·공개 API·C ABI·콘솔·미니게임은 C++11 호환을 유지한다.** C++14 이상 전용 문법·라이브러리를 추가하지 않는다.
+## Language and implementation
 
-## 빌드 · 회귀
+- NeoCore requires explicit declarations: `int x;`, `int F(int x) { ... }`, `void F() { ... }`. Do not reintroduce `var` or `fun` in NeoCore source.
+- NeoCore source uses `.nc`. Keep `.ns` as legacy backend fixtures; do not attach the inherited dynamic LSP/parser to `.nc` as a typed language service.
+- `int` is int64; `float` is binary64. `int32` and `float32` are not user-declarable scalar types; 32-bit storage belongs only to compact arrays and vector components.
+- Nullability is explicit (`T?`); reject unproven null access. Numeric/bool/vector defaults are initialized; nonnullable references require initializers.
+- Functions can call later functions and recurse. Variables and constants must be declared before use, including file variables referenced from function bodies.
+- Keep evaluation order, overflow/division behavior, value/reference semantics, and host error unwinding unless a language change is explicitly approved.
+- Numeric expressions emit from typed IR; declarations/control flow and aggregate intrinsics retain a textual bridge. Calls/assignments/selectors inside IR use ordered compatibility leaves. Array/vector writes expand without runtime helpers; lists/maps, structs and host write composition retain generic paths. Unsupported features must fail explicitly.
+- Preserve typed operand provenance; never infer a payload type from a variable name or debug line. Slot reuse still requires destination reference cleanup. Typed op metadata is centralized in `NeoVMTypedOps.h`.
+- Structs, vector arithmetic, typed arrays, scalar lists/maps, and scalar/vector/native host schemas are checked today; compact arrays/sets, nested collections, imports, closures, and tooling remain separate milestones. Do not claim the static VM is finished.
+- Vector components are float32; scalar reads are float64. Quaternion constructors/host values use w,x,y,z. Component writes preserve value semantics and stored-value results; host writes resolve the saved receiver ID separately for getter and setter.
+- Mutable `T&` references bind once to exact-type named variables/parameters or struct fields. Preserve field aliases across whole-struct assignment. No pointers, rebinding, reference returns/escape, collection-element/host-property refs, or range-loop refs. The host scalar API does not bind refs.
+- Keep the core, public API, C ABI, console, and mini game C++11-compatible. Do not introduce C++14+ syntax or library dependencies. Vendored PCRE2 requires C99.
+- Order `switch` cases by actual enum/numeric value; put `default` last and preserve fallthrough.
 
-```
-빌드 : Samples\console\console.sln   Configuration=Release Platform=x64
-회귀 : console.exe --smoke                      (compiler regression 2828)
-       console.exe --run cycle                  (cycle_ref 368)
-       console.exe --v2smoke                    (0 failures)
-       console.exe --compiler-error-regression   (28/28)
-```
+## Build and regression
 
-**회귀는 `Samples\console` 에서 돌린다.** 테스트가 `../../TestScript/` 를 상대 경로로 열기 때문에, exe 가 있는 폴더에서 돌리면 `file read error` 로 엉뚱하게 실패한다.
-
-`--debug-smoke` 는 이전부터 실패한다(알려진 상태).
-
-**비 Windows 확인은 반드시 한다.** 과거 `_countof` 를 무방비로 써서 Linux/Android 빌드를 깬 적이 있다.
-```
-NDK clang : %LOCALAPPDATA%\Android\Sdk\ndk\25.1.8937393\toolchains\llvm\prebuilt\windows-x86_64\bin\clang++.exe
-            --target=aarch64-linux-android24 -std=c++11 -Werror=c++14-extensions -Werror=c++17-extensions -fsyntax-only -INeoSource <각 .cpp>
+```sh
+cmake -S . -B Build/neocore -DNEOSCRIPT_BUILD_EXAMPLES=OFF
+cmake --build Build/neocore --config Release --parallel
+ctest --test-dir Build/neocore -C Release --output-on-failure
 ```
 
-## Unity
+- Check both accepted and rejected typed programs, lowering semantics, and the public `NeoCore.h` boundary. Keep inherited backend regressions passing.
+- The inherited `host_argument_buffer_regression` zero-allocation assertions fail with MSVC Debug's STL iterator proxies; report this separately from functional checks. Release verifies the zero-allocation expectation.
+- `Samples/bench/check.nc` checks the eight workloads without timers; `bench.nc` is the timed suite. Its explicit map fallback and string conversions preserve results, not identical bytecode.
+- The CLI defaults to non-debug execution. Use `neocore --debug --file source.nc` for runtime source locations; keep timed benchmarks in non-debug mode.
+- Native Windows NeoCore: open root `NeoCore.sln` (also available through `Samples/console/console.sln`). For the library alone, open `Windows/NeoCore.sln`. The `.nc` runner is `Build/Windows/bin/x64/Release/neocore.exe`; `Windows/NeoCore.vcxproj` builds `NeoCore32/64[-d].lib`.
+- Legacy Windows console: build `Samples/console/console.vcxproj` directly, Release x64. Run it from `Samples/console`, because tests resolve `../../TestScript` relative to the working directory. Keep its `.ns` runner separate from the NeoCore startup project.
+- Legacy commands: `--smoke`, `--run cycle`, `--v2smoke`, `--compiler-error-regression`. Report observed results rather than assuming historical counts.
+- `--debug-smoke` has an inherited known failure; do not silently treat it as a passed check.
+- Check non-Windows compilation for C++ source changes; Windows-only assumptions have broken Linux/Android before.
+- NDK clang: `%LOCALAPPDATA%/Android/Sdk/ndk/25.1.8937393/toolchains/llvm/prebuilt/windows-x86_64/bin/clang++.exe` with `--target=aarch64-linux-android24 -std=c++11 -Werror=c++14-extensions -Werror=c++17-extensions -fsyntax-only -INeoSource`.
+- Where available, use GCC with `-std=c++11 -Wpedantic` as well; Clang alone has missed C++14 extensions.
 
-C ABI in `Unity\Native`, C# binding in `Unity\com.neoscript.unity` (UPM). **Keep the C ABI out of
-`NeoSource\`** — source-based hosts compile `NeoSource\*.cpp` wholesale and would drag in a
-shim it never calls. Plugin binaries are not committed: run `pwsh Unity\build_windows.ps1` before
-opening Unity. Regression is `neoscript_c_abi_smoke.exe` (compiling it as C is itself the test)
-plus three Unity suites — smoke, PlayMode, reload cycle. Commands in `docs/Unity.md`.
+## Inherited host integrations
 
-## 성능 측정 규칙
+- The legacy C ABI is in `Unity/Native`; C# bindings are in `Unity/com.neoscript.unity`. They are not yet the typed NeoCore host surface.
+- Keep the C ABI out of `NeoSource`: source-based hosts compile `NeoSource/*.cpp` wholesale.
+- Plugin binaries are not committed. Build with `pwsh Unity/build_windows.ps1` before opening Unity.
+- Integration checks include `neoscript_c_abi_smoke` compiled as C and Unity smoke, PlayMode, and reload-cycle suites. See `docs/Unity.md`.
+- Host members use `HostSchema` plus `HostBindings`; follow [HostBindings.md](docs/HostBindings.md). Resolvers validate typed IDs without side effects; borrowed pointers cannot survive reentry or external deletion. Backend dynamic dispatch alone is not a static signature.
 
-- 벤치는 `Samples\bench` 에서 Neo / Lua / C++ 를 **한 세션 안에서 교차 실행**하고 체크섬 8/8 을 확인한다.
-  Lua 는 `D:\util\lua-5.5_Win64_bin\lua55.exe`.
-- **빌드마다 ±5% 흔들린다. 코드 배치 때문이지 노이즈가 아니다.** 그래서 세션이 다른 수치끼리 비교하지 않는다.
-- 변경의 효과를 보려면 **두 exe 를 같은 루프에서 번갈아** 돌린다. 자세한 근거는 `ReadMe.md` 의 Methodology 5항.
-- 측정하지 않은 수치를 말하지 않는다.
+## Performance
 
-## 먼저 알아야 할 함정
+- Ask the user before starting timed benchmarks so video playback and other builds can stop.
+- Run baseline/trial binaries alternately in the same session. For the inherited eight-case suite, run NeoScript/Lua/C++ from `Samples/bench` and verify all checksums.
+- Build layout can change timings. Do not compare separate sessions as proof of an improvement, or report unmeasured numbers.
+- Inherited NeoScript benchmarks are not NeoCore performance claims. Static checking alone does not demonstrate faster VM execution.
 
-- **함수 이름·인자 정보는 모듈별로 먼저 수집한다.** 뒤쪽 함수 정의를 호출할 수 있으며 `fun F(...);` 전방 선언은 오류다.
-- **변수·const는 반드시 사용 전에 선언한다.** 함수 본문에서도 뒤에 선언된 전역변수는 읽을 수 없다.
-- `import`는 컴파일 시 포함하며, 같은 컴파일의 중복 import는 재사용한다. 실행 인스턴스끼리는 전역 상태를 공유하지 않는다.
-- `math.Vector2/3/4`, `Quaternion` 은 값 타입이고 `NOP_VEC_MAKE` 인트린식이라 호출이 아니다.
-- `import`·`const`·`public`·`export`는 파일 최상위에서만 허용한다(블록·함수 안은 `is only allowed at file scope` 오류).
-- 최상위 `var`는 파일 내부에서만 보인다. 별칭은 `public var`·`public const`·`public fun`만 노출한다(`export`는 모듈에 안 보이며, 둘 다면 `export public`). 호스트 전역은 모든 모듈에 보이며, `export var`·`export fun`은 호스트 공개용이다.
+## Documentation
 
-## 문서
-
-- `ReadMe.md` — 언어 문법, 호스트 API, 성능 결과와 측정 방법
-- `docs/API.md` — 스크립트가 부를 수 있는 모든 함수(math/system/coroutine, string/list/map/async 메서드, 키워드 intrinsic)
-  — 언어·라이브러리를 고치면 구현·회귀 시험과 함께 API 및 ScriptAuthoring 문서도 갱신한다
-- `docs/Unity.md` — Unity integration (the three layers, setup, exposing C# objects, platforms, traps)
-- [docs/ScriptAuthoring.md](docs/ScriptAuthoring.md) — AI와 사람이 먼저 읽는 스크립트 사용법·주요 기능·실행 예제. 이 문서만 줄 수 제한 예외
+- `ReadMe.md`: current NeoCore entry points, attribution, and clearly labeled inherited backend material.
+- `docs/StaticTyping.md`: accepted language design, implemented subset, and remaining milestones; update it with language changes.
+- `docs/ScriptAuthoring.md`, `docs/API.md`, `docs/Embedding.md`, `docs/Unity.md`: legacy references until migrated. Keep backend behavior changes documented without implying frontend support.

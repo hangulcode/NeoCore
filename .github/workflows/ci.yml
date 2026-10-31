@@ -14,13 +14,22 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v6
-      - name: Build the Visual Studio solution
+      - name: Build the NeoCore solution and backend console project
         shell: pwsh
         run: |
           $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
           $installPath = & $vswhere -latest -products * -requires Microsoft.Component.MSBuild -property installationPath
           if (-not $installPath) { throw "Visual Studio MSBuild was not found." }
-          & "$installPath\MSBuild\Current\Bin\amd64\MSBuild.exe" Samples\console\console.sln /m /p:Configuration=Release /p:Platform=x64
+          & "$installPath\MSBuild\Current\Bin\amd64\MSBuild.exe" NeoCore.sln /m /p:Configuration=Release /p:Platform=x64
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & "$installPath\MSBuild\Current\Bin\amd64\MSBuild.exe" Samples\console\console.vcxproj /m /p:Configuration=Release /p:Platform=x64
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Run NeoCore checks
+        shell: pwsh
+        run: |
+          & .\Build\Windows\bin\x64\Release\neocore.exe --check Samples\bench\bench.nc
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & .\Build\Windows\bin\x64\Release\neocore.exe --file Samples\bench\check.nc
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Run smoke tests
         working-directory: Samples/console

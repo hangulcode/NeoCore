@@ -1,4 +1,4 @@
-#include "NeoScript.h"
+﻿#include "NeoScript.h"
 #include "NeoParser.h"
 #include "NeoVMProgram.h"
 
@@ -155,8 +155,7 @@ int main()
 {
     IRuntime* rt = CreateRuntime(RuntimeDesc{});
     rt->FreezeBindings();
-    // Removing opcodes changes the numeric interpretation of older images.
-    // Reject 0122 before decoding its instructions, even for otherwise valid data.
+    // 명령을 삭제하면 이후 번호의 뜻이 바뀌므로 이전 이미지는 명령 해석 전에 거부한다.
     std::vector<uint8_t> oldImage;
     Error imageError = rt->CompileToBytecode(Describe("export fun Test(){return true;}"), oldImage);
     Check(imageError.code == 0 && oldImage.size() >= sizeof(SNeoVMHeader), "version test compile");
@@ -164,19 +163,37 @@ int main()
     {
         SNeoVMHeader oldHeader{};
         std::memcpy(&oldHeader, oldImage.data(), sizeof(oldHeader));
-        for (char version : {'2', '5', '6', '7'})
+        for (const char* version : {"0122", "0125", "0126", "0127", "0146"})
         {
-            oldHeader._dwNeoVersion = ('0' << 24) | ('1' << 16) | ('2' << 8) | version;
+            oldHeader._dwNeoVersion = (uint32_t(version[0]) << 24) | (uint32_t(version[1]) << 16)
+                | (uint32_t(version[2]) << 8) | uint32_t(version[3]);
             std::memcpy(oldImage.data(), &oldHeader, sizeof(oldHeader));
             ProgramHandle oldProgram = rt->LoadProgram(oldImage, &imageError);
             Check(!oldProgram && imageError.message.find("version mismatch") != std::string::npos,
-                "reject cached 012" + std::string(1, version) + " after opcode/selector changes");
+                "reject cached " + std::string(version) + " after opcode/selector changes");
             if (oldProgram) rt->DestroyProgram(oldProgram);
         }
     }
     for (bool debug : {false, true})
     {
         InvalidChainedWrites(rt, debug);
+        // 남아 있는 비트 연산과 범위 변환이 새 명령 번호로 저장·로드되어 실행되는지 확인한다.
+        Run(rt, R"NS(
+export fun Test() {
+    var a = 0x100000003; var b = 0x100000005;
+    var both = a & b; var either = a | b;
+    a &= b; b |= 3;
+    var values = [0x100000003];
+    values[0] &= 0x100000005; values[0] |= 6;
+    var lo = 0.9; var hi = 3.9; var step = 1.9; var sum = 0;
+    for (var i in lo, hi, step) sum += i;
+    var down = 0; step = -1.9;
+    for (var i in hi, lo, step) down += i;
+    return both == 0x100000001 && either == 0x100000007
+        && a == 0x100000001 && b == 0x100000007 && values[0] == 0x100000007
+        && sum == 3 && down == 6;
+}
+)NS", "bitwise and range conversion image roundtrip", debug);
         // Null assignment preserves list positions, but removes map keys. Run
         // both with direct constants and after a pool that requires LOADK.
         const char* const nullAssignments[] = {

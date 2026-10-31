@@ -225,8 +225,6 @@ void WriteFun(CArchiveRdWC& arText, CNArchive& ar, SFunctions& funs, SFunctionIn
 		case NOP_PERSENT3:
 		case NOP_LSHIFT3:
 		case NOP_RSHIFT3:
-		case NOP_AND3:
-		case NOP_OR3:
 		case NOP_XOR3:
 			argFlag |= ChangeIndex(staticCount, localCount, curFunStatkSize, v, 1);
 			argFlag |= ChangeIndex(staticCount, localCount, curFunStatkSize, v, 2);
@@ -412,10 +410,6 @@ void WriteFun(CArchiveRdWC& arText, CNArchive& ar, SFunctions& funs, SFunctionIn
 
 			argFlag |= GetArgIndexToCode(argFlag, &v.n1, &v.n2, &v.n3);
 			break;*/
-		case NOP_VERIFY_TYPE:
-			argFlag |= ChangeIndex(staticCount, localCount, curFunStatkSize, v, 1);
-			argFlag |= GetArgIndexToCode(argFlag, &v.n1, nullptr, nullptr);
-			break;
 		case NOP_CHANGE_INT:
 			argFlag |= ChangeIndex(staticCount, localCount, curFunStatkSize, v, 1);
 			argFlag |= GetArgIndexToCode(argFlag, &v.n1, nullptr, nullptr);
@@ -458,9 +452,23 @@ void WriteFun(CArchiveRdWC& arText, CNArchive& ar, SFunctions& funs, SFunctionIn
 		case NOP_ERROR:
 			break;
 		default:
-			SetCompileError(arText, g_sExportCompileErrors[ECE_INVALID_OPCODE], v.op);
-			argFlag |= GetArgIndexToCode(argFlag, nullptr, nullptr, nullptr);
+		{
+			const TypedOpInfo* typed = GetTypedOpInfo(v.op);
+			const AggregateOpInfo* aggregate = GetAggregateOpInfo(v.op);
+			if (typed != nullptr || aggregate != nullptr)
+			{
+				const unsigned slots = typed ? typed->slots : aggregate->shape == AggregateOpShape::Binary ? 7 : 3;
+				for (unsigned n = 0; n < 3; ++n)
+					if (slots & (1u << n))
+						argFlag |= ChangeIndex(staticCount, localCount, curFunStatkSize, v, static_cast<int>(n + 1));
+			}
+			else
+			{
+				SetCompileError(arText, g_sExportCompileErrors[ECE_INVALID_OPCODE], v.op);
+				argFlag |= GetArgIndexToCode(argFlag, nullptr, nullptr, nullptr);
+			}
 			break;
+		}
 		}
 
 		ar << optype << argFlag << v.n1 << v.n2 << v.n3;
@@ -643,7 +651,12 @@ void WriteFunLog(CArchiveRdWC& arText, CNArchive& arw, SFunctions& funs, SFuncti
 			sJumpMark[off / (int)sizeof(SVMOperation) + 1 + v.n1] = 0;
 			break;
 		default:
+		{
+			const TypedOpInfo* typed = GetTypedOpInfo(v.op);
+			if (typed != nullptr && typed->jump)
+				sJumpMark[off / (int)sizeof(SVMOperation) + 1 + v.n1] = 0;
 			break;
+		}
 		}
 	}
 	int idx = 0;

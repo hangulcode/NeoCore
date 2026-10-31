@@ -4,7 +4,8 @@
 > The limits on other documents, including `AGENTS.md`, still apply.
 
 A practical starting point for people and AI writing `.ns` scripts.
-This guide describes the compiler and standard library in the current repository.
+This guide describes the inherited NeoScript compiler and standard library.
+For typed `.nc` programs and their console, see the [NeoCore build and run guide](../ReadMe.md#build-and-run).
 Do not infer supported features or behavior from syntax that resembles another language.
 When looking for a feature, consult both the examples here and the [full API reference](API.md).
 
@@ -793,7 +794,7 @@ request.get(5000, "https://example.com/", Completed);
 request.wait();
 ```
 
-Keep the existing `aysnc_create` spelling. The console supplies libcurl with HTTPS certificate
+Keep the existing `aysnc_create` spelling. The legacy `.ns` console supplies libcurl with HTTPS certificate
 verification; embedding hosts must provide a transport. Missing transports report failure to the
 callback. `wait()` completion and transport success do not imply an HTTP 2xx status. See the
 [async API](API.md#9-async-methods) for headers and POST requests. A timeout of `-1` means no time
@@ -935,7 +936,10 @@ print(math.MoveToward(0.0, 10.0, 2.0)); // 2
   by `Get()`. Plain root or index variables are read for the write.
   List/map/vector-array writes may use a temporary internal reference; normal reads and assignment results
   remain values. Copies still stay independent, and native properties retain their getter/setter behavior.
-  WREF pairs with an ordinary write and handles vector write-back; rebuild older compiled scripts and caches for bytecode version 0143 (inline Vector2/3 storage, fused compound-assignment read opcodes, exact float32 immediates widened to double, double scalar constants and 64-bit integers; also required for signed-zero constants, foreach source retention, checked shift folding, and corrected NaN branch behavior).
+  WREF pairs with an ordinary write and handles vector write-back. This checkout uses
+  bytecode version 0147; rebuild older scripts and caches after the addition of typed
+  instructions and removal of unused opcodes. Earlier vector-storage, numeric-precision,
+  and evaluation-order fixes remain in effect.
 - A compound assignment from a collection element, `x += c[k]` (also `-=`, `*=`, `/=`), executes
   as one `READ_ADD`/`READ_SUB`/`READ_MUL`/`READ_DIV` instruction. Any key expression qualifies,
   including string keys and host properties. Arithmetic keeps its type and evaluation rules and
@@ -1136,10 +1140,10 @@ Call it explicitly at the end of the test file.
 <a id="verification"></a>
 ## 13. Run scripts in the console and locate errors
 
-Build the console from the repository root. Use the path of your installed Visual Studio version.
+Build the legacy `.ns` console project directly from the repository root. Use the path of your installed Visual Studio version.
 
 ```powershell
-& 'C:\Program Files\Microsoft Visual Studio\18\Community\MSBuild\Current\Bin\amd64\MSBuild.exe' Samples\console\console.sln /m /p:Configuration=Release /p:Platform=x64
+& 'C:\Program Files\Microsoft Visual Studio\18\Community\MSBuild\Current\Bin\amd64\MSBuild.exe' Samples\console\console.vcxproj /m /p:Configuration=Release /p:Platform=x64
 ```
 
 Running with `Samples/console` as the working directory makes the default library path `../../Lib/`
@@ -1154,7 +1158,7 @@ Set-Location Samples\console
 
 An absolute path passed to `--file` does not make imports resolve beside that file.
 Choose another library directory through the host loader or `libPath` in VS Code's `launch.json`.
-See the [ReadMe](../ReadMe.md#vs-code-debugger-setup) for VS Code extension setup and features.
+See the [VS Code extension guide](../Tools/vscode-neo-script/README.md#debugging) for setup and features.
 
 ### A minimal self-checking example
 
@@ -1239,7 +1243,7 @@ Some limits still apply, including:
 - The full image no longer uses a fixed 1 MiB buffer; available memory and 32-bit offset limits apply.
   Capacity and buffer-write failures are reported as compile errors.
 
-See [compiled-image limits](Embedding.md#compiled-image-capacity-format-0123) for exact limits and compatibility.
+See [compiled-image limits](Embedding.md#compiled-image-capacity) for exact limits and compatibility.
 Function count and constant count are different quantities. Rebuild existing bytecode when the engine's image format changes.
 
 Before submitting AI-generated code, check:
@@ -1264,7 +1268,7 @@ When documentation and behavior disagree, verify with a small script and determi
 | What to verify | Reference |
 | --- | --- |
 | All functions, arguments, and return values | [API.md](API.md), [NeoLib.cpp](../NeoSource/NeoLib.cpp) |
-| Syntax, declarations, and selectors | [ReadMe.md](../ReadMe.md), [NeoParser.cpp](../NeoSource/NeoParser.cpp) |
+| Syntax, declarations, and selectors | This guide, [NeoParser.cpp](../NeoSource/NeoParser.cpp) |
 | Recent language behavior and errors | [language_regression.cpp](../Tests/language_regression.cpp) |
 | Branches, returns, and null assignment | [control_flow_regression.cpp](../Tests/control_flow_regression.cpp) |
 | Selectors after calls | [postfix_regression.cpp](../Tests/postfix_regression.cpp) |
