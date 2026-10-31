@@ -53,6 +53,7 @@ struct BuiltinInfo
     int argCount = -1;
     std::string ret;
     std::vector<std::string> params;
+    std::string typeParameters;
 };
 static std::string FullPathOrSelf(const std::string& path)
 {
@@ -1003,7 +1004,17 @@ static const BuiltinInfo* FindLspSignature(const std::vector<BuiltinInfo>& built
         if (c == '/' && next == '/') { lineComment = true; ++i; continue; }
         if (c == '/' && next == '*') { blockComment = true; ++i; continue; }
         if (c == '"' || c == '\'') { quote = c; continue; }
-        if (c == '(' || c == '[' || c == '{') stack.push_back({c, i, 0});
+        bool typeArgument = c == '<' && !stack.empty() && stack.back().kind == '<';
+        if (c == '<' && !typeArgument)
+        {
+            std::string owner, name;
+            GetLspCompletionContext(linePrefix.substr(0, i), owner, name);
+            for (const BuiltinInfo& info : builtins)
+                if (!info.typeParameters.empty() && info.module == owner && info.name == name)
+                { typeArgument = true; break; }
+        }
+        if (c == '(' || c == '[' || c == '{' || typeArgument) stack.push_back({c, i, 0});
+        else if (c == '>' && !stack.empty() && stack.back().kind == '<') stack.pop_back();
         else if (c == ')' || c == ']' || c == '}')
         {
             if (!stack.empty()) stack.pop_back();
@@ -1018,6 +1029,19 @@ static const BuiltinInfo* FindLspSignature(const std::vector<BuiltinInfo>& built
 	size_t nameEnd = openParen;
 	while (nameEnd > 0 && isspace((unsigned char)linePrefix[nameEnd - 1]))
 		--nameEnd;
+    const bool hasTypeArguments = nameEnd > 0 && linePrefix[nameEnd - 1] == '>';
+    if (hasTypeArguments)
+    {
+        int depth = 0;
+        do
+        {
+            const char c = linePrefix[--nameEnd];
+            if (c == '>') ++depth;
+            else if (c == '<') --depth;
+        } while (nameEnd > 0 && depth != 0);
+        if (depth != 0) return nullptr;
+        while (nameEnd > 0 && isspace((unsigned char)linePrefix[nameEnd - 1])) --nameEnd;
+    }
 	size_t nameBegin = nameEnd;
 	while (nameBegin > 0 && IsNeoIdentifierChar(linePrefix[nameBegin - 1]))
 		--nameBegin;
@@ -1037,7 +1061,8 @@ static const BuiltinInfo* FindLspSignature(const std::vector<BuiltinInfo>& built
 
 	for (const BuiltinInfo& info : builtins)
 	{
-		if (info.name == name && info.module == module && !info.params.empty())
+		if (info.name == name && info.module == module && !info.params.empty() &&
+            (!hasTypeArguments || !info.typeParameters.empty()))
 			return &info;
 	}
 	return nullptr;
@@ -1055,7 +1080,7 @@ static std::string BuildLspFunctionDetail(const BuiltinInfo& info)
 		detail << info.ret << " ";
 	if (!info.module.empty())
 		detail << info.module << ".";
-	detail << info.name << "(";
+	detail << info.name << info.typeParameters << "(";
 	for (size_t i = 0; i < info.params.size(); ++i)
 	{
 		if (i > 0)
@@ -1083,10 +1108,11 @@ static void AppendLspCompletionItem(std::ostringstream& os, bool& first, std::se
 
 
 static void AddBuiltin(std::vector<BuiltinInfo>& builtins, const std::string& owner, const std::string& name,
-    const std::string& result, std::initializer_list<const char*> parameters)
+    const std::string& result, std::initializer_list<const char*> parameters, const std::string& typeParameters = "")
 {
     BuiltinInfo info;
     info.module = owner; info.name = name; info.ret = result;
+    info.typeParameters = typeParameters;
     for (const char* parameter : parameters) info.params.push_back(parameter);
     info.argCount = static_cast<int>(info.params.size());
     builtins.push_back(std::move(info));
@@ -1124,6 +1150,8 @@ static void TypedBuiltins(std::vector<BuiltinInfo>& builtins)
     AddBuiltin(builtins, "", "Quaternion", "Quaternion", {"float w", "float x", "float y", "float z"});
     AddBuiltin(builtins, "string", "len", "int", {});
     AddBuiltin(builtins, "system", "set", "set<T>", {"list<T> values"});
+    AddBuiltin(builtins, "system", "jsonEncode", "string", {"T value", "bool sortKeys (optional)"});
+    AddBuiltin(builtins, "system", "jsonDecode", "T", {"string text"}, "<T>");
     AddBuiltin(builtins, "coroutine", "create", "coroutine<fn(...) -> void>", {"fn(...) -> void entry"});
     AddBuiltin(builtins, "coroutine", "resume", "void", {"coroutine<F> task", "entry arguments..."});
     AddBuiltin(builtins, "coroutine", "status", "string", {"coroutine<F> task"});

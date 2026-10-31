@@ -145,6 +145,24 @@ def run_tests(exe):
             lsp.raw({"jsonrpc": "2.0", "id": 6, "method": "textDocument/hover", "params": {
                 "textDocument": {"uri": uri}, "position": {"line": 1, "character": 1}}})
             assert "int Add" in lsp.wait(lambda m: m.get("id") == 6)["result"]["contents"]["value"]
+            source = 'import system; system.json'
+            lsp.raw({"jsonrpc": "2.0", "method": "textDocument/didChange", "params": {
+                "textDocument": {"uri": uri}, "contentChanges": [{"text": source}]}})
+            lsp.raw({"jsonrpc": "2.0", "id": "json-complete", "method": "textDocument/completion", "params": {
+                "textDocument": {"uri": uri}, "position": {"line": 0, "character": len(source)}}})
+            items = lsp.wait(lambda m: m.get("id") == "json-complete")["result"]["items"]
+            assert {"jsonEncode", "jsonDecode"}.issubset({item["label"] for item in items}), items
+            for request_id, source, parameter, signature in (
+                ("json-generic", 'import system; system.jsonDecode<map<string,list<int>>>(', 0, "T system.jsonDecode<T>(string text)"),
+                ("json-outer", 'import system; system.jsonEncode(system.jsonDecode<map<string,list<int>>>("{}"), ', 1, "string system.jsonEncode("),
+            ):
+                lsp.raw({"jsonrpc": "2.0", "method": "textDocument/didChange", "params": {
+                    "textDocument": {"uri": uri}, "contentChanges": [{"text": source}]}})
+                lsp.raw({"jsonrpc": "2.0", "id": request_id, "method": "textDocument/signatureHelp", "params": {
+                    "textDocument": {"uri": uri}, "position": {"line": 0, "character": len(source)}}})
+                result = lsp.wait(lambda m: m.get("id") == request_id)["result"]
+                assert result and result["activeParameter"] == parameter, result
+                assert signature in result["signatures"][0]["label"], result
             source = 'string text="한글😀"; int wrong="bad";'
             lsp.raw({"jsonrpc": "2.0", "method": "textDocument/didChange", "params": {
                 "textDocument": {"uri": uri}, "contentChanges": [{"text": source}]}})
@@ -160,7 +178,7 @@ def run_tests(exe):
             assert cleared
             lsp.raw({"jsonrpc": "2.0", "method": "exit"})
             lsp.exit_cleanly()
-            checks += 8
+            checks += 11
 
             # 열린 모듈의 저장 전 변경을 모든 가져오기 루트에 반영하며 진단을 합친다.
             overlay = root / "overlay.nc"

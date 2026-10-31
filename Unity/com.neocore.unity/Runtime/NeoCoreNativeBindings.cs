@@ -126,6 +126,7 @@ namespace NeoCore.Unity
         [DllImport(Library, CallingConvention = Convention)] internal static extern void NcHostReturnFloat(IntPtr call, double value);
         [DllImport(Library, CallingConvention = Convention)] internal static extern void NcHostReturnBool(IntPtr call, int value);
         [DllImport(Library, CallingConvention = Convention)] internal static extern void NcHostReturnString(IntPtr call, byte[] value, uint length);
+        [DllImport(Library, CallingConvention = Convention)] internal static extern int NcHostReturnJson(IntPtr call, byte[] json, uint length, int strictIntegers);
         [DllImport(Library, CallingConvention = Convention)] internal static extern void NcHostReturnVector(IntPtr call, int kind, float[] components);
         [DllImport(Library, CallingConvention = Convention)] internal static extern void NcHostReturnObject(IntPtr call, ulong id);
         [DllImport(Library, CallingConvention = Convention)] internal static extern void NcHostReturnNull(IntPtr call);

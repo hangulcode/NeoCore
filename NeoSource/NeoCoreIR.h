@@ -79,6 +79,8 @@ struct TypedIR
     // 본문에는 루트 번호만 남기고 타입·연산·피연산자는 이 구조에 보관한다.
     std::string prefix;
     std::string returnPrefix;
+    // 실제 사용한 내부 네이티브 객체만 초기화 명령 없이 전역 슬롯으로 선언한다.
+    std::vector<std::string> nativeGlobals;
     // 호출 경계의 정확한 타입 계약은 컴파일 요청 동안만 유지한다.
     TypeRegistry types;
     std::vector<IRNode> nodes;

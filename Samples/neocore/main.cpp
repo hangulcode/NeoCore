@@ -61,7 +61,9 @@ static const SampleEntry Samples[] = {
     {"structs", "Struct values and copies", true},
     {"vectors", "Vector arithmetic and components", true},
     {"particles", "Particle correctness checks (untimed)", true},
-    {"https", "HTTPS request [manual, live network]", false}
+    {"https", "HTTPS request [manual, live network]", false},
+    {"math", "Scalar, color, random, vector and quaternion mathematics", true},
+    {"json", "Typed JSON encoding and decoding", true}
 };
 static const std::size_t SampleCount = sizeof(Samples) / sizeof(Samples[0]);
 

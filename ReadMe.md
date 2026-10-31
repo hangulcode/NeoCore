@@ -69,8 +69,10 @@ Vector2/3/4 support same-dimension addition/subtraction and scalar multiplicatio
 division. Typed arrays keep a fixed element type and support vector element updates;
 the [particles sample](Samples/neocore/scripts/particles.nc) checks them against a
 scalar reference without timers.
-Built-in imports expose the checked math, string/regex, collection, time and HTTP
-signatures used by the converted samples. Script modules, typed foreach and
+Built-in imports expose 65 checked math functions plus string/regex, collection,
+time and HTTP APIs. Typed JSON uses `system.jsonEncode(value)` and
+`system.jsonDecode<T>(text)`, preserving struct field names and validating the
+declared shape; see [JSON](docs/JSON.md). Script modules, typed foreach and
 signature-bound coroutines are supported; see the [migration guide](docs/SampleMigration.md).
 
 Typed host schemas declare nominal object types, structs, globals, methods, and

@@ -86,6 +86,8 @@ public:
     std::string DisplayName(TypeId id) const;
 
     bool IsNumeric(TypeId id) const;
+    // JSON 경계에서 표현 가능한 타입인지 중첩 필드와 원소까지 검사한다.
+    bool IsJsonType(TypeId id) const;
     bool IsNullable(TypeId id) const { return Get(id).kind == TypeKind::Nullable; }
     bool IsStorable(TypeId id) const
     {

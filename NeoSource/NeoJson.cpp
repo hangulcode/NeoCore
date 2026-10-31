@@ -91,7 +91,7 @@ std::string ErrorPath(const char* text, size_t size, size_t stop) {
 }
 
 struct Encoder {
-    yyjson_mut_doc* doc; JsonResult& result; bool sorted;
+    yyjson_mut_doc* doc; JsonResult& result; bool sorted; bool preserveNullMembers;
     std::vector<const void*> active;
     yyjson_mut_val* Fail(const std::string& path, const std::string& message) { result.Fail(path, message); return nullptr; }
     yyjson_mut_val* Value(const VarInfo& v, const std::string& path, int depth) {
@@ -139,7 +139,7 @@ struct Encoder {
                     const auto& key = member->key._str->_str;
                     const std::string child = KeyPath(path, key);
                     if (!ValidString(key.data(), key.size())) return Fail(child, "invalid UTF-8 or NUL in key");
-                    if (member->value.GetType() == VAR_NONE) continue;
+                    if (!preserveNullMembers && member->value.GetType() == VAR_NONE) continue;
                     auto* value = Value(member->value, child, depth); if (!value) return nullptr;
                     auto* name = yyjson_mut_strn(doc, key.data(), key.size());
                     if (!name || !yyjson_mut_obj_add(container, name, value)) throw std::bad_alloc();
@@ -161,7 +161,7 @@ struct Encoder {
 };
 
 struct Decoder {
-    CNeoVMWorker& worker; JsonResult& result; bool strict;
+    CNeoVMWorker& worker; JsonResult& result; bool strict; bool preserveNullMembers;
     bool Number(yyjson_val* value, VarInfo& out, const std::string& path) {
         bool integer = yyjson_is_int(value);
         double number = yyjson_get_num(value);
@@ -215,8 +215,7 @@ struct Decoder {
                 HeldValue converted(worker), keyValue(worker);
                 if (!Value(item, converted.value, child, depth)) return false;
                 worker.Var_SetStringA(&keyValue.value, name);
-                // Last duplicate wins, including null removing an earlier key.
-                if (converted.value.GetType() == VAR_NONE) map->Remove(&keyValue.value);
+                if (!preserveNullMembers && converted.value.GetType() == VAR_NONE) map->Remove(&keyValue.value);
                 else map->Insert(&keyValue.value, &converted.value);
             }
         }
@@ -225,12 +224,12 @@ struct Decoder {
 };
 }
 
-bool Encode(const VarInfo& value, std::string& text, JsonResult& result, bool sortKeys) {
+bool Encode(const VarInfo& value, std::string& text, JsonResult& result, bool sortKeys, bool preserveNullMembers) {
     result = JsonResult(); text.clear();
     try {
         MutableDocument doc(yyjson_mut_doc_new(nullptr), yyjson_mut_doc_free);
         if (!doc) throw std::bad_alloc();
-        Encoder encoder{doc.get(), result, sortKeys, {}};
+        Encoder encoder{doc.get(), result, sortKeys, preserveNullMembers, {}};
         auto* root = encoder.Value(value, "$", 0);
         if (!root) { if (result.error.empty()) throw std::bad_alloc(); return false; }
         yyjson_mut_doc_set_root(doc.get(), root);
@@ -242,7 +241,7 @@ bool Encode(const VarInfo& value, std::string& text, JsonResult& result, bool so
     } catch (const std::exception& error) { return result.Fail("$", error.what()); }
 }
 bool Decode(CNeoVMWorker& worker, const char* text, size_t size, VarInfo& value,
-    JsonResult& result, bool strictIntegers, bool requireMap) {
+    JsonResult& result, bool strictIntegers, bool requireMap, bool preserveNullMembers) {
     result = JsonResult();
     try {
         yyjson_read_err error;
@@ -252,7 +251,7 @@ bool Decode(CNeoVMWorker& worker, const char* text, size_t size, VarInfo& value,
             std::string(error.msg ? error.msg : "JSON read failed") + " at byte " + std::to_string(error.pos));
         auto* root = yyjson_doc_get_root(doc.get());
         if (requireMap && !yyjson_is_obj(root)) return result.Fail("$", "expected map");
-        HeldValue decoded(worker); Decoder decoder{worker, result, strictIntegers};
+        HeldValue decoded(worker); Decoder decoder{worker, result, strictIntegers, preserveNullMembers};
         if (!decoder.Value(root, decoded.value, "$", 0)) return false;
         // Commit only a complete value. The return slot can alias an input.
         worker.Move(&value, &decoded.value); return true;

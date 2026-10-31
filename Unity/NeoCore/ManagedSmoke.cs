@@ -196,6 +196,67 @@ internal static class ManagedSmoke
         }
     }
 
+    private static void CheckScriptJson()
+    {
+        using (var options = new CompileOptions())
+        {
+            ScriptType resource = options.Object("JsonResource");
+            ScriptType payload = options.Struct("JsonPayload");
+            options.DefineFields(payload, new ScriptField("id", ScriptTypes.Int),
+                new ScriptField("name", ScriptTypes.String), new ScriptField("values", options.List(ScriptTypes.Float)),
+                new ScriptField("note", options.Nullable(ScriptTypes.String)));
+            options.SetResolver((type, id) => id == 9);
+            options.Global("Resource", resource, 9);
+            bool returnAccepted = false;
+            options.Method(resource, "LoadJson", payload, new[] { ScriptTypes.String }, call =>
+            {
+                string path = call.String(0);
+                string json = path == "valid" ? "{\"id\":9007199254740993,\"name\":\"loaded\",\"values\":[1,2.5],\"note\":\"old\",\"note\":null}"
+                    : path == "missing" ? "{\"id\":1}" : "{\"id\":1.5,\"name\":\"fraction\",\"values\":[],\"note\":null}";
+                returnAccepted = path == "relaxed" ? call.ReturnJson(json, false) : call.ReturnJson(json);
+            });
+            options.Method(resource, "LoadWide", ScriptTypes.Float, new[] { ScriptTypes.Bool }, call =>
+                returnAccepted = call.ReturnJson("9223372036854775808", call.Bool(0)));
+            string source = "import system;\n"
+                + "export int loads=0;\n"
+                + "export JsonPayload Load(string path){JsonPayload p=Resource.LoadJson(path);loads+=1;return p;}\n"
+                + "export JsonPayload Decode(string text){return system.jsonDecode<JsonPayload>(text);}\n"
+                + "export string Encode(JsonPayload value){return system.jsonEncode(value,true);}\n"
+                + "export float Wide(bool strict){return Resource.LoadWide(strict);}\n";
+            using (var program = NeoCore.Unity.Program.Compile(source, "script-json.nc", true, options))
+            using (var instance = program.CreateInstance())
+            {
+                using (var value = instance.Call("Load", Scalar.String("valid")).RequireCompleted())
+                {
+                    Require(returnAccepted && value.At(0).AsInt() == 9007199254740993L, "ReturnJson uses declared result and preserves int64");
+                    Require(value.At(3).Kind == ScalarKind.Null, "ReturnJson preserves last duplicate null member");
+                    using (var values = value.At(2))
+                        Require(values.At(1).AsFloat() == 2.5, "ReturnJson builds nested typed collections");
+                    string json = instance.Call("Encode", value).RequireCompleted().AsString();
+                    Require(json.Contains("\"note\":null"), "script encoding retains nullable field");
+                    using (var decoded = instance.Call("Decode", Scalar.String(json)).RequireCompleted())
+                        Require(decoded.At(0).AsInt() == 9007199254740993L && decoded.At(1).AsString() == "loaded"
+                            && decoded.At(3).Kind == ScalarKind.Null,
+                            "script JSON roundtrip through managed calls");
+                }
+                foreach (string bad in new[] { "missing", "fraction", "relaxed" })
+                {
+                    Result error = instance.Call("Load", Scalar.String(bad));
+                    Require(!returnAccepted && error.Status == ExecutionStatus.Failed && error.Line == 3
+                        && error.SourceName == "script-json.nc", "ReturnJson failure persists after managed callback returns");
+                    Require(instance.ReadGlobal("loads").AsInt() == 1, "invalid JSON skips caller continuation");
+                }
+                Result strict = instance.Call("Wide", Scalar.Bool(true));
+                Require(!returnAccepted && strict.Status == ExecutionStatus.Failed, "ReturnJson strict integer range");
+                using (var relaxed = instance.Call("Wide", Scalar.Bool(false)).RequireCompleted())
+                    Require(returnAccepted && relaxed.AsFloat() == 9223372036854775808.0,
+                        "ReturnJson explicit relaxed policy permits wide integer tokens as float64");
+                Require(instance.Call("Decode", Scalar.String("{}")).Status == ExecutionStatus.Failed,
+                    "script JSON rejects invalid shape through managed boundary");
+            }
+        }
+    }
+
     private static int Main(string[] args)
     {
         try
@@ -253,6 +314,7 @@ internal static class ManagedSmoke
             Require(rejected, "typed frontend rejection and diagnostics");
             CheckMigratedBoundaries();
             CheckHostEvents();
+            CheckScriptJson();
             Console.WriteLine("NeoCore managed smoke passed: typed schema, events, values, closures, JSON, modules, images, vectors, budgets, ownership, cleanup");
             return 0;
         }

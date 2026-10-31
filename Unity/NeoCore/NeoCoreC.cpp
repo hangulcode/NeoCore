@@ -1029,6 +1029,11 @@ void NcHostReturnFloat(NcHostCall* call, double value) { if (call) call->value->
 void NcHostReturnBool(NcHostCall* call, int32_t value) { if (call) call->value->ReturnBool(value != 0); }
 void NcHostReturnString(NcHostCall* call, const char* value, uint32_t length)
 { try { if (call) call->value->ReturnString(ReadText(value, length)); } catch (...) { HostFailure(call, "host string result failed"); } }
+int32_t NcHostReturnJson(NcHostCall* call, const char* json, uint32_t length, int32_t strictIntegers)
+{
+    try { return call && call->value->ReturnJson(ReadText(json, length), strictIntegers != 0) ? 1 : 0; }
+    catch (...) { HostFailure(call, "host JSON result failed"); return 0; }
+}
 void NcHostReturnVector(NcHostCall* call, int32_t kind, const float* v)
 {
     if (!call) return;

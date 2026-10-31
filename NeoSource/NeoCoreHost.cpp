@@ -1,5 +1,6 @@
 ﻿#include "NeoCoreHostRuntime.h"
 #include "NeoCoreHostBridge.h"
+#include "NeoCoreInstanceContext.h"
 #include "NeoCoreValueBoundary.h"
 #include "NeoScript.h"
 #include <cassert>
@@ -289,6 +290,16 @@ void HostCall::ReturnQuaternion(QuaternionValue value)
 void HostCall::ReturnObject(ObjectHandle value) { impl_->result.kind = value ? HostResultKind::Object : HostResultKind::Null; impl_->result.value.object = value; }
 void HostCall::ReturnNull() { impl_->result.kind = HostResultKind::Null; }
 void HostCall::ReturnValue(const Scalar& value) { impl_->result.kind = HostResultKind::Owned; impl_->result.value.owned = value; }
+bool HostCall::ReturnJson(const std::string& text, bool strictIntegers)
+{
+    if (!impl_->error.empty()) return false;
+    std::string error;
+    Scalar value = BoundaryAccess::ParseJson(*impl_->instance, impl_->entry->binding->returnType,
+        text, strictIntegers, error);
+    if (!error.empty()) { impl_->Fail(error); return false; }
+    ReturnValue(value);
+    return true;
+}
 void HostCall::Fail(const std::string& message) { impl_->Fail(message); }
 Result HostCall::CallScript(const std::string& name, const std::vector<Scalar>& arguments)
 {
@@ -361,7 +372,8 @@ bool HostRuntimeAccess::Dispatch(NeoScript::CallContext& ctx, NeoScript::StringV
     Entry& entry = *static_cast<Entry*>(ctx.userData());
     try
     {
-        InstanceState* instance = static_cast<InstanceState*>(ctx.instanceUserData());
+        BackendInstanceContext* context = static_cast<BackendInstanceContext*>(ctx.instanceUserData());
+        InstanceState* instance = context ? static_cast<InstanceState*>(context->host) : nullptr;
         if (!instance || instance->state != entry.state)
         {
             ctx.fail(0, "invalid NeoCore instance binding context");

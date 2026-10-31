@@ -71,6 +71,22 @@ object IDs and pending execution. Calls expose completion, suspension and failur
 cancellation/reset, exported globals, image save/load, collection operations,
 typed JSON and retained function calls are exposed through the typed bridge.
 
+Scripts can use `system.jsonEncode(value, sortKeys?)` and
+`system.jsonDecode<T>(text)` after `import system;`. Decoding names the static
+target type and checks the input shape, including nested fields and collections;
+there is no untyped JSON map fallback. Host-side `Program.ParseJson` and
+`Program.ToJson` remain available.
+
+For a typed resource loader, declare the method's return type in `CompileOptions`
+and call `HostCall.ReturnJson(text, strictIntegers = true)` from its adapter. C
+hosts use `NcHostReturnJson(call, bytes, length, strictIntegers)`. The helper
+decodes into that declared result type in the calling program. It returns false
+and records a script error when parsing or shape validation fails, so the caller
+does not continue with a partial result. Strict integer decoding rejects JSON
+integer tokens outside int64. Passing `false` permits their conversion to float64,
+subject to the declared result type; fractional values never become `int` fields
+implicitly. Script-side decoding always uses strict mode.
+
 Dispose owned programs, instances, retained values and options explicitly.
 A copied managed Scalar containing an owned handle shares that handle; use
 `Clone()` when an independent handle is required. Dispose does not deep-destroy

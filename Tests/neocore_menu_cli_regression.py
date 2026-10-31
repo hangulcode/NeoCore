@@ -34,7 +34,7 @@ def main():
         assert set(completed) == expected, result.stdout + result.stderr
         assert len(completed) == len(expected), result.stdout + result.stderr
         assert result.stdout.count("Expected division-by-zero error handled.") == 1, result.stdout
-        assert "Functional samples: 24 passed, 0 failed." in result.stdout, result.stdout
+        assert "Functional samples: 26 passed, 0 failed." in result.stdout, result.stdout
         assert "Skipped: performance (benchmark), https (live network)." in result.stdout, result.stdout
 
     result = run(["--list"])

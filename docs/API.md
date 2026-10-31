@@ -29,17 +29,61 @@ syntax, not a promise of JavaScript RegExp compatibility. See
 
 ## Mathematics and vectors
 
-After `import math;`, the current scalar table exposes `sin`, `cos`, `sqrt`, `abs`,
-`floor`, `ceil` and `pow`. Their scalar input/output type is `float`, with ordinary
-int-to-float widening. Do not infer availability of other functions from a
-NeoScript example.
+After `import math;`, the following names have checked signatures. Scalar numeric
+inputs and results are `float` unless another type is shown; `int` arguments widen
+normally. For example, `math.Clamp(4, 0, 3)` returns `float`, so assigning its result
+to an `int` requires an explicit conversion. Names are case-sensitive.
+
+| Functions | Arguments and result |
+| --- | --- |
+| `abs`, `acos`, `asin`, `atan`, `ceil`, `floor`, `round`, `sin`, `cos`, `tan`, `log`, `log10`, `exp`, `deg`, `rad`, `sqrt`, `trunc`, `fract`, `sinh`, `cosh`, `tanh`, `Sign`, `Clamp01`, `SmoothStep01`, `WrapAngle` | `(float) -> float` |
+| `pow`, `atan2`, `hypot`, `fmod`, `Min`, `Max`, `Repeat`, `PingPong`, `DeltaAngle`, `RandRange` | `(float, float) -> float` |
+| `Clamp`, `Lerp`, `LerpAngle`, `MoveToward`, `MoveTowardAngle`, `InverseLerp`, `SmoothStep` | `(float, float, float) -> float` |
+| `Remap` | `(value, inMin, inMax, outMin, outMax) -> float` |
+| `Distance2` | `(x0, y0, x1, y1) -> float` |
+| `Dot3`, `Distance3`, `DistanceSquared3` | `(Vector3, Vector3) -> float` |
+| `Length3` | `(Vector3) -> float` |
+| `Normalize3`, `Cross3` | `(Vector3, Vector3) -> Vector3` |
+| `Lerp3` | `(Vector3, Vector3, float) -> Vector3` |
+| `RotateVectorByQuat` | `(Quaternion, Vector3) -> Vector3` |
+| `quat_from_basis` | `(Vector3 right, Vector3 up, Vector3 forward) -> Quaternion` |
+| `quat_slerp` | `(Quaternion, Quaternion, float) -> Quaternion` |
+| `srand` / `rand` | `(int seed) -> void` / `() -> int` |
+| `Rand01` | `() -> float` |
+| `Hash32` | `(int value) -> int` |
+| `tostr` | `(float value) -> string` |
+| `ColorRGB` | `(float r, float g, float b) -> int` |
+| `ColorARGB` | `(float a, float r, float g, float b) -> int` |
+
+The established argument order and behavior are retained. `atan2` takes `(y, x)`;
+angle operations use radians, `deg` converts radians to degrees, and `rad` does the
+reverse. `Clamp` takes `(value, min, max)`, `Lerp` takes `(a, b, t)`, `InverseLerp`
+takes `(a, b, value)`, and `SmoothStep` takes `(edge0, edge1, value)`. `Lerp` and
+`InverseLerp` do not clamp their results; `quat_slerp` clamps `t` to `[0,1]`.
+`Normalize3(value, fallback)` returns the fallback for a near-zero input;
+`quat_from_basis` requires nonzero basis vectors. Vector helpers retain float32
+component calculations and value semantics. `fmod(x, 0)` returns zero.
+
+`srand` seeds the current execution worker; its seed is clamped to the signed
+32-bit range. `rand` returns an integer from 0 through 32767, `Rand01` includes both
+0 and 1, and `RandRange(min, max)` can return either endpoint. `Hash32` hashes the
+low 32 bits and returns the signed 32-bit result widened to `int`.
+
+Color channels are normalized values from 0 to 1, not integer bytes. They clamp
+to that interval, treat NaN as zero, and truncate after multiplying by 255. The
+packed `0xAABBGGRR` result is signed 32-bit widened to `int`; `ColorRGB` uses alpha
+255. `tostr` preserves 17 significant digits for binary64 round trips and is not
+interchangeable with the display-oriented `tostring` conversion.
 
 `Vector2`, `Vector3`, `Vector4` and `Quaternion` are explicit value types.
 Vector constructors accept either no arguments or their exact component count.
+The `math.Vector2`, `math.Vector3`, `math.Vector4` and `math.Quaternion` aliases
+require the full component count and use the same typed construction instructions.
 Vector components use `x,y,z,w`; quaternion components and constructors use
 `w,x,y,z`. Scalar component reads produce binary64 values; writes narrow to the
 defined float32 representation. Quaternion defaults are the identity rotation.
-See [vectors.nc](../Samples/neocore/scripts/vectors.nc).
+See [vectors.nc](../Samples/neocore/scripts/vectors.nc) and the checked library
+examples in [math.nc](../Samples/neocore/scripts/math.nc).
 
 ## Collections
 
@@ -99,7 +143,7 @@ See [HTTP sample coverage](SampleMigration.md#http-and-https).
 
 - [Embedding.md](Embedding.md): C++ program/instance ownership, calls and images.
 - [HostBindings.md](HostBindings.md): static host schemas, object IDs and adapters.
-- [JSON.md](JSON.md): explicit target types at the host JSON boundary.
+- [JSON.md](JSON.md): typed script JSON conversion and host return bindings.
 - [Unity.md](Unity.md): typed C ABI and managed Unity integration.
 - [NeoCoreC.h](../Unity/NeoCore/NeoCoreC.h): exact C ABI declarations and ownership contracts.
 - [VS Code](../Tools/vscode-neocore/README.md): `.nc` language service and debugger.

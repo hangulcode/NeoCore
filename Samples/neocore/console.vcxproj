@@ -103,6 +103,8 @@
     <None Include="scripts\particles.nc" />
     <None Include="scripts\performance.nc" />
     <None Include="scripts\regex.nc" />
+    <None Include="scripts\math.nc" />
+    <None Include="scripts\json.nc" />
     <None Include="scripts\regression.nc" />
     <None Include="scripts\slice_run.nc" />
     <None Include="scripts\string.nc" />

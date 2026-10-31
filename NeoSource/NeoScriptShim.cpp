@@ -7,6 +7,7 @@
 #include <algorithm>
 #include "NeoScript.h"
 #include "NeoCoreHostBridge.h"
+#include "NeoCoreIR.h"
 
 // 내부 헤더 (공개 헤더는 이걸 include 하지 않는다 — 여기서만)
 #include "NeoVM.h"
@@ -673,7 +674,8 @@ private:
     // CompileDesc → NeoCompilerParam. 백킹 스토리지(err/gtab/inlineDefines/dbgPath)는 호출자가 소유하고
     // 컴파일 호출까지 살아있어야 한다(param 이 그 주소를 가리킴). Compile / CompileToBytecode 공용.
     void SetupCompilerParam(const CompileDesc& desc, NeoCompilerParam& param, std::string& err,
-                            NeoGlobalSymbolTable& gtab, NeoCompileDefines& inlineDefines, std::string& dbgPath);
+                            NeoGlobalSymbolTable& gtab, std::vector<NeoGlobalSymbol>& nativeGlobals,
+                            NeoCompileDefines& inlineDefines, std::string& dbgPath);
 
     RuntimeDesc m_desc;
     const uint64_t m_identity;
@@ -805,7 +807,8 @@ std::shared_ptr<ObjectBinding> RuntimeImpl::AcquireNestedBinding(InstanceHandle 
 // Program
 //------------------------------------------------------------------------------
 void RuntimeImpl::SetupCompilerParam(const CompileDesc& desc, NeoCompilerParam& param, std::string& err,
-                                    NeoGlobalSymbolTable& gtab, NeoCompileDefines& inlineDefines, std::string& dbgPath)
+                                    NeoGlobalSymbolTable& gtab, std::vector<NeoGlobalSymbol>& nativeGlobals,
+                                    NeoCompileDefines& inlineDefines, std::string& dbgPath)
 {
     param.err = &err;
     param.sourceName = desc.sourceName.str();
@@ -813,8 +816,21 @@ void RuntimeImpl::SetupCompilerParam(const CompileDesc& desc, NeoCompilerParam& 
     param.putASM = desc.emitAsm;   // ASM 덤프(진단): 내부 컴파일러가 OutAsm 으로 stdout 출력
     param.coreIntrinsicPrefix = desc.coreIntrinsicPrefix.str();
     param.coreTypedIR = desc.coreTypedIR;
-    gtab = NeoGlobalSymbolTable{ m_globalSymbols.data(), static_cast<int>(m_globalSymbols.size()) };
-    param.globalSymbols = m_globalSymbols.empty() ? nullptr : &gtab;
+    const std::vector<NeoGlobalSymbol>* globals = &m_globalSymbols;
+    if (desc.coreTypedIR && !desc.coreTypedIR->nativeGlobals.empty())
+    {
+        nativeGlobals = m_globalSymbols;
+        for (const std::string& name : desc.coreTypedIR->nativeGlobals)
+        {
+            if (std::find_if(nativeGlobals.begin(), nativeGlobals.end(), [&name](const NeoGlobalSymbol& symbol) {
+                return name == symbol.name;
+            }) == nativeGlobals.end())
+                nativeGlobals.push_back(NeoGlobalSymbol{ name.c_str(), true });
+        }
+        globals = &nativeGlobals;
+    }
+    gtab = NeoGlobalSymbolTable{ globals->data(), static_cast<int>(globals->size()) };
+    param.globalSymbols = globals->empty() ? nullptr : &gtab;
     if (desc.defineSet)
     {
         // 재사용 집합: 미리 빌드된 맵을 그대로 가리킨다 → 매 Compile 재구성 0.
@@ -850,9 +866,10 @@ CompileResult RuntimeImpl::Compile(const CompileDesc& desc)
     // 백킹 스토리지(param 이 가리킴 — CompileToProgram 반환까지 생존).
     std::string err, dbgPath;
     NeoGlobalSymbolTable gtab{};
+    std::vector<NeoGlobalSymbol> nativeGlobals;
     NeoCompileDefines inlineDefines;
     NeoCompilerParam param(desc.source.data(), static_cast<int>(desc.source.size()));
-    SetupCompilerParam(desc, param, err, gtab, inlineDefines, dbgPath);
+    SetupCompilerParam(desc, param, err, gtab, nativeGlobals, inlineDefines, dbgPath);
     NeoCompileDiagnostic diagnostic;
     param.diagnostic = &diagnostic;
     std::vector<std::string> localSourceNames;
@@ -887,9 +904,10 @@ Error RuntimeImpl::CompileToBytecode(const CompileDesc& desc, std::vector<uint8_
     // 소스 → 바이트코드(빌드 산출물). Program 은 만들지 않는다. 저장/전송 후 LoadProgram 으로 로드.
     std::string err, dbgPath;
     NeoGlobalSymbolTable gtab{};
+    std::vector<NeoGlobalSymbol> nativeGlobals;
     NeoCompileDefines inlineDefines;
     NeoCompilerParam param(desc.source.data(), static_cast<int>(desc.source.size()));
-    SetupCompilerParam(desc, param, err, gtab, inlineDefines, dbgPath);
+    SetupCompilerParam(desc, param, err, gtab, nativeGlobals, inlineDefines, dbgPath);
     NeoCompileDiagnostic diagnostic;
     param.diagnostic = &diagnostic;
 

@@ -110,6 +110,8 @@ public:
     void ReturnObject(ObjectHandle value);
     void ReturnNull();
     void ReturnValue(const Scalar& value);
+    // 현재 호출의 반환형으로 JSON을 검사한다. 실패하면 호스트 호출의 오류를 함께 설정한다.
+    bool ReturnJson(const std::string& text, bool strictIntegers = true);
     void Fail(const std::string& message);
     // 중첩 호출의 실패는 바깥 호스트 호출에도 전달한다. 이후 객체 포인터는 다시 조회한다.
     Result CallScript(const std::string& name, const std::vector<Scalar>& arguments = {});

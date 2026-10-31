@@ -469,6 +469,102 @@ void JsonAndValueCopies(bool debug)
     Int(NcValueAt(returned.get(),0),10,"host schema struct result");Int(NcValueAt(payload.get(),0),9,"host schema struct argument copied");
 }
 
+int32_t LoadJson(void*, NcHostCall* call)
+{
+    uint32_t size = 0;
+    const char* bytes = NcHostString(call, 0, &size);
+    const std::string path(bytes, size);
+    const char* json = path == "valid" ?
+        "{\"id\":9007199254740993,\"name\":\"loaded\",\"values\":[1,2.5],\"note\":\"old\",\"note\":null}" :
+        path == "missing" ? "{\"id\":1}" :
+        "{\"id\":1.5,\"name\":\"fraction\",\"values\":[],\"note\":null}";
+    return NcHostReturnJson(call, json, Length(json), path == "relaxed" ? 0 : 1);
+}
+
+int32_t LoadWideJson(void*, NcHostCall* call)
+{
+    const char* json = "9223372036854775808";
+    return NcHostReturnJson(call, json, Length(json), NcHostBool(call, 0));
+}
+
+void ScriptJsonAndHostReturn(bool debug)
+{
+    Host host;
+    Options options(NcOptionsCreate(), &NcOptionsDestroy);
+    const uint32_t resource = NcSchemaObject(options.get(), "ResourceType", 12);
+    const uint32_t payload = NcSchemaStruct(options.get(), "JsonPayload", 11);
+    const uint32_t numberList = NcTypeCollection(options.get(), NC_LIST, NcTypeBuiltin(NC_FLOAT), 0, 0);
+    const NcField fields[] = {
+        {"id", 2, NcTypeBuiltin(NC_INT)},
+        {"name", 4, NcTypeBuiltin(NC_STRING)},
+        {"values", 6, numberList},
+        {"note", 4, NcTypeNullable(options.get(), NcTypeBuiltin(NC_STRING))}
+    };
+    Check(payload && numberList && NcSchemaStructFields(options.get(), payload, fields, 4), "JSON host result schema");
+    const uint32_t pathType = NcTypeBuiltin(NC_STRING);
+    Check(NcOptionsSetResolver(options.get(), Resolve, &host, 0) &&
+        NcSchemaGlobal(options.get(), "Resource", 8, resource, 7), "JSON host resource binding");
+    Check(NcSchemaMethod(options.get(), resource, "LoadJson", 8, payload, &pathType, 1, LoadJson, 0, 0) != 0,
+        "JSON callback has a static result shape");
+    const uint32_t strictType = NcTypeBuiltin(NC_BOOL);
+    Check(NcSchemaMethod(options.get(), resource, "LoadWide", 8, NcTypeBuiltin(NC_FLOAT), &strictType, 1,
+        LoadWideJson, 0, 0) != 0, "JSON numeric policy callback schema");
+    Program program = Compile(
+        "import system;\n"
+        "export int loads=0;\n"
+        "export JsonPayload Load(string path){JsonPayload p=Resource.LoadJson(path);loads+=1;return p;}\n"
+        "export JsonPayload Decode(string text){return system.jsonDecode<JsonPayload>(text);}\n"
+        "export string Encode(JsonPayload value){return system.jsonEncode(value,true);}\n"
+        "export float Wide(bool strict){return Resource.LoadWide(strict);}\n", debug, options.get());
+    Instance instance = Create(program.get());
+    Arguments path(NcArgumentsCreate(), &NcArgumentsDestroy);
+    Check(NcArgumentsString(path.get(), "valid", 5) != 0, "JSON callback path");
+    Value loaded = Capture(Call(instance.get(), "Load", path.get()), NC_STRUCT, "host JSON converted to declared struct");
+    Int(NcValueAt(loaded.get(), 0), INT64_C(9007199254740993), "callback JSON int64 precision");
+    Result note(NcValueAt(loaded.get(), 3), &NcResultDestroy);
+    Status(note.get(), NC_COMPLETED, "callback JSON nullable field");
+    Check(NcResultKind(note.get()) == NC_NULL, "callback JSON last duplicate null preserves field");
+    Value values = Capture(NcValueAt(loaded.get(), 2), NC_LIST, "callback JSON nested list");
+    Result number(NcValueAt(values.get(), 1), &NcResultDestroy);
+    Status(number.get(), NC_COMPLETED, "callback JSON nested value");
+    Check(NcResultKind(number.get()) == NC_FLOAT && NcResultFloat(number.get()) == 2.5, "callback JSON float value");
+    Arguments encodedArg(NcArgumentsCreate(), &NcArgumentsDestroy);
+    Check(NcArgumentsValue(encodedArg.get(), loaded.get()) != 0, "script encode struct argument");
+    Result encoded(Call(instance.get(), "Encode", encodedArg.get()), &NcResultDestroy);
+    Status(encoded.get(), NC_COMPLETED, "script JSON encode through C ABI");
+    uint32_t size = 0;
+    const char* bytes = NcResultString(encoded.get(), &size);
+    Check(std::string(bytes, size).find("\"note\":null") != std::string::npos, "script encoding retains nullable field");
+    Arguments text(NcArgumentsCreate(), &NcArgumentsDestroy);
+    Check(NcArgumentsString(text.get(), bytes, size) != 0, "script JSON text argument");
+    Value decoded = Capture(Call(instance.get(), "Decode", text.get()), NC_STRUCT, "script JSON decode through C ABI");
+    Int(NcValueAt(decoded.get(), 0), INT64_C(9007199254740993), "script JSON roundtrip int64 precision");
+    Result decodedNote(NcValueAt(decoded.get(), 3), &NcResultDestroy);
+    Check(NcResultKind(decodedNote.get()) == NC_NULL, "script JSON roundtrip nullable field");
+    for (const char* invalid : {"missing", "fraction", "relaxed"})
+    {
+        Arguments bad(NcArgumentsCreate(), &NcArgumentsDestroy);
+        Check(NcArgumentsString(bad.get(), invalid, Length(invalid)) != 0, "invalid JSON callback path");
+        Result failure(Call(instance.get(), "Load", bad.get()), &NcResultDestroy);
+        Status(failure.get(), NC_FAILED, "callback JSON shape rejected");
+        Check(!Error(failure.get()).empty(), "callback JSON error retained");
+        if (debug) Check(NcResultLine(failure.get()) == 3, "callback JSON failure source line");
+        Int(NcReadGlobal(instance.get(), "loads", 5), 1, "failed callback does not execute following statement");
+    }
+    Arguments strict(NcArgumentsCreate(), &NcArgumentsDestroy);
+    Check(NcArgumentsBool(strict.get(), 1) != 0, "strict JSON numeric policy");
+    Rejected(Call(instance.get(), "Wide", strict.get()), "strict JSON rejects integer tokens outside int64");
+    Arguments relaxed(NcArgumentsCreate(), &NcArgumentsDestroy);
+    Check(NcArgumentsBool(relaxed.get(), 0) != 0, "relaxed JSON numeric policy");
+    Result wide(Call(instance.get(), "Wide", relaxed.get()), &NcResultDestroy);
+    Status(wide.get(), NC_COMPLETED, "relaxed JSON permits float64 fallback for wide integer tokens");
+    Check(NcResultKind(wide.get()) == NC_FLOAT && NcResultFloat(wide.get()) == 9223372036854775808.0,
+        "relaxed JSON preserves representable wide float value");
+    Arguments malformed(NcArgumentsCreate(), &NcArgumentsDestroy);
+    Check(NcArgumentsString(malformed.get(), "{}", 2) != 0, "invalid script JSON input");
+    Rejected(Call(instance.get(), "Decode", malformed.get()), "script JSON rejects missing struct fields");
+}
+
 void BulkArrays()
 {
     Options options(NcOptionsCreate(),&NcOptionsDestroy);
@@ -562,7 +658,7 @@ void OwnershipPreflight()
 
 int main()
 {
-    try { for (bool debug : { false, true }) { Collections(debug); BindingsAndImages(debug); Events(debug); ModulesAndHttp(debug); JsonAndValueCopies(debug); HostStructObjects(debug); } HttpCancellation(); BulkArrays(); OwnershipPreflight(); }
+    try { for (bool debug : { false, true }) { Collections(debug); BindingsAndImages(debug); Events(debug); ModulesAndHttp(debug); JsonAndValueCopies(debug); ScriptJsonAndHostReturn(debug); HostStructObjects(debug); } HttpCancellation(); BulkArrays(); OwnershipPreflight(); }
     catch (const std::exception& error) { std::fprintf(stderr, "NeoCore Unity integration: %s\n", error.what()); return 1; }
     std::printf("NeoCore Unity integration: %d checks passed\n", checks); return 0;
 }

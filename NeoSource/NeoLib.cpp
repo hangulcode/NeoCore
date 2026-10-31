@@ -2744,8 +2744,8 @@ static void AddGlobalLibFun()
 	AddSystemFun("Rand01", &neo_libs::Math_Rand01, "float");
 	AddSystemFun("RandRange", &neo_libs::Math_RandRange, "float", "float min", "float max");
 	AddSystemFun("Hash32", &neo_libs::Math_Hash32, "int", "int value");
-	AddSystemFun("ColorRGB", &neo_libs::Math_ColorRGB, "int", "int r", "int g", "int b");
-	AddSystemFun("ColorARGB", &neo_libs::Math_ColorARGB, "int", "int a", "int r", "int g", "int b");
+	AddSystemFun("ColorRGB", &neo_libs::Math_ColorRGB, "int", "float r", "float g", "float b");
+	AddSystemFun("ColorARGB", &neo_libs::Math_ColorARGB, "int", "float a", "float r", "float g", "float b");
 
 	g_sCurrentSystem = "system";
 	AddSystemFun("time", &neo_libs::sys_time, "int");

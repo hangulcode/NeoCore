@@ -545,7 +545,8 @@ bool EncodeJson(const ValuePtr& value, bool sortKeys, std::string& text,
     text.clear(); error.clear(); warnings.clear();
     if (!value) { error = "JSON value is unavailable"; return false; }
     NeoScript::JsonResult result;
-    const bool success = NeoScript::JsonInternal::Encode(value->value, text, result, sortKeys);
+    // 정적 구조체의 nullable 필드는 누락된 필드와 구분되므로 JSON null을 보존한다.
+    const bool success = NeoScript::JsonInternal::Encode(value->value, text, result, sortKeys, true);
     error = result.error;
     warnings = std::move(result.warnings);
     return success;
@@ -561,7 +562,7 @@ ValuePtr DecodeJson(NeoScript::IRuntime& runtime, NeoScript::InstanceHandle inst
     ValuePtr value(new OwnedValue(runtime, lifetime));
     NeoScript::JsonResult result;
     const bool success = NeoScript::JsonInternal::Decode(*static_cast<NeoScript::CNeoVMWorker*>(record->worker),
-        text.data(), text.size(), value->value, result, strictIntegers, requireMap);
+        text.data(), text.size(), value->value, result, strictIntegers, requireMap, true);
     error = result.error;
     warnings = std::move(result.warnings);
     return success ? value : ValuePtr();

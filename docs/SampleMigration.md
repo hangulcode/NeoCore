@@ -30,7 +30,10 @@ input returns to the prompt; end-of-input exits normally.
 
 The original sample numbers 0 through 20 are retained, including `0` for `hello`
 and `1` for the manual `performance` workload. The appended entries are
-`21 fibonacci`, `22 structs`, `23 vectors`, `24 particles`, and `25 https`.
+`21 fibonacci`, `22 structs`, `23 vectors`, `24 particles`, `25 https`,
+`26 math`, and `27 json`. The math sample covers scalar, color, random, vector,
+and Quaternion functions. The JSON sample shows typed struct and collection
+round trips; see [JSON](JSON.md) for schema validation rules.
 Use `r` to repeat the last sample, `list` to display the menu again, and `q`, `quit`,
 or `exit` to leave. Because `list` is a menu command, select the list sample by its
 number (`6`) or run `neocore --run list`.
@@ -44,7 +47,7 @@ sample sources into the executable; a copied executable still needs access to th
 | --- | --- | --- |
 | `--list` | `list` | Display sample numbers, names, and commands without running samples |
 | `--run <name-or-number>` | Sample name or number | Run one typed sample and its host checks |
-| `--run-all` or `--smoke` | `all` or `smoke` | Run the 24 offline functional samples; skip `performance` and live `https` |
+| `--run-all` or `--smoke` | `all` or `smoke` | Run the 26 offline functional samples; skip `performance` and live `https` |
 | `--debug-smoke` | `debug-smoke` | Run the functional samples with debug information and verify a runtime error's source file and line |
 | `--compiler-error-regression` | `compiler-errors` | Compile 24 typed acceptance/rejection cases without executing their programs |
 | `--bench-check` | `bench-check` | Check the nine console workloads with 54 reduced, untimed calls |

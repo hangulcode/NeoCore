@@ -6,6 +6,7 @@
 #include "NeoCoreDebugger.h"
 #include "NeoCoreHostRuntime.h"
 #include "NeoCoreHostBridge.h"
+#include "NeoCoreInstanceContext.h"
 #include "NeoCoreValueBoundary.h"
 #include "NeoScript.h"
 #include <stdexcept>
@@ -104,6 +105,7 @@ AllocationStats GetAllocationStats()
 }
 
 static Error TranslateError(const NeoScript::Error& backend, const std::string& name);
+static bool RegisterJsonFunctions(NeoScript::IRuntime& runtime, std::string& error);
 
 struct Runtime::Impl
 {
@@ -166,6 +168,7 @@ struct Instance::Impl
     NeoScript::IRuntime* runtime;
     NeoScript::InstanceHandle instance;
     std::unique_ptr<HostInstance> host;
+    BackendInstanceContext backendContext;
     std::shared_ptr<int> debugLifetime;
     std::uint64_t id = 0;
     void* userData = nullptr;
@@ -249,6 +252,7 @@ std::unique_ptr<Runtime> Runtime::CreateImpl(const HostBindings* bindings, Error
         // 바인딩 항목 주소와 인자 계획은 모든 프로그램이 공유하므로 한 번만 등록한다.
         if (!state->host->Link(*state->runtime, "$neocore_host_", error.message)) return std::unique_ptr<Runtime>();
     }
+    if (!RegisterJsonFunctions(*state->runtime, error.message)) return std::unique_ptr<Runtime>();
     state->runtime->FreezeBindings();
     return std::unique_ptr<Runtime>(new Runtime(std::move(state)));
 }
@@ -481,7 +485,9 @@ std::unique_ptr<Instance> Program::CreateInstance(Error& error)
     if (impl_->host) result->impl_->host = impl_->host->CreateInstance(*result);
     NeoScript::InstanceDesc desc;
     desc.runGlobalInit = false;
-    desc.userData = result->impl_->host ? result->impl_->host->UserData() : nullptr;
+    result->impl_->backendContext.owner = result.get();
+    result->impl_->backendContext.host = result->impl_->host ? result->impl_->host->UserData() : nullptr;
+    desc.userData = &result->impl_->backendContext;
     result->impl_->instance = impl_->runtime->CreateInstance(impl_->program, desc);
     if (!result->impl_->instance ||
         !NeoCoreBackend::EnableCooperativeSleep(*impl_->runtime, result->impl_->instance))
@@ -618,6 +624,80 @@ static TypeId ScalarType(const TypeRegistry& types, Scalar::Kind kind)
 
 #include "NeoCoreValueBoundary.inl"
 
+static bool DispatchJsonEncode(NeoScript::CallContext& context, NeoScript::StringView)
+{
+    try
+    {
+        BackendInstanceContext* instance = static_cast<BackendInstanceContext*>(context.instanceUserData());
+        if (!instance || !instance->owner || context.argCount() != 3 ||
+            context.argType(0) != NeoScript::ValueType::Int || context.argType(2) != NeoScript::ValueType::Bool)
+        {
+            context.fail(0, "invalid internal JSON encode arguments");
+            return false;
+        }
+        const std::int64_t type = NeoCoreBackend::ReadInt(context, 0);
+        if (type <= 0 || static_cast<std::uint64_t>(type) > std::numeric_limits<TypeId>::max())
+        {
+            context.fail(0, "invalid internal JSON type");
+            return false;
+        }
+        std::string text, error;
+        if (!BoundaryAccess::EncodeJson(*instance->owner, context, 1, static_cast<TypeId>(type),
+            NeoCoreBackend::ReadBool(context, 2), text, error))
+        {
+            context.fail(0, error);
+            return false;
+        }
+        context.retString(text);
+        return true;
+    }
+    catch (const std::exception& failure) { context.fail(0, failure.what()); }
+    catch (...) { context.fail(0, "JSON encode failed"); }
+    return false;
+}
+
+static bool DispatchJsonDecode(NeoScript::CallContext& context, NeoScript::StringView)
+{
+    try
+    {
+        BackendInstanceContext* instance = static_cast<BackendInstanceContext*>(context.instanceUserData());
+        if (!instance || !instance->owner || context.argCount() != 2 ||
+            context.argType(0) != NeoScript::ValueType::Int || context.argType(1) != NeoScript::ValueType::String)
+        {
+            context.fail(0, "invalid internal JSON decode arguments");
+            return false;
+        }
+        const std::int64_t type = NeoCoreBackend::ReadInt(context, 0);
+        if (type <= 0 || static_cast<std::uint64_t>(type) > std::numeric_limits<TypeId>::max())
+        {
+            context.fail(0, "invalid internal JSON type");
+            return false;
+        }
+        const std::string text = NeoCoreBackend::ReadString(context, 1);
+        std::string error;
+        if (BoundaryAccess::DecodeJson(*instance->owner, context, static_cast<TypeId>(type), text, error)) return true;
+        context.fail(0, error);
+    }
+    catch (const std::exception& failure) { context.fail(0, failure.what()); }
+    catch (...) { context.fail(0, "JSON decode failed"); }
+    return false;
+}
+
+static bool RegisterJsonFunctions(NeoScript::IRuntime& runtime, std::string& error)
+{
+    NeoScript::NativeObjectDesc encode;
+    encode.name = "$neocore_json_encode";
+    encode.method = &DispatchJsonEncode;
+    encode.declareGlobal = false;
+    NeoScript::NativeObjectDesc decode;
+    decode.name = "$neocore_json_decode";
+    decode.method = &DispatchJsonDecode;
+    decode.declareGlobal = false;
+    if (runtime.RegisterObject(encode) && runtime.RegisterObject(decode)) return true;
+    error = "could not register typed JSON functions";
+    return false;
+}
+
 static TypeId BoundaryTypeByName(const TypeRegistry& types, const std::string& name)
 {
     for(TypeId type=1; types.Get(type).kind!=TypeKind::Invalid; ++type)
@@ -683,13 +763,8 @@ Scalar Program::ParseJson(const std::string& typeName, const std::string& json, 
     try
     {
         if(defaultInstance_->IsExecuting()) throw std::logic_error("cannot parse JSON through the default instance during execution");
-        const auto& types=impl_->checked.types;
-        const TypeId type=BoundaryTypeByName(types,typeName);
-        std::vector<std::string> warnings;
-        const auto raw=NeoCoreBackend::DecodeJson(*impl_->runtime,defaultInstance_->impl_->instance,json,strictIntegers,false,impl_,error.message,warnings);
-        if(!raw) return Scalar();
-        const auto normalized=ConvertJsonValue(*impl_->runtime,types,type,impl_,raw,true,0);
-        return BoundaryAccess::Wrap(*impl_->runtime,types,type,impl_,normalized);
+        const TypeId type=BoundaryTypeByName(impl_->checked.types,typeName);
+        return BoundaryAccess::ParseJson(*defaultInstance_,type,json,strictIntegers,error.message);
     }
     catch(const std::exception& failure) { error.message=failure.what(); }
     return Scalar();

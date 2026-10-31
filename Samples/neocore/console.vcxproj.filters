@@ -22,6 +22,8 @@
     <None Include="scripts\particles.nc"><Filter>Scripts</Filter></None>
     <None Include="scripts\performance.nc"><Filter>Scripts</Filter></None>
     <None Include="scripts\regex.nc"><Filter>Scripts</Filter></None>
+    <None Include="scripts\math.nc"><Filter>Scripts</Filter></None>
+    <None Include="scripts\json.nc"><Filter>Scripts</Filter></None>
     <None Include="scripts\regression.nc"><Filter>Scripts</Filter></None>
     <None Include="scripts\slice_run.nc"><Filter>Scripts</Filter></None>
     <None Include="scripts\string.nc"><Filter>Scripts</Filter></None>

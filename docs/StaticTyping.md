@@ -189,7 +189,9 @@ are the old value. `int32` and `float32` remain unavailable as scalar declaratio
 
 The owning host value API supports typed aggregates and retained function values.
 Closures retain their creating instance identity; reset or cross-instance invocation
-is rejected. JSON decoding requires an explicit registered target type. The
+is rejected. Script JSON uses `system.jsonEncode(value, sortKeys)` and
+`system.jsonDecode<T>(text)` with a compile-time target type. Host decoding uses
+an explicit registered target type. The
 [typed C ABI and Unity package](../Unity/NeoCore/README.md) expose these contracts
 without dynamic fallback. The CLI's `--lsp` and `--dap` modes use the NeoCore
 frontend and source maps. Dynamic NeoScript integrations remain in the original repository.
@@ -732,8 +734,18 @@ The other methods are `add_header(string,string)`, `wait()->bool`, and `close()-
 The host supplies a transport through `CompileOptions.httpTransport`; the library
 does not make an untyped host member available. Callbacks execute on the owning
 script worker when completions are processed. Backend reentry, suspension, and
-error-unwinding rules still apply. Host-side JSON decoding now requires an explicit
-target type and checks every field/element; see [JSON.md](JSON.md).
+error-unwinding rules still apply.
+
+`system.jsonEncode(value, sortKeys = false)` produces a string from the expression's
+static type. `system.jsonDecode<T>(text)` requires an explicit supported target
+type and returns exactly that type; nested collection arguments are supported.
+Both require `import system;`. Structs use JSON objects with their declared field
+names, and all fields/elements are checked during conversion. Functions, native
+IDs, coroutine/service handles and maps with non-string keys are rejected
+recursively at compile time. Malformed text or a value that violates the declared
+shape is a runtime error. This built-in syntax does not add user-defined generic
+functions. Host callbacks can use `HostCall::ReturnJson` to decode against their
+declared return type in the calling program; see [JSON.md](JSON.md).
 
 After `import coroutine;`, `coroutine<fn(int)->void>` describes a coroutine whose
 entry takes an int and returns void. `coroutine.create(function)` fixes that
@@ -777,8 +789,9 @@ describe their measured snapshots, not the current NeoCore build.
 `int32` and `float32` are not public scalar types. Compact storage belongs to
 `array32<int>`, `array32<float>` and vector components. Mutable collection types
 are invariant. Missing map values are nullable; removal is explicit. Heterogeneous
-collections and implicit dynamic fallback remain excluded. Host JSON decoding uses
-an explicit registered target rather than exposing an untyped script object.
+collections and implicit dynamic fallback remain excluded. Script JSON decoding
+uses `jsonDecode<T>` and host decoding uses an explicit registered target rather
+than exposing an untyped script object.
 
 Structs have nominal identity and value assignment. Classes, inheritance,
 user-defined generics and function overloading remain deferred. Built-in collection

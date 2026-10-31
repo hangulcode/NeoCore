@@ -20,6 +20,9 @@ inline TypeId BuiltinSignatureType(TypeRegistry& types, char code)
 {
     switch (code)
     {
+    case '2': return types.Vector2();
+    case '3': return types.Vector3();
+    case '4': return types.Vector4();
     case 'a': return types.LookupNamed("AsyncRequest");
     case 'b': return types.Bool();
     case 'f': return types.Float();
@@ -33,6 +36,7 @@ inline TypeId BuiltinSignatureType(TypeRegistry& types, char code)
     case 'l': return types.ListOf(types.String());
     case 'm': return types.MapOf(types.String(), types.Int());
     case 'p': return types.LookupNamed("TimeSpan");
+    case 'q': return types.Quaternion();
     case 'r': return types.NullableOf(types.ListOf(types.String()));
     case 's': return types.String();
     case 'v': return types.Void();
@@ -79,13 +83,71 @@ inline const BuiltinSignature* GetBuiltinSignatures(std::size_t& count)
         {"AsyncRequest", "add_header", 'v', 2, 2, "ss"},
         {"AsyncRequest", "wait", 'b', 0, 0, ""},
         {"AsyncRequest", "close", 'v', 0, 0, ""},
+        {"math", "abs", 'f', 1, 1, "f"},
+        {"math", "acos", 'f', 1, 1, "f"},
+        {"math", "asin", 'f', 1, 1, "f"},
+        {"math", "atan", 'f', 1, 1, "f"},
+        {"math", "ceil", 'f', 1, 1, "f"},
+        {"math", "floor", 'f', 1, 1, "f"},
+        {"math", "round", 'f', 1, 1, "f"},
         {"math", "sin", 'f', 1, 1, "f"},
         {"math", "cos", 'f', 1, 1, "f"},
-        {"math", "sqrt", 'f', 1, 1, "f"},
-        {"math", "abs", 'f', 1, 1, "f"},
-        {"math", "floor", 'f', 1, 1, "f"},
-        {"math", "ceil", 'f', 1, 1, "f"},
+        {"math", "tan", 'f', 1, 1, "f"},
+        {"math", "log", 'f', 1, 1, "f"},
+        {"math", "log10", 'f', 1, 1, "f"},
+        {"math", "exp", 'f', 1, 1, "f"},
         {"math", "pow", 'f', 2, 2, "ff"},
+        {"math", "deg", 'f', 1, 1, "f"},
+        {"math", "rad", 'f', 1, 1, "f"},
+        {"math", "sqrt", 'f', 1, 1, "f"},
+        {"math", "atan2", 'f', 2, 2, "ff"},
+        {"math", "hypot", 'f', 2, 2, "ff"},
+        {"math", "fmod", 'f', 2, 2, "ff"},
+        {"math", "trunc", 'f', 1, 1, "f"},
+        {"math", "fract", 'f', 1, 1, "f"},
+        {"math", "sinh", 'f', 1, 1, "f"},
+        {"math", "cosh", 'f', 1, 1, "f"},
+        {"math", "tanh", 'f', 1, 1, "f"},
+        {"math", "Sign", 'f', 1, 1, "f"},
+        {"math", "Min", 'f', 2, 2, "ff"},
+        {"math", "Max", 'f', 2, 2, "ff"},
+        {"math", "Vector2", '2', 2, 2, "ff"},
+        {"math", "Vector3", '3', 3, 3, "fff"},
+        {"math", "Vector4", '4', 4, 4, "ffff"},
+        {"math", "Quaternion", 'q', 4, 4, "ffff"},
+        {"math", "Clamp01", 'f', 1, 1, "f"},
+        {"math", "Clamp", 'f', 3, 3, "fff"},
+        {"math", "SmoothStep01", 'f', 1, 1, "f"},
+        {"math", "Lerp", 'f', 3, 3, "fff"},
+        {"math", "Lerp3", '3', 3, 3, "33f"},
+        {"math", "Repeat", 'f', 2, 2, "ff"},
+        {"math", "PingPong", 'f', 2, 2, "ff"},
+        {"math", "WrapAngle", 'f', 1, 1, "f"},
+        {"math", "DeltaAngle", 'f', 2, 2, "ff"},
+        {"math", "LerpAngle", 'f', 3, 3, "fff"},
+        {"math", "MoveToward", 'f', 3, 3, "fff"},
+        {"math", "MoveTowardAngle", 'f', 3, 3, "fff"},
+        {"math", "InverseLerp", 'f', 3, 3, "fff"},
+        {"math", "Remap", 'f', 5, 5, "fffff"},
+        {"math", "SmoothStep", 'f', 3, 3, "fff"},
+        {"math", "Distance2", 'f', 4, 4, "ffff"},
+        {"math", "Dot3", 'f', 2, 2, "33"},
+        {"math", "Length3", 'f', 1, 1, "3"},
+        {"math", "Distance3", 'f', 2, 2, "33"},
+        {"math", "DistanceSquared3", 'f', 2, 2, "33"},
+        {"math", "Normalize3", '3', 2, 2, "33"},
+        {"math", "Cross3", '3', 2, 2, "33"},
+        {"math", "RotateVectorByQuat", '3', 2, 2, "q3"},
+        {"math", "quat_from_basis", 'q', 3, 3, "333"},
+        {"math", "quat_slerp", 'q', 3, 3, "qqf"},
+        {"math", "srand", 'v', 1, 1, "i"},
+        {"math", "rand", 'i', 0, 0, ""},
+        {"math", "tostr", 's', 1, 1, "f"},
+        {"math", "Rand01", 'f', 0, 0, ""},
+        {"math", "RandRange", 'f', 2, 2, "ff"},
+        {"math", "Hash32", 'i', 1, 1, "i"},
+        {"math", "ColorRGB", 'i', 3, 3, "fff"},
+        {"math", "ColorARGB", 'i', 4, 4, "ffff"},
         {"system", "clock", 'f', 0, 0, ""},
         {"system", "time", 'i', 0, 0, ""},
         {"system", "time_ms", 'i', 0, 0, ""},

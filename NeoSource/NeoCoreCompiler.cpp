@@ -401,6 +401,7 @@ struct Expr
     std::vector<Symbol*> lambdaParameters;
     TypeId type = InvalidType;
     TypeId constructorType = InvalidType;
+    TypeId jsonType = InvalidType;
     bool constant = false;
     bool constantInitializer = false;
     bool branchCondition = false;
@@ -886,7 +887,16 @@ private:
         else Fail(token, "expected an expression");
         for (;;)
         {
-            if (At("["))
+            if (At("<") && result->kind == ExprKind::Member && result->op == "jsonDecode" &&
+                result->children[0]->kind == ExprKind::Name && result->children[0]->op == "system")
+            {
+                if (result->jsonType != InvalidType) Fail(Peek(), "jsonDecode accepts only one target type");
+                Take();
+                result->jsonType = ParseType().type;
+                result->end = TypeClose().end;
+                if (!At("(")) Fail(Peek(), "jsonDecode<T> requires arguments in parentheses");
+            }
+            else if (At("["))
             {
                 const Token index = Take();
                 std::unique_ptr<Expr> access(new Expr(ExprKind::Index, index));
@@ -1771,6 +1781,13 @@ private:
         else if (callee.kind == ExprKind::Member && callee.children[0]->kind == ExprKind::Name)
             name = callee.children[0]->op + "." + callee.op;
         else Fail(callee.token, "indirect calls are not supported by this compiler stage");
+        const bool mathConstructor = name == "math.Vector2" || name == "math.Vector3" ||
+            name == "math.Vector4" || name == "math.Quaternion";
+        if (mathConstructor)
+        {
+            if (!imports_.count("math")) Fail(callee.token, "math must be imported before use");
+            name = name.substr(5);
+        }
         expression.callName = name;
         if (Lookup(name)) Fail(callee.token, "this value is not callable");
         const auto function = functions_.find(name);
@@ -1844,7 +1861,9 @@ private:
         if (IsVector(structure))
         {
             const std::size_t components = static_cast<std::size_t>(VectorSize(structure));
-            if (count != 0 && count != components) Fail(callee.token, "vector constructor requires no arguments or exactly its component count");
+            if ((mathConstructor && count != components) || (count != 0 && count != components))
+                Fail(callee.token, mathConstructor ? "math vector constructor requires exactly its component count"
+                    : "vector constructor requires no arguments or exactly its component count");
             for (std::size_t i = 1; i < expression.children.size(); ++i) Convert(*expression.children[i], types_.Float());
             expression.callName = VectorConstructor(structure, callee.token.line);
             if (count == 0)
@@ -1919,6 +1938,36 @@ private:
                 expression.type = (name == "int" || name == "toint") ? types_.Int() : types_.Float();
                 if (name == "int" || name == "float") expression.callName = "to" + name;
             }
+            return;
+        }
+        if (name == "system.jsonEncode" || name == "system.jsonDecode")
+        {
+            if (!imports_.count("system")) Fail(callee.token, "system must be imported before use");
+            if (checkingConstant_) Fail(callee.token, "JSON conversion is not a constant initializer");
+            const bool encode = name == "system.jsonEncode";
+            if (encode)
+            {
+                if (count < 1 || count > 2) Fail(callee.token, "jsonEncode requires a value and optional bool sortKeys");
+                expression.jsonType = expression.children[1]->type;
+                if (count == 2) Require(*expression.children[2], types_.Bool(), "JSON sortKeys");
+                else expression.extraArgument = "false";
+                expression.type = types_.String();
+                expression.callName = internalPrefix_ + "json_encode.call";
+            }
+            else
+            {
+                if (callee.jsonType == InvalidType) Fail(callee.token, "jsonDecode requires an explicit target type: system.jsonDecode<T>(text)");
+                if (count != 1) Fail(callee.token, "jsonDecode<T> requires one string argument");
+                Require(*expression.children[1], types_.String(), "JSON text");
+                expression.jsonType = callee.jsonType;
+                expression.type = callee.jsonType;
+                expression.callName = internalPrefix_ + "json_decode.call";
+            }
+            if (!types_.IsJsonType(expression.jsonType))
+                Fail(callee.token, "JSON does not support type '" + types_.DisplayName(expression.jsonType) + "'");
+            const std::string global = internalPrefix_ + (encode ? "json_encode" : "json_decode");
+            if (std::find(result_.typedIR.nativeGlobals.begin(), result_.typedIR.nativeGlobals.end(), global) == result_.typedIR.nativeGlobals.end())
+                result_.typedIR.nativeGlobals.push_back(global);
             return;
         }
         if (name == "system.set")
@@ -2820,6 +2869,7 @@ private:
             if (builtinMethod)
                 callName = "(" + RenderExpr(*callee.children[0]) + ")" + callName;
             text = Lines(expression.begin, callee.begin) + callName + "(";
+            if (expression.jsonType != InvalidType) text += std::to_string(expression.jsonType);
             if (expression.receiverArgument)
             {
                 const Expr& receiver = *callee.children[0];
@@ -2830,7 +2880,7 @@ private:
             std::size_t previous = callee.end;
             for (std::size_t i = 1; i < expression.children.size(); ++i)
             {
-                if (i != 1 || expression.receiverArgument) text += ",";
+                if (i != 1 || expression.receiverArgument || expression.jsonType != InvalidType) text += ",";
                 text += Lines(previous, expression.children[i]->begin);
                 text += RenderExpr(*expression.children[i]);
                 previous = expression.children[i]->end;

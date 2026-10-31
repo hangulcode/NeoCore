@@ -191,6 +191,7 @@ NC_API void NcHostReturnInt(NcHostCall* call, int64_t value);
 NC_API void NcHostReturnFloat(NcHostCall* call, double value);
 NC_API void NcHostReturnBool(NcHostCall* call, int32_t value);
 NC_API void NcHostReturnString(NcHostCall* call, const char* value, uint32_t length);
+NC_API int32_t NcHostReturnJson(NcHostCall* call, const char* json, uint32_t length, int32_t strictIntegers);
 NC_API void NcHostReturnVector(NcHostCall* call, int32_t kind, const float* components);
 NC_API void NcHostReturnObject(NcHostCall* call, uint64_t id);
 NC_API void NcHostReturnNull(NcHostCall* call);

@@ -89,6 +89,19 @@ host resolver on use; compilation cannot guarantee that a game object remains
 alive or retains a capability such as a UI component. See
 [HostBindings.md](HostBindings.md).
 
+## Math and typed JSON
+
+Import `math` for scalar functions, interpolation, colors, random numbers,
+vectors and Quaternion helpers. Arguments and results have fixed signatures;
+see [the API reference](API.md#mathematics-and-vectors) and
+[math.nc](../Samples/neocore/scripts/math.nc).
+
+Import `system` to encode a checked value with `system.jsonEncode(value)` or
+decode text with `system.jsonDecode<T>(text)`. For example,
+`list<int> values = system.jsonDecode<list<int>>("[1,2,3]");`.
+Structs use named JSON object fields. Invalid text or a schema mismatch is a
+runtime error; missing and extra struct fields are rejected. See [JSON.md](JSON.md).
+
 ## Run and debug
 
 ```sh

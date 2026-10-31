@@ -115,7 +115,7 @@ bool SampleHost::Verify(const std::string& sample, NeoCore::Program& program, Ne
         result = program.Call("Verify");
         matched = result.ok() && result.value.kind() == NeoCore::Scalar::Kind::Bool && result.value.asBool();
     }
-    else if (sample == "module" || sample == "particles")
+    else if (sample == "module" || sample == "particles" || sample == "math" || sample == "json")
     {
         result = program.Call("CheckPassed");
         matched = result.ok() && !result.suspended() &&

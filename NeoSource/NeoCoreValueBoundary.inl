@@ -354,7 +354,8 @@ static NeoCoreBackend::ValuePtr ConvertJsonValue(NeoScript::IRuntime& runtime, c
     if(!ReadValue(value,data)) throw std::invalid_argument("invalid JSON boundary value");
     if(data.kind==ValueKind::Null)
     {
-        if(!types.IsNullable(type)) throw std::invalid_argument("null requires a nullable JSON target");
+        if(!types.IsNullable(type) && types.Get(type).kind != TypeKind::Null)
+            throw std::invalid_argument("null requires a nullable JSON target");
         return value;
     }
     type=Underlying(types,type);
@@ -453,4 +454,65 @@ static NeoCoreBackend::ValuePtr ConvertJsonValue(NeoScript::IRuntime& runtime, c
     default: throw std::invalid_argument("JSON does not support this declared type: "+types.DisplayName(type));
     }
     throw std::invalid_argument("JSON value requires "+types.DisplayName(type));
+}
+
+// JSON은 호출자의 타입 표와 할당 영역에서 변환한다. 기본 인스턴스로 우회하지 않는다.
+static NeoCoreBackend::ValuePtr DecodeTypedJson(NeoScript::IRuntime& runtime, NeoScript::InstanceHandle instance,
+    const TypeRegistry& types, TypeId type, const std::shared_ptr<void>& lifetime,
+    const std::string& text, bool strictIntegers, std::string& error)
+{
+    if (!types.IsJsonType(type))
+        throw std::invalid_argument("JSON does not support this declared type: " + types.DisplayName(type));
+    std::vector<std::string> warnings;
+    const auto raw = NeoCoreBackend::DecodeJson(runtime, instance, text, strictIntegers, false, lifetime, error, warnings);
+    if (!raw) return NeoCoreBackend::ValuePtr();
+    return ConvertJsonValue(runtime, types, type, lifetime, raw, true, 0);
+}
+
+Scalar BoundaryAccess::ParseJson(Instance& owner, TypeId type, const std::string& text,
+    bool strictIntegers, std::string& error)
+{
+    error.clear();
+    try
+    {
+        const auto value = DecodeTypedJson(*owner.impl_->runtime, owner.impl_->instance,
+            owner.impl_->checked.types, type, owner.impl_->module, text, strictIntegers, error);
+        if (!value) return Scalar();
+        return Wrap(*owner.impl_->runtime, owner.impl_->checked.types, type, owner.impl_->module, value);
+    }
+    catch (const std::exception& failure) { error = failure.what(); }
+    return Scalar();
+}
+
+bool BoundaryAccess::EncodeJson(Instance& owner, const NeoScript::CallContext& context, std::size_t index,
+    TypeId type, bool sortKeys, std::string& text, std::string& error)
+{
+    text.clear(); error.clear();
+    try
+    {
+        const auto& types = owner.impl_->checked.types;
+        if (!types.IsJsonType(type))
+            throw std::invalid_argument("JSON does not support this declared type: " + types.DisplayName(type));
+        const auto raw = NeoCoreBackend::CaptureArgument(context, index, owner.impl_->module);
+        const auto normalized = ConvertJsonValue(*owner.impl_->runtime, types, type, owner.impl_->module, raw, false, 0);
+        std::vector<std::string> warnings;
+        return NeoCoreBackend::EncodeJson(normalized, sortKeys, text, error, warnings);
+    }
+    catch (const std::exception& failure) { error = failure.what(); return false; }
+}
+
+bool BoundaryAccess::DecodeJson(Instance& owner, NeoScript::CallContext& context, TypeId type,
+    const std::string& text, std::string& error)
+{
+    error.clear();
+    try
+    {
+        const auto normalized = DecodeTypedJson(*owner.impl_->runtime, owner.impl_->instance,
+            owner.impl_->checked.types, type, owner.impl_->module, text, true, error);
+        if (!normalized) return false;
+        if (NeoCoreBackend::ReturnValue(context, normalized)) return true;
+        error = "could not return JSON value to the active script instance";
+    }
+    catch (const std::exception& failure) { error = failure.what(); }
+    return false;
 }

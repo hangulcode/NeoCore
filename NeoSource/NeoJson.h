@@ -16,8 +16,10 @@ class CNeoVMWorker;
 struct VarInfo;
 namespace JsonInternal
 {
-bool Encode(const VarInfo& value, std::string& text, JsonResult& result, bool sortKeys);
+bool Encode(const VarInfo& value, std::string& text, JsonResult& result, bool sortKeys,
+    bool preserveNullMembers = false);
 bool Decode(CNeoVMWorker& worker, const char* text, size_t size, VarInfo& value,
-    JsonResult& result, bool strictIntegers = true, bool requireMap = false);
+    JsonResult& result, bool strictIntegers = true, bool requireMap = false,
+    bool preserveNullMembers = false);
 }
 }

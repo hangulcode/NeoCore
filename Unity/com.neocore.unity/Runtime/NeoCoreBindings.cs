@@ -304,6 +304,8 @@ namespace NeoCore.Unity
         public void ReturnBool(bool value) { Native.NcHostReturnBool(Handle, value ? 1 : 0); }
         public void ReturnString(string value)
         { byte[] bytes = Encoding.UTF8.GetBytes(value ?? throw new ArgumentNullException(nameof(value))); Native.NcHostReturnString(Handle, bytes, checked((uint)bytes.Length)); }
+        public bool ReturnJson(string json, bool strictIntegers = true)
+        { byte[] bytes = Encoding.UTF8.GetBytes(json ?? throw new ArgumentNullException(nameof(json))); return Native.NcHostReturnJson(Handle, bytes, checked((uint)bytes.Length), strictIntegers ? 1 : 0) != 0; }
         public void ReturnObject(ulong id) { Native.NcHostReturnObject(Handle, id); }
         public void ReturnNull() { Native.NcHostReturnNull(Handle); }
         public void Fail(string message)

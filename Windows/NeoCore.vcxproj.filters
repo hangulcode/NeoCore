@@ -48,6 +48,7 @@
     <ClInclude Include="..\NeoSource\NeoCoreHostSchema.h"><Filter>NeoCore</Filter></ClInclude>
     <ClInclude Include="..\NeoSource\NeoCoreHostBridge.h"><Filter>NeoCore</Filter></ClInclude>
     <ClInclude Include="..\NeoSource\NeoCoreHostRuntime.h"><Filter>NeoCore</Filter></ClInclude>
+    <ClInclude Include="..\NeoSource\NeoCoreInstanceContext.h"><Filter>NeoCore</Filter></ClInclude>
     <ClInclude Include="..\NeoSource\NeoVMTypedOps.h"><Filter>NeoCore</Filter></ClInclude>
     <ClInclude Include="..\NeoSource\NeoRegex.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="..\NeoSource\NeoTime.h"><Filter>Header Files</Filter></ClInclude>

@@ -224,6 +224,49 @@ TypeId TypeRegistry::DeclareNative(const std::string& qualifiedName)
     return DeclareNominal(TypeKind::Native, qualifiedName);
 }
 
+bool TypeRegistry::IsJsonType(TypeId id) const
+{
+    std::vector<TypeId> pending(1, id);
+    std::set<TypeId> visited;
+    while (!pending.empty())
+    {
+        const TypeId current = pending.back();
+        pending.pop_back();
+        if (!visited.insert(current).second) continue;
+        const TypeDesc& type = Get(current);
+        switch (type.kind)
+        {
+        case TypeKind::Int:
+        case TypeKind::Float:
+        case TypeKind::Bool:
+        case TypeKind::String:
+        case TypeKind::Null:
+        case TypeKind::Vector2:
+        case TypeKind::Vector3:
+        case TypeKind::Vector4:
+        case TypeKind::Quaternion:
+            break;
+        case TypeKind::Nullable:
+        case TypeKind::Array:
+        case TypeKind::Array32:
+        case TypeKind::List:
+        case TypeKind::Set:
+            pending.push_back(type.element);
+            break;
+        case TypeKind::Map:
+            if (type.key != String()) return false;
+            pending.push_back(type.value);
+            break;
+        case TypeKind::Struct:
+            if (!type.fieldsDefined) return false;
+            for (const StructField& field : type.fields) pending.push_back(field.type);
+            break;
+        default: return false;
+        }
+    }
+    return true;
+}
+
 TypeId TypeRegistry::DeclareBuiltinObject(const std::string& qualifiedName)
 {
     return DeclareNominal(TypeKind::BuiltinObject, qualifiedName);

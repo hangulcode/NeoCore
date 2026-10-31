@@ -11,6 +11,11 @@ struct BoundaryAccess
 {
     static Scalar Capture(Instance& owner, const NeoScript::CallContext& context, std::size_t index, TypeId type);
     static bool Return(Instance& owner, NeoScript::CallContext& context, TypeId type, const Scalar& value, std::string& error);
+    static Scalar ParseJson(Instance& owner, TypeId type, const std::string& text, bool strictIntegers, std::string& error);
+    static bool EncodeJson(Instance& owner, const NeoScript::CallContext& context, std::size_t index,
+        TypeId type, bool sortKeys, std::string& text, std::string& error);
+    static bool DecodeJson(Instance& owner, NeoScript::CallContext& context, TypeId type,
+        const std::string& text, std::string& error);
     static bool Accepts(const TypeRegistry& types, TypeId type, const Scalar& value);
     static Scalar Wrap(NeoScript::IRuntime& runtime, const TypeRegistry& types, TypeId type,
         const std::shared_ptr<void>& lifetime, const std::shared_ptr<NeoCoreBackend::OwnedValue>& value);
