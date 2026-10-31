@@ -5,6 +5,11 @@
 #include <cstdint>
 #include <limits>
 
+// 이전 .ns 회귀 전용 빌드만 범용 3항 산술을 포함한다. NeoCore 기본 빌드에는 넣지 않는다.
+#ifndef NEOSCRIPT_LEGACY_ARITHMETIC
+#define NEOSCRIPT_LEGACY_ARITHMETIC 0
+#endif
+
 namespace NeoScript
 {
 
@@ -98,7 +103,13 @@ struct debug_info
 // 0145: 정적 숫자 비교와 조건 분기 명령을 추가한다. 이전 이미지는 다시 컴파일한다.
 // 0146: 정적 벡터·배열·셀 명령과 정수 비트 연산 명령을 추가한다.
 // 0147: 생성되지 않는 비트 연산·타입 검증 명령 3개를 제거한다. 이전 캐시는 다시 만든다.
-#define NEO_VER		(('0' << 24) | ('1' << 16) | ('4' << 8) | ('7'))
+// 0148: 생성되지 않는 컨테이너 복합 대입 명령 5개를 제거한다. 이전 캐시는 다시 만든다.
+// 0149/L149: 정적/이전 동적 명령 집합을 구분하여 서로의 이미지를 로드하지 않는다.
+#if NEOSCRIPT_LEGACY_ARITHMETIC
+#define NEO_VER (('L' << 24) | ('1' << 16) | ('4' << 8) | ('9'))
+#else
+#define NEO_VER (('0' << 24) | ('1' << 16) | ('4' << 8) | ('9'))
+#endif
 
 #if defined(_MSC_VER) && !defined(_DEBUG)
 #define NEOS_FORCEINLINE __forceinline

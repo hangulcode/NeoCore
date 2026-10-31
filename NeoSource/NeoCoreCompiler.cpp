@@ -11,6 +11,7 @@
 #include <map>
 #include <memory>
 #include <set>
+#include <stdexcept>
 #include <utility>
 
 namespace NeoCore
@@ -207,8 +208,9 @@ struct Expr
     int treeDepth = 1;
     Symbol* symbol = nullptr;
     std::size_t fieldIndex = 0;
-    bool address = false, widen = false, constantWiden = false, clone = false, box = false;
+    bool cellStorage = false, widen = false, constantWiden = false, clone = false, box = false;
     std::string callName;
+    std::size_t functionIndex = static_cast<std::size_t>(-1);
     bool receiverArgument = false;
     const HostProperty* hostProperty = nullptr;
     bool vectorComponent = false;
@@ -370,12 +372,7 @@ private:
             if (result.type == InvalidType) Fail(nullable, "this type cannot be nullable");
         }
         if (At("&"))
-        {
-            const Token reference = Take();
-            result.end = reference.end;
-            result.type = types_.ReferenceOf(result.type);
-            if (result.type == InvalidType) Fail(reference, "this type cannot be a reference");
-        }
+            Fail(Peek(), "reference types are not supported; pass and return values instead");
         return result;
     }
 
@@ -460,7 +457,7 @@ private:
         {
             std::unique_ptr<Statement> s(new Statement(StatementKind::Return, at));
             if (!At(";")) s->expressions.push_back(ParseExpression());
-            Expect(";");
+            s->end = Expect(";").end;
             return s;
         }
         if (At("break") || At("continue"))
@@ -672,7 +669,7 @@ struct Symbol
 {
     TypeId type;
     bool constant;
-    bool boxed = false, reference = false, parameter = false, loopVariable = false;
+    bool boxed = false, parameter = false;
     bool hostGlobal = false;
     bool fileGlobal = false;
     std::size_t hostGlobalIndex = 0;
@@ -687,12 +684,13 @@ struct Symbol
 class Checker
 {
 public:
-    Checker(const std::string& source, StaticCompileResult& result, bool typedBackend, const HostSchema* hostSchema) : source_(source), result_(result), types_(result.types), hostSchema_(hostSchema), typedBackend_(typedBackend)
+    Checker(const std::string& source, StaticCompileResult& result, const HostSchema* hostSchema) : source_(source), result_(result), types_(result.types), hostSchema_(hostSchema)
     {
         scopes_.push_back(std::map<std::string, Symbol*>());
         while (source.find(internalPrefix_) != std::string::npos) internalPrefix_ += "_";
-        if (typedBackend_) result_.backendIntrinsicPrefix = internalPrefix_ + "op_";
-        if (typedBackend_) result_.typedIR.prefix = internalPrefix_ + "ir_";
+        result_.backendIntrinsicPrefix = internalPrefix_ + "op_";
+        result_.typedIR.prefix = internalPrefix_ + "ir_";
+        result_.typedIR.returnPrefix = internalPrefix_ + "return_";
         if (hostSchema_) result_.hostPrefix = internalPrefix_ + "host_";
     }
 
@@ -727,32 +725,56 @@ public:
             StaticFunctionSignature signature;
             signature.name = node->name.text;
             signature.returnType = node->declared.type;
-            if (types_.IsReference(signature.returnType)) Fail(node->declared.first, "reference return values are not supported");
             signature.exported = node->isExported;
             for (const Parameter& parameter : node->parameters)
             {
-                if (!types_.IsStorable(parameter.type.type) && !types_.IsReference(parameter.type.type)) Fail(parameter.type.first, "a parameter cannot have this type");
+                if (!types_.IsStorable(parameter.type.type)) Fail(parameter.type.first, "a parameter cannot have this type");
                 signature.parameterTypes.push_back(parameter.type.type);
             }
             functions_[signature.name] = signature;
             result_.functions.push_back(signature);
+            {
+                IRFunction function;
+                function.backendName = signature.name;
+                function.returnType = signature.returnType;
+                function.parameterTypes = signature.parameterTypes;
+                irFunctions_[signature.name] = result_.typedIR.functions.size();
+                result_.typedIR.functions.push_back(std::move(function));
+            }
         }
         for (const auto& node : program) CheckStatement(*node);
         CheckGlobalInitializationCalls();
-        FinishReferences();
+        FinishStorage();
         for (Expr* expression : roots_)
         {
             std::string text = RenderExpr(*expression);
             edits_.push_back(Edit(expression->begin, expression->end, text));
+        }
+        for (const auto& entry : returns_)
+        {
+            const Statement& statement = *entry.first;
+            IRReturn result;
+            result.functionIndex = entry.second;
+            result.source.begin = statement.token.begin;
+            result.source.end = statement.end;
+            result.source.line = statement.token.line;
+            result.source.column = statement.token.column;
+            if (!statement.expressions.empty())
+                result.valueIndex = ConvertIR(BuildValueIR(*statement.expressions[0]),
+                    result_.typedIR.functions[entry.second].returnType, result.source);
+            const std::string marker = "return " + result_.typedIR.returnPrefix
+                + std::to_string(result_.typedIR.returns.size()) + "();"
+                + Lines(statement.token.begin, statement.end);
+            result_.typedIR.returns.push_back(std::move(result));
+            edits_.push_back(Edit(statement.token.begin, statement.end, marker));
         }
         const std::string helpers = Helpers();
         result_.loweredSource = Lower();
         int generatedLine = 1 + static_cast<int>(std::count(result_.loweredSource.begin(), result_.loweredSource.end(), '\n'));
         for (const HostWrite& write : hostWrites_)
             result_.hostWriteSourceLines.push_back(std::make_pair(++generatedLine, write.line));
-        for (const MappedHelper& helper : mappedHelpers_)
-            result_.hostWriteSourceLines.push_back(std::make_pair(++generatedLine, helper.line));
         result_.loweredSource += helpers;
+        result_.typedIR.types = types_;
     }
 
 private:
@@ -762,6 +784,8 @@ private:
     TypeRegistry& types_;
     const HostSchema* hostSchema_;
     std::map<std::string, StaticFunctionSignature> functions_;
+    std::map<std::string, std::size_t> irFunctions_;
+    std::vector<std::pair<const Statement*, std::size_t>> returns_;
     std::string currentFunction_;
     std::map<std::string, std::size_t> requiredGlobalEnd_;
     std::map<std::string, std::vector<std::string>> functionCallers_;
@@ -775,11 +799,8 @@ private:
     TypeId returnType_ = InvalidType;
     int loopDepth_ = 0;
     bool checkingConstant_ = false;
-    bool typedBackend_ = false;
     std::string internalPrefix_ = "__neocore_";
     bool resizeHelper_ = false, getHelper_ = false;
-    mutable bool vectorImport_ = false;
-    bool arrayImport_ = false;
     std::set<Symbol*> nonNullLocals_;
     mutable std::map<TypeId, bool> defaultable_;
     mutable std::map<const Symbol*, std::size_t> irSymbols_;
@@ -791,17 +812,8 @@ private:
         TypeId valueType;
         int line;
         int component = -1;
-        bool arrayElement = false;
     };
     std::vector<HostWrite> hostWrites_;
-    struct MappedHelper
-    {
-        std::string name;
-        std::string body;
-        int line;
-    };
-    std::vector<MappedHelper> mappedHelpers_;
-
     void RecordScriptCall(const Token& call, const std::string& callee)
     {
         if (currentFunction_.empty()) globalCalls_.push_back(std::make_pair(call, callee));
@@ -845,9 +857,7 @@ private:
     int VectorSize(TypeId type) const { return type == types_.Vector2() ? 2 : type == types_.Vector3() ? 3 : 4; }
     std::string VectorConstructor(TypeId type, int line = 1) const
     {
-        if (typedBackend_) return Intrinsic("v" + std::to_string(VectorSize(type)) + "make", line);
-        vectorImport_ = true;
-        return internalPrefix_ + "math." + types_.DisplayName(type);
+        return Intrinsic("v" + std::to_string(VectorSize(type)) + "make", line);
     }
     std::string ArrayStorage(TypeId type) const
     {
@@ -863,16 +873,6 @@ private:
     std::string Helper(const char* operation, TypeId type) const { return internalPrefix_ + operation + "_" + std::to_string(type); }
     std::string HostCall(HostBindingId binding) const { return result_.hostPrefix + "b" + std::to_string(binding) + ".call"; }
 
-    std::string AddMappedHelper(const std::string& body, int line)
-    {
-        MappedHelper helper;
-        helper.name = internalPrefix_ + "valueop_" + std::to_string(mappedHelpers_.size());
-        helper.body = body;
-        helper.line = line;
-        mappedHelpers_.push_back(helper);
-        return helper.name;
-    }
-
     bool IsArrayWriteTarget(const Expr& target) const
     {
         const Expr& owner = target.vectorComponent ? *target.children[0] : target;
@@ -884,15 +884,17 @@ private:
         Expr& property = target.vectorComponent ? *target.children[0] : target;
         const bool vectorCompound = IsArithmeticVector(target.type) && operation != "=";
         const bool arrayElement = IsArrayWriteTarget(target);
-        if (!property.hostProperty && !target.vectorComponent && !vectorCompound && !(typedBackend_ && arrayElement)) return;
-        if (!property.hostProperty && !arrayElement)
+        const bool listElement = target.kind == ExprKind::Index && types_.Get(target.children[0]->type).kind == TypeKind::List
+            && types_.IsNumeric(target.type) && operation != "=";
+        if (!property.hostProperty && !target.vectorComponent && !vectorCompound && !arrayElement && !listElement) return;
+        if (!property.hostProperty && !arrayElement && !listElement)
         {
             // 벡터 쓰기는 저장 셀을 전달한다. 성분 쓰기의 반환값은 저장된 float32를 다시 읽는다.
             Symbol* symbol = Writable(property);
-            if (property.kind == ExprKind::Name && !symbol->reference) symbol->boxed = true;
-            property.address = true;
+            if (property.kind == ExprKind::Name) symbol->boxed = true;
+            property.cellStorage = property.kind == ExprKind::Name;
         }
-        if (typedBackend_ && !property.hostProperty)
+        if (!property.hostProperty)
         {
             int mode = 0;
             if (operation == "+=" || operation == "++") mode = 1;
@@ -911,13 +913,14 @@ private:
             if (target.vectorComponent || vectorCompound)
             {
                 name = (arrayElement ? "av" : "v") + std::to_string(VectorSize(property.type))
-                    + (arrayElement ? "write_C" : "cellwrite_C")
+                    + (arrayElement ? "write_C" : property.kind == ExprKind::Member ? "fieldwrite_C" : "cellwrite_C")
                     + std::to_string(target.vectorComponent ? target.fieldIndex : 4) + "_M" + std::to_string(mode);
                 expression.typedWriteFloat = target.vectorComponent || mode == 3 || mode == 4;
             }
             else
             {
-                name = "a" + ArrayStorage(target.type) + (mode == 0 ? "set" : "write_M" + std::to_string(mode));
+                name = std::string(listElement ? "c" : "a") + ArrayStorage(target.type)
+                    + (mode == 0 ? "set" : "write_M" + std::to_string(mode));
                 expression.typedWriteFloat = target.type == types_.Float();
             }
             expression.typedWriteIntrinsic = Intrinsic(name, expression.token.line);
@@ -929,7 +932,6 @@ private:
         write.operation = operation;
         write.valueType = valueType;
         write.line = expression.token.line;
-        write.arrayElement = arrayElement;
         if (target.vectorComponent) write.component = static_cast<int>(target.fieldIndex);
         expression.hostWriteHelper = write.name;
         hostWrites_.push_back(write);
@@ -943,8 +945,12 @@ private:
 
     std::string WriteReceiverArguments(const Expr& target) const
     {
-        if (!IsArrayWriteTarget(target)) return RenderExpr(WriteReceiver(target));
-        // 배열 저장소와 인덱스는 우변 뒤에 한 번씩 확정한다. 원소 포인터는 호출 밖으로 보관하지 않는다.
+        const Expr& property = target.vectorComponent ? *target.children[0] : target;
+        if (!property.hostProperty && property.kind == ExprKind::Member)
+            return RenderExpr(*property.children[0]) + "," + std::to_string(property.fieldIndex);
+        if (property.kind != ExprKind::Index || !IsCollection(property.children[0]->type))
+            return RenderExpr(WriteReceiver(target));
+        // 컬렉션 저장소와 인덱스는 우변 뒤에 한 번씩 확정한다. 원소 포인터는 호출 밖으로 보관하지 않는다.
         const Expr& element = target.vectorComponent ? *target.children[0] : target;
         const Expr& owner = *element.children[0];
         const Expr& key = *element.children[1];
@@ -1012,7 +1018,7 @@ private:
 
     bool CanRefineNative(const Symbol* symbol) const
     {
-        return symbol && !symbol->fileGlobal && !symbol->hostGlobal && !symbol->reference && !symbol->boxed
+        return symbol && !symbol->fileGlobal && !symbol->hostGlobal && !symbol->boxed
             && types_.IsNullable(symbol->type) && IsNative(types_.Get(symbol->type).element);
     }
 
@@ -1037,14 +1043,6 @@ private:
     {
         if (expression.kind == ExprKind::Assignment && expression.children[0]->kind == ExprKind::Name)
             nonNullLocals_.erase(Lookup(expression.children[0]->op));
-        if (expression.kind == ExprKind::Call && expression.children[0]->kind == ExprKind::Name)
-        {
-            const auto function = functions_.find(expression.children[0]->op);
-            if (function != functions_.end())
-                for (std::size_t i = 1; i < expression.children.size() && i <= function->second.parameterTypes.size(); ++i)
-                    if (types_.IsReference(function->second.parameterTypes[i - 1]) && expression.children[i]->kind == ExprKind::Name)
-                        nonNullLocals_.erase(Lookup(expression.children[i]->op));
-        }
         for (const auto& child : expression.children) InvalidateNativeWrites(*child);
     }
 
@@ -1067,30 +1065,13 @@ private:
         Symbol& symbol = symbols_.back();
         symbol.fileGlobal = scopes_.size() == 1 && !parameter;
         symbol.backendName = scopes_.size() == 1 ? name.text : internalPrefix_ + std::to_string(symbols_.size());
-        symbol.reference = types_.IsReference(type);
-        if (symbol.reference) symbol.type = types_.Get(type).element;
-        symbol.boxed = IsStruct(symbol.type) && !symbol.reference;
         symbol.parameter = parameter;
         scopes_.back().insert(std::make_pair(name.text, &symbol));
         return symbol;
     }
 
-    void BindReference(Expr& expression, TypeId reference)
-    {
-        if (expression.vectorComponent) Fail(expression.token, "a float32 vector component cannot bind a float reference");
-        if (expression.hostProperty) Fail(expression.token, "a host property is not reference storage");
-        if (expression.kind == ExprKind::Index) Fail(expression.token, "collection element references are not supported because resizing can invalidate them");
-        Symbol* symbol = Writable(expression);
-        if (expression.type != types_.Get(reference).element)
-            Fail(expression.token, "a reference requires an exact-type variable; conversions cannot bind references");
-        if (symbol->loopVariable) Fail(expression.token, "binding a reference to a range-loop variable is not supported yet");
-        if (expression.kind == ExprKind::Name && !symbol->reference) symbol->boxed = true;
-        nonNullLocals_.erase(symbol);
-        expression.address = true;
-    }
-
-    // 참조 대상만 공유 셀로 내린다. 인자 복사 후 되쓰기는 같은 대상의 별칭을 보존하지 못한다.
-    void FinishReferences()
+    // 벡터 성분 쓰기의 내부 저장 셀과 기본 초기값만 준비한다. 구조체 필드는 직접 저장한다.
+    void FinishStorage()
     {
         for (Symbol& symbol : symbols_)
         {
@@ -1098,15 +1079,14 @@ private:
             if (symbol.parameter)
             {
                 if (symbol.boxed) edits_.push_back(Edit(symbol.functionBody, symbol.functionBody, symbol.backendName + "="
-                    + (typedBackend_ ? Intrinsic("cellnew", symbol.name.line) + "(" + symbol.backendName + ")" : "[" + symbol.backendName + "]") + ";"));
+                    + Intrinsic("cellnew", symbol.name.line) + "(" + symbol.backendName + ")" + ";"));
                 continue;
             }
             if (!symbol.declaration) continue;
             Statement& declaration = *symbol.declaration;
             if (!symbol.defaultValue.empty())
             {
-                const std::string value = symbol.boxed ? (typedBackend_ ? Intrinsic("cellnew", symbol.name.line) + "(" + symbol.defaultValue + ")"
-                    : "[" + symbol.defaultValue + "]") : symbol.defaultValue;
+                const std::string value = symbol.boxed ? Intrinsic("cellnew", symbol.name.line) + "(" + symbol.defaultValue + ")" : symbol.defaultValue;
                 edits_.push_back(Edit(symbol.name.end, symbol.name.end, "=" + value));
             }
             else if (symbol.boxed)
@@ -1170,7 +1150,7 @@ private:
             return nullptr;
         }
         if (expression.kind == ExprKind::Member) return Writable(*expression.children[0]);
-        if (expression.kind != ExprKind::Name) Fail(expression.token, "assignment or reference binding requires a named variable or its field");
+        if (expression.kind != ExprKind::Name) Fail(expression.token, "assignment requires a named variable or its field");
         Symbol* symbol = expression.symbol;
         if (!symbol) Fail(expression.token, "assignment requires a variable");
         if (symbol->hostGlobal) Fail(expression.token, "host global handles cannot be rebound");
@@ -1251,7 +1231,7 @@ private:
         if (member.op == "len" && (IsCollection(receiver.type) || receiver.type == types_.String()))
         {
             if (count) Fail(member.token, "len requires no arguments");
-            expression.callName = typedBackend_ && IsArray(receiver.type) ? Intrinsic("alen", member.token.line) : "tosize";
+            expression.callName = IsArray(receiver.type) ? Intrinsic("alen", member.token.line) : "tosize";
             expression.type = types_.Int();
             return;
         }
@@ -1275,8 +1255,7 @@ private:
             if (count != 1) Fail(member.token, "array " + member.op + " requires one argument");
             if (member.op == "append") Convert(*expression.children[1], type.element);
             else Require(*expression.children[1], types_.Int(), "array size");
-            expression.callName = typedBackend_ ? Intrinsic(member.op == "append" ? "a" + ArrayStorage(type.element) + "append" : "a" + member.op, member.token.line)
-                : AddMappedHelper("(var self,var value){self." + member.op + "(value);}", member.token.line);
+            expression.callName = Intrinsic(member.op == "append" ? "a" + ArrayStorage(type.element) + "append" : "a" + member.op, member.token.line);
             expression.type = types_.Void();
             return;
         }
@@ -1325,13 +1304,7 @@ private:
             if (count) Require(*expression.children[1], types_.Int(), "array size");
             if (count == 2) Convert(*expression.children[2], element);
             else expression.extraArgument = (count ? "" : "0,") + DefaultValue(element);
-            // 백엔드 생성자는 fill,size 순서다. 원래 인자 평가를 마친 뒤 함수 안에서만 순서를 바꾼다.
-            if (typedBackend_) expression.callName = Intrinsic("a" + ArrayStorage(element) + "new", callee.token.line);
-            else
-            {
-                arrayImport_ = true;
-                expression.callName = AddMappedHelper("(var size,var fill){return " + internalPrefix_ + "system.array(fill,size);}", callee.token.line);
-            }
+            expression.callName = Intrinsic("a" + ArrayStorage(element) + "new", callee.token.line);
             expression.type = callee.constructorType;
             return;
         }
@@ -1377,11 +1350,18 @@ private:
             for (std::size_t i = 0; i < count; ++i)
             {
                 const TypeId parameter = function->second.parameterTypes[i];
-                if (types_.IsReference(parameter)) BindReference(*expression.children[i + 1], parameter);
-                else Convert(*expression.children[i + 1], parameter);
+                Convert(*expression.children[i + 1], parameter);
             }
             RecordScriptCall(callee.token, name);
+            expression.functionIndex = irFunctions_.at(name);
             expression.type = function->second.returnType;
+            return;
+        }
+        if (name == "sleep")
+        {
+            if (count != 1) Fail(callee.token, "sleep requires exactly one argument");
+            Require(*expression.children[1], types_.Int(), "sleep duration");
+            expression.type = types_.Void();
             return;
         }
         if (name == "print")
@@ -1498,14 +1478,10 @@ private:
             expression.type = BinaryType(expression.token, expression.op, expression.children[0]->type, expression.children[1]->type);
             if (expression.op == "*" && types_.IsNumeric(expression.children[0]->type) && IsArithmeticVector(expression.children[1]->type))
             {
-                if (typedBackend_)
-                {
-                    Convert(*expression.children[0], types_.Float());
-                    expression.callName = Intrinsic("v" + std::to_string(VectorSize(expression.type)) + "rmul", expression.token.line);
-                }
-                else expression.callName = AddMappedHelper("(var scalar,var vector){return vector*scalar;}", expression.token.line);
+                Convert(*expression.children[0], types_.Float());
+                expression.callName = Intrinsic("v" + std::to_string(VectorSize(expression.type)) + "rmul", expression.token.line);
             }
-            else if (typedBackend_ && IsArithmeticVector(expression.type))
+            else if (IsArithmeticVector(expression.type))
             {
                 if (types_.IsNumeric(expression.children[1]->type)) Convert(*expression.children[1], types_.Float());
                 const char* operation = expression.op == "+" ? "add" : expression.op == "-" ? "sub" : expression.op == "*" ? "mul" : "div";
@@ -1530,7 +1506,6 @@ private:
             if (expression.op == "=")
             {
                 Convert(source, writeType);
-                if (IsStruct(writeType)) target.address = true;
             }
             else
             {
@@ -1617,7 +1592,8 @@ private:
 
     int CheckStatement(Statement& statement)
     {
-        for (const auto& expression : statement.expressions) roots_.push_back(expression.get());
+        if (statement.kind != StatementKind::Return)
+            for (const auto& expression : statement.expressions) roots_.push_back(expression.get());
         switch (statement.kind)
         {
         case StatementKind::Empty:
@@ -1636,10 +1612,7 @@ private:
         }
         case StatementKind::Declaration:
         {
-            const bool reference = types_.IsReference(statement.declared.type);
-            if (!types_.IsStorable(statement.declared.type) && !reference) Fail(statement.declared.first, "a variable cannot have this type");
-            if (reference && (statement.isConst || statement.isPublic || statement.isExported)) Fail(statement.declared.first, "references cannot be const, public or exported");
-            if (reference && statement.expressions.empty()) Fail(statement.name, "a reference requires a variable initializer");
+            if (!types_.IsStorable(statement.declared.type)) Fail(statement.declared.first, "a variable cannot have this type");
             if (statement.isConst && (IsStruct(statement.declared.type) || IsVector(statement.declared.type))) Fail(statement.name, "const structures and vectors are not supported by this compiler stage");
             if (statement.isExported && statement.isConst) Fail(statement.token, "export const is not supported; use public const");
             if (statement.isConst && statement.expressions.empty()) Fail(statement.name, "const requires an initializer");
@@ -1652,8 +1625,7 @@ private:
                 Contextualize(value, statement.declared.type);
                 CheckExpr(value);
                 if (statement.isConst && !value.constant) Fail(value.token, "const initializer must be a constant expression");
-                if (reference) BindReference(value, statement.declared.type);
-                else Convert(value, statement.declared.type);
+                Convert(value, statement.declared.type);
             }
             else
             {
@@ -1738,7 +1710,7 @@ private:
                 CheckExpr(*expression); Require(*expression, types_.Int(), "range bound or step");
             }
             scopes_.push_back(std::map<std::string, Symbol*>());
-            Define(statement.name, types_.Int(), false).loopVariable = true;
+            Define(statement.name, types_.Int(), false);
             ReplaceType(statement.declared, "var");
             ++loopDepth_;
             const int body = CheckStatement(*statement.children[0]);
@@ -1759,6 +1731,7 @@ private:
                 Contextualize(*statement.expressions[0], returnType_);
                 CheckExpr(*statement.expressions[0]); Convert(*statement.expressions[0], returnType_);
             }
+            returns_.push_back(std::make_pair(&statement, irFunctions_.at(currentFunction_)));
             return Returns;
         case StatementKind::Break:
             if (!loopDepth_) Fail(statement.token, "break is only allowed in a loop");
@@ -1802,7 +1775,72 @@ private:
     IRValueType IRType(TypeId type) const
     {
         return type == types_.Int() ? IRValueType::Int : type == types_.Float() ? IRValueType::Float
-            : type == types_.Bool() ? IRValueType::Bool : IRValueType::Invalid;
+            : type == types_.Bool() ? IRValueType::Bool : type == types_.String() ? IRValueType::String
+            : type == types_.Void() ? IRValueType::Void
+            : type == types_.Null() || types_.IsStorable(type) ? IRValueType::Value : IRValueType::Invalid;
+    }
+
+    bool ValueStorage(const Expr& expression, IRStorageTarget* storage = nullptr) const
+    {
+        const Expr* root = &expression;
+        std::vector<std::size_t> fields;
+        while (root->kind == ExprKind::Member)
+        {
+            if (root->hostProperty || root->vectorComponent || !IsStruct(root->children[0]->type)) return false;
+            fields.push_back(root->fieldIndex);
+            root = root->children[0].get();
+        }
+        if (root->kind != ExprKind::Name || !root->symbol || root->symbol->constant || root->symbol->hostGlobal)
+            return false;
+        const Symbol* symbol = root->symbol;
+        const bool cell = symbol->boxed;
+        if (storage)
+        {
+            storage->kind = cell ? IRStorageKind::Cell : IRStorageKind::Variable;
+            storage->backendName = symbol->backendName;
+            const auto inserted = irSymbols_.insert(std::make_pair(symbol, irSymbols_.size() + 1));
+            storage->symbolId = inserted.first->second;
+            storage->fields.assign(fields.rbegin(), fields.rend());
+        }
+        return true;
+    }
+
+    bool ScalarStorage(const Expr& expression, IRStorageTarget* storage = nullptr) const
+    {
+        const IRValueType type = IRType(expression.type);
+        return (type == IRValueType::Int || type == IRValueType::Float || type == IRValueType::Bool
+            || type == IRValueType::String) && ValueStorage(expression, storage);
+    }
+
+    bool ScalarMutationIROp(const Expr& expression, IROp& operation) const
+    {
+        if (expression.kind != ExprKind::Assignment && expression.kind != ExprKind::Unary) return false;
+        if (!expression.hostWriteHelper.empty() || !expression.typedWriteIntrinsic.empty()
+            || !ScalarStorage(*expression.children[0])) return false;
+        if (expression.kind == ExprKind::Assignment && expression.op == "=")
+        { operation = IROp::Assign; return true; }
+        if (!types_.IsNumeric(expression.type)) return false;
+        if (expression.kind == ExprKind::Assignment)
+        {
+            if (expression.op == "+=") operation = IROp::AddAssign;
+            else if (expression.op == "-=") operation = IROp::SubtractAssign;
+            else if (expression.op == "*=") operation = IROp::MultiplyAssign;
+            else if (expression.op == "/=") operation = IROp::DivideAssign;
+            else if (expression.op == "%=") operation = IROp::RemainderAssign;
+            else if (expression.op == "&=") operation = IROp::BitAndAssign;
+            else if (expression.op == "|=") operation = IROp::BitOrAssign;
+            else if (expression.op == "^=") operation = IROp::BitXorAssign;
+            else if (expression.op == "<<=") operation = IROp::ShiftLeftAssign;
+            else if (expression.op == ">>=") operation = IROp::ShiftRightAssign;
+            else return false;
+            return true;
+        }
+        if (expression.op == "++") operation = IROp::PreIncrement;
+        else if (expression.op == "--") operation = IROp::PreDecrement;
+        else if (expression.op == "post++") operation = IROp::PostIncrement;
+        else if (expression.op == "post--") operation = IROp::PostDecrement;
+        else return false;
+        return true;
     }
 
     bool NumericIROp(const Expr& expression, IROp& operation) const
@@ -1866,7 +1904,20 @@ private:
         return AppendIR(std::move(conversion));
     }
 
-    std::size_t BuildNumericIR(const Expr& expression) const
+    std::size_t ConvertIR(std::size_t input, TypeId target, const IRSourceSpan& source) const
+    {
+        if (result_.typedIR.nodes[input].typeId == target) return input;
+        if (target == types_.Float()) return WidenIR(input, source);
+        IRNode conversion;
+        conversion.op = IROp::NullableConvert;
+        conversion.type = IRType(target);
+        conversion.typeId = target;
+        conversion.source = source;
+        conversion.inputs.push_back(input);
+        return AppendIR(std::move(conversion));
+    }
+
+    std::size_t BuildValueIR(const Expr& expression) const
     {
         IRNode node;
         node.type = IRType(expression.type);
@@ -1875,12 +1926,37 @@ private:
         node.source.end = expression.end;
         node.source.line = expression.token.line;
         node.source.column = expression.token.column;
-        const bool operation = NumericIROp(expression, node.op);
-        if (operation)
+        if (expression.functionIndex != static_cast<std::size_t>(-1))
+        {
+            node.op = IROp::ScriptCall;
+            node.functionIndex = expression.functionIndex;
+            const IRFunction& function = result_.typedIR.functions[node.functionIndex];
+            for (std::size_t i = 1; i < expression.children.size(); ++i)
+            {
+                const std::size_t input = BuildValueIR(*expression.children[i]);
+                const IRSourceSpan source = result_.typedIR.nodes[input].source;
+                node.inputs.push_back(ConvertIR(input, function.parameterTypes[i - 1], source));
+            }
+        }
+        else if (ScalarMutationIROp(expression, node.op))
+        {
+            ScalarStorage(*expression.children[0], &node.storage);
+            if (expression.kind == ExprKind::Assignment)
+            {
+                std::size_t value = BuildValueIR(*expression.children[1]);
+                if (node.type == IRValueType::Float)
+                {
+                    const IRSourceSpan origin = result_.typedIR.nodes[value].source;
+                    value = WidenIR(value, origin);
+                }
+                node.inputs.push_back(value);
+            }
+        }
+        else if (NumericIROp(expression, node.op))
         {
             const std::size_t first = expression.kind == ExprKind::Call ? 1 : 0;
             for (std::size_t i = first; i < expression.children.size(); ++i)
-                node.inputs.push_back(BuildNumericIR(*expression.children[i]));
+                node.inputs.push_back(BuildValueIR(*expression.children[i]));
             if (expression.kind == ExprKind::Binary &&
                 (expression.children[0]->type == types_.Float() || expression.children[1]->type == types_.Float()))
                 for (std::size_t i = 0; i < node.inputs.size(); ++i)
@@ -1889,7 +1965,8 @@ private:
                     node.inputs[i] = WidenIR(node.inputs[i], origin);
                 }
         }
-        else if (expression.kind == ExprKind::Literal && node.type != IRValueType::Invalid)
+        else if (expression.kind == ExprKind::Literal &&
+            (node.type == IRValueType::Int || node.type == IRValueType::Float || node.type == IRValueType::Bool))
         {
             node.op = node.type == IRValueType::Int ? IROp::IntLiteral
                 : node.type == IRValueType::Float ? IROp::FloatLiteral : IROp::BoolLiteral;
@@ -1898,21 +1975,25 @@ private:
             node.boolean = expression.op == "true";
         }
         else if (expression.kind == ExprKind::Name && !expression.symbol->constant &&
-            !expression.symbol->hostGlobal && !expression.symbol->boxed && !expression.symbol->reference)
+            !expression.symbol->hostGlobal && !expression.symbol->boxed)
         {
             node.op = IROp::Symbol;
             const auto inserted = irSymbols_.insert(std::make_pair(expression.symbol, irSymbols_.size() + 1));
             node.symbolId = inserted.first->second;
             node.backendName = expression.symbol->backendName;
         }
+        else if (ValueStorage(expression, &node.storage))
+        {
+            node.op = IROp::LoadStorage;
+        }
         else if (expression.kind == ExprKind::Unary && expression.op == "+")
         {
-            const std::size_t input = BuildNumericIR(*expression.children[0]);
+            const std::size_t input = BuildValueIR(*expression.children[0]);
             return expression.widen ? WidenIR(input, node.source) : input;
         }
         else
         {
-            // 아직 이관하지 않은 호출·대입·선택자는 해당 실행 순서에 도달했을 때만 방출한다.
+            // 아직 이관하지 않은 내장 호출·컨테이너·호스트 선택자는 해당 실행 순서에 도달했을 때만 방출한다.
             // 숫자 자식은 다시 IR이 될 수 있지만 현재 식의 변환과 박싱은 중복하지 않는다.
             node.op = IROp::LegacyExpression;
             node.source.line = BeginLine(expression);
@@ -1921,18 +2002,32 @@ private:
             node.legacySource = RenderExpr(expression, false, false);
         }
         const IRSourceSpan origin = node.source;
-        const std::size_t result = AppendIR(std::move(node));
-        return expression.widen ? WidenIR(result, origin) : result;
+        std::size_t result = AppendIR(std::move(node));
+        if (expression.widen) result = WidenIR(result, origin);
+        if (expression.clone)
+        {
+            IRNode copy;
+            copy.op = IROp::CopyStruct;
+            copy.type = IRType(expression.type);
+            copy.typeId = expression.type;
+            copy.source = origin;
+            copy.inputs.push_back(result);
+            copy.backendName = Helper("clone", expression.type);
+            result = AppendIR(std::move(copy));
+        }
+        return result;
     }
 
     std::string RenderExpr(const Expr& expression, bool allowIR = true, bool applyWrappers = true) const
     {
         std::string text;
         IROp operation;
-        if (allowIR && typedBackend_ && !expression.constantInitializer &&
-            (NumericIROp(expression, operation) || (expression.widen && !expression.constantWiden)))
+        if (allowIR && !expression.constantInitializer &&
+            (NumericIROp(expression, operation) || ScalarMutationIROp(expression, operation)
+                || expression.functionIndex != static_cast<std::size_t>(-1)
+                || (expression.widen && !expression.constantWiden)))
         {
-            const std::size_t root = BuildNumericIR(expression);
+            const std::size_t root = BuildValueIR(expression);
             text = result_.typedIR.prefix + std::to_string(root) + "()" + Lines(expression.begin, expression.end);
             if (applyWrappers && expression.box) text = Intrinsic("cellnew", BeginLine(expression)) + "(" + text + ")";
             return text;
@@ -1951,8 +2046,8 @@ private:
             break;
         case ExprKind::Name:
             text = expression.symbol->hostGlobal ? result_.hostPrefix + "g" + std::to_string(expression.symbol->hostGlobalIndex) + ".call()" : expression.symbol->backendName;
-            if (!expression.address && (expression.symbol->boxed || expression.symbol->reference))
-                text = typedBackend_ && IsVector(expression.type) && !expression.writeTarget
+            if (!expression.cellStorage && expression.symbol->boxed)
+                text = IsVector(expression.type) && !expression.writeTarget
                     ? Intrinsic("cellget", expression.token.line) + "(" + text + ")" : text + "[0]";
             text = Lines(expression.begin, expression.token.begin) + text + Lines(expression.token.end, expression.end);
             break;
@@ -1974,9 +2069,9 @@ private:
             if (expression.op == "post++" || expression.op == "post--")
                 text = "(" + Lines(expression.begin, value.begin) + RenderExpr(value) + Lines(value.end, expression.token.begin) + expression.op.substr(4) + Lines(expression.token.end, expression.end) + ")";
             else if (expression.op == "-" && IsArithmeticVector(value.type))
-                text = (typedBackend_ ? Intrinsic("v" + std::to_string(VectorSize(value.type)) + "mul", expression.token.line) : "")
+                text = Intrinsic("v" + std::to_string(VectorSize(value.type)) + "mul", expression.token.line)
                     + "(" + Lines(expression.begin, expression.token.begin) + Lines(expression.token.end, value.begin)
-                    + RenderExpr(value) + (typedBackend_ ? ", -1.0" : " * -1.0") + Lines(value.end, expression.end) + ")";
+                    + RenderExpr(value) + ", -1.0" + Lines(value.end, expression.end) + ")";
             else text = "(" + Lines(expression.begin, expression.token.begin) + (expression.op == "+" ? "" : expression.op)
                 + Lines(expression.token.end, value.begin) + RenderExpr(value) + Lines(value.end, expression.end) + ")";
             break;
@@ -2019,21 +2114,13 @@ private:
                 receiver.erase(std::remove(receiver.begin(), receiver.end(), '\n'), receiver.end());
                 text = expression.hostWriteHelper + "(" + Lines(expression.begin, value.begin) + RenderExpr(value) + "," + receiver + Lines(value.end, expression.end) + ")";
             }
-            else if (typedBackend_ && IsVector(target.type) && expression.op == "=" &&
-                ((target.kind == ExprKind::Name && (target.symbol->boxed || target.symbol->reference)) || target.kind == ExprKind::Member))
+            else if (IsVector(target.type) && expression.op == "=" &&
+                target.kind == ExprKind::Name && target.symbol->boxed)
             {
-                std::string cell = target.kind == ExprKind::Name ? target.symbol->backendName
-                    : RenderExpr(*target.children[0]) + "[" + std::to_string(target.fieldIndex) + "]";
+                std::string cell = target.symbol->backendName;
                 cell.erase(std::remove(cell.begin(), cell.end(), '\n'), cell.end());
                 text = Intrinsic("cellset", expression.token.line) + "(" + Lines(expression.begin, value.begin)
                     + RenderExpr(value) + "," + cell + Lines(value.end, expression.end) + ")";
-            }
-            else if (IsStruct(expression.type))
-            {
-                // 대상을 계산하는 필드 경로에는 호출이 없다. 원래 대상의 줄 간격을 우변 앞에 두어 우변 오류 위치를 보존한다.
-                std::string address = RenderExpr(target);
-                address.erase(std::remove(address.begin(), address.end(), '\n'), address.end());
-                text = Helper("assign", expression.type) + "(" + Lines(expression.begin, value.begin) + RenderExpr(value) + "," + address + Lines(value.end, expression.end) + ")";
             }
             else text = "(" + Lines(expression.begin, target.begin) + RenderExpr(target) + Lines(target.end, expression.token.begin)
                 + " " + expression.op + " " + Lines(expression.token.end, value.begin) + RenderExpr(value) + Lines(value.end, expression.end) + ")";
@@ -2073,16 +2160,11 @@ private:
             }
             if (expression.vectorComponent)
             {
-                if (typedBackend_)
-                    text = Intrinsic("v" + std::to_string(VectorSize(owner.type)) + "get_C" + std::to_string(expression.fieldIndex), expression.token.line)
-                        + "(" + Lines(expression.begin, owner.begin) + RenderExpr(owner) + Lines(owner.end, expression.end) + ")";
-                else text = Lines(expression.begin, owner.begin) + RenderExpr(owner) + "[" + Lines(owner.end, expression.token.begin)
-                        + std::to_string(expression.fieldIndex) + "]" + Lines(expression.token.end, expression.end);
+                text = Intrinsic("v" + std::to_string(VectorSize(owner.type)) + "get_C" + std::to_string(expression.fieldIndex), expression.token.line)
+                    + "(" + Lines(expression.begin, owner.begin) + RenderExpr(owner) + Lines(owner.end, expression.end) + ")";
                 break;
             }
             text = Lines(expression.begin, owner.begin) + RenderExpr(owner) + "[" + Lines(owner.end, expression.token.begin) + std::to_string(expression.fieldIndex) + "]";
-            if (!expression.address) text = typedBackend_ && IsVector(expression.type) && !expression.writeTarget
-                ? Intrinsic("cellget", expression.token.line) + "(" + text + ")" : text + "[0]";
             text += Lines(expression.token.end, expression.end);
             break;
         }
@@ -2090,7 +2172,7 @@ private:
         {
             const Expr& owner = *expression.children[0];
             const Expr& key = *expression.children[1];
-            if (typedBackend_ && IsArray(owner.type))
+            if (IsArray(owner.type))
                 text = Intrinsic("a" + ArrayStorage(expression.type) + "get", expression.token.line) + "("
                     + Lines(expression.begin, owner.begin) + RenderExpr(owner) + Lines(owner.end, expression.token.begin) + ","
                     + Lines(expression.token.end, key.begin) + RenderExpr(key) + Lines(key.end, expression.end) + ")";
@@ -2116,10 +2198,25 @@ private:
             break;
         }
         if (applyWrappers && expression.widen) text = expression.constantWiden ? "(" + text + "+0.0)"
-            : (typedBackend_ ? Intrinsic("itof", BeginLine(expression)) + "(" : "tofloat(") + text + ")";
+            : Intrinsic("itof", BeginLine(expression)) + "(" + text + ")";
         if (applyWrappers && expression.clone) text = Helper("clone", expression.type) + "(" + text + ")";
-        if (applyWrappers && expression.box) text = typedBackend_ ? Intrinsic("cellnew", BeginLine(expression)) + "(" + text + ")" : "[" + text + "]";
+        if (applyWrappers && expression.box) text = Intrinsic("cellnew", BeginLine(expression)) + "(" + text + ")";
         return text;
+    }
+
+    static std::string ArithmeticSuffix(const std::string& operation)
+    {
+        if (operation == "+") return "add";
+        if (operation == "-") return "sub";
+        if (operation == "*") return "mul";
+        if (operation == "/") return "div";
+        if (operation == "%") return "mod";
+        if (operation == "&") return "and";
+        if (operation == "|") return "or";
+        if (operation == "^") return "xor";
+        if (operation == "<<") return "shl";
+        if (operation == ">>") return "shr";
+        throw std::logic_error("unsupported typed arithmetic operation");
     }
 
     std::string Helpers() const
@@ -2129,62 +2226,50 @@ private:
         {
             const bool increment = write.operation == "++" || write.operation == "--" || write.operation == "post++" || write.operation == "post--";
             const bool postfix = write.operation == "post++" || write.operation == "post--";
-            result += "\nfun " + write.name + (increment ? "(var self" : "(var value,var self")
-                + (write.arrayElement ? ",var key){" : "){");
+            result += "\nfun " + write.name + (increment ? "(var self){" : "(var value,var self){");
             if (write.component >= 0)
             {
                 // 벡터는 값으로 가져온다. 쓰기 직전 setter가 같은 ID의 생존 여부를 다시 검사한다.
-                const std::string index = "[" + std::to_string(write.component) + "]";
-                const std::string vectorType = "v" + std::to_string(VectorSize(write.property ? write.property->type : types_.Vector4()));
-                const std::string componentRead = typedBackend_ && write.property
-                    ? Intrinsic(vectorType + "get_C" + std::to_string(write.component), write.line) + "(vector)" : "vector" + index;
-                result += "var vector=" + (write.property ? HostCall(write.property->getter) + "(self)" : write.arrayElement ? "self[key]" : "self[0]") + ";";
+                const std::string vectorType = "v" + std::to_string(VectorSize(write.property->type));
+                const std::string componentRead = Intrinsic(vectorType + "get_C" + std::to_string(write.component), write.line) + "(vector)";
+                result += "var vector=" + HostCall(write.property->getter) + "(self);";
                 if (write.operation != "=")
                 {
                     result += "var old=" + componentRead + ";";
                     const std::string operation = increment ? (write.operation.find("++") != std::string::npos ? "+" : "-") : write.operation.substr(0, write.operation.size() - 1);
                     std::string argument = increment ? "1.0" : "value";
-                    if (write.valueType == types_.Int() && !increment) argument = typedBackend_ ? Intrinsic("itof", write.line) + "(" + argument + ")" : "tofloat(" + argument + ")";
-                    std::string calculation = "old " + operation + " " + argument;
-                    if (typedBackend_)
-                    {
-                        const char* name = operation == "+" ? "add" : operation == "-" ? "sub" : operation == "*" ? "mul" : "div";
-                        calculation = Intrinsic(std::string("f") + name, write.line) + "(old," + argument + ")";
-                    }
+                    if (write.valueType == types_.Int() && !increment) argument = Intrinsic("itof", write.line) + "(" + argument + ")";
+                    const std::string calculation = Intrinsic("f" + ArithmeticSuffix(operation), write.line) + "(old," + argument + ")";
                     result += std::string(increment ? "var value=" : "value=") + calculation + ";";
                 }
-                result += typedBackend_ && write.property
-                    ? "vector=" + Intrinsic(vectorType + "set_C" + std::to_string(write.component), write.line) + "(vector,value);"
-                    : "vector" + index + "=value;";
-                result += write.property ? HostCall(write.property->setter) + "(self,vector);" : write.arrayElement ? "self[key]=vector;" : "self[0]=vector;";
+                result += "vector=" + Intrinsic(vectorType + "set_C" + std::to_string(write.component), write.line) + "(vector,value);";
+                result += HostCall(write.property->setter) + "(self,vector);";
                 result += "return " + (postfix ? "old" : componentRead) + ";}";
                 continue;
             }
             if (write.operation != "=")
             {
-                result += "var old=" + (write.property ? HostCall(write.property->getter) + "(self)" : write.arrayElement ? "self[key]" : "self[0]") + ";";
+                result += "var old=" + HostCall(write.property->getter) + "(self);";
                 const std::string operation = increment ? (write.operation.find("++") != std::string::npos ? "+" : "-") : write.operation.substr(0, write.operation.size() - 1);
-                std::string argument = increment ? (write.property && write.property->type == types_.Float() ? "1.0" : "1") : "value";
-                std::string calculation = "old " + operation + " " + argument;
-                if (typedBackend_ && write.property && types_.IsNumeric(write.property->type) && (operation == "+" || operation == "-" || operation == "*" || operation == "/"))
+                std::string argument = increment ? (write.property->type == types_.Float() ? "1.0" : "1") : "value";
+                std::string prefix;
+                if (types_.IsNumeric(write.property->type))
                 {
                     const bool floating = write.property->type == types_.Float();
                     if (floating && write.valueType == types_.Int() && !increment) argument = Intrinsic("itof", write.line) + "(" + argument + ")";
-                    const char* name = operation == "+" ? "add" : operation == "-" ? "sub" : operation == "*" ? "mul" : "div";
-                    calculation = Intrinsic(std::string(floating ? "f" : "i") + name, write.line) + "(old," + argument + ")";
+                    prefix = floating ? "f" : "i";
                 }
-                else if (typedBackend_ && write.property && IsArithmeticVector(write.property->type))
+                else
                 {
                     if (write.valueType == types_.Int()) argument = Intrinsic("itof", write.line) + "(" + argument + ")";
-                    const char* name = operation == "+" ? "add" : operation == "-" ? "sub" : operation == "*" ? "mul" : "div";
-                    calculation = Intrinsic("v" + std::to_string(VectorSize(write.property->type)) + name, write.line) + "(old," + argument + ")";
+                    prefix = "v" + std::to_string(VectorSize(write.property->type));
                 }
+                const std::string calculation = Intrinsic(prefix + ArithmeticSuffix(operation), write.line) + "(old," + argument + ")";
                 result += std::string(increment ? "var value=" : "value=") + calculation + ";";
             }
-            result += write.property ? HostCall(write.property->setter) + "(self,value);" : write.arrayElement ? "self[key]=value;" : "self[0]=value;";
+            result += HostCall(write.property->setter) + "(self,value);";
             result += "return " + std::string(postfix ? "old" : "value") + ";}";
         }
-        for (const MappedHelper& helper : mappedHelpers_) result += "\nfun " + helper.name + helper.body;
         for (TypeId type : structures_)
         {
             const TypeDesc& description = types_.Get(type);
@@ -2198,31 +2283,24 @@ private:
             for (std::size_t i = 0; i < description.fields.size(); ++i)
             {
                 if (i) result += ",";
-                result += "[a" + std::to_string(i) + "]";
+                result += "a" + std::to_string(i);
             }
             result += "]; }\nfun " + Helper("clone", type) + "(var s){return [";
             for (std::size_t i = 0; i < description.fields.size(); ++i)
             {
                 if (i) result += ",";
-                std::string value = "s[" + std::to_string(i) + "][0]";
+                std::string value = "s[" + std::to_string(i) + "]";
                 if (IsStruct(description.fields[i].type)) value = Helper("clone", description.fields[i].type) + "(" + value + ")";
-                result += "[" + value + "]";
+                result += value;
             }
-            result += "]; }\nfun " + Helper("assign", type) + "(var s,var d){";
-            for (std::size_t i = 0; i < description.fields.size(); ++i)
-            {
-                const std::string index = "[" + std::to_string(i) + "]";
-                if (IsStruct(description.fields[i].type)) result += Helper("assign", description.fields[i].type) + "(s" + index + "[0],d[0]" + index + ");";
-                else result += "d[0]" + index + "[0]=s" + index + "[0];";
-            }
-            result += "return s;}";
+            result += "]; }";
             if (Defaultable(type))
             {
                 result += "\nfun " + Helper("default", type) + "(){return [";
                 for (std::size_t i = 0; i < description.fields.size(); ++i)
                 {
                     if (i) result += ",";
-                    result += "[" + DefaultValue(description.fields[i].type) + "]";
+                    result += DefaultValue(description.fields[i].type);
                 }
                 result += "];}";
             }
@@ -2260,18 +2338,13 @@ private:
                 output += source_[position++];
             }
         }
-        // 생성자용 모듈 이름은 사용자 식별자와 겹치지 않는다. BOM 뒤 같은 줄에 붙여 원본 행을 유지한다.
-        if (vectorImport_)
-            output.insert(output.compare(0, 3, "\xef\xbb\xbf") == 0 ? 3 : 0, "import math as " + internalPrefix_ + "math;");
-        if (arrayImport_)
-            output.insert(output.compare(0, 3, "\xef\xbb\xbf") == 0 ? 3 : 0, "import system as " + internalPrefix_ + "system;");
         return output;
     }
 };
 
 }
 
-bool CompileStaticSource(const std::string& source, StaticCompileResult& result, bool typedBackend, const HostSchema* hostSchema)
+bool CompileStaticSource(const std::string& source, StaticCompileResult& result, const HostSchema* hostSchema)
 {
     result = StaticCompileResult();
     try
@@ -2283,7 +2356,7 @@ bool CompileStaticSource(const std::string& source, StaticCompileResult& result,
         }
         const std::vector<Token> tokens = Lexer(source).Read();
         std::vector<std::unique_ptr<Statement>> program = Parser(tokens, result.types).Read();
-        Checker(source, result, typedBackend, hostSchema).Check(program);
+        Checker(source, result, hostSchema).Check(program);
         result.success = true;
         return true;
     }

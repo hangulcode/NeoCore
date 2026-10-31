@@ -202,6 +202,7 @@ void WriteFun(CArchiveRdWC& arText, CNArchive& ar, SFunctions& funs, SFunctionIn
 
 		switch (v.op)
 		{
+#if NEOSCRIPT_LEGACY_ARITHMETIC
 		case NOP_ADD2:
 		case NOP_SUB2:
 		case NOP_MUL2:
@@ -217,7 +218,9 @@ void WriteFun(CArchiveRdWC& arText, CNArchive& ar, SFunctions& funs, SFunctionIn
 
 			argFlag |= GetArgIndexToCode(argFlag, &v.n1, &v.n2, nullptr);
 			break;
+#endif
 
+#if NEOSCRIPT_LEGACY_ARITHMETIC
 		case NOP_ADD3:
 		case NOP_SUB3:
 		case NOP_MUL3:
@@ -233,6 +236,7 @@ void WriteFun(CArchiveRdWC& arText, CNArchive& ar, SFunctions& funs, SFunctionIn
 			argFlag |= GetArgIndexToCode(argFlag, &v.n1, &v.n2, &v.n3);
 			break;
 
+#endif
 		case NOP_VAR_CLEAR:
 		case NOP_INC:
 		case NOP_DEC:
@@ -247,8 +251,10 @@ void WriteFun(CArchiveRdWC& arText, CNArchive& ar, SFunctions& funs, SFunctionIn
 		case NOP_LESS_EQ:	// <=
 		case NOP_EQUAL2:	// ==
 		case NOP_NEQUAL:	// !=
+#if NEOSCRIPT_LEGACY_ARITHMETIC
 		case NOP_AND:		// &
 		case NOP_OR:		// |
+#endif
 		case NOP_LOG_AND:		// &&
 		case NOP_LOG_OR:		// ||
 		case NOP_STR_ADD: // ..
@@ -316,7 +322,9 @@ void WriteFun(CArchiveRdWC& arText, CNArchive& ar, SFunctions& funs, SFunctionIn
 			break;
 
 		case NOP_MOV:
+#if NEOSCRIPT_LEGACY_ARITHMETIC
 		case NOP_MOV_MINUS:
+#endif
 		case NOP_LOG_NOT:
 			argFlag |= ChangeIndex(staticCount, localCount, curFunStatkSize, v, 1);
 			if ((argFlag & NEOS_ARG_N2_IMMEDIATE) == 0)
@@ -377,11 +385,6 @@ void WriteFun(CArchiveRdWC& arText, CNArchive& ar, SFunctions& funs, SFunctionIn
 			break;
 		case NOP_CLT_MOV:
 		case NOP_CLT_READ:
-		case NOP_TABLE_ADD2:
-		case NOP_TABLE_SUB2:
-		case NOP_TABLE_MUL2:
-		case NOP_TABLE_DIV2:
-		case NOP_TABLE_PERSENT2:
 			if ((argFlag & NEOS_ARG_N1_IMMEDIATE) == 0)
 				argFlag |= ChangeIndex(staticCount, localCount, curFunStatkSize, v, 1);
 			if ((argFlag & NEOS_ARG_N2_IMMEDIATE) == 0)
@@ -441,10 +444,12 @@ void WriteFun(CArchiveRdWC& arText, CNArchive& ar, SFunctions& funs, SFunctionIn
 		}
 		case NOP_CLT_WRITE_REF:
 		case NOP_CLT_READ_RESULT:
+#if NEOSCRIPT_LEGACY_ARITHMETIC
 		case NOP_READ_ADD:
 		case NOP_READ_SUB:
 		case NOP_READ_MUL:
 		case NOP_READ_DIV:
+#endif
             argFlag |= ChangeIndex(staticCount, localCount, curFunStatkSize, v, 1);
             argFlag |= ChangeIndex(staticCount, localCount, curFunStatkSize, v, 2);
             argFlag |= ChangeIndex(staticCount, localCount, curFunStatkSize, v, 3);

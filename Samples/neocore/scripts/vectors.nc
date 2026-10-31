@@ -4,14 +4,15 @@
     Quaternion rotation;
 };
 
-void Move(Vector3& position, float amount)
+Vector3 Move(Vector3 position, float amount)
 {
     position.x += amount;
+    return position;
 }
 
 Vector3 position = Vector3(1, 2, 3);
 Vector3 snapshot = position;
-Move(position, 2.0);
+position = Move(position, 2.0);
 
 Transform transform;
 transform.position = position;

@@ -103,14 +103,14 @@ static void CheckCopiesAndReferences(bool debug)
         49, "vector4 returned value is independent", debug);
     ExpectFloat("Quaternion source=Quaternion(1,2,3,4);Quaternion Read(){return source;}export float Probe(){Quaternion copy=Read();copy.x=9;return source.x*10+copy.x;}",
         29, "returned quaternion preserves nominal type and value", debug);
-    ExpectFloat("void Change(Vector3& value){value.x=9;}export float Probe(){Vector3 v=Vector3(1,2,3);Change(v);return v.x;}",
-        9, "whole vector reference parameter", debug);
-    ExpectFloat("export float Probe(){Vector4 v=Vector4(1,2,3,4);Vector4& alias=v;v=Vector4(5,6,7,8);alias.w+=1;return v.w;}",
-        9, "whole vector alias survives reassignment", debug);
-    ExpectFloat("void Change(Vector3& a,Vector3& b){a=Vector3(5,6,7);b.x+=2;}export float Probe(){Vector3 v;Change(v,v);return v.x;}",
-        7, "overlapping vector reference arguments", debug);
-    ExpectFloat("float Local(Vector3 value){Vector3& alias=value;alias.x=9;return value.x;}export float Probe(){Vector3 v=Vector3(1,2,3);return Local(v)*10+v.x;}",
-        91, "vector reference to by-value parameter", debug);
+    ExpectFloat("Vector3 Change(Vector3 value){value.x=9;return value;}export float Probe(){Vector3 v=Vector3(1,2,3);v=Change(v);return v.x;}",
+        9, "whole vector value return", debug);
+    ExpectFloat("export float Probe(){Vector4 v=Vector4(1,2,3,4);Vector4 copy=v;v=Vector4(5,6,7,8);copy.w+=1;return v.w*10+copy.w;}",
+        85, "whole vector copy survives source reassignment", debug);
+    ExpectFloat("float Change(Vector3 a,Vector3 b){a=Vector3(5,6,7);b.x+=2;return a.x*10+b.x;}export float Probe(){Vector3 v;return Change(v,v)*10+v.x;}",
+        520, "repeated vector arguments remain independent", debug);
+    ExpectFloat("float Local(Vector3 value){value.x=9;return value.x;}export float Probe(){Vector3 v=Vector3(1,2,3);return Local(v)*10+v.x;}",
+        91, "vector by-value parameter preserves caller", debug);
 
     ExpectFloat("struct S{Vector3 position;Quaternion rotation;};export float Probe(){S s;return s.position.x+s.position.z+s.rotation.w;}",
         1, "struct vector and quaternion defaults", debug);
@@ -118,10 +118,10 @@ static void CheckCopiesAndReferences(bool debug)
         19, "struct vector field copy", debug);
     ExpectFloat("struct I{Vector4 v;};struct O{I inner;};export float Probe(){O a=O(I(Vector4(1,2,3,4)));O b=a;b.inner.v.w+=5;return a.inner.v.w*10+b.inner.v.w;}",
         49, "deep struct vector field copy", debug);
-    ExpectFloat("struct S{Vector3 v;};export float Probe(){S s=S(Vector3(1,2,3));Vector3& alias=s.v;s=S(Vector3(5,6,7));alias.x+=2;return s.v.x;}",
-        7, "vector field reference survives whole struct assignment", debug);
-    ExpectFloat("struct S{Vector4 v;};void Change(S& s,Vector4& v){s=S(Vector4(5,6,7,8));v.w+=2;}export float Probe(){S s;Change(s,s.v);return s.v.w;}",
-        10, "overlapping struct and vector field references", debug);
+    ExpectFloat("struct S{Vector3 v;};export float Probe(){S s=S(Vector3(1,2,3));Vector3 copy=s.v;s=S(Vector3(5,6,7));copy.x+=2;return s.v.x*10+copy.x;}",
+        53, "vector field copy survives whole struct assignment", debug);
+    ExpectFloat("struct S{Vector4 v;};S Change(S s,Vector4 v){s=S(Vector4(5,6,7,8));v.w+=2;s.v.w+=v.w;return s;}export float Probe(){S s;s=Change(s,s.v);return s.v.w;}",
+        10, "struct and field arguments are separate values", debug);
 }
 
 static void CheckOrder(bool debug)
@@ -158,8 +158,8 @@ static void CheckArithmetic(bool debug)
         410, "heap vector arithmetic preserves copied input", debug);
     ExpectFloat("export float Probe(){Vector4 a=Vector4(1,2,3,4);Vector4 result=(a+=Vector4(1,1,1,1));result.w=9;return a.w*10+result.w;}",
         59, "whole-vector compound expression returns independent value", debug);
-    ExpectFloat("void Scale(Vector3& v){v*=2;}export float Probe(){Vector3 a=Vector3(1,2,3);Scale(a);return a.z;}",
-        6, "whole-vector arithmetic through reference", debug);
+    ExpectFloat("Vector3 Scale(Vector3 v){v*=2;return v;}export float Probe(){Vector3 a=Vector3(1,2,3);a=Scale(a);return a.z;}",
+        6, "whole-vector arithmetic through value return", debug);
     ExpectFloat("struct S{Vector4 v;};export float Probe(){S a=S(Vector4(1,2,3,4));S b=a;b.v+=Vector4(1,1,1,1);return a.v.w*10+b.v.w;}",
         45, "struct field whole-vector compound preserves value copy", debug);
     ExpectFloat("Vector3 g=Vector3(1,2,3);Vector3 Change(){g=Vector3(9,8,7);return Vector3(2,3,4);}export float Probe(){Vector3 v=g+Change();return v.x*100+v.y*10+g.x;}",

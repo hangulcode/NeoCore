@@ -9,7 +9,9 @@
 #include "NeoVMInternal.h"
 #include "NeoVMWorker.h"
 #include "NeoArchive.h"
+#if NEOSCRIPT_LEGACY_ARITHMETIC
 #include "NeoLibDCall.h"
+#endif
 #include "UTFString.h"
 
 namespace NeoScript
@@ -77,6 +79,9 @@ void SVarWrapper::SetString(const char* str) { _vmw->Var_SetString(_var, str); }
 //void SVarWrapper::SetTableFun(FunctionPtrNative fun) { _vmw->Var_SetTableFun(_var, fun); }
 
 #include "NeoVMWorker.inl"
+#if NEOSCRIPT_LEGACY_ARITHMETIC
+#include "NeoVMWorker_LegacyArithmetic.inl"
+#endif
 
 // 벡터 세터 (native 호출 내부에서만 쓰이므로 non-inline. NeoLib.cpp 에서 링크됨)
 //
@@ -178,8 +183,9 @@ int CNeoVMWorker::Sleep(int iTimeout, VarInfo* v1)
 	if (iSleepTick < 0)
 		iSleepTick = 0;
 
-	if (iTimeout >= 0)
+	if (iTimeout >= 0 || m_bCooperativeSleep)
 	{
+		m_bCooperativeSleepPending = m_bCooperativeSleep;
 		_iRemainSleep = iSleepTick;
 		_sleepClock = std::chrono::steady_clock::now();
 		return 0;
@@ -982,6 +988,7 @@ void CNeoVMWorker::ReleaseExecution(bool discardParkedClosuresWithoutSync)
 	m_pRegisterActive = nullptr;
 	m_sCoroutines.clear();
 	ClearSP();
+	m_bCooperativeSleepPending = false;
 	_iRemainSleep = 0;
 	m_bSliceExpired = false;
 	SetVarStackBase(nullptr);
@@ -1035,6 +1042,7 @@ int CNeoVMWorker::ExecuteTop(int iFunctionID, std::vector<VarInfo>& _args)
 		_iSP_Vars = 0;
 		_iSP_VarsMax = 0;
 		_iSP_Vars_Max2 = 0;
+		m_bCooperativeSleepPending = false;
 		_iRemainSleep = 0;
 		m_bSliceExpired = false;
 		_isInitialized = true;
@@ -1090,7 +1098,7 @@ NeoExecutionState CNeoVMWorker::GetExecutionState()
 		return NeoExecutionState::Idle;
 	if (m_eDebugRunMode == DBG_PAUSED)
 		return NeoExecutionState::SuspendedDebugger;
-	if (_iRemainSleep > 0)
+	if (m_bCooperativeSleepPending || _iRemainSleep > 0)
 		return NeoExecutionState::SuspendedSleep;
 	if (m_bSliceExpired)
 		return NeoExecutionState::SuspendedSlice;
@@ -1147,6 +1155,7 @@ NeoHostCallBegin CNeoVMWorker::BeginHostCall()
 	_iSP_Vars = 0;
 	_iSP_VarsMax = 0;
 	_iSP_Vars_Max2 = 0;
+	m_bCooperativeSleepPending = false;
 	_iRemainSleep = 0;
 	m_bSliceExpired = false;
 	_isInitialized = true;
@@ -2061,6 +2070,7 @@ bool	CNeoVMWorker::RunInternal(int iBreakingCallStack)
 	if (false == _isInitialized)
 		return false;
 
+	m_bCooperativeSleepPending = false;
 	if (_iRemainSleep > 0)
 	{
 		auto now = std::chrono::steady_clock::now();
@@ -2134,9 +2144,12 @@ bool	CNeoVMWorker::RunInternal(int iBreakingCallStack)
 		case NOP_MOVF:          MoveF(GetVarPtrF1(OP), OP.n23); break;
 		case NOP_MOVF_L:        MoveF(GetVarPtr_L(OP.n1), OP.n23); break;
 		case NOP_LOADK:         handle_LOADK_cold(OP); break;
+#if NEOSCRIPT_LEGACY_ARITHMETIC
 		case NOP_MOV_MINUS:     MoveMinus(GetVarPtrF1(OP), GetVarPtr2(OP)); break;
 		case NOP_MOV_MINUS_L:   MoveMinus(GetVarPtr_L(OP.n1), GetVarPtr_L(OP.n2)); break;
+#endif
 		case NOP_LOG_NOT:       handle_LOG_NOT_cold(OP); break;
+#if NEOSCRIPT_LEGACY_ARITHMETIC
 		case NOP_ADD2:          Add2(GetVarPtrF1(OP), GetVarPtr2(OP)); break;
 		case NOP_ADD2_L:        Add2(GetVarPtr_L(OP.n1), GetVarPtr_L(OP.n2)); break;
 		case NOP_SUB2:          Sub2(GetVarPtrF1(OP), GetVarPtr2(OP)); break;
@@ -2148,9 +2161,11 @@ bool	CNeoVMWorker::RunInternal(int iBreakingCallStack)
 		case NOP_AND2:          And2(GetVarPtrF1(OP), GetVarPtr2(OP)); break;
 		case NOP_OR2:           Or2(GetVarPtrF1(OP), GetVarPtr2(OP)); break;
 		case NOP_XOR2:          Xor2(GetVarPtrF1(OP), GetVarPtr2(OP)); break;
+#endif
 		case NOP_VAR_CLEAR:     Var_Release(GetVarPtrF1(OP)); break;
 		case NOP_INC:           Inc(GetVarPtrF1(OP)); break;
 		case NOP_DEC:           Dec(GetVarPtrF1(OP)); break;
+#if NEOSCRIPT_LEGACY_ARITHMETIC
 		case NOP_ADD3:          Add3(GetVarPtrF1(OP), GetVarPtr2(OP), GetVarPtr3(OP)); break;
 		case NOP_ADD3_L:        Add3(GetVarPtr_L(OP.n1), GetVarPtr_L(OP.n2), GetVarPtr_L(OP.n3)); break;
 		case NOP_SUB3:          Sub3(GetVarPtrF1(OP), GetVarPtr2(OP), GetVarPtr3(OP)); break;
@@ -2162,15 +2177,18 @@ bool	CNeoVMWorker::RunInternal(int iBreakingCallStack)
 		case NOP_LSHIFT3:       LSh3(GetVarPtrF1(OP), GetVarPtr2(OP), GetVarPtr3(OP)); break;
 		case NOP_RSHIFT3:       RSh3(GetVarPtrF1(OP), GetVarPtr2(OP), GetVarPtr3(OP)); break;
 		case NOP_XOR3:          Xor3(GetVarPtrF1(OP), GetVarPtr2(OP), GetVarPtr3(OP)); break;
+#endif
 		case NOP_GREAT:         handle_GREAT_cold(OP); break;
 		case NOP_GREAT_EQ:      handle_GREAT_EQ_cold(OP); break;
 		case NOP_LESS:          handle_LESS_cold(OP); break;
 		case NOP_LESS_EQ:       handle_LESS_EQ_cold(OP); break;
 		case NOP_EQUAL2:        handle_EQUAL2_cold(OP); break;
 		case NOP_NEQUAL:        handle_NEQUAL_cold(OP); break;
+#if NEOSCRIPT_LEGACY_ARITHMETIC
 		case NOP_AND:           handle_AND_cold(OP); break;
 		case NOP_AND_L:         And(GetVarPtr_L(OP.n1), GetVarPtr_L(OP.n2), GetVarPtr_L(OP.n3)); break;
 		case NOP_OR:            handle_OR_cold(OP); break;
+#endif
 		case NOP_LOG_AND:       handle_LOG_AND_cold(OP); break;
 		case NOP_LOG_OR:        handle_LOG_OR_cold(OP); break;
 		case NOP_JMP:           SetCodeIncPtr(OP.n1); break;
@@ -2227,11 +2245,6 @@ bool	CNeoVMWorker::RunInternal(int iBreakingCallStack)
 		case NOP_CLT_READ_L:    handle_CLT_READ_L(OP); break;
 		case NOP_CLT_MOV:       handle_CLT_MOV(OP); break;
 		case NOP_CLT_MOV_L:     handle_CLT_MOV_L(OP); break;
-		case NOP_TABLE_ADD2:    handle_TABLE_ADD2(OP); break;
-		case NOP_TABLE_SUB2:    handle_TABLE_SUB2(OP); break;
-		case NOP_TABLE_MUL2:    handle_TABLE_MUL2(OP); break;
-		case NOP_TABLE_DIV2:    handle_TABLE_DIV2(OP); break;
-		case NOP_TABLE_PERSENT2:handle_TABLE_PERSENT2(OP); break;
 		case NOP_LIST_ALLOC:    handle_LIST_ALLOC(OP); break;
 		case NOP_LIST_ALLOC_L:  handle_LIST_ALLOC_L(OP); break;
 		case NOP_CHANGE_INT:    handle_CHANGE_INT(OP); break;
@@ -2250,10 +2263,12 @@ bool	CNeoVMWorker::RunInternal(int iBreakingCallStack)
 
 		case NOP_CLT_WRITE_REF: handle_CLT_WRITE_REF(OP); break;
 		case NOP_CLT_READ_RESULT: handle_CLT_READ_RESULT(OP); break;
+#if NEOSCRIPT_LEGACY_ARITHMETIC
 		case NOP_READ_ADD:      handle_READ_ADD(OP); break;
 		case NOP_READ_SUB:      handle_READ_SUB(OP); break;
 		case NOP_READ_MUL:      handle_READ_MUL(OP); break;
 		case NOP_READ_DIV:      handle_READ_DIV(OP); break;
+#endif
 		case NOP_I64_ADD:       StoreNumberInt(GetVarPtrF1(OP), NeoIntAdd(GetVarPtr2(OP)->_int, GetVarPtr3(OP)->_int)); break;
 		case NOP_I64_SUB:       StoreNumberInt(GetVarPtrF1(OP), NeoIntSub(GetVarPtr2(OP)->_int, GetVarPtr3(OP)->_int)); break;
 		case NOP_I64_MUL:       StoreNumberInt(GetVarPtrF1(OP), NeoIntMul(GetVarPtr2(OP)->_int, GetVarPtr3(OP)->_int)); break;
@@ -2268,6 +2283,8 @@ bool	CNeoVMWorker::RunInternal(int iBreakingCallStack)
 		case NOP_F64_SUB:       StoreNumberFloat(GetVarPtrF1(OP), GetVarPtr2(OP)->_float - GetVarPtr3(OP)->_float); break;
 		case NOP_F64_MUL:       StoreNumberFloat(GetVarPtrF1(OP), GetVarPtr2(OP)->_float * GetVarPtr3(OP)->_float); break;
 		case NOP_F64_DIV:       StoreNumberFloat(GetVarPtrF1(OP), GetVarPtr2(OP)->_float / GetVarPtr3(OP)->_float); break;
+		case NOP_I64_NEG:       StoreNumberInt(GetVarPtrF1(OP), NeoIntNeg(GetVarPtr2(OP)->_int)); break;
+		case NOP_F64_NEG:       StoreNumberFloat(GetVarPtrF1(OP), -GetVarPtr2(OP)->_float); break;
 		case NOP_I64_TO_F64:    StoreNumberFloat(GetVarPtrF1(OP), static_cast<NS_FLOAT>(GetVarPtr2(OP)->_int)); break;
 		case NOP_F64_TO_I64:    StoreNumberInt(GetVarPtrF1(OP), NeoFloatToInt(GetVarPtr2(OP)->_float)); break;
 		case NOP_I64_EQ:        StoreNumberBool(GetVarPtrF1(OP), ((OP.argFlag & NEOS_OP_COMPARE_INVERT) == 0) == (GetVarPtr2(OP)->_int == GetVarPtr3(OP)->_int)); break;
@@ -3010,44 +3027,6 @@ void CNeoVMWorker::SetArrayAssignError(ArrayInfo* array, VarInfo* value)
 {
 	if (array->Int32OutOfRange(value)) SetError("int32 array value out of range");
 	else SetErrorFormat(RTE_ARRAY_VALUE_TYPE, GetDataType(value->GetType()).c_str(), GetArrayElementTypeName(array->_elementType));
-}
-
-bool CNeoVMWorker::ArrayModify(VarInfo* pClt, VarInfo* pKey, VarInfo* pValue, eNOperation op)
-{
-	if (pClt->GetType() != VAR_ARRAY || pKey->GetType() != VAR_INT)
-	{
-		SetError(RTE_ARRAY_INDEX_TYPE);
-		return false;
-	}
-
-	ArrayInfo* array = pClt->_array;
-	const NS_INT index = pKey->_int;
-	if (array->IsValidIndex(index) == false)
-	{
-		SetError(RTE_ARRAY_INDEX_WRITE);
-		return false;
-	}
-
-	VarInfo value;
-	ArrayReadValue(this, array, static_cast<int>(index), &value);
-	switch (op)
-	{
-	case NOP_TABLE_ADD2:     Add2(&value, pValue); break;
-	case NOP_TABLE_SUB2:     Sub2(&value, pValue); break;
-	case NOP_TABLE_MUL2:     Mul2(&value, pValue); break;
-	case NOP_TABLE_DIV2:     Div2(&value, pValue); break;
-	case NOP_TABLE_PERSENT2: Per2(&value, pValue); break;
-	default:
-		SetError(RTE_UNKNOWN_OP);
-		Var_Release(&value);
-		return false;
-	}
-
-	const bool written = ArrayWriteValue(array, static_cast<int>(index), &value);
-	if (!written)
-		SetArrayAssignError(array, &value);
-	Var_Release(&value);
-	return written;
 }
 
 std::string GetDataType(VAR_TYPE t)

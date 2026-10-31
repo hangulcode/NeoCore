@@ -42,39 +42,13 @@ TypeId TypeRegistry::LookupNamed(const std::string& qualifiedName) const
     return found == names_.end() ? InvalidType : found->second;
 }
 
-const TypeDesc& TypeRegistry::Get(TypeId id) const
-{
-    return id < types_.size() ? types_[id] : types_.front();
-}
-
 bool TypeRegistry::IsNumeric(TypeId id) const
 {
     return id == Int() || id == Float();
 }
 
-bool TypeRegistry::IsNullable(TypeId id) const
-{
-    return Get(id).kind == TypeKind::Nullable;
-}
-
-bool TypeRegistry::IsReference(TypeId id) const
-{
-    return Get(id).kind == TypeKind::Reference;
-}
-
-bool TypeRegistry::IsStorable(TypeId id) const
-{
-    const TypeKind kind = Get(id).kind;
-    // 참조는 별도의 값이 아니라 변수의 별칭이다. 컬렉션이나 반환값에 넣어 수명을 벗어나게 하지 않는다.
-    return kind != TypeKind::Invalid && kind != TypeKind::Void && kind != TypeKind::Null &&
-        kind != TypeKind::Reference;
-}
-
 bool TypeRegistry::CanAssign(TypeId target, TypeId source) const
 {
-    // 참조 결합은 같은 타입에만 허용한다. 일반 읽기·쓰기는 검사기가 대상 타입으로 확인한다.
-    if (IsReference(target))
-        return target == source;
     if (!IsStorable(target) || Get(source).kind == TypeKind::Invalid || source == Void())
         return false;
     if (target == source)
@@ -140,9 +114,6 @@ TypeId TypeRegistry::Intern(TypeKind kind, const std::vector<TypeId>& arguments,
     case TypeKind::Struct:
     case TypeKind::Native:
         break;
-    case TypeKind::Reference:
-        desc.element = arguments[0];
-        break;
     default:
         return InvalidType;
     }
@@ -166,11 +137,6 @@ TypeId TypeRegistry::NullableOf(TypeId element)
     if (IsNullable(element))
         return InvalidType;
     return Unary(TypeKind::Nullable, element);
-}
-
-TypeId TypeRegistry::ReferenceOf(TypeId element)
-{
-    return Unary(TypeKind::Reference, element);
 }
 
 TypeId TypeRegistry::ArrayOf(TypeId element)
@@ -214,7 +180,7 @@ TypeId TypeRegistry::FunctionOf(TypeId returnType, const std::vector<TypeId>& pa
     arguments.push_back(returnType);
     for (TypeId parameter : parameters)
     {
-        if (!IsStorable(parameter) && !IsReference(parameter))
+        if (!IsStorable(parameter))
             return InvalidType;
         arguments.push_back(parameter);
     }
@@ -370,8 +336,6 @@ std::string TypeRegistry::DisplayName(TypeId id) const
     case TypeKind::Struct:
     case TypeKind::Native:
         return type.name;
-    case TypeKind::Reference:
-        return DisplayName(type.element) + "&";
     default:
         return "<invalid>";
     }

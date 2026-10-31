@@ -40,7 +40,6 @@ struct StaticCompileResult
 
 // 타입 검사한 숫자 식은 IR로, 아직 이관하지 않은 문장과 식은 줄 수를 보존한 골격으로 내린다.
 // IR은 원본 위치를 보존한다. 기존 경로의 변환 식 때문에 백엔드 열 위치는 달라질 수 있다.
-// typedBackend=false는 차등 검증용이며 기존 범용 명령을 내는 중간 소스를 생성한다.
-bool CompileStaticSource(const std::string& source, StaticCompileResult& result, bool typedBackend = true, const HostSchema* hostSchema = nullptr);
+bool CompileStaticSource(const std::string& source, StaticCompileResult& result, const HostSchema* hostSchema = nullptr);
 
 }

@@ -96,8 +96,8 @@ void MethodsAndAliases(bool debug)
         259, "array assignment and by-value parameters share container", debug);
     ExpectInt("array<int> data=array<int>(1,3);array<int> Get(){return data;}export int Probe(){Get().append(8);Get()[0]=7;return data.len()*100+data[0]*10+data[1];}",
         278, "function returned arrays retain shared mutable container", debug);
-    ExpectInt("void Replace(array<int>& a){a=array<int>(2,7);}export int Probe(){array<int> a=array<int>(1,3);array<int> old=a;array<int>& alias=a;Replace(alias);return a.len()*100+a[1]*10+old[0];}",
-        273, "named array references support container replacement", debug);
+    ExpectInt("array<int> Replace(array<int> a){a=array<int>(2,7);return a;}export int Probe(){array<int> a=array<int>(1,3);array<int> old=a;a=Replace(a);return a.len()*100+a[1]*10+old[0];}",
+        273, "explicit return replaces array while prior container remains alive", debug);
     ExpectFloat("export float Probe(){array<Vector4> a=array<Vector4>(2,Vector4(1,2,3,4));a[0].w=9;Vector4 v=a[1];v.w=8;return a[0].w*100+a[1].w*10+v.w;}",
         948, "shared vector fill and local vector copy preserve value semantics", debug);
     ExpectFloat("export float Probe(){array<Vector3> a=array<Vector3>(1,Vector3(1,2,3));array<Vector3> b=a;b[0].x=9;Vector3 copy=a[0];copy.x=7;return a[0].x*10+copy.x;}",

@@ -73,6 +73,7 @@
   <ItemGroup>
     <None Include="..\NeoSource\NeoVMWorker.inl"><Filter>Implementation</Filter></None>
     <None Include="..\NeoSource\NeoVMWorker_Handlers.inl"><Filter>Implementation</Filter></None>
+    <None Include="..\NeoSource\NeoVMWorker_LegacyArithmetic.inl"><Filter>Implementation</Filter></None>
     <None Include="..\NeoSource\NeoVMWorker_Typed.inl"><Filter>Implementation</Filter></None>
     <None Include="..\NeoSource\NeoVMWorker_Move.inl"><Filter>Implementation</Filter></None>
     <None Include="..\NeoSource\NeoVMWorker_Var.inl"><Filter>Implementation</Filter></None>

@@ -1351,6 +1351,9 @@ static RunStatus ResumeInstanceExecution(InstanceRec* inst)
             inst->suspendedNested = false;
         }
     }
+    // Invocation 없이 시작한 전역 초기화도 재개 실패의 위치와 메시지를 보존한다.
+    else if (status == RunStatus::Failed)
+        inst->runtime->CaptureCallError(inst, status);
     return status;
 }
 RunStatus RuntimeImpl::Resume(InstanceHandle h, const ResumeDesc& desc)
@@ -2584,6 +2587,15 @@ bool RemapSourceLines(NeoScript::IRuntime& runtime, NeoScript::ProgramHandle pro
         const auto found = lines.find(info._lineseq);
         if (found != lines.end()) info._lineseq = static_cast<NeoScript::u16>(found->second);
     }
+    return true;
+}
+
+bool EnableCooperativeSleep(NeoScript::IRuntime& runtime, NeoScript::InstanceHandle instance)
+{
+    NeoScript::RuntimeImpl& impl = static_cast<NeoScript::RuntimeImpl&>(runtime);
+    NeoScript::InstanceRec* record = impl.resolveInstance(instance);
+    if (record == nullptr || record->worker == nullptr || record->worker->IsInterpreterRunning()) return false;
+    static_cast<NeoScript::CNeoVMWorker*>(record->worker)->EnableCooperativeSleep();
     return true;
 }
 

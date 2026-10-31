@@ -30,7 +30,7 @@ intended to improve execution and validation while preserving that convenience.
 The project follows these goals:
 
 - **Compile-time contracts:** explicit types, function signatures, nullability,
-  references, and host schemas make invalid operations diagnosable before a script
+  value semantics, and host schemas make invalid operations diagnosable before a script
   runs. Unsupported features fail explicitly instead of silently becoming dynamic.
 - **Efficient execution:** carry resolved type information into dedicated VM
   instructions and progressively remove transitional compiler and runtime helpers.
@@ -58,9 +58,9 @@ and implicit dynamic fallback. Numeric defaults are initialized; non-null string
 require an initializer. Nullable values do not implicitly unwrap; native object
 locals support member access inside an explicit non-null `if` branch.
 
-Mutable `T&` references bind once to named variables, parameters, or struct fields.
-Assignment writes the referenced value; it cannot rebind the reference. Struct
-copies are independent, and existing field aliases survive whole-struct assignment.
+NeoCore does not support pointers or `T&` reference declarations, parameters, or
+returns. Structs and vectors copy by value; functions return modified values for
+the caller to assign explicitly. Struct copies include independent nested fields.
 See the [struct sample](Samples/neocore/scripts/structs.nc) and
 [vector sample](Samples/neocore/scripts/vectors.nc). Vectors have float32 components,
 value copies, and checked named component writes; Quaternion uses `w, x, y, z` order.
@@ -98,29 +98,39 @@ Checked numeric expressions now use a typed intermediate representation (IR),
 retaining literal values, resolved symbols, operand types, and original source
 locations. The bytecode emitter reads that IR directly instead of reparsing
 numeric operation strings. Arithmetic, integer bit operations, int/float conversions,
-comparisons, and comparison branches use 28 dedicated I64/F64 bytecode operations.
+comparisons, comparison branches, and numeric negation use 30 dedicated I64/F64
+bytecode operations.
 Another 51 instructions cover vector arithmetic/construction/components,
 typed array storage/methods, and internal reference cells. Array/vector compound
-writes expand into instructions at compile time, without runtime helper calls.
+writes and numeric list compound updates expand into typed arithmetic and storage
+instructions at compile time, without runtime helper calls.
 Conditions use fused comparison branches, and numeric `!` preserves unordered
 comparisons through result inversion.
 The dispatch loop, call frames, eight-byte instructions, and 16-byte value slots
 remain in place. Declarations and control flow still use a transitional textual
-skeleton. Calls, assignments, and selectors inside numeric IR are emitted through
-ordered compatibility leaves; they are not evaluated before preceding IR operations.
-Scalar compound assignments, lists/maps, struct helpers and host property write
-composition retain inherited paths; the typed VM is not complete.
+skeleton. Named scalar assignments, compound assignments, and prefix/postfix updates
+now carry their variable targets and flat struct-field paths in IR. Targets are
+resolved after the RHS; the stored value or old postfix value is retained as the
+expression result. Script calls carry resolved signatures and ordered argument
+roots, with explicit numeric/nullable conversions and struct value copies. Return
+records retain the owning function, result type, and original source location.
+Structs store raw field values; clone helpers preserve nested value copies.
+Internal boxed vector locals still support component writes, without exposing
+language references. Host/builtin calls, remaining aggregate operations, and
+unmigrated selectors keep ordered compatibility paths. The typed VM is not complete.
 An early numeric-VM snapshot measured on 2026-10-31 showed a 7.5% increase in the
 sum of eight case medians versus its paired generic-op control. That historical
 [measurement report](docs/TypedVmBenchmark.md) predates the current IR and aggregate
 instructions; it is not a measurement of this build.
 Typed sets, compact arrays, nested collections,
-script imports, richer host signatures, closures, and coroutine integration remain
+script imports, richer host signatures, closures, and coroutine scheduling remain
 future work. See the [status and roadmap](docs/StaticTyping.md).
 
-This NeoCore build uses bytecode image version `0147`; regenerate cached images.
-Three unused instructions were removed, changing subsequent opcode numbers;
-older images are rejected instead of interpreting their instructions incorrectly.
+This NeoCore build uses bytecode image version `0149`; regenerate cached images.
+Generic three-operand arithmetic, compound arithmetic, numeric negation, and fused
+read/arithmetic instructions and their handlers are excluded from the NeoCore library. Five generic indexed compound-arithmetic instructions
+were also removed. Legacy `.ns` fixtures use a separate backend with image version
+`L149`; the two profiles reject each other's images and earlier image versions.
 Rebuild C++ hosts against the matching headers and library, because the internal
 backend compile descriptor now carries typed-lowering metadata. This does not
 change the legacy C ABI structures or make that API a typed NeoCore host surface.
@@ -137,8 +147,19 @@ cmake --build Build/neocore --config Release --parallel
 ctest --test-dir Build/neocore -C Release --output-on-failure
 ```
 
-The `NEOSCRIPT_*` CMake options configure the inherited backend. C++ hosts can link
-the `NeoCore::Runtime` target for the new entry point.
+C++ hosts link `NeoCore::Runtime`, which uses `neocore_backend` with
+`NEOSCRIPT_LEGACY_ARITHMETIC=0`. Generic binary/compound arithmetic, numeric
+negation, and fused read/arithmetic are absent from its opcode set and VM dispatch;
+typed numeric and vector operations remain available. Bool logical inversion reads
+its statically checked bool value directly.
+The frontend no longer exposes an untyped comparison mode. Constant folding uses
+compiler operations independently of VM opcode numbers.
+
+The `NEOSCRIPT_*` CMake options configure inherited tests and hosts. Their separate
+`neoscript`, `NeoScriptShared`, and `NeoScriptStatic` targets enable
+`NEOSCRIPT_LEGACY_ARITHMETIC=1` for `.ns` fixtures. Do not link both backend profiles
+into one executable. These fixtures preserve old dynamic behavior without adding
+its arithmetic handlers to the NeoCore library.
 
 For a multi-configuration CMake build such as Visual Studio:
 
@@ -176,6 +197,12 @@ The `.nc` console does not install an HTTP transport or build libcurl. The inher
 `.ns` runner and debugger remain in the `Samples/console/console.vcxproj` project; their
 `console.exe` output and command-line options are separate.
 
+The [NeoCore mini game host](Samples/neocore/minigame/README.md) compiles one `.nc`
+program for three independent instances. It checks frame/event dispatch, `sleep`
+and resume, service callback reentry, and object-ID validation after destruction.
+It is included in the CMake regression suite and in `NeoCore.sln` as
+`NeoCoreMiniGame`; no graphics engine is required.
+
 `--check <file>` checks and compiles without executing top-level code.
 `--file <file>` runs a checked program. `--emit-backend <file>` prints the checked,
 lowered statement skeleton for diagnostics. Its private compiler intrinsics and
@@ -204,8 +231,8 @@ build performance.
 For embedding, `NeoSource/NeoCore.h` is the new static entry point in namespace
 `NeoCore`. `Program::Compile` creates a checked program; `Run` executes its top-level
 code once, and `Call` validates an exported function's scalar signature before
-invoking the VM. This C++-to-script scalar entry point currently rejects reference
-parameters, native-object arguments/results, and null arguments; nullable scalar
+invoking the VM. This C++-to-script scalar entry point currently rejects
+native-object arguments/results and null arguments; nullable scalar
 return values are supported. To expose C++ objects to scripts, include
 `NeoSource/NeoCoreHost.h` and use the `Program::Compile` overload accepting
 `HostBindings`. That separate script-to-host boundary supports declared scalar

@@ -4,6 +4,8 @@
 #include "NeoCoreHostBridge.h"
 #include "NeoScript.h"
 #include <stdexcept>
+#include <cmath>
+#include <limits>
 #include <utility>
 
 namespace NeoCore
@@ -43,25 +45,15 @@ struct Program::Impl
     std::string sourceName;
     NeoScript::IRuntime* runtime = nullptr;
     NeoScript::ProgramHandle program;
-    NeoScript::InstanceHandle instance;
-    bool initialized = false;
-    bool initializing = false;
-    Result initialization;
     std::unique_ptr<HostRuntime> host;
-
     ~Impl()
     {
         if (!runtime) return;
-        if (instance) runtime->DestroyInstance(instance);
         if (program) runtime->DestroyProgram(program);
         NeoScript::DestroyRuntime(runtime);
     }
-
     Error BackendError(const std::string& fallback)
     {
-        NeoScript::Error backend;
-        if (instance && NeoCoreBackend::ReadLastCallError(*runtime, instance, backend))
-            return TranslateError(backend, sourceName);
         Error error;
         error.sourceName = sourceName;
         NeoScript::StringView text;
@@ -70,11 +62,68 @@ struct Program::Impl
     }
 };
 
-Program::Program(std::unique_ptr<Impl> impl) : impl_(std::move(impl))
+static Result Failure(const std::string& message, const std::string& source)
 {
-    if (impl_->host) impl_->host->SetProgram(this);
+    Result result;
+    result.status = ExecutionStatus::Failed;
+    result.error.message = message;
+    result.error.sourceName = source;
+    return result;
 }
+
+struct Instance::Impl
+{
+    explicit Impl(std::shared_ptr<Program::Impl> shared)
+        : module(std::move(shared)), checked(module->checked), sourceName(module->sourceName), runtime(module->runtime) {}
+    std::shared_ptr<Program::Impl> module;
+    StaticCompileResult& checked;
+    const std::string& sourceName;
+    NeoScript::IRuntime* runtime;
+    NeoScript::InstanceHandle instance;
+    std::unique_ptr<HostInstance> host;
+    bool initialized = false;
+    bool initializing = false;
+    bool suspended = false;
+    unsigned executing = 0;
+    Result initialization;
+    NeoScript::Invocation pending;
+    const StaticFunctionSignature* pendingSignature = nullptr;
+    std::string pendingName;
+    bool deferredCall = false;
+    std::string deferredName;
+    std::vector<Scalar> deferredArguments;
+
+    ~Impl()
+    {
+        // 대기 중 반환값 소유자를 먼저 반납한 뒤 실행 컨텍스트와 바인딩을 파괴한다.
+        pending = NeoScript::Invocation();
+        if (instance)
+        {
+            if (suspended) runtime->Cancel(instance);
+            runtime->DestroyInstance(instance);
+        }
+    }
+    Error BackendError(const std::string& fallback)
+    {
+        NeoScript::Error backend;
+        if (instance && NeoCoreBackend::ReadLastCallError(*runtime, instance, backend))
+            return TranslateError(backend, sourceName);
+        return module->BackendError(fallback);
+    }
+    Result ReadResult(NeoScript::Invocation& call, const StaticFunctionSignature& signature, const std::string& name);
+};
+
+// 재진입 호출은 허용하되 실행 중인 인스턴스를 Resume으로 다시 진행하지 않는다.
+struct ExecutionScope
+{
+    explicit ExecutionScope(unsigned& count) : count_(count) { ++count_; }
+    ~ExecutionScope() { --count_; }
+    unsigned& count_;
+};
+Program::Program(std::shared_ptr<Impl> impl) : impl_(std::move(impl)) {}
 Program::~Program() = default;
+Instance::Instance(std::unique_ptr<Impl> impl) : impl_(std::move(impl)) {}
+Instance::~Instance() = default;
 
 static Error TranslateError(const NeoScript::Error& backend, const std::string& name)
 {
@@ -102,14 +151,14 @@ std::unique_ptr<Program> Program::CompileImpl(const std::string& source, Error& 
     const std::string& sourceName, bool debug, const HostBindings* bindings)
 {
     error = Error();
-    std::unique_ptr<Impl> impl(new Impl());
+    std::shared_ptr<Impl> impl(new Impl());
     impl->sourceName = sourceName;
     if (bindings)
     {
         if (!bindings->Validate(error.message)) { error.sourceName = sourceName; return std::unique_ptr<Program>(); }
         impl->host.reset(new HostRuntime(*bindings));
     }
-    if (!CompileStaticSource(source, impl->checked, true, impl->host ? &impl->host->Schema() : nullptr))
+    if (!CompileStaticSource(source, impl->checked, impl->host ? &impl->host->Schema() : nullptr))
     {
         error.message = impl->checked.errorMessage;
         error.sourceName = sourceName;
@@ -150,41 +199,77 @@ std::unique_ptr<Program> Program::CompileImpl(const std::string& source, Error& 
         error.message = "could not map host property diagnostics to source";
         return std::unique_ptr<Program>();
     }
-    NeoScript::InstanceDesc instanceDesc;
-    instanceDesc.runGlobalInit = false;
-    impl->instance = impl->runtime->CreateInstance(impl->program, instanceDesc);
-    if (!impl->instance)
-    {
-        error = impl->BackendError("could not create NeoCore instance");
-        return std::unique_ptr<Program>();
-    }
-    return std::unique_ptr<Program>(new Program(std::move(impl)));
+    std::unique_ptr<Program> result(new Program(std::move(impl)));
+    result->defaultInstance_ = result->CreateInstance(error);
+    if (!result->defaultInstance_) return std::unique_ptr<Program>();
+    return result;
 }
 
+std::unique_ptr<Instance> Program::CreateInstance(Error& error)
+{
+    error = Error();
+    std::unique_ptr<Instance::Impl> state(new Instance::Impl(impl_));
+    std::unique_ptr<Instance> result(new Instance(std::move(state)));
+    if (impl_->host) result->impl_->host = impl_->host->CreateInstance(*result);
+    NeoScript::InstanceDesc desc;
+    desc.runGlobalInit = false;
+    desc.userData = result->impl_->host ? result->impl_->host->UserData() : nullptr;
+    result->impl_->instance = impl_->runtime->CreateInstance(impl_->program, desc);
+    if (!result->impl_->instance ||
+        !NeoCoreBackend::EnableCooperativeSleep(*impl_->runtime, result->impl_->instance))
+    {
+        error = result->impl_->BackendError("could not create NeoCore instance");
+        return std::unique_ptr<Instance>();
+    }
+    return result;
+}
+Result Program::Run() { return defaultInstance_->Run(); }
+Result Program::Call(const std::string& name, const std::vector<Scalar>& arguments)
+{
+    return defaultInstance_->Call(name, arguments);
+}
+Result Program::Resume(double deltaTime) { return defaultInstance_->Resume(deltaTime); }
+bool Program::IsSuspended() const { return defaultInstance_->IsSuspended(); }
 bool Program::SetHostObject(const std::string& name, ObjectHandle object, Error& error)
+{
+    return defaultInstance_->SetHostObject(name, object, error);
+}
+bool Instance::SetHostObject(const std::string& name, ObjectHandle object, Error& error)
 {
     error = Error();
     error.sourceName = impl_->sourceName;
     if (!impl_->host) { error.message = "program has no host bindings"; return false; }
     return impl_->host->SetGlobal(name, object, error.message);
 }
+bool Instance::IsSuspended() const { return impl_->suspended; }
 
-Result Program::Run()
+Result Instance::Run()
 {
     if (impl_->initializing)
     {
-        Result result;
-        result.error.sourceName = impl_->sourceName;
-        result.error.message = "script reentry is not allowed before global initialization completes";
-        return result;
+        if (impl_->suspended) return impl_->initialization;
+        return Failure("script reentry is not allowed before global initialization completes", impl_->sourceName);
     }
+    if (impl_->suspended) return Failure("instance has a suspended call; resume it before starting another call", impl_->sourceName);
     if (impl_->initialized) return impl_->initialization;
     impl_->initialized = true;
-    // 타입이 정해진 전역 슬롯도 초기화 도중에는 아직 값을 받지 못했을 수 있다.
     impl_->initializing = true;
-    if (impl_->runtime->RunGlobalInit(impl_->instance) != NeoScript::RunStatus::Completed)
-        impl_->initialization.error = impl_->BackendError("global initialization did not complete");
-    impl_->initializing = false;
+    ExecutionScope executing(impl_->executing);
+    const NeoScript::RunStatus status = impl_->runtime->RunGlobalInit(impl_->instance);
+    if (status == NeoScript::RunStatus::Suspended || status == NeoScript::RunStatus::Yielded)
+    {
+        impl_->suspended = true;
+        impl_->initialization.status = ExecutionStatus::Suspended;
+    }
+    else
+    {
+        impl_->initializing = false;
+        if (status != NeoScript::RunStatus::Completed)
+        {
+            impl_->initialization.status = ExecutionStatus::Failed;
+            impl_->initialization.error = impl_->BackendError("global initialization did not complete");
+        }
+    }
     return impl_->initialization;
 }
 
@@ -202,9 +287,11 @@ static TypeId ScalarType(const TypeRegistry& types, Scalar::Kind kind)
     return InvalidType;
 }
 
-Result Program::Call(const std::string& name, const std::vector<Scalar>& arguments)
+Result Instance::Call(const std::string& name, const std::vector<Scalar>& arguments)
 {
+    if (impl_->suspended) return Failure("instance has a suspended call; resume it before starting another call", impl_->sourceName);
     Result result;
+    result.status = ExecutionStatus::Failed;
     result.error.sourceName = impl_->sourceName;
     const StaticFunctionSignature* signature = nullptr;
     for (const auto& candidate : impl_->checked.functions)
@@ -248,6 +335,14 @@ Result Program::Call(const std::string& name, const std::vector<Scalar>& argumen
     }
     Result initialized = Run();
     if (!initialized.ok()) return initialized;
+    if (initialized.suspended())
+    {
+        // 초기화가 양보해도 최초 요청의 함수와 소유 인자 값을 버리지 않는다.
+        impl_->deferredCall = true;
+        impl_->deferredName = name;
+        impl_->deferredArguments = arguments;
+        return initialized;
+    }
     NeoScript::Invocation call = impl_->runtime->Call(impl_->instance, name);
     if (!call)
     {
@@ -272,16 +367,36 @@ Result Program::Call(const std::string& name, const std::vector<Scalar>& argumen
         case Scalar::Kind::Null: break;
         }
     }
-    if (call.invoke() != NeoScript::RunStatus::Completed)
+    ExecutionScope executing(impl_->executing);
+    const NeoScript::RunStatus status = call.invoke();
+    if (status == NeoScript::RunStatus::Suspended || status == NeoScript::RunStatus::Yielded)
+    {
+        impl_->suspended = true;
+        impl_->pending = std::move(call);
+        impl_->pendingSignature = signature;
+        impl_->pendingName = name;
+        result.status = ExecutionStatus::Suspended;
+        return result;
+    }
+    if (status != NeoScript::RunStatus::Completed)
     {
         result.error = TranslateError(call.error(), impl_->sourceName);
         if (result.error.ok()) result.error = impl_->BackendError("function did not complete");
         return result;
     }
+    return impl_->ReadResult(call, *signature, name);
+}
+
+Result Instance::Impl::ReadResult(NeoScript::Invocation& call, const StaticFunctionSignature& signature, const std::string& name)
+{
+    Result result;
+    result.status = ExecutionStatus::Failed;
+    result.error.sourceName = sourceName;
+    const TypeRegistry& types = checked.types;
     switch (call.retType())
     {
     case NeoScript::ValueType::None:
-        if (signature->returnType != types.Void()) result.value = Scalar::Null();
+        if (signature.returnType != types.Void()) result.value = Scalar::Null();
         break;
     case NeoScript::ValueType::Bool: result.value = Scalar::Bool(call.retBool()); break;
     case NeoScript::ValueType::Int: result.value = Scalar::Int(call.retInt()); break;
@@ -291,10 +406,56 @@ Result Program::Call(const std::string& name, const std::vector<Scalar>& argumen
     }
     // 실제 값의 타입도 대조하여 변환 누락을 호스트로 조용히 전달하지 않는다.
     TypeId actual = ScalarType(types, result.value.kind());
-    TypeId expected = signature->returnType;
+    TypeId expected = signature.returnType;
     if (types.IsNullable(expected) && actual != types.Null()) expected = types.Get(expected).element;
     if (expected != actual && !(types.IsNullable(expected) && actual == types.Null()))
         result.error.message = "backend result type disagrees with the static signature of " + name;
+    result.status = result.error.ok() ? ExecutionStatus::Completed : ExecutionStatus::Failed;
+    return result;
+}
+
+
+Result Instance::Resume(double deltaTime)
+{
+    if (!std::isfinite(deltaTime) || deltaTime < 0.0 || deltaTime > (std::numeric_limits<float>::max)())
+        return Failure("resume delta time must be finite and nonnegative", impl_->sourceName);
+    if (impl_->executing) return Failure("cannot resume an executing instance", impl_->sourceName);
+    if (!impl_->suspended) return Failure("instance has no suspended execution", impl_->sourceName);
+    NeoScript::ResumeDesc desc;
+    desc.deltaTime = static_cast<float>(deltaTime);
+    ExecutionScope executing(impl_->executing);
+    impl_->suspended = false;
+    const NeoScript::RunStatus status = impl_->runtime->Resume(impl_->instance, desc);
+    Result result;
+    if (status == NeoScript::RunStatus::Suspended || status == NeoScript::RunStatus::Yielded)
+    {
+        impl_->suspended = true;
+        result.status = ExecutionStatus::Suspended;
+        return result;
+    }
+    impl_->suspended = false;
+    if (status != NeoScript::RunStatus::Completed)
+    {
+        result.status = ExecutionStatus::Failed;
+        result.error = impl_->BackendError("resumed execution did not complete");
+    }
+    else if (impl_->pendingSignature)
+        result = impl_->ReadResult(impl_->pending, *impl_->pendingSignature, impl_->pendingName);
+    if (impl_->initializing)
+    {
+        impl_->initializing = false;
+        impl_->initialization = result;
+    }
+    impl_->pending = NeoScript::Invocation();
+    impl_->pendingSignature = nullptr;
+    impl_->pendingName.clear();
+    if (impl_->deferredCall)
+    {
+        const std::string name = std::move(impl_->deferredName);
+        std::vector<Scalar> arguments = std::move(impl_->deferredArguments);
+        impl_->deferredCall = false;
+        if (result.ok()) return Call(name, arguments);
+    }
     return result;
 }
 

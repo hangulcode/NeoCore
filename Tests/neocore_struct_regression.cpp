@@ -76,7 +76,7 @@ static void CheckExecution(bool debug)
     ExpectInt("struct S{int x;};S Make(){return S(7);}export int Probe(){return Make().x+S(3).x;}",
         10, "temporary struct field reads", debug);
 
-    // 모든 값 전달 경계에서 복사하고, 참조 전달만 원래 저장소를 가리키는지 확인한다.
+    // 모든 값 전달 경계에서 복사하여 호출자와 복사본의 필드가 독립적인지 확인한다.
     ExpectInt("struct S{int x;};export int Probe(){S a=S(1);S b=a;b.x=2;return a.x*10+b.x;}",
         12, "declaration copy", debug);
     ExpectInt("struct S{int x;};export int Probe(){S a=S(1);S b=S(0);b=a;a.x=3;return a.x*10+b.x;}",
@@ -108,58 +108,43 @@ static void CheckExecution(bool debug)
         12, "constructor argument snapshot", debug);
     ExpectInt("struct S{int x;};S g=S(1);S Next(){g=S(2);return g;}int Read(S a,S b){return a.x*10+b.x;}export int Probe(){return Read(g,Next());}",
         12, "each struct argument has its own snapshot", debug);
-    ExpectFloat("struct S{float x;int y;};int Change(int& i){i=4;return 2;}export float Probe(){int i=1;S s=S(i,Change(i));return s.x*10+s.y+i;}",
-        16.0, "constructor preserves child promotion and reference call", debug);
-    ExpectInt("struct S{int x;};S g=S(1);int Replace(){g=S(9);return 0;}int Read(S s,int unused){return s.x;}export int Probe(){S& r=g;return Read(r,Replace());}",
-        1, "by-value snapshot from struct reference", debug);
-
-    ExpectInt("struct S{int x;};void Change(S& s){s.x=9;}export int Probe(){S s=S(1);Change(s);return s.x;}",
-        9, "whole struct reference parameter", debug);
-    ExpectInt("struct S{int x;};void Inc(int& x){x++;}export int Probe(){S s=S(1);Inc(s.x);return s.x;}",
-        2, "field reference argument", debug);
-    ExpectInt("struct S{int x;};export int Probe(){S s=S(1);S& r=s;r=S(8);return s.x;}",
-        8, "local struct reference assignment", debug);
-    ExpectInt("struct S{int x;};export int Probe(){S s=S(1);int& x=s.x;s=S(5);x+=2;return s.x;}",
-        7, "field reference survives whole assignment", debug);
-    ExpectInt("struct I{int x;};struct O{I inner;};export int Probe(){O o=O(I(1));int& x=o.inner.x;o.inner=I(5);x+=2;return o.inner.x;}",
-        7, "field reference survives nested assignment", debug);
-    ExpectInt("struct I{int x;};struct O{I inner;};export int Probe(){O o=O(I(1));int& x=o.inner.x;o=O(I(5));x+=2;return o.inner.x;}",
-        7, "deep field reference survives root assignment", debug);
-    ExpectInt("struct I{int x;};struct O{I inner;};export int Probe(){O o=O(I(1));I& i=o.inner;o=O(I(5));i.x+=2;return o.inner.x;}",
-        7, "nested struct reference survives root assignment", debug);
-    ExpectInt("struct S{int x;};void Change(S& a,S& b){a.x=3;b.x+=a.x;}export int Probe(){S s=S(1);Change(s,s);return s.x;}",
-        6, "same actual struct aliases", debug);
-    ExpectInt("struct S{int x;};void Change(S& s,int& x){s=S(5);x+=2;}export int Probe(){S s=S(1);Change(s,s.x);return s.x;}",
-        7, "overlapping whole and field references", debug);
-    ExpectInt("struct S{int x;};void Change(int& x,S& s){s=S(5);x+=2;}export int Probe(){S s=S(1);Change(s.x,s);return s.x;}",
-        7, "overlapping references in reverse order", debug);
-    ExpectInt("struct I{int x;};struct O{I inner;};void Change(I& i,O& o){o=O(I(5));i.x+=2;}export int Probe(){O o=O(I(1));Change(o.inner,o);return o.inner.x;}",
-        7, "overlapping nested and root references", debug);
-    ExpectInt("struct S{int x;};void Inc(int& x){x++;}void Relay(S& s){Inc(s.x);}export int Probe(){S s=S(1);Relay(s);return s.x;}",
-        2, "forwarded field reference", debug);
-    ExpectInt("struct S{int x;};int Local(S s){S& r=s;r.x=9;return s.x;}export int Probe(){S s=S(1);return Local(s)*10+s.x;}",
-        91, "reference to by-value struct parameter", debug);
-    ExpectInt("struct S{int x;};export int Probe(){S s=S(1);int& r=s.x;{S s=S(9);r=s.x;}return s.x;}",
-        9, "field alias retains shadowed outer root", debug);
-    ExpectInt("struct S{int x;};export int Probe(){S a=S(1);S b=S(2);int& r=a.x;r=b.x;b.x=8;return a.x*10+b.x;}",
-        28, "field reference assignment does not rebind", debug);
-    ExpectInt("struct S{int x;};export int Probe(){S s=S(1);S& r=s;r=r;return s.x;}",
-        1, "struct reference self assignment", debug);
-    ExpectInt("struct S{int x;};S g=S(1);int Replace(){g=S(9);return 0;}int Read(int& x,int unused){return x;}export int Probe(){return Read(g.x,Replace());}",
-        9, "field reference observes later argument replacement", debug);
+    ExpectFloat("struct S{float x;int y;};int i=1;int Change(){i=4;return 2;}export float Probe(){S s=S(i,Change());return s.x*10+s.y+i;}",
+        16.0, "constructor preserves child promotion before global mutation", debug);
+    ExpectInt("struct S{int x;};S Change(S s){s=S(9);return s;}export int Probe(){S s=S(1);S copy=Change(s);return s.x*10+copy.x;}",
+        19, "whole parameter replacement leaves caller value unchanged", debug);
+    ExpectInt("struct S{int x;};int Inc(int x){return ++x;}export int Probe(){S s=S(1);return Inc(s.x)*10+s.x;}",
+        21, "field argument is a scalar value copy", debug);
+    ExpectInt("struct S{int x;};export int Probe(){S s=S(1);s=S(5);s.x+=2;return s.x;}",
+        7, "field writes after whole assignment", debug);
+    ExpectInt("struct I{int x;};struct O{I inner;};export int Probe(){O o=O(I(1));o.inner=I(5);o.inner.x+=2;return o.inner.x;}",
+        7, "field writes after nested assignment", debug);
+    ExpectInt("struct I{int x;};struct O{I inner;};export int Probe(){O o=O(I(1));I copy=o.inner;o=O(I(5));copy.x+=2;return o.inner.x*10+copy.x;}",
+        53, "nested copy stays independent after root replacement", debug);
+    ExpectInt("struct S{int x;};S Change(S a,S b){a.x=3;b.x+=a.x;return b;}export int Probe(){S s=S(1);S result=Change(s,s);return s.x*10+result.x;}",
+        14, "repeated struct arguments have independent storage", debug);
+    ExpectInt("struct I{int x;};struct O{I inner;};int Change(I i,O o){o=O(I(5));i.x+=2;return i.x*10+o.inner.x;}export int Probe(){O o=O(I(1));return Change(o.inner,o)*10+o.inner.x;}",
+        351, "nested and root arguments are independent values", debug);
+    ExpectInt("struct S{int x;};S Inc(S s){s.x++;return s;}S Relay(S s){return Inc(s);}export int Probe(){S s=S(1);S result=Relay(s);return result.x*10+s.x;}",
+        21, "forwarded struct values do not mutate the caller", debug);
+    ExpectInt("struct S{int x;};int Local(S s){s.x=9;return s.x;}export int Probe(){S s=S(1);return Local(s)*10+s.x;}",
+        91, "field update in a by-value struct parameter", debug);
+    ExpectInt("struct S{int x;};export int Probe(){S s=S(1);int result=0;{S s=S(9);result=s.x;}return result*10+s.x;}",
+        91, "shadowed struct roots retain separate storage", debug);
+    ExpectInt("struct S{int x;};S g=S(1);int Replace(){g=S(9);return 0;}int Read(int x,int unused){return x;}export int Probe(){return Read(g.x,Replace());}",
+        1, "field value argument snapshots before source replacement", debug);
     ExpectInt("struct S{int x;int y;};export int Probe(){S s=S(1,2);S t=S(3,4);s.x=(s=t).y;return s.x*10+s.y;}",
         44, "field target resolved after whole assignment RHS", debug);
     ExpectInt("struct I{int x;int y;};struct O{I inner;};export int Probe(){O o=O(I(1,2));I t=I(3,4);o.inner.x=(o.inner=t).y;return o.inner.x*10+o.inner.y;}",
         44, "nested field target resolved after RHS", debug);
-    ExpectInt("struct S{int? x;};export int Probe(){S s=S(1);int?& r=s.x;s=S(2);r=null;if(s.x==null)return 1;return 0;}",
-        1, "nullable field reference after replacement", debug);
-    ExpectString("struct S{string text;};export string Probe(){S s=S(\"a\");string& r=s.text;s=S(\"b\");r=\"c\";return s.text;}",
-        "c", "string field reference after replacement", debug);
-    ExpectFloat("struct Position{float x;float y;};struct Particle{Position position;int age;};void Advance(Particle& p,float dt){p.position.x+=dt;p.age+=1;}export float Probe(){Particle p=Particle(Position(1,2),0);Particle copy=p;float& x=p.position.x;p=Particle(Position(10,20),3);x+=2;Advance(p,0.5);if(p.age!=4||copy.position.x!=1.0)return -1.0;return x;}",
-        12.5, "documented particle field reference example", debug);
+    ExpectInt("struct S{int? x;};export int Probe(){S s=S(1);s=S(2);s.x=null;if(s.x==null)return 1;return 0;}",
+        1, "nullable field write after replacement", debug);
+    ExpectString("struct S{string text;};export string Probe(){S s=S(\"a\");string copy=s.text;s=S(\"b\");s.text=\"c\";return copy..s.text;}",
+        "ac", "string field copy survives root replacement", debug);
+    ExpectFloat("struct Position{float x;float y;};struct Particle{Position position;int age;};Particle Advance(Particle p,float dt){p.position.x+=dt;p.age+=1;return p;}export float Probe(){Particle p=Particle(Position(1,2),0);Particle copy=p;p=Particle(Position(10,20),3);p.position.x+=2;p=Advance(p,0.5);if(p.age!=4||copy.position.x!=1.0)return -1.0;return p.position.x;}",
+        12.5, "particle update returns a new value", debug);
     ExpectInt("struct S{int x;};export int Probe(){S s=S(1);return s.x;}// trailing comment without newline",
         1, "generated helpers after final line comment", debug);
-    ExpectInt("struct S{int clone;int assign;};int __neocore_1=5;export int Probe(){S s=S(1,2);int& r=s.clone;s=S(3,4);r+=__neocore_1;return s.clone*10+s.assign;}",
+    ExpectInt("struct S{int clone;int assign;};int __neocore_1=5;export int Probe(){S s=S(1,2);s=S(3,4);s.clone+=__neocore_1;return s.clone*10+s.assign;}",
         84, "field and helper-like user names remain distinct", debug);
 }
 
@@ -201,6 +186,10 @@ static void CheckRejections(bool debug)
         {"struct S{int x;};S a=S(1);S b=S(1);bool eq=a!=b;", "struct inequality"},
         {"struct S{int x;};S s=S(1);s+=s;", "struct arithmetic"},
         {"struct S{int x;};S& r=S(1);", "temporary whole struct reference"},
+        {"struct S{int x;};S value=S(1);S& alias=value;", "named whole struct reference"},
+        {"struct S{int x;};S value=S(1);int& alias=value.x;", "named field reference"},
+        {"struct S{int x;};void Change(S& value){value.x=2;}", "struct reference parameter"},
+        {"struct S{int x;};void Change(int& value){value=2;}", "scalar reference parameter"},
         {"struct S{int x;};int& r=S(1).x;", "temporary field reference"},
         {"struct S{int x;};S Make(){return S(1);}int& r=Make().x;", "returned temporary field reference"},
         {"struct S{int x;};void Set(int& x){x=2;}Set(S(1).x);", "temporary field reference argument"},
@@ -235,7 +224,7 @@ static void CheckHostBoundary(bool debug)
             "return preflight leaves global initialization unexecuted");
     }
     program = NeoCore::Program::Compile(
-        "struct S{int x;};int zero=0;int invalid=1/zero;export void Whole(S s){}export void Ref(S& s){}",
+        "struct S{int x;};int zero=0;int invalid=1/zero;export void Whole(S s){}",
         error, "host struct parameter preflight", debug);
     Check(program != nullptr, "host struct parameter source compiles: " + error.message);
     if (program)
@@ -243,9 +232,6 @@ static void CheckHostBoundary(bool debug)
         const NeoCore::Result value = program->Call("Whole", {NeoCore::Scalar::Int(1)});
         Check(!value.ok() && value.error.message.find("requires S") != std::string::npos,
             "host scalar cannot initialize a struct parameter");
-        const NeoCore::Result reference = program->Call("Ref", {NeoCore::Scalar::Int(1)});
-        Check(!reference.ok() && reference.error.message.find("requires S&") != std::string::npos,
-            "host scalar cannot bind a struct reference");
     }
 }
 

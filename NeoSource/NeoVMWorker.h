@@ -67,7 +67,9 @@ protected:
 };
 
 
+#if NEOSCRIPT_LEGACY_ARITHMETIC
 struct neo_DCalllibs;
+#endif
 struct neo_libs;
 class CNeoVM;
 class CNeoVMWorker : public INeoVMWorker, public AllocBase, public CoroutineBase
@@ -76,7 +78,9 @@ class CNeoVMWorker : public INeoVMWorker, public AllocBase, public CoroutineBase
 	friend		SVarWrapper;
 	friend		MapInfo;
 	friend		neo_libs;
+#if NEOSCRIPT_LEGACY_ARITHMETIC
 	friend		neo_DCalllibs;
+#endif
 private:
 	class NativeFrameScope;
 	// 컴파일 이미지(코드/함수테이블/디버그정보/상수)는 프로그램이 소유하고 워커들이 공유한다.
@@ -95,6 +99,9 @@ private:
 	std::chrono::steady_clock::time_point _preClock;
 
 	int m_iTimeout = -1;
+	// NeoCore의 sleep(0)도 한 번 양보한다. 기존 호스트의 동기 sleep 동작은 유지한다.
+	bool m_bCooperativeSleep = false;
+	bool m_bCooperativeSleepPending = false;
 	int m_iCheckOpCount = NEO_DEFAULT_CHECKOP;
 	int m_op_process = 0;
 	uint64_t m_instructionBudget = 0;
@@ -355,6 +362,7 @@ private:
 	bool EnsureStackRange(int base, int lastOffset);
 public:
 	NEOS_FORCEINLINE CNeoVM* GetVM() { return _pVM;  }
+	void EnableCooperativeSleep() { m_bCooperativeSleep = true; }
 	bool IsNativeScriptCallActive() const { return m_iNativeScriptCallDepth > 0; }
 	bool IsSynchronousExecutionLimited() const {
 		return m_iTimeout >= 0 || (m_instructionBudget != 0 && m_budgetRestrictsNested);
@@ -387,7 +395,6 @@ public:
 
 	void Swap(VarInfo* v1, VarInfo* v2);
 private:
-	void MoveMinus(VarInfo* v1, VarInfo* v2);
 
 	// 산술 결과 저장. 대입 대상이 숫자/none 이면 바로 쓰고, 참조형이면 분리 함수에서 놓는다.
 	// 해제 코드를 핫 경로에 인라인하면 MSVC 가 저장 블록을 멀리 흩어 놓아 실수 산술이 느려졌다(dumpbin 확인).
@@ -395,13 +402,16 @@ private:
 	void StoreNumberFloat(VarInfo* r, NS_FLOAT v);
 	void StoreNumberBool(VarInfo* r, bool v);
 	NEOS_NOINLINE void ReleaseBeforeNumber(VarInfo* r);
-	void Add2(VarInfo* r, VarInfo* v2);
-	void Sub2(VarInfo* r, VarInfo* v2);
-	void Mul2(VarInfo* r, VarInfo* v2);
 	bool CheckIntegerDivision(NS_INT dividend, NS_INT divisor);
 	bool CheckIntegerDivisionOverflow(NS_INT dividend);
 	void DivI64(VarInfo* r, const VarInfo* left, const VarInfo* right);
 	bool CheckShiftCount(NS_INT count);
+
+#if NEOSCRIPT_LEGACY_ARITHMETIC
+	void MoveMinus(VarInfo* v1, VarInfo* v2);
+	void Add2(VarInfo* r, VarInfo* v2);
+	void Sub2(VarInfo* r, VarInfo* v2);
+	void Mul2(VarInfo* r, VarInfo* v2);
 	void Div2(VarInfo* r, VarInfo* v2);
 	void Per2(VarInfo* r, VarInfo* v2);
 	void LSh2(VarInfo* r, VarInfo* v2);
@@ -412,7 +422,10 @@ private:
 	void Or2 (VarInfo* r, VarInfo* v2);
 	void Xor2(VarInfo* r, VarInfo* v2);
 
-	void MoveMinusI(VarInfo* v1, int);
+	NEOS_NOINLINE void Add2Rare(VarInfo* r, VarInfo* v2);
+	NEOS_NOINLINE void Sub2Rare(VarInfo* r, VarInfo* v2);
+	NEOS_NOINLINE void Mul2Rare(VarInfo* r, VarInfo* v2);
+	NEOS_NOINLINE void Div2Rare(VarInfo* r, VarInfo* v2);
 
 	void And(VarInfo* r, VarInfo* v1, VarInfo* v2);
 	void Or(VarInfo* r, VarInfo* v1, VarInfo* v2);
@@ -422,10 +435,6 @@ private:
 	NEOS_NOINLINE void Sub3Rare(VarInfo* r, VarInfo* v1, VarInfo* v2);
 	NEOS_NOINLINE void Mul3Rare(VarInfo* r, VarInfo* v1, VarInfo* v2);
 	NEOS_NOINLINE void Div3Rare(VarInfo* r, VarInfo* v1, VarInfo* v2);
-	NEOS_NOINLINE void Add2Rare(VarInfo* r, VarInfo* v2);
-	NEOS_NOINLINE void Sub2Rare(VarInfo* r, VarInfo* v2);
-	NEOS_NOINLINE void Mul2Rare(VarInfo* r, VarInfo* v2);
-	NEOS_NOINLINE void Div2Rare(VarInfo* r, VarInfo* v2);
 	void Sub3(VarInfo* r, VarInfo* v1, VarInfo* v2);
 	void Mul3(VarInfo* r, VarInfo* v1, VarInfo* v2);
 	void Div3(VarInfo* r, VarInfo* v1, VarInfo* v2);
@@ -438,6 +447,7 @@ private:
 	void LSh3Rare(VarInfo* r, VarInfo* v1, VarInfo* v2);
 	void RSh3Rare(VarInfo* r, VarInfo* v1, VarInfo* v2);
 	void Xor3(VarInfo* r, VarInfo* v1, VarInfo* v2);
+#endif
 
 	void Inc(VarInfo* v1);
 	void Dec(VarInfo* v1);
@@ -489,6 +499,7 @@ private:
 	void CltInsert(VarInfo *pClt, NS_INT key, NS_INT v);
 	void CltRead(VarInfo *pClt, VarInfo *pArray, VarInfo *pValue);
 	void CltReadRare(VarInfo *pClt, VarInfo *pArray, VarInfo *pValue);
+#if NEOSCRIPT_LEGACY_ARITHMETIC
 	// READ_ADD/SUB/MUL/DIV: dest op= clt[key]. 빠른 경로는 디스패치 루프에 인라인되고 나머지는 ReadArithRare 로 간다.
 	// 산술 종류는 템플릿 인자라 호출 지점마다 접힌다.
 	template<eNOperation OPK> NEOS_FORCEINLINE void ReadArith(const SVMOperation& OP);
@@ -497,13 +508,10 @@ private:
 	VarInfo* FindCollectionSlot(VarInfo* owner, VarInfo* key);
 	bool ReadArrayOrVectorElement(VarInfo* owner, VarInfo* key, VarInfo& value);
 	void ReadArith2(VarInfo* r, VarInfo* v, eNOperation op);
+#endif
 	void SetArrayAssignError(ArrayInfo* array, VarInfo* value);
-	bool ArrayModify(VarInfo* pClt, VarInfo* pKey, VarInfo* pValue, eNOperation op);
-	bool VecComponentOp(VarInfo* pClt, VarInfo* pKey, VarInfo* pValue, eNOperation op);
 	void TableRemove(VarInfo *pTable, VarInfo *pArray);
 	VarInfo* GetTableItem(VarInfo *pTable, VarInfo *pArray);
-	VarInfo* GetTableItemValid(VarInfo *pTable, VarInfo *pArray);
-	VarInfo* GetTableItemValid(VarInfo *pTable, int Array);
 
 
 	bool ChangeNumber(VarInfo* p);

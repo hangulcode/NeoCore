@@ -116,41 +116,11 @@ int main()
     Check(types.DisplayName(types.NullableOf(object)) == "host.GameObject?", "nullable nominal diagnostics");
     Check(types.DisplayName(unaryInt) == "function(int) -> int", "function signature diagnostics");
 
-    const TypeId refInt = types.ReferenceOf(types.Int());
-    const TypeId refFloat = types.ReferenceOf(types.Float());
-    const TypeId refPosition = types.ReferenceOf(position);
-    Check(refInt == types.ReferenceOf(types.Int()) && types.Get(refInt).element == types.Int(),
-        "reference types keep stable target identity");
-    Check(types.IsReference(refInt) && !types.IsStorable(refInt), "references are bindings rather than stored values");
-    Check(types.CanAssign(refInt, refInt), "identical reference bindings are compatible");
-    Check(!types.CanAssign(refFloat, refInt), "numeric references do not widen");
-    Check(!types.CanAssign(refInt, types.Int()) && !types.CanAssign(types.Int(), refInt),
-        "the checker explicitly binds and dereferences lvalues");
-    Check(types.CommonNumericType(refInt, types.Int()) == InvalidType, "arithmetic requires a dereferenced value");
-    Check(types.ReferenceOf(types.Void()) == InvalidType && types.ReferenceOf(types.Null()) == InvalidType,
-        "references require a declared value type");
-    Check(types.ReferenceOf(InvalidType) == InvalidType && types.ReferenceOf(refInt) == InvalidType,
-        "invalid and nested references are rejected");
-    Check(types.ReferenceOf(optionalInt) != InvalidType, "a reference can target a nullable variable");
-    Check(types.NullableOf(refInt) == InvalidType, "nullable reference bindings are rejected");
-    Check(types.ArrayOf(refInt) == InvalidType && types.Array32Of(refInt) == InvalidType &&
-        types.ListOf(refInt) == InvalidType && types.SetOf(refInt) == InvalidType,
-        "collections cannot retain references");
-    Check(types.MapOf(refInt, types.Int()) == InvalidType && types.MapOf(types.Int(), refInt) == InvalidType,
-        "neither map keys nor values may retain references");
-    Check(types.FunctionOf(refInt, std::vector<TypeId>()) == InvalidType, "escaping reference returns are rejected");
-    const TypeId refParameter = types.FunctionOf(types.Void(), std::vector<TypeId>(1, refInt));
-    Check(refParameter != InvalidType && types.Get(refParameter).parameters[0] == refInt,
-        "function parameters may use mutable references");
-    Check(refParameter != types.FunctionOf(types.Void(), std::vector<TypeId>(1, types.Int())),
-        "reference parameters differ from by-value parameters");
-    Check(refPosition != types.ReferenceOf(velocity) && !types.CanAssign(refPosition, types.ReferenceOf(velocity)),
-        "nominal references retain nominal identity");
-    Check(types.ReferenceOf(object) != InvalidType && types.ReferenceOf(types.Vector3()) != InvalidType,
-        "native objects and vectors may be referenced");
-    Check(types.DisplayName(refPosition) == "geometry.Position&" &&
-        types.DisplayName(types.ReferenceOf(optionalInt)) == "int?&", "reference diagnostics identify the target type");
-    Check(types.DisplayName(refParameter) == "function(int&) -> void", "reference parameter signature diagnostics");
+    Check(types.LookupNamed("int&") == InvalidType && types.LookupNamed("geometry.Position&") == InvalidType,
+        "reference spellings are not registered types");
+    const TypeId valueParameter = types.FunctionOf(types.Void(), std::vector<TypeId>(1, position));
+    Check(valueParameter != InvalidType && types.Get(valueParameter).parameters[0] == position,
+        "function parameters retain nominal value types");
 
     std::vector<StructField> coordinates;
     coordinates.push_back(StructField("x", types.Float()));
@@ -175,9 +145,8 @@ int main()
         "identical field layouts remain nominally distinct");
     Check(types.FindStructField(position, "missing", &fieldIndex) == nullptr && fieldIndex == InvalidFieldIndex,
         "missing field lookup invalidates an old index");
-    Check(types.FindStructField(types.NullableOf(position), "x") == nullptr &&
-        types.FindStructField(refPosition, "x") == nullptr,
-        "nullable and reference receivers must be resolved explicitly by the checker");
+    Check(types.FindStructField(types.NullableOf(position), "x") == nullptr,
+        "nullable receivers must be resolved explicitly by the checker");
     Check(!types.DefineStructFields(types.Int(), coordinates) && !types.DefineStructFields(object, coordinates) &&
         !types.DefineStructFields(InvalidType, coordinates), "only nominal structs accept field definitions");
 
@@ -196,8 +165,6 @@ int main()
         "void cannot be a field type");
     Check(!types.DefineStructFields(invalidFields, std::vector<StructField>(1, StructField("x", types.Null()))),
         "bare null cannot be a field type");
-    Check(!types.DefineStructFields(invalidFields, std::vector<StructField>(1, StructField("x", refInt))),
-        "reference fields cannot escape their binding scope");
     Check(types.DefineStructFields(invalidFields, coordinates), "a rejected definition can be corrected");
     const TypeId emptyStruct = types.DeclareStruct("EmptyStruct");
     Check(types.DefineStructFields(emptyStruct, std::vector<StructField>()) && types.Get(emptyStruct).fieldsDefined,
@@ -210,9 +177,8 @@ int main()
     nestedFields.push_back(StructField("weight", optionalFloat));
     nestedFields.push_back(StructField("name", types.String()));
     Check(types.DefineStructFields(nestedStruct, nestedFields), "nested values and nullable scalar fields are valid");
-    Check(types.FindStructField(nestedStruct, "position")->type == position &&
-        types.ReferenceOf(types.FindStructField(nestedStruct, "position")->type) == refPosition,
-        "a struct field retains the nominal identity needed by field references");
+    Check(types.FindStructField(nestedStruct, "position")->type == position,
+        "a struct field retains its nominal value identity");
     const TypeId self = types.DeclareStruct("Self");
     Check(!types.DefineStructFields(self, std::vector<StructField>(1, StructField("next", self))),
         "direct recursive values are rejected");

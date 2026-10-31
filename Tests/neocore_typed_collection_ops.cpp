@@ -89,10 +89,10 @@ std::vector<SVMOperation> Operations(const std::vector<uint8_t>& bytes)
     return result;
 }
 
-bool CompileImage(IRuntime& runtime, const char* source, bool typed, bool debug,
+bool CompileImage(IRuntime& runtime, const char* source, bool debug,
     std::vector<uint8_t>& bytes, NeoCore::StaticCompileResult& checked)
 {
-    Check(NeoCore::CompileStaticSource(source, checked, typed), "shape frontend: " + checked.errorMessage);
+    Check(NeoCore::CompileStaticSource(source, checked), "shape frontend: " + checked.errorMessage);
     if (!checked.success) return false;
     CompileDesc desc;
     desc.source = checked.loweredSource;
@@ -105,11 +105,11 @@ bool CompileImage(IRuntime& runtime, const char* source, bool typed, bool debug,
     return error.ok();
 }
 
-Outcome Run(IRuntime& runtime, const std::string& source, bool typed, bool debug, bool image,
+Outcome Run(IRuntime& runtime, const std::string& source, bool debug, bool image,
     const std::string& label)
 {
     NeoCore::StaticCompileResult checked;
-    Check(NeoCore::CompileStaticSource(source, checked, typed), label + " frontend: " + checked.errorMessage);
+    Check(NeoCore::CompileStaticSource(source, checked), label + " frontend: " + checked.errorMessage);
     if (!checked.success) return Outcome();
     CompileDesc desc;
     desc.source = checked.loweredSource;
@@ -152,27 +152,26 @@ void Compare(IRuntime& runtime, const char* source, const Outcome& expected, boo
     const std::string complete = std::string(source) + "\nexport int Recovery(){return " + recovery + ";}";
     for (bool image : {false, true})
     {
-        const Outcome generic = Run(runtime, complete, false, debug, image, std::string(label) + " generic");
-        const Outcome typed = Run(runtime, complete, true, debug, image, std::string(label) + " typed");
+
+        const Outcome typed = Run(runtime, complete, debug, image, std::string(label) + " typed");
         if (errorLine == 0)
         {
-            Check(SameValue(generic, typed), std::string(label) + " generic/typed value and representation");
+
             Check(SameValue(typed, expected), std::string(label) + " expected result");
         }
         else
         {
             // 직접 명령에는 생성 함수 프레임이 없다. 오류 종류와 원본 줄·호출 뒤 상태를 비교한다.
-            Check(generic.valid && typed.valid && generic.status == RunStatus::Failed && typed.status == RunStatus::Failed,
-                std::string(label) + " both paths fail");
-            Check(!typed.error.ok() && !typed.error.message.empty() && typed.error.code == generic.error.code,
+            Check(typed.valid && typed.status == RunStatus::Failed,
+                std::string(label) + " fails at runtime");
+            Check(!typed.error.ok() && !typed.error.message.empty(),
                 std::string(label) + " runtime error category retained");
             if (debug)
             {
                 Check(typed.error.line == static_cast<uint32_t>(errorLine), std::string(label) + " typed source line: " + typed.error.message);
-                Check(generic.error.line == static_cast<uint32_t>(errorLine), std::string(label) + " generic source line: " + generic.error.message);
+
                 // 기존 원시 이미지 형식은 원본 파일명 목록을 저장하지 않는다. 줄과 호출 프레임은 보존한다.
-                const bool sourceMatches = image ? typed.error.sourceName == generic.error.sourceName
-                    : typed.error.sourceName == "aggregate-ops.nc";
+                const bool sourceMatches = image || typed.error.sourceName == "aggregate-ops.nc";
                 Check(sourceMatches && typed.error.message.find("Probe") != std::string::npos,
                     std::string(label) + " direct failure retains source and caller frame; image=" + std::to_string(image) +
                     " source='" + typed.error.sourceName + "' error=" + typed.error.message);
@@ -191,24 +190,19 @@ bool IsGenericAggregate(eNOperation op)
 {
     return op == NOP_CLT_READ || op == NOP_CLT_READ_L || op == NOP_CLT_READ_STATIC_STRING ||
         op == NOP_CLT_MOV || op == NOP_CLT_MOV_L || op == NOP_CLT_WRITE_REF || op == NOP_CLT_READ_RESULT ||
-        op == NOP_TABLE_ADD2 || op == NOP_TABLE_SUB2 || op == NOP_TABLE_MUL2 || op == NOP_TABLE_DIV2 ||
-        op == NOP_VEC_MAKE || op == NOP_READ_ADD || op == NOP_READ_SUB || op == NOP_READ_MUL || op == NOP_READ_DIV;
+        op == NOP_VEC_MAKE;
 }
 
 void CheckShape(IRuntime& runtime, const char* source, const std::vector<eNOperation>& required,
     bool debug, const char* label)
 {
-    for (bool typed : {false, true})
     {
         std::vector<uint8_t> bytes;
         NeoCore::StaticCompileResult checked;
-        if (!CompileImage(runtime, source, typed, debug, bytes, checked)) continue;
+        if (!CompileImage(runtime, source, debug, bytes, checked)) return;
         const auto operations = Operations(bytes);
-        int aggregates = 0;
         for (const auto& op : operations)
         {
-            if (GetAggregateOpInfo(op.op)) ++aggregates;
-            if (typed)
             {
                 Check(!IsRuntimeCall(op.op), std::string(label) + " has no runtime helper/library call");
                 Check(!IsGenericAggregate(op.op), std::string(label) + " has no generic collection operation; opcode=" +
@@ -216,7 +210,6 @@ void CheckShape(IRuntime& runtime, const char* source, const std::vector<eNOpera
                     std::to_string(op.n3) + " flags=" + std::to_string(op.argFlag) + " source=" + checked.loweredSource);
             }
         }
-        if (typed)
         {
             for (eNOperation expected : required)
             {
@@ -226,12 +219,11 @@ void CheckShape(IRuntime& runtime, const char* source, const std::vector<eNOpera
                 Check(info && found, std::string(label) + " emits " + (info ? info->name : "missing aggregate metadata"));
             }
         }
-        else Check(aggregates == 0, std::string(label) + " generic baseline emits no dedicated aggregate op");
+
         Error error;
         ProgramHandle loaded = runtime.LoadProgram(bytes, &error);
         Check(bool(loaded) && error.ok(), std::string(label) + " dedicated image loads: " + error.message);
         if (loaded) runtime.DestroyProgram(loaded);
-        if (!typed) continue;
         for (std::size_t i = 0; i < operations.size(); ++i)
         {
             const AggregateOpInfo* info = GetAggregateOpInfo(operations[i].op);
@@ -262,14 +254,13 @@ void Shapes(IRuntime& runtime, bool debug)
     for (const auto& shape : numeric)
     {
         const std::string source = "export int Probe(int a,int b){return a" + std::string(shape.operation) + "b;}";
-        for (bool typed : {false, true})
-        {
+            {
             std::vector<uint8_t> bytes;
             NeoCore::StaticCompileResult checked;
-            if (!CompileImage(runtime, source.c_str(), typed, debug, bytes, checked)) continue;
+            if (!CompileImage(runtime, source.c_str(), debug, bytes, checked)) continue;
             int count = 0;
             for (const auto& op : Operations(bytes)) if (op.op == shape.op) ++count;
-            Check(count == (typed ? 1 : 0), std::string("dedicated scalar integer operation ") + shape.operation);
+            Check(count == 1, std::string("dedicated scalar integer operation ") + shape.operation);
         }
     }
     CheckShape(runtime, "export float Probe(float a,float b){Vector2 v=Vector2(a,b);Vector2 w=Vector2(b,a);v+=w;v-=w;v*=a;v/=b;v.x=a;return v.y;}",
@@ -280,8 +271,23 @@ void Shapes(IRuntime& runtime, bool debug)
         {NOP_V4_MAKE,NOP_V4_ADD,NOP_V4_SUB,NOP_V4_MUL,NOP_V4_DIV,NOP_V4_GET,NOP_V4_SET}, debug, "Vector4 primitive shape");
     CheckShape(runtime, "export float Probe(float a){Quaternion q=Quaternion(1,a,2,3);q.w=a;return q.x;}",
         {NOP_V4_MAKE,NOP_V4_GET,NOP_V4_SET}, debug, "Quaternion uses validated Vec4 physical ops");
-    CheckShape(runtime, "export float Probe(float a){Vector3 v=Vector3(a,2,3);Vector3& alias=v;alias=Vector3(4,5,6);return v.z;}",
-        {NOP_CELL_GET,NOP_CELL_SET}, debug, "named reference cells use direct cell operations");
+    CheckShape(runtime, "export float Probe(float a){Vector3 v=Vector3(a,2,3);v.x=a;v=Vector3(4,5,6);return v.z;}",
+        {NOP_CELL_GET,NOP_CELL_SET}, debug, "internal vector storage uses direct cell operations");
+    {
+        std::vector<uint8_t> bytes;
+        NeoCore::StaticCompileResult checked;
+        const char* source = "struct P{float x;};struct S{P p;Vector3 v;};"
+            "S Next(S s){s.p.x+=1;return s;}export float Probe(){S s=S(P(2),Vector3(1,2,3));"
+            "s=Next(s);s.v.x+=4;return s.p.x+s.v.x;}";
+        if (CompileImage(runtime, source, debug, bytes, checked))
+        {
+            for (const SVMOperation& op : Operations(bytes))
+                Check(op.op != NOP_CELL_NEW && op.op != NOP_CELL_GET && op.op != NOP_CELL_SET,
+                    "struct roots and fields require no alias cells");
+            Check(checked.loweredSource.find("__neocore_assign_") == std::string::npos,
+                "struct replacement requires no in-place assignment helper");
+        }
+    }
     CheckShape(runtime, "export int Probe(int n){array<int> a=array<int>(n,7);a[0]=9;a.append(5);a.resize(4);a.reserve(8);return a[0]+a.len();}",
         {NOP_ARRAY_I64_NEW,NOP_ARRAY_I64_GET,NOP_ARRAY_I64_SET,NOP_ARRAY_I64_APPEND,NOP_ARRAY_LEN,NOP_ARRAY_RESIZE,NOP_ARRAY_RESERVE}, debug, "int array primitive shape");
     CheckShape(runtime, "export float Probe(int n){array<float> a=array<float>(n,1.5);a[0]=2.5;a.append(3.5);return a[0];}",
@@ -332,7 +338,36 @@ void Values(IRuntime& runtime, bool debug)
     Compare(runtime, "export float Probe(){array<Vector3> a=array<Vector3>(1,Vector3(16777216,0,0));float pre=++a[0].x;float post=a[0].x++;return pre+post-a[0].x;}", Float(16777216), debug, "component increment stored precision");
     Compare(runtime, "export float Probe(){array<Vector4> a=array<Vector4>(1);return (a[0].w=16777217)-a[0].w;}", Float(0), debug, "component assignment returns narrowed value");
     Compare(runtime, "export float Probe(){array<Quaternion> a=array<Quaternion>();a.append(Quaternion(1,2,3,4));a.resize(2);return a[0].x*10+a[1].w;}", Float(21), debug, "quaternion array default identity");
-    Compare(runtime, "void Replace(array<int>& a){a=array<int>(2,7);}export int Probe(){array<int> a=array<int>(1,3);array<int> old=a;array<int>& alias=a;Replace(alias);return a.len()*100+a[1]*10+old[0];}", Int(273), debug, "array reference rebinding");
+    Compare(runtime, "array<int> Replace(array<int> a){a=array<int>(2,7);return a;}export int Probe(){array<int> a=array<int>(1,3);array<int> old=a;a=Replace(a);return a.len()*100+a[1]*10+old[0];}", Int(273), debug, "explicit array replacement return");
+}
+
+void ListWrites(IRuntime& runtime, bool debug)
+{
+    Compare(runtime, "export int Probe(){list<int> a=[9];int p=a[0]++;int q=++a[0];a[0]+=3;a[0]-=2;a[0]*=4;a[0]/=3;a[0]%=7;a[0]|=8;a[0]&=14;a[0]^=3;a[0]<<=2;a[0]>>=1;return p*1000+q*100+a[0];}",
+        Int(10118), debug, "list integer compound and increment use typed arithmetic");
+    Compare(runtime, "export float Probe(){list<float> a=[2.0];float p=a[0]++;float q=--a[0];a[0]+=3;a[0]-=1;a[0]*=2;a[0]/=4;return p*100+q*10+a[0];}",
+        Float(222), debug, "list float compound widens integer operands");
+    Compare(runtime, "int order=0;list<int> a=[2];int Rhs(){order=order*10+1;return 3;}list<int> Owner(){order=order*10+2;return a;}int Key(){order=order*10+3;return 0;}export int Probe(){Owner()[Key()]+=Rhs();return order*10+a[0];}",
+        Int(1235), debug, "list compound evaluates RHS then owner and key once");
+    Compare(runtime, "list<int> a=[2];int Rhs(){a=[9];return 3;}export int Probe(){list<int> old=a;a[0]+=Rhs();return old[0]*100+a[0];}",
+        Int(212), debug, "list compound resolves rebound target after RHS");
+    Compare(runtime, "list<int> a=[2];int Key(){a=[9];return 0;}export int Probe(){list<int> old=a;a[Key()]+=3;return old[0]*10+a[0];}",
+        Int(59), debug, "list owner is snapshotted before key side effects");
+    Compare(runtime, "list<int> a=[29];\nexport int Probe(){\na[0]/=0;\nreturn 0;}",
+        Outcome(), debug, "list division failure retains element", 3, "a[0]");
+    Compare(runtime, "list<int> a=[29];\nexport int Probe(){\na[0]<<=64;\nreturn 0;}",
+        Outcome(), debug, "list shift failure retains element", 3, "a[0]");
+    Compare(runtime, "list<int> a=[29];\nexport int Probe(){\na[1]+=1;\nreturn 0;}",
+        Outcome(), debug, "list compound missing index reports original source", 3, "a[0]");
+    for (const char* source : {
+        "export void Probe(){map<string,int> a={};a[\"missing\"]+=1;}",
+        "export void Probe(){map<string,int> a={};a[\"x\"]=2;a[\"x\"]++;}",
+        "export void Probe(){map<string,float> a={};--a[\"missing\"]; }"})
+    {
+        NeoCore::StaticCompileResult checked;
+        Check(!NeoCore::CompileStaticSource(source, checked) && !checked.errorMessage.empty(),
+            "nullable map element cannot enter unchecked numeric compound arithmetic");
+    }
 }
 
 void Order(IRuntime& runtime, bool debug)
@@ -390,10 +425,9 @@ void Cleanup(IRuntime& runtime, bool debug)
         "for(int i in 0,64){Vector4 copy=a[0];a[0]=v;v=copy+Vector4(1,1,1,1);"
         "a.append(v);a.resize(2);a[1].w+=1;v.w=5;}"
         "return witness[1].w;}\nexport int Recovery(){return 29;}";
-    for (bool typed : {false, true})
     {
         AllocStats before; GetAllocStats(before);
-        const Outcome result = Run(runtime, source, typed, debug, true, "aggregate reference cleanup");
+        const Outcome result = Run(runtime, source, debug, true, "aggregate reference cleanup");
         AllocStats after; GetAllocStats(after);
         Check(SameValue(result, Float(68)), "repeated vector array updates preserve witness");
         Check(before.lists == after.lists && before.arrays == after.arrays && before.vectors == after.vectors &&
@@ -413,6 +447,7 @@ int main()
         Shapes(*runtime, debug);
         Values(*runtime, debug);
         Order(*runtime, debug);
+        ListWrites(*runtime, debug);
         Errors(*runtime, debug);
         Cleanup(*runtime, debug);
     }

@@ -75,31 +75,31 @@ static void CheckExecution(bool debug)
     Check(literals.ok() && literals.value.kind() == NeoCore::Scalar::Kind::Float &&
         literals.value.asFloat() == 16.5, "fractional spellings preserve value");
 
-    // 같은 저장소의 별칭 둘과 별칭을 다시 전달하는 호출도 즉시 같은 값을 읽어야 한다.
-    ExpectInt("void Change(int& a,int& b){a=4;b+=a;} export int Probe(){int x=1;Change(x,x);return x;}",
-        8, "aliased reference arguments", debug);
-    ExpectInt("void Add(int& x){x+=1;} void Relay(int& x){Add(x);} export int Probe(){int x=2;int& a=x;int& b=a;b=5;Relay(a);return x;}",
-        6, "local and forwarded references", debug);
-    ExpectInt("int x=3;void Set(int& a){a=9;} export int Probe(){Set(x);return x;}",
-        9, "global reference", debug);
-    ExpectInt("void Set(int& a){a=7;} int Local(int a){Set(a);return a;} export int Probe(){int x=3;return Local(x)*10+x;}",
-        73, "reference to by-value parameter", debug);
-    ExpectInt("int Change(int& a){a=8;return 2;} int Pair(int a,int b){return a*10+b;} export int Probe(){int x=3;return Pair(x,Change(x));}",
-        32, "snapshot before reference call", debug);
-    ExpectInt("export int Probe(){int x=1;int y=7;int& alias=x;alias=y;y=9;return x*10+y;}",
-        79, "reference assignment never rebinds", debug);
-    ExpectInt("export int Probe(){int x=1;int& alias=x;{int x=9;alias=x;}return x;}",
-        9, "reference with shadowed name", debug);
-    ExpectInt("int count=0;bool Bump(int& x){x+=1;return true;} export int Probe(){bool a=false&&Bump(count);bool b=true||Bump(count);return count;}",
-        0, "short circuit with references", debug);
-    NeoCore::Result refFloat = Invoke("void Add(float& x){x+=0.5;} export float Probe(){float x=1;float& r=x;Add(r);return x;}",
-        "float cell promotion", debug);
-    Check(refFloat.ok() && refFloat.value.kind() == NeoCore::Scalar::Kind::Float &&
-        refFloat.value.asFloat() == 1.5, "float cell retains promoted storage");
-    NeoCore::Result refString = Invoke("void Set(string& s){s=\"new\";} export string Probe(){string s=\"old\";Set(s);return s;}",
-        "string reference", debug);
-    Check(refString.ok() && refString.value.kind() == NeoCore::Scalar::Kind::String &&
-        refString.value.asString() == "new", "string reference updates caller");
+    // 인자는 값으로 전달하고 변경 결과는 반환값으로 명시적으로 대입한다.
+    ExpectInt("int Change(int a,int b){a=4;b+=a;return b;} export int Probe(){int x=1;return Change(x,x)*10+x;}",
+        51, "repeated arguments are independent values", debug);
+    ExpectInt("int Add(int x){return x+1;} int Relay(int x){return Add(x);} export int Probe(){int x=5;x=Relay(x);return x;}",
+        6, "forwarded value return", debug);
+    ExpectInt("int x=3;void Set(){x=9;} export int Probe(){Set();return x;}",
+        9, "explicit global mutation", debug);
+    ExpectInt("int Local(int a){a=7;return a;} export int Probe(){int x=3;return Local(x)*10+x;}",
+        73, "parameter mutation preserves caller value", debug);
+    ExpectInt("int x=3;int Change(){x=8;return 2;} int Pair(int a,int b){return a*10+b;} export int Probe(){return Pair(x,Change());}",
+        32, "snapshot before global mutation call", debug);
+    ExpectInt("export int Probe(){int x=1;int y=7;int copy=x;copy=y;y=9;return x*100+copy*10+y;}",
+        179, "local copies do not alias", debug);
+    ExpectInt("export int Probe(){int x=1;int copy=x;{int x=9;copy=x;}return x*10+copy;}",
+        19, "copied value with shadowed name", debug);
+    ExpectInt("int count=0;bool Bump(){count+=1;return true;} export int Probe(){bool a=false&&Bump();bool b=true||Bump();return count;}",
+        0, "short circuit excludes global mutation", debug);
+    NeoCore::Result valueFloat = Invoke("float Add(float x){return x+0.5;} export float Probe(){float x=1;x=Add(x);return x;}",
+        "float value return", debug);
+    Check(valueFloat.ok() && valueFloat.value.kind() == NeoCore::Scalar::Kind::Float &&
+        valueFloat.value.asFloat() == 1.5, "float return retains promoted storage");
+    NeoCore::Result valueString = Invoke("string Set(string s){s=\"new\";return s;} export string Probe(){string s=\"old\";return Set(s);}",
+        "string value return", debug);
+    Check(valueString.ok() && valueString.value.kind() == NeoCore::Scalar::Kind::String &&
+        valueString.value.asString() == "new", "string return owns updated value");
 }
 
 int main()
@@ -208,13 +208,13 @@ int main()
         }
     }
     Check(retained.kind() == NeoCore::Scalar::Kind::String && retained.asString() == "owned", "result owns string after program destruction");
-    auto refs = NeoCore::Program::Compile("int zero=0;int x=1/zero;export void Ref(int& x){x=2;}", error);
-    Check(refs != nullptr, "host ref boundary compile");
-    if (refs)
+    auto vectors = NeoCore::Program::Compile("int zero=0;int x=1/zero;export void Use(Vector3 value){}", error);
+    Check(vectors != nullptr, "host vector boundary compile");
+    if (vectors)
     {
-        NeoCore::Result result = refs->Call("Ref", {NeoCore::Scalar::Int(1)});
-        Check(!result.ok() && result.error.message.find("requires int&") != std::string::npos,
-            "host value cannot bind to script reference before init");
+        NeoCore::Result result = vectors->Call("Use", {NeoCore::Scalar::Int(1)});
+        Check(!result.ok() && result.error.message.find("requires Vector3") != std::string::npos,
+            "host scalar argument mismatch is rejected before init");
     }
     NeoCore::StaticCompileResult diagnostic;
     Check(!NeoCore::CompileStaticSource("int x=1;\nint y=\"bad\";", diagnostic) && diagnostic.errorLine == 2,

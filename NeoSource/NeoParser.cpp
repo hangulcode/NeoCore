@@ -297,6 +297,19 @@ static void ReadElement(SOperand& operand, int dest, CArchiveRdWC& ar, SFunction
 
 bool g_neoFuseCollectionReads = true;
 
+#if NEOSCRIPT_LEGACY_ARITHMETIC
+#define LEGACY_EMIT_OP(ar, op) op
+#else
+static eNOperation RejectLegacyArithmetic(CArchiveRdWC& ar)
+{
+    SetCompileError(ar, "numeric expressions require typed IR");
+    return NOP_ERROR;
+}
+#define LEGACY_EMIT_OP(ar, op) RejectLegacyArithmetic(ar)
+#endif
+
+
+#if NEOSCRIPT_LEGACY_ARITHMETIC
 // 복합 대입(x op= clt[key])에서 융합할 수 있는 산술이면 READ_* opcode 를, 아니면 NOP_NONE 을 돌려준다.
 static eNOperation ReadArithOpcode(eNOperation op)
 {
@@ -307,25 +320,44 @@ static eNOperation ReadArithOpcode(eNOperation op)
 	return NOP_NONE;
 }
 
+#endif
+
 static void WriteElement(SOperand& operand, eNOperation op, int value, bool immediate,
 	CArchiveRdWC& ar, SFunctions& funs)
 {
-    PrepareContainerPath(operand, ar, funs);
-    if (op == NOP_LSHIFT2 || op == NOP_RSHIFT2 || op == NOP_AND2 || op == NOP_OR2 || op == NOP_XOR2)
+#if NEOSCRIPT_LEGACY_ARITHMETIC
+    if (op == NOP_ADD2 || op == NOP_SUB2 || op == NOP_MUL2 || op == NOP_DIV2 || op == NOP_PERSENT2 ||
+        op == NOP_LSHIFT2 || op == NOP_RSHIFT2 || op == NOP_AND2 || op == NOP_OR2 || op == NOP_XOR2)
     {
+        // 우변 값을 먼저 고정한다. 대상 getter가 같은 변수를 바꿔도 산술 입력은 바뀌지 않는다.
+        if (!IsTempVar(value) && !IsCompileConstant(value))
+        {
+            const int saved = funs._cur->AllocLocalTempVar();
+            funs._cur->Push_OP2(ar, NOP_MOV, saved, value, immediate);
+            value = saved;
+            immediate = false;
+        }
+        // 대입 뒤 보존된 벡터는 현재 소유자의 값으로 갱신한다. 호스트 getter는 반복하지 않는다.
+        if (operand._container.loaded && operand._container.owner != INVALID_ERROR_PARSEJOB)
+        {
+            funs._cur->Push_TableRead(ar, operand._container.owner, operand._container.key,
+                operand._iVar, false, NOP_CLT_READ_RESULT);
+            funs._cur->GetOPPointer(funs._cur->_iLastOPOffset)->argFlag |= NEOS_OP_REF_LOADED;
+        }
+        PrepareContainerPath(operand, ar, funs);
         const int updated = funs._cur->AllocLocalTempVar();
         ReadElement(operand, updated, ar, funs);
         funs._cur->Push_OP2(ar, op, updated, value, immediate);
         WriteElement(operand, NOP_MOV, updated, false, ar, funs);
         return;
     }
+#endif
+    PrepareContainerPath(operand, ar, funs);
 	const auto access = operand._container;
-    if (access.owner != INVALID_ERROR_PARSEJOB &&
-        (op == NOP_MOV || op == NOP_ADD2 || op == NOP_SUB2 ||
-         op == NOP_MUL2 || op == NOP_DIV2 || op == NOP_PERSENT2))
+    if (access.owner != INVALID_ERROR_PARSEJOB && op == NOP_MOV)
     {
         const int temp = operand._iVar;
-        funs._cur->Push_TableWriteRef(ar, op, access.owner, access.key, temp,
+        funs._cur->Push_TableWriteRef(ar, access.owner, access.key, temp,
             operand._iArrayIndex, value, access.loaded);
         operand._assignedResult = true;
         operand._container.loaded = false;
@@ -453,18 +485,53 @@ static bool TryPushImmediate(CArchiveRdWC& ar, SFunctions& funs, int dest, const
 	return true;
 }
 
-// 양쪽이 숫자 리터럴인 이항 연산은 컴파일 시점에 계산해 리터럴 하나로 접는다.
-// 결과도 리터럴이라 그대로 MOVI/MOVF 로 나가고, 접힌 피연산자의 상수 슬롯은 회수한다.
-//
-// [VM 과 결과가 한 비트도 다르면 안 된다]
-// 그래서 double 이 아니라 NS_FLOAT 로 계산한다. VM 의 Add3/Sub3/Mul3/Div3 은
-// int op float 를 C++ 승격 규칙에 따라 float 산술로 처리하므로 여기서도 같아야 한다.
-// (const 선언용 EvalConstBinOp 는 double 로 계산한다 — 그건 별도 경로라 건드리지 않는다.)
-//
-// [접지 않는 경우]
-// 정수 0 나눗셈/나머지는 접지 않는다. VM 은 예외로 잡아 스크립트 에러로 보고하는데,
-// 여기서 접으면 컴파일 에러로 바뀌어 기존 동작이 달라진다.
-static bool TryFoldLiteralBinOp(SOperand& a, eNOperation op, const SOperand& b, SFunctions& funs)
+// 상수 계산은 런타임 명령 번호에 의존하지 않는다.
+enum class ScalarBinaryOp
+{
+    Invalid, Add, Subtract, Multiply, Divide, Remainder,
+    ShiftLeft, ShiftRight, BitXor, BitAnd, BitOr
+};
+
+static ScalarBinaryOp TokenBinaryOp(TK_TYPE token)
+{
+    if (token == TK_PLUS) return ScalarBinaryOp::Add;
+    if (token == TK_MINUS) return ScalarBinaryOp::Subtract;
+    if (token == TK_MUL) return ScalarBinaryOp::Multiply;
+    if (token == TK_DIV) return ScalarBinaryOp::Divide;
+    if (token == TK_PERCENT) return ScalarBinaryOp::Remainder;
+    if (token == TK_LSHIFT) return ScalarBinaryOp::ShiftLeft;
+    if (token == TK_RSHIFT) return ScalarBinaryOp::ShiftRight;
+    if (token == TK_XOR) return ScalarBinaryOp::BitXor;
+    if (token == TK_AND) return ScalarBinaryOp::BitAnd;
+    if (token == TK_OR) return ScalarBinaryOp::BitOr;
+    return ScalarBinaryOp::Invalid;
+}
+
+static ScalarBinaryOp TypedBinaryOp(eNOperation op)
+{
+    switch (op)
+    {
+    case NOP_I64_ADD: return ScalarBinaryOp::Add;
+    case NOP_I64_SUB: return ScalarBinaryOp::Subtract;
+    case NOP_I64_MUL: return ScalarBinaryOp::Multiply;
+    case NOP_I64_DIV: return ScalarBinaryOp::Divide;
+    case NOP_I64_MOD: return ScalarBinaryOp::Remainder;
+    case NOP_I64_AND: return ScalarBinaryOp::BitAnd;
+    case NOP_I64_OR: return ScalarBinaryOp::BitOr;
+    case NOP_I64_XOR: return ScalarBinaryOp::BitXor;
+    case NOP_I64_SHL: return ScalarBinaryOp::ShiftLeft;
+    case NOP_I64_SHR: return ScalarBinaryOp::ShiftRight;
+    case NOP_F64_ADD: return ScalarBinaryOp::Add;
+    case NOP_F64_SUB: return ScalarBinaryOp::Subtract;
+    case NOP_F64_MUL: return ScalarBinaryOp::Multiply;
+    case NOP_F64_DIV: return ScalarBinaryOp::Divide;
+    default: return ScalarBinaryOp::Invalid;
+    }
+}
+
+// 양쪽 숫자 리터럴을 VM과 같은 정수/NS_FLOAT 규칙으로 접는다.
+// 0 나누기와 오버플로는 접지 않아 원래 위치의 런타임 오류를 유지한다.
+static bool TryFoldLiteralBinOp(SOperand& a, ScalarBinaryOp op, const SOperand& b, SFunctions& funs)
 {
 	if (a.IsArray() || b.IsArray())
 		return false;
@@ -485,16 +552,16 @@ static bool TryFoldLiteralBinOp(SOperand& a, eNOperation op, const SOperand& b, 
 
 	switch (op)
 	{
-	case NOP_ADD3:
+	case ScalarBinaryOp::Add:
 		if (bothInt) ri = NeoIntAdd(a._intLiteral, b._intLiteral); else rf = fx + fy;
 		break;
-	case NOP_SUB3:
+	case ScalarBinaryOp::Subtract:
 		if (bothInt) ri = NeoIntSub(a._intLiteral, b._intLiteral); else rf = fx - fy;
 		break;
-	case NOP_MUL3:
+	case ScalarBinaryOp::Multiply:
 		if (bothInt) ri = NeoIntMul(a._intLiteral, b._intLiteral); else rf = fx * fy;
 		break;
-	case NOP_DIV3:
+	case ScalarBinaryOp::Divide:
 		if (bothInt)
 		{
 			if (b._intLiteral == 0 || (a._intLiteral == NS_INT_MIN && b._intLiteral == -1))
@@ -505,29 +572,29 @@ static bool TryFoldLiteralBinOp(SOperand& a, eNOperation op, const SOperand& b, 
 		break;
 	// 아래는 VM 도 int/int 조합에서만 계산한다. 나머지 조합은 접지 않고 넘겨서
 	// 기존과 같은 타입 에러가 런타임에 나게 둔다.
-	case NOP_PERSENT3:
+	case ScalarBinaryOp::Remainder:
 		if (bothInt == false || b._intLiteral == 0 ||
 			(a._intLiteral == NS_INT_MIN && b._intLiteral == -1))
 			return false;
 		ri = a._intLiteral % b._intLiteral;
 		break;
-	case NOP_LSHIFT3:
+	case ScalarBinaryOp::ShiftLeft:
 		if (bothInt == false || static_cast<NS_UINT>(b._intLiteral) >= 64) return false;
 		ri = NeoShiftLeft(a._intLiteral, b._intLiteral);
 		break;
-	case NOP_RSHIFT3:
+	case ScalarBinaryOp::ShiftRight:
 		if (bothInt == false || static_cast<NS_UINT>(b._intLiteral) >= 64) return false;
 		ri = NeoShiftRight(a._intLiteral, b._intLiteral);
 		break;
-	case NOP_XOR3:
+	case ScalarBinaryOp::BitXor:
 		if (bothInt == false) return false;
 		ri = a._intLiteral ^ b._intLiteral;
 		break;
-	case NOP_AND:
+	case ScalarBinaryOp::BitAnd:
 		if (bothInt == false) return false;
 		ri = a._intLiteral & b._intLiteral;
 		break;
-	case NOP_OR:
+	case ScalarBinaryOp::BitOr:
 		if (bothInt == false) return false;
 		ri = a._intLiteral | b._intLiteral;
 		break;
@@ -591,6 +658,12 @@ std::map<std::string, TK_TYPE> g_sStringToToken;
 
 #define TOKEN_STR1(key, str) g_sTokenToString[key] = STokenValue(str, 20, NOP_NONE)
 #define TOKEN_STR2(key, str) g_sTokenToString[key] = STokenValue(str, 20, NOP_NONE); g_sStringToToken[str] = key
+#if NEOSCRIPT_LEGACY_ARITHMETIC
+#define LEGACY_ARITHMETIC_OP(op) op
+#else
+#define LEGACY_ARITHMETIC_OP(op) NOP_NONE
+#endif
+
 #define TOKEN_STR3(key, str, pri, op) g_sTokenToString[key] = STokenValue(str, pri, op); g_sStringToToken[str] = key
 
 TK_TYPE ParseJob(bool bReqReturn, SOperand& sResultStack, std::vector<SJumpValue>* pJumps, CArchiveRdWC& ar, SFunctions& funs, SVars& vars, bool bAllowVarDef = false, TK_TYPE tkEnd1 = TK_SEMICOLON, TK_TYPE tkEnd2 = TK_COMMA, TK_TYPE tkEnd3 = TK_R_SMALL, TK_TYPE tkEnd4 = TK_R_ARRAY, std::vector<SJumpValue>* pContinueJumps = NULL, TK_TYPE tkEnd5 = TK_UNUSED, TK_TYPE tkEnd6 = TK_UNUSED);
@@ -611,30 +684,6 @@ bool ParseFunctionBody(CArchiveRdWC& ar, SFunctions& funs, SVars& vars, bool add
 
 eNOperation GetOpTypeFromOp(eNOperation op)
 {
-	return g_sOpInfo[op]._opType;
-}
-eNOperation GetTableOpTypeFromOp(eNOperation op)
-{
-	switch (op)
-	{
-	case NOP_MOV: op = NOP_CLT_MOV; break;
-	case NOP_ADD2: op = NOP_TABLE_ADD2; break;
-	case NOP_SUB2: op = NOP_TABLE_SUB2; break;
-	case NOP_MUL2: op = NOP_TABLE_MUL2; break;
-	case NOP_DIV2: op = NOP_TABLE_DIV2; break;
-	case NOP_PERSENT2: op = NOP_TABLE_PERSENT2; break;
-
-	default: break;
-	}
-	return g_sOpInfo[op]._opType;
-}
-eNOperation GetListOpTypeFromOp(eNOperation op)
-{
-	switch (op)
-	{
-	case NOP_MOV: op = NOP_CLT_MOV; break;
-	default: break;
-	}
 	return g_sOpInfo[op]._opType;
 }
 int GetOpLength(eNOperation op)
@@ -695,34 +744,34 @@ int InitDefaultTokenString()
 	TOKEN_STR3(TK_PLUS2, "++", 1, NOP_INC);
 	TOKEN_STR3(TK_MINUS2, "--", 1, NOP_DEC);
 
-	TOKEN_STR3(TK_PLUS, "+", 5, NOP_ADD3);
-	TOKEN_STR3(TK_PLUS_EQ, "+=", 15, NOP_ADD2);
-	TOKEN_STR3(TK_MINUS, "-", 5, NOP_SUB3);
-	TOKEN_STR3(TK_MINUS_EQ, "-=", 15, NOP_SUB2);
-	TOKEN_STR3(TK_MUL, "*", 4, NOP_MUL3);
-	TOKEN_STR3(TK_MUL_EQ, "*=", 15, NOP_MUL2);
-	TOKEN_STR3(TK_DIV, "/", 4, NOP_DIV3);
-	TOKEN_STR3(TK_DIV_EQ, "/=", 15, NOP_DIV2);
-	TOKEN_STR3(TK_PERCENT, "%", 4, NOP_PERSENT3);
-	TOKEN_STR3(TK_PERCENT_EQ, "%=", 15, NOP_PERSENT2);
+	TOKEN_STR3(TK_PLUS, "+", 5, LEGACY_ARITHMETIC_OP(NOP_ADD3));
+	TOKEN_STR3(TK_PLUS_EQ, "+=", 15, LEGACY_ARITHMETIC_OP(NOP_ADD2));
+	TOKEN_STR3(TK_MINUS, "-", 5, LEGACY_ARITHMETIC_OP(NOP_SUB3));
+	TOKEN_STR3(TK_MINUS_EQ, "-=", 15, LEGACY_ARITHMETIC_OP(NOP_SUB2));
+	TOKEN_STR3(TK_MUL, "*", 4, LEGACY_ARITHMETIC_OP(NOP_MUL3));
+	TOKEN_STR3(TK_MUL_EQ, "*=", 15, LEGACY_ARITHMETIC_OP(NOP_MUL2));
+	TOKEN_STR3(TK_DIV, "/", 4, LEGACY_ARITHMETIC_OP(NOP_DIV3));
+	TOKEN_STR3(TK_DIV_EQ, "/=", 15, LEGACY_ARITHMETIC_OP(NOP_DIV2));
+	TOKEN_STR3(TK_PERCENT, "%", 4, LEGACY_ARITHMETIC_OP(NOP_PERSENT3));
+	TOKEN_STR3(TK_PERCENT_EQ, "%=", 15, LEGACY_ARITHMETIC_OP(NOP_PERSENT2));
 
-	TOKEN_STR3(TK_LSHIFT, "<<", 6, NOP_LSHIFT3);
-	TOKEN_STR3(TK_LSHIFT_EQ, "<<=", 15, NOP_LSHIFT2);
-	TOKEN_STR3(TK_RSHIFT, ">>", 6, NOP_RSHIFT3);
-	TOKEN_STR3(TK_RSHIFT_EQ, ">>=", 15, NOP_RSHIFT2);
+	TOKEN_STR3(TK_LSHIFT, "<<", 6, LEGACY_ARITHMETIC_OP(NOP_LSHIFT3));
+	TOKEN_STR3(TK_LSHIFT_EQ, "<<=", 15, LEGACY_ARITHMETIC_OP(NOP_LSHIFT2));
+	TOKEN_STR3(TK_RSHIFT, ">>", 6, LEGACY_ARITHMETIC_OP(NOP_RSHIFT3));
+	TOKEN_STR3(TK_RSHIFT_EQ, ">>=", 15, LEGACY_ARITHMETIC_OP(NOP_RSHIFT2));
 
 	TOKEN_STR2(TK_NOT, "~");
-	TOKEN_STR3(TK_XOR, "^", 10, NOP_XOR3); // C 우선순위: & (9) > ^ (10) > | (11)
-	TOKEN_STR3(TK_XOR_EQ, "^=", 15, NOP_XOR2);
+	TOKEN_STR3(TK_XOR, "^", 10, LEGACY_ARITHMETIC_OP(NOP_XOR3)); // C 우선순위: & (9) > ^ (10) > | (11)
+	TOKEN_STR3(TK_XOR_EQ, "^=", 15, LEGACY_ARITHMETIC_OP(NOP_XOR2));
 	TOKEN_STR3(TK_EQUAL, "=", 15, NOP_MOV);
 	TOKEN_STR3(TK_EQUAL_EQ, "==", 8, NOP_EQUAL2);
 	TOKEN_STR3(TK_EQUAL_NOT, "!=", 8, NOP_NEQUAL);
 
-	TOKEN_STR3(TK_AND, "&", 9, NOP_AND);
-	TOKEN_STR3(TK_AND_EQ, "&=", 15, NOP_AND2);
+	TOKEN_STR3(TK_AND, "&", 9, LEGACY_ARITHMETIC_OP(NOP_AND));
+	TOKEN_STR3(TK_AND_EQ, "&=", 15, LEGACY_ARITHMETIC_OP(NOP_AND2));
 	TOKEN_STR3(TK_AND2, "&&", 12, NOP_LOG_AND);
-	TOKEN_STR3(TK_OR, "|", 11, NOP_OR);
-	TOKEN_STR3(TK_OR_EQ, "|=", 15, NOP_OR2);
+	TOKEN_STR3(TK_OR, "|", 11, LEGACY_ARITHMETIC_OP(NOP_OR));
+	TOKEN_STR3(TK_OR_EQ, "|=", 15, LEGACY_ARITHMETIC_OP(NOP_OR2));
 	TOKEN_STR3(TK_OR2, "||", 13, NOP_LOG_OR);
 
 	TOKEN_STR2(TK_L_SMALL, "(");
@@ -757,8 +806,11 @@ int InitDefaultTokenString()
 	OP_STR1(NOP_MOVI, 3);
 	OP_STR1(NOP_MOVF, 3);
 	OP_STR1(NOP_LOADK, 3);
+#if NEOSCRIPT_LEGACY_ARITHMETIC
 	OP_STR1(NOP_MOV_MINUS, 2);
+#endif
 	OP_STR1(NOP_LOG_NOT, 2);
+#if NEOSCRIPT_LEGACY_ARITHMETIC
 	OP_STR1(NOP_ADD2, 2);
 	OP_STR1(NOP_SUB2, 2);
 	OP_STR1(NOP_MUL2, 2);
@@ -769,23 +821,22 @@ int InitDefaultTokenString()
 	OP_STR1(NOP_AND2, 2);
 	OP_STR1(NOP_OR2, 2);
 	OP_STR1(NOP_XOR2, 2);
-
-	OP_STR1(NOP_LSHIFT3, 3);
-	OP_STR1(NOP_RSHIFT3, 3);
-	
+#endif
 
 	OP_STR1(NOP_VAR_CLEAR, 1);
 	OP_STR1(NOP_INC, 1);
 	OP_STR1(NOP_DEC, 1);
 
+#if NEOSCRIPT_LEGACY_ARITHMETIC
 	OP_STR1(NOP_ADD3, 3);
 	OP_STR1(NOP_SUB3, 3);
 	OP_STR1(NOP_MUL3, 3);
 	OP_STR1(NOP_DIV3, 3);
 	OP_STR1(NOP_PERSENT3, 3);
-	OP_STR1(NOP_PERSENT3, 3);
 	OP_STR1(NOP_LSHIFT3, 3);
+	OP_STR1(NOP_RSHIFT3, 3);
 	OP_STR1(NOP_XOR3, 3);
+#endif
 
 	OP_STR1(NOP_GREAT, 3);
 	OP_STR1(NOP_GREAT_EQ, 3);
@@ -793,8 +844,10 @@ int InitDefaultTokenString()
 	OP_STR1(NOP_LESS_EQ, 3);
 	OP_STR1(NOP_EQUAL2, 3);
 	OP_STR1(NOP_NEQUAL, 3);
+#if NEOSCRIPT_LEGACY_ARITHMETIC
 	OP_STR1(NOP_AND, 3);
 	OP_STR1(NOP_OR, 3);
+#endif
 	OP_STR1(NOP_LOG_AND, 3);
 	OP_STR1(NOP_LOG_OR, 3);
 
@@ -838,11 +891,6 @@ int InitDefaultTokenString()
 	OP_STR1(NOP_TABLE_ALLOC, 3);
 	OP_STR1(NOP_CLT_READ, 3);
 	OP_STR1(NOP_CLT_MOV, 3);
-	OP_STR1(NOP_TABLE_ADD2, 3);
-	OP_STR1(NOP_TABLE_SUB2, 3);
-	OP_STR1(NOP_TABLE_MUL2, 3);
-	OP_STR1(NOP_TABLE_DIV2, 3);
-	OP_STR1(NOP_TABLE_PERSENT2, 3);
 
 	OP_STR1(NOP_LIST_ALLOC, 3);
 
@@ -854,10 +902,12 @@ int InitDefaultTokenString()
 	OP_STR1(NOP_JMP_RANGE_OUTSIDE_L, 3);
 	OP_STR1(NOP_CLT_WRITE_REF, 3);
 	OP_STR1(NOP_CLT_READ_RESULT, 3);
+#if NEOSCRIPT_LEGACY_ARITHMETIC
 	OP_STR1(NOP_READ_ADD, 3);
 	OP_STR1(NOP_READ_SUB, 3);
 	OP_STR1(NOP_READ_MUL, 3);
 	OP_STR1(NOP_READ_DIV, 3);
+#endif
 
 #define REGISTER_CORE_TYPED_OP(op, name, suffix, arity, slots, writes, comparison, jump, branchOp) OP_STR1(op, (arity) + 1);
 	NEOCORE_TYPED_OPS(REGISTER_CORE_TYPED_OP)
@@ -1601,7 +1651,11 @@ void ClearTempVars(SFunctions& funs)
 {
 	funs._cur->FreeLocalTempVar();
 	eNOperation opLast = funs._cur->GetLastOP();
-	if (opLast == NOP_MOV || opLast == NOP_MOV_MINUS)
+	if (opLast == NOP_MOV || opLast == NOP_I64_NEG || opLast == NOP_F64_NEG
+#if NEOSCRIPT_LEGACY_ARITHMETIC
+        || opLast == NOP_MOV_MINUS
+#endif
+    )
 	{
 		int iVar = funs._cur->GetN(funs._cur->_iLastOPOffset, 0);
 		if (IsTempVar(iVar))
@@ -2226,9 +2280,9 @@ bool ParseFunCall(SOperand& iResultStack, TK_TYPE tkTypePre, SFunctionInfo* pFun
 				int iArrayIndex = funs.AddStaticString(pFun->_name);
 				iResultStack = funs._cur->AllocLocalTempVar();
 				funs._cur->Push_CallPtr2(ar, iArrayIndex, iParamCount, iResultStack._iVar, iCallLine);
-				//funs._cur->Push_OP2(ar, tkTypePre != TK_MINUS ? NOP_MOV : NOP_MOV_MINUS, iResultStack._iVar, STACK_POS_RETURN, false);
+				//funs._cur->Push_OP2(ar, tkTypePre != TK_MINUS ? NOP_MOV : LEGACY_EMIT_OP(ar, NOP_MOV_MINUS), iResultStack._iVar, STACK_POS_RETURN, false);
 				if (tkTypePre == TK_MINUS)
-					funs._cur->Push_OP2(ar, NOP_MOV_MINUS, iResultStack._iVar, iResultStack._iVar, false);
+					funs._cur->Push_OP2(ar, LEGACY_EMIT_OP(ar, NOP_MOV_MINUS), iResultStack._iVar, iResultStack._iVar, false);
 				return true;
 			}
 			else
@@ -2243,7 +2297,7 @@ bool ParseFunCall(SOperand& iResultStack, TK_TYPE tkTypePre, SFunctionInfo* pFun
 				funs._cur->Push_Call(ar, NOP_CALL, pFun->_funID, iParamCount, iResultStack._iVar, iCallLine);
 			}
 			if (tkTypePre == TK_MINUS)
-				funs._cur->Push_OP2(ar, NOP_MOV_MINUS, iResultStack._iVar, iResultStack._iVar, false);
+				funs._cur->Push_OP2(ar, LEGACY_EMIT_OP(ar, NOP_MOV_MINUS), iResultStack._iVar, iResultStack._iVar, false);
 			return true;
 		}
 		else if(iResultStack._iVar != -1)
@@ -2252,13 +2306,13 @@ bool ParseFunCall(SOperand& iResultStack, TK_TYPE tkTypePre, SFunctionInfo* pFun
 			{
 				funs._cur->Push_CallPtr(ar, iResultStack._iVar, iResultStack._iArrayIndex, iParamCount, false, iCallLine);
 				iResultStack = funs._cur->AllocLocalTempVar();
-				funs._cur->Push_OP2(ar, tkTypePre != TK_MINUS ? NOP_MOV : NOP_MOV_MINUS, iResultStack._iVar, STACK_POS_RETURN, false);
+				funs._cur->Push_OP2(ar, tkTypePre != TK_MINUS ? NOP_MOV : LEGACY_EMIT_OP(ar, NOP_MOV_MINUS), iResultStack._iVar, STACK_POS_RETURN, false);
 			}
 			else
 			{	// TODO
 				funs._cur->Push_CallPtr(ar, iResultStack._iVar, iResultStack._iArrayIndex, iParamCount, false, iCallLine);
 				iResultStack = funs._cur->AllocLocalTempVar();
-				funs._cur->Push_OP2(ar, tkTypePre != TK_MINUS ? NOP_MOV : NOP_MOV_MINUS, iResultStack._iVar, STACK_POS_RETURN, false);
+				funs._cur->Push_OP2(ar, tkTypePre != TK_MINUS ? NOP_MOV : LEGACY_EMIT_OP(ar, NOP_MOV_MINUS), iResultStack._iVar, STACK_POS_RETURN, false);
 			}
 		}
 		else
@@ -2266,9 +2320,9 @@ bool ParseFunCall(SOperand& iResultStack, TK_TYPE tkTypePre, SFunctionInfo* pFun
 			int iArrayIndex = iResultStack._iArrayIndex;
 			iResultStack = funs._cur->AllocLocalTempVar();
 			funs._cur->Push_CallPtr2(ar, iArrayIndex, iParamCount, iResultStack._iVar, iCallLine);
-//			funs._cur->Push_OP2(ar, tkTypePre != TK_MINUS ? NOP_MOV : NOP_MOV_MINUS, iResultStack._iVar, STACK_POS_RETURN, false);
+//			funs._cur->Push_OP2(ar, tkTypePre != TK_MINUS ? NOP_MOV : LEGACY_EMIT_OP(ar, NOP_MOV_MINUS), iResultStack._iVar, STACK_POS_RETURN, false);
 			if (tkTypePre == TK_MINUS)
-				funs._cur->Push_OP2(ar, NOP_MOV_MINUS, iResultStack._iVar, iResultStack._iVar, false);
+				funs._cur->Push_OP2(ar, LEGACY_EMIT_OP(ar, NOP_MOV_MINUS), iResultStack._iVar, iResultStack._iVar, false);
 		}
 	}
 	else if (tkType1 == TK_SEMICOLON)
@@ -2810,7 +2864,7 @@ static SOperand EmitCoreNumber(eNOperation op, const SOperand& left, const SOper
 }
 
 // 쓰기 매크로는 컴파일 중에 전용 명령열로 펼친다. 우변과 대상은 이미 원래 순서로 확정되어 있다.
-static SOperand EmitCoreWrite(const std::string& family, bool array, int component, int mode,
+static SOperand EmitCoreWrite(const std::string& family, bool array, bool field, int component, int mode,
     const SOperand* arguments, CArchiveRdWC& ar, SFunctions& funs, int sourceLine)
 {
     const bool vector = family[0] == 'v';
@@ -2818,7 +2872,14 @@ static SOperand EmitCoreWrite(const std::string& family, bool array, int compone
     SOperand readArguments[] = { arguments[1], arguments[2] };
     SOperand old;
     if (mode != 0 || !whole)
-        old = EmitCoreAggregate(array ? "a" + family + "get" : "cellget", readArguments, 0, ar, funs, sourceLine);
+    {
+        if (field)
+        {
+            old = SOperand(funs._cur->AllocLocalTempVar());
+            funs._cur->Push_OP(ar, NOP_CLT_READ, arguments[1]._iVar, arguments[2]._iVar, old._iVar, sourceLine);
+        }
+        else old = EmitCoreAggregate(array ? "a" + family + "get" : "cellget", readArguments, 0, ar, funs, sourceLine);
+    }
     SOperand oldValue = old;
     if (!whole) oldValue = EmitCoreAggregate(family + "get", &old, component, ar, funs, sourceLine);
     SOperand value = arguments[0];
@@ -2848,7 +2909,10 @@ static SOperand EmitCoreWrite(const std::string& family, bool array, int compone
         stored = EmitCoreAggregate(family + "set", replacement, component, ar, funs, sourceLine);
     }
     SOperand writeArguments[] = { stored, arguments[1], arguments[2] };
-    const SOperand result = EmitCoreAggregate(array ? "a" + family + "set" : "cellset", writeArguments,
+    SOperand result = stored;
+    if (field)
+        funs._cur->Push_OP(ar, NOP_CLT_MOV, arguments[1]._iVar, arguments[2]._iVar, stored._iVar, sourceLine);
+    else result = EmitCoreAggregate(array ? "a" + family + "set" : "cellset", writeArguments,
         0, ar, funs, sourceLine);
     if (mode == 5 || mode == 6) return oldValue;
     return whole ? result : EmitCoreAggregate(family + "get", &result, component, ar, funs, sourceLine);
@@ -2866,6 +2930,7 @@ static bool ParseCoreTypedIntrinsic(SOperand& result, const std::string& name,
     bool swapOperands = false;
     bool invert = false;
     bool arrayWrite = false;
+    bool fieldWrite = false;
     int component = -1;
     int mode = -1;
     std::string writeFamily;
@@ -2879,15 +2944,20 @@ static bool ParseCoreTypedIntrinsic(SOperand& result, const std::string& name,
             for (int dimension = 2; dimension <= 4; ++dimension)
             {
                 const std::string family = "v" + std::to_string(dimension);
-                if (operation == family + "cellwrite" || operation == "a" + family + "write")
+                if (operation == family + "cellwrite" || operation == family + "fieldwrite" || operation == "a" + family + "write")
                 {
                     if ((component >= 0 && component < dimension && mode <= 6) || (component == 4 && mode <= 4))
-                    { writeFamily = family; arrayWrite = operation[0] == 'a'; }
+                    { writeFamily = family; arrayWrite = operation[0] == 'a'; fieldWrite = operation == family + "fieldwrite"; }
                 }
             }
-            if (component == -1 && (operation == "ai64write" || operation == "af64write") &&
-                mode <= (operation == "ai64write" ? 12 : 6))
-            { writeFamily = operation == "ai64write" ? "i64" : "f64"; arrayWrite = true; }
+            if (component == -1 && (operation == "ai64write" || operation == "af64write" ||
+                operation == "ci64write" || operation == "cf64write") &&
+                mode <= (operation.substr(1) == "i64write" ? 12 : 6))
+            {
+                writeFamily = operation.substr(1) == "i64write" ? "i64" : "f64";
+                arrayWrite = operation[0] == 'a';
+                fieldWrite = operation[0] == 'c';
+            }
         }
         else
         {
@@ -2932,7 +3002,7 @@ static bool ParseCoreTypedIntrinsic(SOperand& result, const std::string& name,
     }
     std::vector<int> effects;
     const bool scanned = ScanCallArguments(ar, effects);
-    const int arity = info ? info->arity : aggregate ? aggregate->arity : arrayWrite ? 3 : 2;
+    const int arity = info ? info->arity : aggregate ? aggregate->arity : (arrayWrite || fieldWrite) ? 3 : 2;
     SOperand arguments[4];
     for (int i = 0; i < arity; ++i)
     {
@@ -2956,7 +3026,7 @@ static bool ParseCoreTypedIntrinsic(SOperand& result, const std::string& name,
     }
     if (!writeFamily.empty())
     {
-        result = EmitCoreWrite(writeFamily, arrayWrite, component, mode, arguments, ar, funs, sourceLine);
+        result = EmitCoreWrite(writeFamily, arrayWrite, fieldWrite, component, mode, arguments, ar, funs, sourceLine);
         return true;
     }
     if (aggregate)
@@ -2977,7 +3047,7 @@ static bool ParseCoreTypedIntrinsic(SOperand& result, const std::string& name,
         result.SetIntLiteral(funs.AddStaticInt(value), value);
         return true;
     }
-    if (info->arity == 2 && TryFoldLiteralBinOp(arguments[0], GetTypedGenericArithmetic(info->op), arguments[1], funs))
+    if (info->arity == 2 && TryFoldLiteralBinOp(arguments[0], TypedBinaryOp(info->op), arguments[1], funs))
     {
         result = arguments[0];
         return true;
@@ -3006,6 +3076,23 @@ class CoreIRValidator
         SetCompileError(ar_, "invalid typed IR node %llu: %s", static_cast<unsigned long long>(index), message);
         return false;
     }
+    bool ValidSpan(const NeoCore::IRSourceSpan& source) const
+    { return source.line >= 1 && source.column >= 1 && source.begin <= source.end; }
+    bool ValidType(const NeoCore::IRNode& node) const
+    {
+        using NeoCore::IRValueType;
+        using NeoCore::TypeKind;
+        switch (ir_.types.Get(node.typeId).kind)
+        {
+        case TypeKind::Invalid: return false;
+        case TypeKind::Void: return node.type == IRValueType::Void;
+        case TypeKind::Int: return node.type == IRValueType::Int;
+        case TypeKind::Float: return node.type == IRValueType::Float;
+        case TypeKind::Bool: return node.type == IRValueType::Bool;
+        case TypeKind::String: return node.type == IRValueType::String;
+        default: return node.type == IRValueType::Value;
+        }
+    }
     bool Visit(std::size_t index, int depth)
     {
         using NeoCore::IROp;
@@ -3017,10 +3104,8 @@ class CoreIRValidator
             return depth + heights_[index] - 1 <= 128 || Fail(index, "expression nesting exceeds limit");
         states_[index] = 1;
         const NeoCore::IRNode& node = ir_.nodes[index];
-        if (node.type != IRValueType::Int && node.type != IRValueType::Float && node.type != IRValueType::Bool)
-            return Fail(index, "unknown value type");
-        if (node.source.line < 1 || node.source.column < 1 || node.source.begin > node.source.end)
-            return Fail(index, "invalid source span");
+        if (!ValidType(node)) return Fail(index, "unknown or inconsistent value type");
+        if (!ValidSpan(node.source)) return Fail(index, "invalid source span");
         std::size_t arity = 0;
         switch (node.op)
         {
@@ -3033,11 +3118,43 @@ class CoreIRValidator
             arity = 2; break;
         case IROp::Negate: case IROp::BitNot: case IROp::LogicalNot: case IROp::ToFloat: case IROp::ToInt:
             arity = 1; break;
+        case IROp::LoadStorage: arity = 0; break;
+        case IROp::Assign: case IROp::AddAssign: case IROp::SubtractAssign:
+        case IROp::MultiplyAssign: case IROp::DivideAssign: case IROp::RemainderAssign:
+        case IROp::BitAndAssign: case IROp::BitOrAssign: case IROp::BitXorAssign:
+        case IROp::ShiftLeftAssign: case IROp::ShiftRightAssign:
+            arity = 1; break;
+        case IROp::PreIncrement: case IROp::PreDecrement:
+        case IROp::PostIncrement: case IROp::PostDecrement:
+            arity = 0; break;
+        case IROp::ScriptCall:
+            if (node.functionIndex >= ir_.functions.size()) return Fail(index, "function index is out of range");
+            arity = ir_.functions[node.functionIndex].parameterTypes.size(); break;
+        case IROp::NullableConvert: case IROp::CopyStruct: arity = 1; break;
         default: return Fail(index, "unknown operation");
         }
+        if (node.op != IROp::ScriptCall && node.functionIndex != static_cast<std::size_t>(-1))
+            return Fail(index, "operation does not accept function metadata");
         if (node.inputs.size() != arity) return Fail(index, "incorrect operand count");
         int height = 1;
-        unsigned char effects = node.op == IROp::LegacyExpression ? EXPR_EFFECT_ALL : 0;
+        const bool storage = node.op >= IROp::LoadStorage && node.op <= IROp::PostDecrement;
+        if (storage)
+        {
+            const NeoCore::IRStorageTarget& target = node.storage;
+            if ((target.kind != NeoCore::IRStorageKind::Variable && target.kind != NeoCore::IRStorageKind::Cell) ||
+                !AbleName(target.backendName) || target.symbolId == 0)
+                return Fail(index, "invalid storage target");
+            if ((target.kind == NeoCore::IRStorageKind::Cell && !target.fields.empty()) || target.fields.size() > 128)
+                return Fail(index, "invalid storage field path");
+            for (std::size_t field : target.fields)
+                if (field > static_cast<std::size_t>(INT_MAX)) return Fail(index, "storage field index is out of range");
+        }
+        else if (node.storage.kind != NeoCore::IRStorageKind::Invalid || !node.storage.backendName.empty() ||
+            node.storage.symbolId != 0 || !node.storage.fields.empty())
+            return Fail(index, "operation does not accept storage metadata");
+        unsigned char effects = node.op == IROp::LegacyExpression ? EXPR_EFFECT_ALL
+            : node.op == IROp::ScriptCall || node.op == IROp::CopyStruct ? EXPR_EFFECT_CALL
+            : storage && node.op != IROp::LoadStorage ? EXPR_EFFECT_ASSIGN : 0;
         for (std::size_t input : node.inputs)
         {
             if (!Visit(input, depth + 1)) return false;
@@ -3045,29 +3162,57 @@ class CoreIRValidator
             effects |= effects_[input];
         }
         const IRValueType input = arity ? ir_.nodes[node.inputs[0]].type : IRValueType::Invalid;
+        const NeoCore::TypeId inputType = arity ? ir_.nodes[node.inputs[0]].typeId : NeoCore::InvalidType;
         const bool numeric = input == IRValueType::Int || input == IRValueType::Float;
-        if (arity == 2 && input != ir_.nodes[node.inputs[1]].type) return Fail(index, "operand types differ");
+        if (arity == 2 && node.op != IROp::ScriptCall && inputType != ir_.nodes[node.inputs[1]].typeId)
+            return Fail(index, "operand types differ");
         bool valid = false;
         switch (node.op)
         {
         case IROp::IntLiteral: valid = node.type == IRValueType::Int; break;
         case IROp::FloatLiteral: valid = node.type == IRValueType::Float; break;
         case IROp::BoolLiteral: valid = node.type == IRValueType::Bool; break;
-        case IROp::Symbol: valid = AbleName(node.backendName); break;
-        case IROp::LegacyExpression: valid = !node.legacySource.empty(); break;
+        case IROp::Symbol:
+            valid = AbleName(node.backendName) && node.type != IRValueType::Void; break;
+        case IROp::LegacyExpression:
+            valid = !node.legacySource.empty() && node.type != IRValueType::Void; break;
         case IROp::Add: case IROp::Subtract: case IROp::Multiply: case IROp::Divide:
-            valid = numeric && node.type == input; break;
+            valid = numeric && node.typeId == inputType; break;
         case IROp::Remainder: case IROp::BitAnd: case IROp::BitOr: case IROp::BitXor:
         case IROp::ShiftLeft: case IROp::ShiftRight:
             valid = input == IRValueType::Int && node.type == IRValueType::Int; break;
         case IROp::Equal: case IROp::NotEqual: case IROp::Less: case IROp::LessEqual:
         case IROp::Greater: case IROp::GreaterEqual:
             valid = numeric && node.type == IRValueType::Bool; break;
-        case IROp::Negate: valid = numeric && node.type == input; break;
+        case IROp::Negate: valid = numeric && node.typeId == inputType; break;
         case IROp::BitNot: valid = input == IRValueType::Int && node.type == IRValueType::Int; break;
         case IROp::LogicalNot: valid = input == IRValueType::Bool && node.type == IRValueType::Bool; break;
         case IROp::ToFloat: valid = input == IRValueType::Int && node.type == IRValueType::Float; break;
         case IROp::ToInt: valid = input == IRValueType::Float && node.type == IRValueType::Int; break;
+        case IROp::LoadStorage:
+            valid = node.type != IRValueType::Void; break;
+        case IROp::Assign: valid = node.typeId == inputType && input != IRValueType::Void; break;
+        case IROp::AddAssign: case IROp::SubtractAssign: case IROp::MultiplyAssign: case IROp::DivideAssign:
+            valid = numeric && node.typeId == inputType; break;
+        case IROp::RemainderAssign: case IROp::BitAndAssign: case IROp::BitOrAssign: case IROp::BitXorAssign:
+        case IROp::ShiftLeftAssign: case IROp::ShiftRightAssign:
+            valid = input == IRValueType::Int && node.type == IRValueType::Int; break;
+        case IROp::PreIncrement: case IROp::PreDecrement: case IROp::PostIncrement: case IROp::PostDecrement:
+            valid = node.type == IRValueType::Int || node.type == IRValueType::Float; break;
+        case IROp::ScriptCall:
+        {
+            const NeoCore::IRFunction& function = ir_.functions[node.functionIndex];
+            valid = node.typeId == function.returnType;
+            for (std::size_t i = 0; valid && i < node.inputs.size(); ++i)
+                valid = ir_.nodes[node.inputs[i]].typeId == function.parameterTypes[i];
+            break;
+        }
+        case IROp::NullableConvert:
+            valid = ir_.types.IsNullable(node.typeId) &&
+                (inputType == ir_.types.Null() || inputType == ir_.types.Get(node.typeId).element); break;
+        case IROp::CopyStruct:
+            valid = ir_.types.Get(node.typeId).kind == NeoCore::TypeKind::Struct &&
+                node.typeId == inputType && AbleName(node.backendName); break;
         default: break;
         }
         if (!valid) return Fail(index, "operation type contract does not match");
@@ -3082,11 +3227,33 @@ public:
     { effects_.assign(ir.nodes.size(), 0); }
     bool Validate()
     {
-        if (ir_.nodes.empty()) return true;
-        if (ir_.prefix.empty() || !AbleName(ir_.prefix))
+        if (!ir_.nodes.empty() && (ir_.prefix.empty() || !AbleName(ir_.prefix)))
         { SetCompileError(ar_, "invalid typed IR marker prefix"); return false; }
+        if (!ir_.returns.empty() && (ir_.returnPrefix.empty() || !AbleName(ir_.returnPrefix) || ir_.returnPrefix == ir_.prefix))
+        { SetCompileError(ar_, "invalid typed IR return marker prefix"); return false; }
+        std::set<std::string> names;
+        for (const NeoCore::IRFunction& function : ir_.functions)
+        {
+            bool valid = AbleName(function.backendName) && names.insert(function.backendName).second &&
+                (function.returnType == ir_.types.Void() || ir_.types.IsStorable(function.returnType)) &&
+                function.parameterTypes.size() <= COMPILE_MAX_ARGUMENTS;
+            for (NeoCore::TypeId parameter : function.parameterTypes)
+                valid = valid && ir_.types.IsStorable(parameter);
+            if (!valid) { SetCompileError(ar_, "invalid typed IR function signature"); return false; }
+        }
         for (std::size_t i = 0; i < ir_.nodes.size(); ++i)
             if (!Visit(i, 1)) return false;
+        for (const NeoCore::IRReturn& statement : ir_.returns)
+        {
+            if (!ValidSpan(statement.source) || statement.functionIndex >= ir_.functions.size())
+            { SetCompileError(ar_, "invalid typed IR return metadata"); return false; }
+            const NeoCore::TypeId expected = ir_.functions[statement.functionIndex].returnType;
+            const bool noValue = statement.valueIndex == static_cast<std::size_t>(-1);
+            if ((noValue && expected != ir_.types.Void()) || (!noValue &&
+                (statement.valueIndex >= ir_.nodes.size() || expected == ir_.types.Void() ||
+                    ir_.nodes[statement.valueIndex].typeId != expected)))
+            { SetCompileError(ar_, "invalid typed IR return type contract"); return false; }
+        }
         return true;
     }
 };
@@ -3116,12 +3283,185 @@ static eNOperation CoreIRNumberOp(NeoCore::IROp operation, NeoCore::IRValueType 
     }
 }
 
+static eNOperation CoreIRWriteOp(NeoCore::IROp operation, NeoCore::IRValueType type)
+{
+    using NeoCore::IROp;
+    switch (operation)
+    {
+    case IROp::AddAssign: return CoreIRNumberOp(IROp::Add, type);
+    case IROp::SubtractAssign: return CoreIRNumberOp(IROp::Subtract, type);
+    case IROp::MultiplyAssign: return CoreIRNumberOp(IROp::Multiply, type);
+    case IROp::DivideAssign: return CoreIRNumberOp(IROp::Divide, type);
+    case IROp::RemainderAssign: return CoreIRNumberOp(IROp::Remainder, type);
+    case IROp::BitAndAssign: return CoreIRNumberOp(IROp::BitAnd, type);
+    case IROp::BitOrAssign: return CoreIRNumberOp(IROp::BitOr, type);
+    case IROp::BitXorAssign: return CoreIRNumberOp(IROp::BitXor, type);
+    case IROp::ShiftLeftAssign: return CoreIRNumberOp(IROp::ShiftLeft, type);
+    case IROp::ShiftRightAssign: return CoreIRNumberOp(IROp::ShiftRight, type);
+    case IROp::PreIncrement: return CoreIRNumberOp(IROp::Add, type);
+    case IROp::PreDecrement: return CoreIRNumberOp(IROp::Subtract, type);
+    case IROp::PostIncrement: return CoreIRNumberOp(IROp::Add, type);
+    case IROp::PostDecrement: return CoreIRNumberOp(IROp::Subtract, type);
+    default: return NOP_NONE;
+    }
+}
+
+static SOperand SnapshotCoreIRValue(SOperand value, CArchiveRdWC& ar, SFunctions& funs, int line)
+{
+    MaterializeValue(value, ar, funs);
+    if (!IsTempVar(value._iVar) && !IsCompileConstant(value._iVar))
+    {
+        const int saved = funs._cur->AllocLocalTempVar();
+        funs._cur->Push_OP2(ar, NOP_MOV, saved, value._iVar, false, line);
+        return SOperand(saved);
+    }
+    return value;
+}
+
+static bool ResolveCoreIRStorage(const NeoCore::IRNode& node, SOperand& target,
+    CArchiveRdWC& ar, SFunctions& funs, SVars& vars)
+{
+    target = SOperand(FindReadableVar(funs, vars, node.storage.backendName));
+    if (target.IsInvalidValue() || target.IsNone() || IsTempVar(target._iVar) || IsCompileConstant(target._iVar))
+    {
+        SetCompileError(ar, "unresolved or readonly typed IR storage '%s'", node.storage.backendName.c_str());
+        return false;
+    }
+    // 구조체는 평면 값 목록이다. 우변이 끝난 뒤 마지막 필드를 소유한 목록까지 다시 찾는다.
+    for (std::size_t i = 0; i + 1 < node.storage.fields.size(); ++i)
+    {
+        const int value = funs._cur->AllocLocalTempVar();
+        funs._cur->Push_OP(ar, NOP_CLT_READ, target._iVar,
+            funs.AddStaticInt(static_cast<NS_INT>(node.storage.fields[i])), value, node.source.line);
+        target = SOperand(value);
+    }
+    return true;
+}
+
+static SOperand ReadCoreIRStorage(const NeoCore::IRNode& node, const SOperand& target,
+    CArchiveRdWC& ar, SFunctions& funs)
+{
+    if (!node.storage.fields.empty())
+    {
+        const int value = funs._cur->AllocLocalTempVar();
+        funs._cur->Push_OP(ar, NOP_CLT_READ, target._iVar,
+            funs.AddStaticInt(static_cast<NS_INT>(node.storage.fields.back())), value, node.source.line);
+        return SOperand(value);
+    }
+    return node.storage.kind == NeoCore::IRStorageKind::Cell
+        ? EmitCoreAggregate("cellget", &target, 0, ar, funs, node.source.line) : target;
+}
+
+static bool EmitCoreIRNode(std::size_t index, SOperand& result,
+    CArchiveRdWC& ar, SFunctions& funs, SVars& vars);
+
+// 호출 인자는 순서대로 평가한 뒤 한꺼번에 인자 창으로 옮긴다. 중첩 호출이 같은 창을 재사용한다.
+static bool EmitCoreIRCall(const NeoCore::IRNode& node, const std::string& name, SOperand& result,
+    CArchiveRdWC& ar, SFunctions& funs, SVars& vars)
+{
+    if (funs.GetCurFunName() == GLOBAL_INIT_FUN_NAME && !ar._allowGlobalInitLogic)
+    { SetParserCompileError(ar, PCE_GLOBAL_CALL_NOT_ALLOWED); return false; }
+    SFunctionInfo* function = funs.FindFun(name);
+    if (!function || function->_funType == FUNT_BUILT_IN || function->_args.size() != node.inputs.size())
+    { SetCompileError(ar, "unresolved or inconsistent typed IR function '%s'", name.c_str()); return false; }
+    CheckCompileRange("call arguments", static_cast<int64_t>(node.inputs.size()), 0, COMPILE_MAX_ARGUMENTS);
+    std::vector<SOperand> arguments;
+    std::vector<int> producerOffsets, callCounts;
+    std::vector<int> laterEffects(node.inputs.size(), 0);
+    int effects = 0;
+    for (std::size_t i = node.inputs.size(); i > 0; --i)
+    {
+        laterEffects[i - 1] = effects;
+        effects |= (*ar.m_coreIREffects)[node.inputs[i - 1]];
+    }
+    for (std::size_t i = 0; i < node.inputs.size(); ++i)
+    {
+        const int start = funs._cur->_code->GetBufferOffset();
+        SOperand value;
+        if (!EmitCoreIRNode(node.inputs[i], value, ar, funs, vars)) return false;
+        MaterializeValue(value, ar, funs);
+        if (NeedsSnapshot(value, laterEffects[i])) value = SnapshotCoreIRValue(value, ar, funs, node.source.line);
+        arguments.push_back(value);
+        int producer = -1;
+        if (funs._cur->_iLastOPOffset == start && !value.IsFun() &&
+            value._iArrayIndex == INVALID_ERROR_PARSEJOB && IsTempVar(value._iVar) &&
+            funs._cur->GetN(start, 0) == value._iVar &&
+            SFunctionInfo::IsRetargetableProducerOP(funs._cur->GetOP(start)))
+            producer = start;
+        producerOffsets.push_back(producer);
+        callCounts.push_back(funs._cur->_callOpEmitCount);
+    }
+    const int finalCalls = funs._cur->_callOpEmitCount;
+    for (std::size_t i = 0; i < arguments.size(); ++i)
+    {
+        const int slot = COMPILE_CALLARG_VAR_BEGIN + 1 + static_cast<int>(i);
+        // 뒤 인자가 호출 창을 쓰지 않을 때만 기존 단일 생산자 융합을 유지한다.
+        if (producerOffsets[i] >= 0 && callCounts[i] == finalCalls && (laterEffects[i] & EXPR_EFFECT_CALL) == 0)
+            funs._cur->SetN(producerOffsets[i], 0, static_cast<s16>(slot));
+        else if (!TryPushImmediate(ar, funs, slot, arguments[i], node.source.line))
+            funs._cur->Push_OP2(ar, NOP_MOV, slot, arguments[i]._iVar, arguments[i].IsShort(), node.source.line);
+    }
+    result = SOperand(funs._cur->AllocLocalTempVar());
+    funs._cur->Push_Call(ar, NOP_CALL, function->_funID, static_cast<int>(arguments.size()), result._iVar, node.source.line);
+    return true;
+}
+
+static bool EmitCoreIRStorage(const NeoCore::IRNode& node, SOperand& result,
+    CArchiveRdWC& ar, SFunctions& funs, SVars& vars)
+{
+    using NeoCore::IROp;
+    SOperand value;
+    if (!node.inputs.empty())
+    {
+        // 우변을 먼저 끝내고 값을 보존한 다음 대상 셀과 옛 값을 찾는다.
+        if (!EmitCoreIRNode(node.inputs[0], value, ar, funs, vars)) return false;
+        value = SnapshotCoreIRValue(value, ar, funs, node.source.line);
+    }
+    SOperand target;
+    if (!ResolveCoreIRStorage(node, target, ar, funs, vars)) return false;
+    if (node.op == IROp::LoadStorage)
+    {
+        result = ReadCoreIRStorage(node, target, ar, funs);
+        return true;
+    }
+    SOperand old;
+    if (node.op != IROp::Assign)
+    {
+        old = ReadCoreIRStorage(node, target, ar, funs);
+        const bool postfix = node.op == IROp::PostIncrement || node.op == IROp::PostDecrement;
+        if (postfix) old = SnapshotCoreIRValue(old, ar, funs, node.source.line);
+        if (node.inputs.empty())
+            value = SOperand(node.type == NeoCore::IRValueType::Float ? funs.AddStaticNum(1.0) : funs.AddStaticInt(1));
+        value = EmitCoreNumber(CoreIRWriteOp(node.op, node.type), old, value, ar, funs, node.source.line);
+    }
+    SOperand stored = value;
+    if (!node.storage.fields.empty())
+    {
+        funs._cur->Push_OP(ar, NOP_CLT_MOV, target._iVar,
+            funs.AddStaticInt(static_cast<NS_INT>(node.storage.fields.back())), value._iVar, node.source.line);
+    }
+    else if (node.storage.kind == NeoCore::IRStorageKind::Cell)
+    {
+        const SOperand arguments[] = { value, target };
+        stored = EmitCoreAggregate("cellset", arguments, 0, ar, funs, node.source.line);
+    }
+    else
+    {
+        // 대입식 결과 임시는 이후에도 사용한다. MOV peephole로 생산자의 목적지를 변수로 옮기지 않는다.
+        funs._cur->Push_OP(ar, NOP_MOV, target._iVar, value._iVar, 0, node.source.line);
+    }
+    result = node.op == IROp::PostIncrement || node.op == IROp::PostDecrement ? old : stored;
+    return true;
+}
+
 static bool EmitCoreIRNode(std::size_t index, SOperand& result,
     CArchiveRdWC& ar, SFunctions& funs, SVars& vars)
 {
     using NeoCore::IROp;
     ParserDepthGuard depth(ar);
     const NeoCore::IRNode& node = ar.m_coreTypedIR->nodes[index];
+    if (node.op >= IROp::LoadStorage && node.op <= IROp::PostDecrement)
+        return EmitCoreIRStorage(node, result, ar, funs, vars);
     switch (node.op)
     {
     case IROp::IntLiteral:
@@ -3136,7 +3476,7 @@ static bool EmitCoreIRNode(std::size_t index, SOperand& result,
         SetCompileError(ar, "unresolved typed IR symbol '%s'", node.backendName.c_str()); return false;
     case IROp::LegacyExpression:
     {
-        // 호출·선택자·대입은 이 잎의 차례에서만 실행 코드를 만든다. 인자를 먼저 모으면 오류 순서가 바뀐다.
+        // 아직 이관하지 않은 호출·선택자는 이 잎의 차례에서만 실행 코드를 만든다. 인자를 먼저 모으면 오류 순서가 바뀐다.
         CArchiveRdWC fragment;
         const std::string source = node.legacySource + ";";
         CheckCompileRange("typed IR fragment bytes", static_cast<int64_t>(source.size()), 0, INT_MAX - 1);
@@ -3178,6 +3518,12 @@ static bool EmitCoreIRNode(std::size_t index, SOperand& result,
         if (!valid && ar.m_sErrorString.empty()) SetCompileError(ar, "invalid typed IR expression fragment");
         return valid;
     }
+    case IROp::ScriptCall:
+        return EmitCoreIRCall(node, ar.m_coreTypedIR->functions[node.functionIndex].backendName, result, ar, funs, vars);
+    case IROp::NullableConvert:
+        return EmitCoreIRNode(node.inputs[0], result, ar, funs, vars);
+    case IROp::CopyStruct:
+        return EmitCoreIRCall(node, node.backendName, result, ar, funs, vars);
     default: break;
     }
 
@@ -3198,7 +3544,8 @@ static bool EmitCoreIRNode(std::size_t index, SOperand& result,
         if (operands[0].IsFloatLiteral())
         { const NS_FLOAT value = -operands[0]._floatLiteral; result.SetFloatLiteral(funs.AddStaticNum(value), value); return true; }
         result = SOperand(funs._cur->AllocLocalTempVar());
-        funs._cur->Push_OP2(ar, NOP_MOV_MINUS, result._iVar, operands[0]._iVar, false, node.source.line);
+        funs._cur->Push_OP2(ar, node.type == NeoCore::IRValueType::Int ? NOP_I64_NEG : NOP_F64_NEG,
+            result._iVar, operands[0]._iVar, false, node.source.line);
         return true;
     }
     if (node.op == IROp::BitNot)
@@ -3231,7 +3578,7 @@ static bool EmitCoreIRNode(std::size_t index, SOperand& result,
     { const NS_FLOAT value = static_cast<NS_FLOAT>(operands[0]._intLiteral); result.SetFloatLiteral(funs.AddStaticNum(value), value); return true; }
     if (node.op == IROp::ToInt && operands[0].IsFloatLiteral())
     { const NS_INT value = NeoFloatToInt(operands[0]._floatLiteral); result.SetIntLiteral(funs.AddStaticInt(value), value); return true; }
-    if (node.inputs.size() == 2 && TryFoldLiteralBinOp(operands[0], GetTypedGenericArithmetic(op), operands[1], funs))
+    if (node.inputs.size() == 2 && TryFoldLiteralBinOp(operands[0], TypedBinaryOp(op), operands[1], funs))
     { result = operands[0]; return true; }
     if (node.op == IROp::Greater || node.op == IROp::GreaterEqual) std::swap(operands[0], operands[1]);
     result = SOperand(funs._cur->AllocLocalTempVar());
@@ -3243,13 +3590,12 @@ static bool EmitCoreIRNode(std::size_t index, SOperand& result,
     return true;
 }
 
-static bool ParseCoreIR(SOperand& result, const std::string& name,
-    CArchiveRdWC& ar, SFunctions& funs, SVars& vars)
+static bool ParseCoreIRIndex(const std::string& name, const std::string& prefix,
+    std::size_t count, std::size_t& index, CArchiveRdWC& ar)
 {
-    const NeoCore::TypedIR& ir = *ar.m_coreTypedIR;
-    std::size_t index = 0;
-    bool valid = name.size() > ir.prefix.size();
-    for (std::size_t i = ir.prefix.size(); valid && i < name.size(); ++i)
+    index = 0;
+    bool valid = name.size() > prefix.size();
+    for (std::size_t i = prefix.size(); valid && i < name.size(); ++i)
     {
         const int digit = name[i] - '0';
         if (digit < 0 || digit > 9 || index > ((std::numeric_limits<std::size_t>::max)() - digit) / 10)
@@ -3257,9 +3603,41 @@ static bool ParseCoreIR(SOperand& result, const std::string& name,
         else index = index * 10 + digit;
     }
     std::string token;
-    if (!valid || index >= ir.nodes.size() || GetToken(ar, token) != TK_L_SMALL || GetToken(ar, token) != TK_R_SMALL)
-    { SetCompileError(ar, "invalid typed IR expression marker '%s'", name.c_str()); return false; }
-    return EmitCoreIRNode(index, result, ar, funs, vars);
+    if (!valid || index >= count || GetToken(ar, token) != TK_L_SMALL || GetToken(ar, token) != TK_R_SMALL)
+    { SetCompileError(ar, "invalid typed IR marker '%s'", name.c_str()); return false; }
+    return true;
+}
+
+static bool ParseCoreIR(SOperand& result, const std::string& name,
+    CArchiveRdWC& ar, SFunctions& funs, SVars& vars)
+{
+    const NeoCore::TypedIR& ir = *ar.m_coreTypedIR;
+    std::size_t index;
+    return ParseCoreIRIndex(name, ir.prefix, ir.nodes.size(), index, ar) &&
+        EmitCoreIRNode(index, result, ar, funs, vars);
+}
+
+static bool ParseCoreIRReturn(const std::string& name, CArchiveRdWC& ar, SFunctions& funs, SVars& vars)
+{
+    const NeoCore::TypedIR& ir = *ar.m_coreTypedIR;
+    std::size_t index;
+    if (!ParseCoreIRIndex(name, ir.returnPrefix, ir.returns.size(), index, ar)) return false;
+    const NeoCore::IRReturn& statement = ir.returns[index];
+    if (ir.functions[statement.functionIndex].backendName != funs.GetCurFunName())
+    { SetCompileError(ar, "typed IR return belongs to another function"); return false; }
+    std::string token;
+    if (GetToken(ar, token) != TK_SEMICOLON)
+    { SetParserCompileError(ar, PCE_INVALID_RETURN_STATEMENT); return false; }
+    if (statement.valueIndex == static_cast<std::size_t>(-1))
+        funs._cur->Push_RETURN(ar, 0, true, statement.source.line);
+    else
+    {
+        SOperand value;
+        if (!EmitCoreIRNode(statement.valueIndex, value, ar, funs, vars)) return false;
+        MaterializeValue(value, ar, funs);
+        funs._cur->Push_RETURN(ar, value._iVar, value.IsShort(), statement.source.line);
+    }
+    return true;
 }
 
 bool ParseString(SOperand& operand, TK_TYPE tkTypePre, CArchiveRdWC& ar, SFunctions& funs, SVars& vars)
@@ -3300,6 +3678,9 @@ bool ParseString(SOperand& operand, TK_TYPE tkTypePre, CArchiveRdWC& ar, SFuncti
 		if (value._iVar == -1)
 			value._iVar = FindPublicModuleVar(vars, pOtherModule, tk1);
 	}
+    if (pOtherModule == nullptr && ar.m_coreTypedIR && !ar.m_coreTypedIR->returnPrefix.empty() &&
+        tk1.compare(0, ar.m_coreTypedIR->returnPrefix.size(), ar.m_coreTypedIR->returnPrefix) == 0)
+    { SetCompileError(ar, "typed IR return marker is only valid in a return statement"); return false; }
 	if (pOtherModule == nullptr && ar.m_coreTypedIR && !ar.m_coreTypedIR->prefix.empty() &&
         tk1.compare(0, ar.m_coreTypedIR->prefix.size(), ar.m_coreTypedIR->prefix) == 0)
     {
@@ -3373,7 +3754,7 @@ bool ParseString(SOperand& operand, TK_TYPE tkTypePre, CArchiveRdWC& ar, SFuncti
 		// -L()[i], -S().len() 의 부호는 호출 결과가 아니라 최종 선택자 결과에 한 번만 적용한다.
 		MaterializeValue(value, ar, funs);
 		const int negated = IsTempVar(value._iVar) ? value._iVar : funs._cur->AllocLocalTempVar();
-		funs._cur->Push_OP2(ar, NOP_MOV_MINUS, negated, value._iVar, false);
+		funs._cur->Push_OP2(ar, LEGACY_EMIT_OP(ar, NOP_MOV_MINUS), negated, value._iVar, false);
 		value = SOperand(negated);
 	}
 	operand = value;
@@ -3402,7 +3783,7 @@ static bool ParseUnaryOperand(SOperand& operand, TK_TYPE prefix, CArchiveRdWC& a
             return false;
         }
         if (operand.IsArray())
-            WriteElement(operand, type == TK_PLUS2 ? NOP_ADD2 : NOP_SUB2, funs.AddStaticInt(1), false, ar, funs);
+            WriteElement(operand, LEGACY_EMIT_OP(ar, type == TK_PLUS2 ? NOP_ADD2 : NOP_SUB2), funs.AddStaticInt(1), false, ar, funs);
         else funs._cur->Push_OP1(ar, type == TK_PLUS2 ? NOP_INC : NOP_DEC, operand._iVar);
     }
     else if (type == TK_L_SMALL)
@@ -3452,7 +3833,7 @@ static bool ParseUnaryOperand(SOperand& operand, TK_TYPE prefix, CArchiveRdWC& a
         const int old = funs._cur->AllocLocalTempVar();
         ReadElement(operand, old, ar, funs);
         if (operand.IsArray())
-            WriteElement(operand, next == TK_PLUS2 ? NOP_ADD2 : NOP_SUB2, funs.AddStaticInt(1), false, ar, funs);
+            WriteElement(operand, LEGACY_EMIT_OP(ar, next == TK_PLUS2 ? NOP_ADD2 : NOP_SUB2), funs.AddStaticInt(1), false, ar, funs);
         else
             funs._cur->Push_OP1(ar, next == TK_PLUS2 ? NOP_INC : NOP_DEC, operand._iVar);
         operand = SOperand(old);
@@ -3483,9 +3864,16 @@ static bool ParseUnaryOperand(SOperand& operand, TK_TYPE prefix, CArchiveRdWC& a
     }
     const int result = funs._cur->AllocLocalTempVar();
     if (prefix == TK_NOT)
+    {
+#if NEOSCRIPT_LEGACY_ARITHMETIC
         funs._cur->Push_OP(ar, NOP_XOR3, result, operand._iVar, funs.AddStaticInt(-1), false, false);
+#else
+        SetCompileError(ar, "bitwise expressions require typed IR");
+        return false;
+#endif
+    }
     else
-        funs._cur->Push_OP2(ar, prefix == TK_MINUS ? NOP_MOV_MINUS : NOP_LOG_NOT, result, operand._iVar, false);
+        funs._cur->Push_OP2(ar, prefix == TK_MINUS ? LEGACY_EMIT_OP(ar, NOP_MOV_MINUS) : NOP_LOG_NOT, result, operand._iVar, false);
     operand = SOperand(result);
     return true;
 }
@@ -3830,7 +4218,8 @@ TK_TYPE ParseJob(bool bReqReturn, SOperand& sResultStack, std::vector<SJumpValue
 			}
 		}
 		if (iFindPriority > maximumPriority) break;
-		auto op = TokenToOP(operators[iFindOffset], iTempPriority);
+		const TK_TYPE operatorToken = operators[iFindOffset];
+		auto op = TokenToOP(operatorToken, iTempPriority);
 		RemoveAt<TK_TYPE>(operators, iFindOffset);
 
 		SOperand& a = operands[iFindOffset];
@@ -3838,14 +4227,21 @@ TK_TYPE ParseJob(bool bReqReturn, SOperand& sResultStack, std::vector<SJumpValue
 
 		// 양쪽이 숫자 리터럴이면 여기서 계산해 버린다(런타임 연산이 통째로 사라진다).
 		// 결과 리터럴이 다시 피연산자가 되므로 (2 + 3) * 4 처럼 중첩된 식도 끝까지 접힌다.
-		if (TryFoldLiteralBinOp(a, op, b, funs))
+		if (TryFoldLiteralBinOp(a, TokenBinaryOp(operatorToken), b, funs))
 		{
 			operands[iFindOffset] = a;
 			RemoveAt<SOperand>(operands, iFindOffset + 1);
 			continue;
 		}
 
-		// Check the destination before the function-value assignment path too.
+#if !NEOSCRIPT_LEGACY_ARITHMETIC
+        if (op == NOP_NONE)
+        {
+            SetCompileError(ar, "numeric expressions require typed IR");
+            return false;
+        }
+#endif
+        // 함수 값 대입에서도 목적지를 먼저 검사한다.
 		if (op < NOP_VAR_CLEAR && (a.IsFun() || a._readOnly ||
 			(!a.IsArray() && (IsTempVar(a._iVar) || IsCompileConstant(a._iVar)))))
 		{
@@ -3863,6 +4259,7 @@ TK_TYPE ParseJob(bool bReqReturn, SOperand& sResultStack, std::vector<SJumpValue
 			}
 			else if (op == NOP_MOV && !a.IsArray() && b.IsArray())
 				ReadElement(b, a._iVar, ar, funs); // retain READ-to-destination fusion
+#if NEOSCRIPT_LEGACY_ARITHMETIC
 			else if (g_neoFuseCollectionReads && !a.IsArray() && b.IsArray() && !b._assignedResult &&
 				ReadArithOpcode(op) != NOP_NONE)
 			{
@@ -3870,6 +4267,7 @@ TK_TYPE ParseJob(bool bReqReturn, SOperand& sResultStack, std::vector<SJumpValue
 				ResolveContainer(b, ar, funs);
 				funs._cur->Push_TableRead(ar, b._iVar, b._iArrayIndex, a._iVar, b.IsHaveShort(), ReadArithOpcode(op));
 			}
+#endif
 			else
 			{
 				MaterializeValue(b, ar, funs); // complete the RHS before resolving the destination
@@ -3921,6 +4319,18 @@ TK_TYPE ParseJob(bool bReqReturn, SOperand& sResultStack, std::vector<SJumpValue
 				SetParserCompileError(ar, PCE_UNEXPECTED_GLOBAL_BLOCK_END);
 				return TK_NONE;
 			}
+            if (ar.m_coreTypedIR && !ar.m_coreTypedIR->returnPrefix.empty())
+            {
+                tkType2 = GetToken(ar, tk2);
+                if (tkType2 == TK_STRING && tk2.compare(0, ar.m_coreTypedIR->returnPrefix.size(), ar.m_coreTypedIR->returnPrefix) == 0)
+                {
+                    if (!ParseCoreIRReturn(tk2, ar, funs, vars)) return TK_NONE;
+                    r = TK_SEMICOLON;
+                    blEnd = true;
+                    break;
+                }
+                ar.PushToken(tkType2, tk2);
+            }
 			iTempOffset.Reset();
 			if (TK_SEMICOLON != ParseShortCircuitLogic(true, iTempOffset, ar, funs, vars, TK_SEMICOLON, TK_NONE, TK_NONE, TK_NONE))
 			{
@@ -4182,7 +4592,7 @@ TK_TYPE ParseJob(bool bReqReturn, SOperand& sResultStack, std::vector<SJumpValue
 				if (a.IsArray())
 				{
 					const int one = funs.AddStaticInt(1);
-					WriteElement(a, tkType1 == TK_PLUS2 ? NOP_ADD2 : NOP_SUB2, one, false, ar, funs);
+					WriteElement(a, LEGACY_EMIT_OP(ar, tkType1 == TK_PLUS2 ? NOP_ADD2 : NOP_SUB2), one, false, ar, funs);
 					const int value = funs._cur->AllocLocalTempVar();
 					ReadElement(a, value, ar, funs);
 					a = SOperand(value);
@@ -4219,7 +4629,7 @@ TK_TYPE ParseJob(bool bReqReturn, SOperand& sResultStack, std::vector<SJumpValue
 						ReadElement(a, iTempOffset2, ar, funs);
 					}
 					const int one = funs.AddStaticInt(1);
-					WriteElement(a, tkType1 == TK_PLUS2 ? NOP_ADD2 : NOP_SUB2, one, false, ar, funs);
+					WriteElement(a, LEGACY_EMIT_OP(ar, tkType1 == TK_PLUS2 ? NOP_ADD2 : NOP_SUB2), one, false, ar, funs);
 				}
 				else
 				{
@@ -6529,11 +6939,15 @@ static int HoistableOperandMask(eNOperation op)
 	switch (op)
 	{
 	case NOP_MOV:			// n1 = dest
+#if NEOSCRIPT_LEGACY_ARITHMETIC
 	case NOP_MOV_MINUS:		// n1 = dest
 	case NOP_ADD2:			// n1 = dest 겸 src
+#endif
 		return 0x2;
+#if NEOSCRIPT_LEGACY_ARITHMETIC
 	case NOP_ADD3:	case NOP_SUB3:	case NOP_MUL3:
 	case NOP_AND:
+#endif
 	case NOP_JMP_GREAT:		case NOP_JMP_GREAT_EQ:
 	case NOP_JMP_LESS:		case NOP_JMP_LESS_EQ:
 	case NOP_JMP_EQUAL2:	case NOP_JMP_NEQUAL:

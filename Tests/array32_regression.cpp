@@ -162,9 +162,9 @@ foreach(var x in values){
  unit[i]=x;list[0][i]=x;map.v[i]=x;array[0][i]=x;
  if(!same(unit[i],expected) || !same(list[0][i],expected) || !same(map.v[i],expected) || !same(array[0][i],expected))return false;
  unit[i]=1.0;unit[i]*=x;if(!same(unit[i],expected))return false;
- unit[i]=1.0;unit[i]/=x;if(!same(unit[i],inv))return false;
- unit[i]=0.0;unit[i]+=x;if(!same(unit[i],system.array32(0.0+expected,1)[0]))return false;
- unit[i]=0.0;unit[i]-=x;if(!same(unit[i],system.array32(0.0-expected,1)[0]))return false;
+ unit[i]=1.0;unit[i]/=x;if(!same(unit[i],system.array32(1.0/x,1)[0]))return false;
+ unit[i]=0.0;unit[i]+=x;if(!same(unit[i],system.array32(0.0+x,1)[0]))return false;
+ unit[i]=0.0;unit[i]-=x;if(!same(unit[i],system.array32(0.0-x,1)[0]))return false;
  if(!same(direct[i],expected))return false;
  }}return true;
 )NS";

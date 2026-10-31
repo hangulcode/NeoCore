@@ -16,7 +16,7 @@ Supported parameter/property types are `int` (int64), `float` (binary64), `bool`
 `string`, `Vector2`, `Vector3`, `Vector4`, `Quaternion`, registered native object
 types, and their nullable forms. Methods also
 support `void` results. Every member has one exact signature; scripts receive
-ordinary int-to-float widening before the call. Reference parameters are rejected.
+ordinary int-to-float widening before the call. The language has no reference parameters.
 
 Create all schema entries before constructing `HostBindings`. Bind every method,
 getter, setter, and global before compilation, even if a source file does not use
@@ -116,14 +116,57 @@ while another argument is being resolved.
 Changing the original `HostBindings` afterward does not update that program.
 The resolver's user-data pointer and any pointers captured by callbacks are not
 deep-copied or owned by NeoCore; keep their target registry/data alive for the
-program's lifetime. The host also controls object destruction and ID reuse.
+lifetime of every instance that can use them. The host also controls object
+destruction and ID reuse.
 
 Host globals cannot be rebound from script, but writable object properties can
-change. `Program::SetHostObject(name, id, error)` changes a global ID in one
-compiled program without recompiling. The next access reads the new ID; a script
-variable that previously copied the global still holds its previous ID.
+change. `Instance::SetHostObject(name, id, error)` changes a global ID in that
+instance without recompiling or changing its siblings. Set it before `Run` when
+file initializers must observe the instance-specific object. The next access reads
+the new ID; a script variable that previously copied the global still holds its
+previous ID. `Program::SetHostObject` targets only the program's default instance.
 Nonnullable globals reject ID zero. The host validates actual object state when
 the ID is resolved for a later member call.
+
+## Shared programs and execution instances
+
+`Program::Compile` creates the shared code and binding snapshot.
+`Program::CreateInstance(error)` creates an independent set of globals, bound
+global IDs, and invocation state. Each instance initializes its globals at most
+once through `Run`; `Call` initializes them first if necessary. An initialization
+failure stays a failure rather than rerunning partially completed side effects.
+Instances retain the shared code even if the `Program` factory is destroyed.
+This public wrapper reuses the existing backend Runtime/Program/Worker ownership
+and shared execution-context pool from the inherited host sample. It adds no
+separate VM or per-object runtime.
+
+`Program::Run`, `Call`, `Resume`, `IsSuspended`, and `SetHostObject` are convenience
+operations on one default instance. Explicit instances are suitable for several
+objects using the same compiled script. Instances sharing a program must execute
+serially on one host thread; this interface does not promise parallel VM access.
+
+`Instance::Call` and `Resume` return `Result` with `ExecutionStatus::Completed`,
+`Suspended`, or `Failed`. `ok()` is true for both successful completion and a
+successful suspension; use `suspended()` or `Instance::IsSuspended()` to decide
+whether another host frame must resume execution. `sleep(0)` suspends once rather
+than running the continuation inside the current call. Positive sleep uses elapsed
+real time and takes integer milliseconds. Negative sleep durations clamp to zero;
+durations above `INT32_MAX` milliseconds fail at runtime. `Resume(deltaTime)` accepts
+a finite, nonnegative duration within the float32 range, but that parameter is currently reserved and does not advance the
+sleep timer. A resume may suspend again or return the completed scalar result.
+
+One instance owns one pending execution. Calling a new exported function while it
+is suspended fails without replacing the pending call. Queue such events in the
+host until the instance is idle. If automatic file initialization suspends during
+`Call`, the instance retains that original function and its owned argument values.
+`Resume` completes initialization and then starts the retained call; do not submit
+it again. This does not queue later calls made while the instance is busy.
+Destroying a suspended instance abandons its own pending execution and leaves
+other instances intact.
+
+See the [mini game host](../Samples/neocore/minigame/README.md) for one program
+shared by three instances, frame/event dispatch, callback reentry, suspension, and
+object destruction between sleep and resume.
 
 ## Reentry, borrowing, and execution order
 
@@ -133,8 +176,9 @@ by `Receiver`/`Object` are borrowed only until reentry or an external lifetime
 change; they are not pinned resources.
 
 Use `HostCall::CallScript(name, arguments)` for a synchronous nested call. It uses
-the exported scalar `Program::Call` boundary: native objects, references, and null
-arguments are not supported there. Reentry while the program's top-level
+the exported scalar `Instance::Call` boundary of the invoking instance: native
+objects and null arguments are not supported there. A shared service callback
+therefore reenters its caller's instance. Reentry while that instance's top-level
 initialization is incomplete is rejected. It invalidates the host call's cached object
 pointers before and after execution. Reacquire them through `Receiver`/`Object`
 after a successful nested call. A nested failure is sticky: ignoring its `Result`
@@ -151,16 +195,16 @@ If another host callback or deletion path changes object lifetime without going
 through `CallScript`, use `ResolveReceiver`/`ResolveObject` to force a new lookup.
 Check returned pointers before dereferencing them. Never continue using an old
 local C++ pointer merely because the wrapper's cache was invalidated. Do not
-destroy the executing `Program`, and do not invoke it concurrently from another
-thread. Retaining a `HostCall`, borrowed pointer, or argument reference for later
+destroy the executing `Instance` (or a `Program` owning its executing default
+instance), and do not invoke instances sharing the program concurrently from
+another thread. Retaining a `HostCall`, borrowed pointer, or argument reference for later
 asynchronous execution is unsupported; typed retained callbacks are future work.
 
 A property read invokes its getter. Assignment first evaluates the right-hand
 side, then the entire target receiver path once. Compound assignment then reads
 the property, computes the result, and calls its setter. Pre/post-increments keep
 their usual result values. Nested property paths preserve these rules.
-Read-only/write-only misuse is rejected during compilation. A property cannot
-bind a script `T&`; computed accessors do not expose addressable storage.
+Read-only/write-only misuse is rejected during compilation.
 
 ## Current implementation limits
 
@@ -190,8 +234,7 @@ rejected binding syntax.
 
 Nullable native locals and by-value parameters can access members within a
 matching `if (value != null)` branch, or the non-null branch of `if (value == null)`.
-The compiler conservatively invalidates this proof when the variable is assigned
-or exposed through a mutable reference. Globals, aliased variables, nullable
+The compiler conservatively invalidates this proof when the variable is assigned. Globals, nullable
 property chains, and general nullable-value unwrapping are outside this proof.
 The guard proves only that the stored ID is nonzero; each host callback still
 checks that the object is alive.
@@ -212,8 +255,9 @@ if the parent relationship later changes. The saved parent object is resolved
 from that saved ID rather than by reevaluating `GameObject.Parent`.
 
 Host value structs, arrays/other collections, overloads, default arguments,
-reference parameters, full callback signatures, asynchronous callbacks, coroutine
-integration, and typed C ABI/Unity adapters are deferred.
+full callback signatures, asynchronous callbacks, richer coroutine scheduling,
+and typed C ABI/Unity adapters are deferred. Basic `sleep` and host-driven resume
+are supported by the execution-instance API.
 Type and binding IDs are local to their schema snapshot; a portable offline
 binding ABI, schema fingerprinting, and serialized binding-table relinking are
 also future work. Do not serialize live callback pointers or treat these IDs as

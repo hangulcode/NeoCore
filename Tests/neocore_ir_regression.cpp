@@ -30,6 +30,7 @@ struct Value
     std::int64_t integer = 0;
     double number = 0;
     bool boolean = false;
+    std::string text;
     Error error;
 };
 
@@ -43,18 +44,8 @@ Value Invoke(IRuntime& runtime, InstanceHandle instance, const char* name)
     if (result.type == ValueType::Int) result.integer = call.retInt();
     else if (result.type == ValueType::Float) result.number = call.retFloat();
     else if (result.type == ValueType::Bool) result.boolean = call.retBool();
+    else if (result.type == ValueType::String) result.text = call.retString().str();
     return result;
-}
-
-bool Same(const Value& a, const Value& b)
-{
-    if (a.status != b.status || a.status != RunStatus::Completed || a.type != b.type) return false;
-    if (a.type == ValueType::Int) return a.integer == b.integer;
-    if (a.type == ValueType::Bool) return a.boolean == b.boolean;
-    if (a.type == ValueType::Float)
-        return (std::isnan(a.number) && std::isnan(b.number)) ||
-            std::memcmp(&a.number, &b.number, sizeof(double)) == 0;
-    return a.type == ValueType::None;
 }
 
 CompileDesc Description(const NeoCore::StaticCompileResult& checked, bool debug)
@@ -90,11 +81,11 @@ ProgramHandle Compile(IRuntime& runtime, const NeoCore::StaticCompileResult& che
     return program;
 }
 
-Value Run(IRuntime& runtime, const std::string& source, bool typed, bool debug,
+Value Run(IRuntime& runtime, const std::string& source, bool debug,
     bool image, const std::string& label)
 {
     NeoCore::StaticCompileResult checked;
-    Check(NeoCore::CompileStaticSource(source, checked, typed), label + " frontend: " + checked.errorMessage);
+    Check(NeoCore::CompileStaticSource(source, checked), label + " frontend: " + checked.errorMessage);
     if (!checked.success) return Value();
     ProgramHandle program = Compile(runtime, checked, debug, image, label);
     if (!program) return Value();
@@ -153,16 +144,14 @@ void Structure()
         Check(node.op != NeoCore::IROp::LegacyExpression, "plain numeric expression does not retain expression text");
     }
     Check(symbols >= 2, "IR retains both checked parameter bindings");
-    Check(checked.loweredSource.find(ir.prefix) != std::string::npos,
+    Check(checked.loweredSource.find(ir.returnPrefix) != std::string::npos,
         "transitional statement skeleton references an IR root");
     const char* numericSuffixes[] = {"iadd", "fmul", "itof"};
     for (const char* suffix : numericSuffixes)
         Check(checked.loweredSource.find(checked.backendIntrinsicPrefix + suffix) == std::string::npos,
             std::string("migrated expression has no textual numeric intrinsic: ") + suffix);
 
-    NeoCore::StaticCompileResult generic;
-    Check(NeoCore::CompileStaticSource(source, generic, false), "generic control frontend");
-    Check(generic.typedIR.nodes.empty(), "generic differential control does not consume typed IR");
+
 }
 
 // 바이트코드가 원래 식 문자열이 아니라 IR 상수에서 생성되는지 직접 확인한다.
@@ -252,6 +241,67 @@ void InvalidMetadata(IRuntime& runtime, bool debug)
     }
 }
 
+void StorageStructure()
+{
+    NeoCore::StaticCompileResult checked;
+    const char* source = "struct S{int x;};export int Probe(){int value=1;S object=S(2);int direct=3;"
+        "direct=7;value+=4;int old=value++;++object.x;bool flag=false;flag=true;string text=\"before\";text=\"after\";"
+        "return direct+old+value+object.x;}";
+    Check(NeoCore::CompileStaticSource(source, checked), "storage metadata frontend: " + checked.errorMessage);
+    if (!checked.success) return;
+    bool variable = false, field = false, boolean = false, string = false, read = false;
+    for (const auto& node : checked.typedIR.nodes)
+    {
+        if (node.op == NeoCore::IROp::Assign)
+        {
+            variable = variable || node.storage.kind == NeoCore::IRStorageKind::Variable;
+            boolean = boolean || node.type == NeoCore::IRValueType::Bool;
+            string = string || node.type == NeoCore::IRValueType::String;
+        }
+        if (node.op == NeoCore::IROp::PreIncrement)
+            field = field || (node.storage.kind == NeoCore::IRStorageKind::Variable && node.storage.fields.size() == 1);
+        if (node.op == NeoCore::IROp::LoadStorage)
+            read = read || (node.storage.kind == NeoCore::IRStorageKind::Variable && !node.storage.fields.empty());
+        if (node.storage.kind != NeoCore::IRStorageKind::Invalid)
+        {
+            Check(!node.storage.backendName.empty(), "storage node retains a resolved root binding");
+            Check(node.legacySource.empty(), "storage node does not reparse its source expression");
+            Check(node.typeId != NeoCore::InvalidType && node.source.line > 0,
+                "storage node retains checked type and source position");
+        }
+    }
+    Check(variable && field && read, "IR distinguishes direct storage and struct field paths");
+    Check(boolean && string, "boolean and string assignments use storage IR");
+}
+
+void InvalidStorageMetadata(IRuntime& runtime, bool debug)
+{
+    NeoCore::StaticCompileResult valid;
+    Check(NeoCore::CompileStaticSource("export int Probe(){int value=2;value+=3;return value;}", valid),
+        "malformed storage fixture frontend");
+    if (!valid.success) return;
+    const std::size_t write = FindOp(valid.typedIR, NeoCore::IROp::AddAssign);
+    Check(write < valid.typedIR.nodes.size(), "malformed storage fixture contains typed compound assignment");
+    if (write == valid.typedIR.nodes.size()) return;
+    for (int change = 0; change < 5; ++change)
+    {
+        NeoCore::StaticCompileResult altered = valid;
+        NeoCore::IRNode& node = altered.typedIR.nodes[write];
+        if (change == 0) node.storage.kind = static_cast<NeoCore::IRStorageKind>(255);
+        else if (change == 1) node.storage.backendName.clear();
+        else if (change == 2) node.inputs.clear();
+        else if (change == 3) node.storage.kind = NeoCore::IRStorageKind::Invalid;
+        else
+        {
+            NeoCore::IRNode& input = altered.typedIR.nodes[node.inputs[0]];
+            input.op = NeoCore::IROp::BoolLiteral;
+            input.type = NeoCore::IRValueType::Bool;
+            input.typeId = altered.types.Bool();
+        }
+        RejectIR(runtime, altered, debug, "bad storage metadata variant " + std::to_string(change));
+    }
+}
+
 void EvaluationOrder(IRuntime& runtime, bool debug)
 {
     struct Case { const char* source; std::int64_t expected; const char* label; };
@@ -266,8 +316,8 @@ void EvaluationOrder(IRuntime& runtime, bool debug)
             "argument snapshot sees assignment hidden behind IR root"},
         {"int x=1;int Replace(){x=8;return 2;}export int Probe(){return x+(Replace()*3);}", 7,
             "global snapshot precedes nested call"},
-        {"int Bump(int& x){x=8;return 2;}export int Probe(){int x=3;return x+(Bump(x)*4);}", 11,
-            "reference snapshot precedes nested call"},
+        {"int x=3;int Bump(){x=8;return 2;}export int Probe(){return x+(Bump()*4);}", 11,
+            "global value snapshot precedes nested mutation"},
         {"export int Probe(){int x=2;int total=x+3;{float x=1.5;total+=int(x*4.0);}return total+x;}", 13,
             "shadowed symbols keep distinct numeric types and storage"},
         {"export int Probe(){int x=1;int y=2;return (x+=3)+(y*=4);}", 12,
@@ -284,9 +334,7 @@ void EvaluationOrder(IRuntime& runtime, bool debug)
     for (const auto& item : cases)
         for (bool image : {false, true})
         {
-            const Value generic = Run(runtime, item.source, false, debug, image, std::string(item.label) + " generic");
-            const Value direct = Run(runtime, item.source, true, debug, image, std::string(item.label) + " IR");
-            Check(Same(generic, direct), std::string(item.label) + " matches generic execution");
+            const Value direct = Run(runtime, item.source, debug, image, std::string(item.label) + " IR");
             Check(direct.status == RunStatus::Completed && direct.type == ValueType::Int && direct.integer == item.expected,
                 std::string(item.label) + " expected value");
         }
@@ -332,6 +380,416 @@ void ErrorOrder(IRuntime& runtime, bool debug)
             runtime.DestroyProgram(program);
         }
 }
+
+// 같은 저장소를 여러 식이 바꾸더라도 각 식의 결과와 우변 평가 순서는 보존한다.
+void ScalarWrites(IRuntime& runtime, bool debug)
+{
+    struct IntCase { const char* source; std::int64_t expected; const char* label; };
+    const IntCase integers[] = {
+        {"export int Probe(){int x=9;int total=(x+=3);total+=(x-=2);total+=(x*=4);"
+            "total+=(x/=5);total+=(x%=3);return total*10+x;}", 722, "integer compound arithmetic"},
+        {"export int Probe(){int x=13;int total=(x&=11);total+=(x|=16);total+=(x^=3);"
+            "total+=(x<<=2);total+=(x>>=3);return total+x;}", 190, "integer compound bit operations"},
+        {"int Rewrite(int x){return (x=7)+(x+=2);}export int Probe(){int x=3;return Rewrite(x)*10+x;}",
+            163, "value parameter updates remain local to the callee"},
+        {"export int Probe(){int x=1;int y=9;int a=(x=y);y=2;x+=3;return x*100+y*10+a;}",
+            1229, "assignment result is independent of later source and target writes"},
+        {"int g=1;int Replace(){g=10;return 3;}export int Probe(){int result=(g+=Replace());return result*100+g;}",
+            1313, "compound target is read after RHS changes the global"},
+        {"export int Probe(){int a=1;int b=2;int c=3;int result=(a=b=c=7);return result*1000+a*100+b*10+c;}",
+            7777, "chained assignments return the stored value"},
+        {"export int Probe(){int x=1;int result=(x=2)+(x=3)+(x=4);return result*10+x;}",
+            94, "assignment results survive later writes to the same variable"},
+        {"export int Probe(){int x=3;int result=x++ + ++x + x-- + --x;return result*10+x;}",
+            163, "prefix and postfix results snapshot their respective values"},
+        {"int Pair(int a,int b){return a*10+b;}export int Probe(){int x=3;int result=Pair(x++,++x);return result*10+x;}",
+            355, "increment results in call arguments preserve left to right order"},
+        {"int Mutate(int x){return x++ + ++x;}export int Probe(){int x=3;int result=Mutate(x);return result*10+x;}",
+            83, "parameter increments preserve expression results and caller value"},
+        {"struct S{int x;};S g=S(2);int Replace(){g=S(7);return 3;}"
+            "export int Probe(){int result=(g.x+=Replace());return result*100+g.x;}",
+            1010, "field target is resolved after whole struct replacement"},
+        {"struct I{int x;};struct O{I inner;};O g=O(I(2));int Replace(){g=O(I(7));return 3;}"
+            "export int Probe(){int old=g.inner.x++;int result=(g.inner.x+=Replace());return old*1000+result*10+g.inner.x;}",
+            2110, "nested field target and postfix value survive replacement"},
+        {"export int Probe(){int x=9;bool a=false&&((x/=0)>0);bool b=true||((x<<=64)>0);return x;}",
+            9, "short circuit skips failing writes"},
+        {"export int Probe(){bool a=false;bool b=true;bool value=(a=b);b=false;"
+            "if(value&&a&&!b)return 1;return 0;}", 1, "boolean assignment result"},
+        {"export int Probe(){string a=\"a\";string b=\"b\";string value=(a=b);b=\"c\";a=\"d\";"
+            "if(value==\"b\"&&a==\"d\"&&b==\"c\")return 1;return 0;}", 1, "string assignment retains its result ownership"},
+        {"int Pair(string a,string b){if(a==\"first\"&&b==\"second\")return 1;return 0;}"
+            "export int Probe(){string text=\"old\";return Pair(text=\"first\",text=\"second\");}",
+            1, "string assignment argument snapshots"},
+        {"export int Probe(){int x=9223372036854775807;int a=x++;int b=--x;"
+            "if(a==9223372036854775807&&b==a&&x==a)return 1;return 0;}",
+            1, "integer increments preserve wrapping behavior"},
+        {"export int Probe(){Vector3 value=Vector3(16777216.0,0.0,0.0);value.x+=-16777215.5;if(value.x==0.5)return 1;return 0;}",
+            1, "local vector component compound computes in binary64 before float32 storage"},
+        {"struct S{Vector3 value;};export int Probe(){S object=S(Vector3(16777216.0,0.0,0.0));object.value.x+=-16777215.5;if(object.value.x==0.5)return 1;return 0;}",
+            1, "struct vector component compound computes in binary64 before float32 storage"},
+        {"export int Probe(){array<Vector3> values=array<Vector3>(1,Vector3(16777216.0,0.0,0.0));values[0].x+=-16777215.5;if(values[0].x==0.5)return 1;return 0;}",
+            1, "array vector component compound computes in binary64 before float32 storage"}
+    };
+    for (const auto& item : integers)
+        for (bool image : {false, true})
+        {
+            const Value direct = Run(runtime, item.source, debug, image, std::string(item.label) + " IR");
+            Check(direct.status == RunStatus::Completed && direct.type == ValueType::Int && direct.integer == item.expected,
+                std::string(item.label) + " expected value");
+        }
+
+    struct FloatCase { const char* source; double expected; const char* label; };
+    const FloatCase floats[] = {
+        {"export float Probe(){float x=2;float total=(x=7);total+=(x+=0.5);total+=(x-=2);"
+            "total+=(x*=3);total+=(x/=2);return total+x;}", 53.0, "floating compound arithmetic widens integer RHS"},
+        {"export float Probe(){float x=1.5;float result=x++ + ++x + x-- + --x;return result*10+x;}",
+            101.5, "floating prefix and postfix values"},
+        {"export float Probe(){float x=0;int source=9007199254740993;return (x=source);}",
+            9007199254740992.0, "assignment returns the converted binary64 value"},
+        {"struct S{float x;};export float Probe(){S value=S(0);int source=9007199254740993;return (value.x=source);}",
+            9007199254740992.0, "field assignment returns the converted binary64 value"},
+        {"export float Probe(){float x=1;return (x=-0.0);}",
+            -0.0, "assignment retains the sign of zero"}
+    };
+    for (const auto& item : floats)
+        for (bool image : {false, true})
+        {
+            const Value direct = Run(runtime, item.source, debug, image, std::string(item.label) + " IR");
+            Check(direct.status == RunStatus::Completed && direct.type == ValueType::Float &&
+                std::memcmp(&direct.number, &item.expected, sizeof(double)) == 0, std::string(item.label) + " expected value");
+        }
+}
+
+// 쓰기 자체가 실패해도 완료된 우변 효과는 남고, 계산 전 대상 값은 덮어쓰지 않는다.
+void ScalarWriteErrors(IRuntime& runtime, bool debug)
+{
+    struct Case { const char* source; const char* error; std::int64_t expected; };
+    const Case cases[] = {
+        {"int target=9;int calls=0;\nint RHS(){calls+=1;return 0;}\nexport int Probe(){\nreturn target/=RHS();\n}"
+            "\nexport int State(){return target*10+calls;}", "integer division by zero", 91},
+        {"int target=9;int calls=0;\nint RHS(){calls+=1;target=7;return 0;}\nexport int Probe(){\nreturn target%=RHS();\n}"
+            "\nexport int State(){return target*10+calls;}", "integer division by zero", 71},
+        {"int target=-9223372036854775808;int calls=0;\nint RHS(){calls+=1;return -1;}\nexport int Probe(){\nreturn target/=RHS();\n}"
+            "\nexport int State(){if(target==-9223372036854775808)return 10+calls;return -1;}", "integer division overflow", 11},
+        {"struct S{int x;};S target=S(9);int calls=0;\nint RHS(){calls+=1;return 64;}\nexport int Probe(){\nreturn target.x<<=RHS();\n}"
+            "\nexport int State(){return target.x*10+calls;}", "shift count must be between 0 and 63", 91}
+    };
+    for (std::size_t index = 0; index < sizeof(cases) / sizeof(cases[0]); ++index)
+            for (bool image : {false, true})
+            {
+                const std::string label = "scalar write failure " + std::to_string(index) + " IR";
+                NeoCore::StaticCompileResult checked;
+                Check(NeoCore::CompileStaticSource(cases[index].source, checked), label + " frontend");
+                if (!checked.success) continue;
+                ProgramHandle program = Compile(runtime, checked, debug, image, label);
+                if (!program) continue;
+                InstanceHandle instance = runtime.CreateInstance(program);
+                Check(bool(instance), label + " instance");
+                if (instance)
+                {
+                    const Value value = Invoke(runtime, instance, "Probe");
+                    Check(value.status == RunStatus::Failed && value.error.message.find(cases[index].error) == 0,
+                        label + " expected runtime error: " + value.error.message);
+                    const Value state = Invoke(runtime, instance, "State");
+                    Check(state.status == RunStatus::Completed && state.type == ValueType::Int && state.integer == cases[index].expected,
+                        label + " retains completed RHS effects and allows the next call");
+                    if (debug)
+                    {
+                        Check(value.error.line == 4, label + " reports source write line: " + value.error.message);
+                        Check(value.error.message.find("Probe") != std::string::npos, label + " retains the caller frame");
+                        if (!image) Check(value.error.sourceName == "ir-regression.nc", label + " retains source filename");
+                    }
+                    runtime.DestroyInstance(instance);
+                }
+                runtime.DestroyProgram(program);
+            }
+}
+
+void CallStructure()
+{
+    const char* source = "struct Box{int x;};\nBox Copy(Box value){return value;}\n"
+        "int? Optional(int value){return value;}\nvoid Empty(){}\n"
+        "export float Probe(){int x=1;Box box=Copy(Box(2));Touch(x,box.x);Empty();int? n=Optional(x);return Sum(x,2);}\n"
+        "void Touch(int left,int right){left+=right;return;}\nfloat Sum(float left,float right){return left+right;}";
+    NeoCore::StaticCompileResult checked;
+    Check(NeoCore::CompileStaticSource(source, checked), "call metadata frontend: " + checked.errorMessage);
+    if (!checked.success) return;
+    const NeoCore::TypedIR& ir = checked.typedIR;
+    Check(!ir.returnPrefix.empty() && checked.loweredSource.find(ir.returnPrefix) != std::string::npos,
+        "return statements reference structured return metadata");
+    int calls = 0, copies = 0, nullable = 0;
+    for (const auto& node : ir.nodes)
+    {
+        if (node.op == NeoCore::IROp::ScriptCall)
+        {
+            ++calls;
+            Check(node.legacySource.empty(), "script call has no reparsed source expression");
+            Check(node.functionIndex < ir.functions.size(), "call resolves a checked function signature");
+            if (node.functionIndex >= ir.functions.size()) continue;
+            const NeoCore::IRFunction& function = ir.functions[node.functionIndex];
+            Check(!function.backendName.empty() && node.typeId == function.returnType,
+                "call retains resolved callee and exact result type");
+            Check(node.inputs.size() == function.parameterTypes.size(), "call retains every formal argument");
+            for (std::size_t argument = 0; argument < node.inputs.size() && argument < function.parameterTypes.size(); ++argument)
+                Check(node.inputs[argument] < ir.nodes.size() &&
+                    ir.nodes[node.inputs[argument]].typeId == function.parameterTypes[argument],
+                    "call argument conversion is explicit before transfer");
+        }
+        else if (node.op == NeoCore::IROp::NullableConvert)
+        {
+            ++nullable;
+            Check(node.type == NeoCore::IRValueType::Value && ir.types.IsNullable(node.typeId) && node.inputs.size() == 1,
+                "nullable transfer is represented explicitly");
+        }
+        else if (node.op == NeoCore::IROp::CopyStruct)
+        {
+            ++copies;
+            Check(node.type == NeoCore::IRValueType::Value && ir.types.Get(node.typeId).kind == NeoCore::TypeKind::Struct &&
+                node.inputs.size() == 1 && !node.backendName.empty(), "struct value transfer keeps its copy helper");
+        }
+    }
+    Check(calls == 5 && copies >= 2 && nullable >= 1,
+        "calls retain scalar widening, struct copies and nullable returns");
+    bool voidReturn = false, valueReturn = false;
+    for (const auto& statement : ir.returns)
+    {
+        Check(statement.functionIndex < ir.functions.size(), "return resolves its owning function");
+        if (statement.functionIndex >= ir.functions.size()) continue;
+        const NeoCore::IRFunction& function = ir.functions[statement.functionIndex];
+        Check(statement.source.line > 0, "return retains its source position");
+        if (function.returnType == ir.types.Void())
+        {
+            voidReturn = true;
+            Check(statement.valueIndex == static_cast<std::size_t>(-1), "void return carries no value root");
+        }
+        else
+        {
+            valueReturn = true;
+            Check(statement.valueIndex < ir.nodes.size() && ir.nodes[statement.valueIndex].typeId == function.returnType,
+                "return transfers the exact declared result type");
+        }
+    }
+    Check(voidReturn && valueReturn, "IR retains void and value returns");
+}
+
+void InvalidCallMetadata(IRuntime& runtime, bool debug)
+{
+    NeoCore::StaticCompileResult valid;
+    Check(NeoCore::CompileStaticSource("int Read(int first,int value){return first+value;}"
+        "export int Probe(){int x=2;return Read(x,3);}", valid), "malformed call fixture frontend");
+    if (!valid.success) return;
+    const std::size_t call = FindOp(valid.typedIR, NeoCore::IROp::ScriptCall);
+    Check(call < valid.typedIR.nodes.size() && !valid.typedIR.returns.empty(),
+        "malformed fixture contains a call and return");
+    if (call == valid.typedIR.nodes.size() || valid.typedIR.returns.empty()) return;
+    for (int change = 0; change < 9; ++change)
+    {
+        NeoCore::StaticCompileResult altered = valid;
+        NeoCore::TypedIR& ir = altered.typedIR;
+        NeoCore::IRNode& node = ir.nodes[call];
+        if (change == 0) node.functionIndex = ir.functions.size();
+        else if (change == 1) node.inputs.clear();
+        else if (change == 2) ir.functions[node.functionIndex].parameterTypes[0] = ir.types.Bool();
+        else if (change == 3) ir.functions[node.functionIndex].backendName.clear();
+        else if (change == 4) { node.type = NeoCore::IRValueType::Float; node.typeId = ir.types.Float(); }
+        else if (change == 5) ir.returns[0].functionIndex = ir.functions.size();
+        else if (change == 6) ir.returns[0].valueIndex = ir.nodes.size();
+        else if (change == 7) ir.returns[0].valueIndex = static_cast<std::size_t>(-1);
+        else
+        {
+            NeoCore::IRNode wrong;
+            wrong.op = NeoCore::IROp::BoolLiteral;
+            wrong.type = NeoCore::IRValueType::Bool;
+            wrong.typeId = ir.types.Bool();
+            ir.returns[0].valueIndex = ir.nodes.size();
+            ir.nodes.push_back(wrong);
+        }
+        RejectIR(runtime, altered, debug, "bad call metadata variant " + std::to_string(change));
+    }
+}
+
+void RejectReferences()
+{
+    const char* sources[] = {
+        "export int Probe(){int x=1;int& alias=x;return alias;}",
+        "export float Probe(){float x=1;float & alias=x;return alias;}",
+        "export bool Probe(){bool x=false;bool& alias=x;return alias;}",
+        "export string Probe(){string x=\"x\";string& alias=x;return alias;}",
+        "export void Probe(){int? x=null;int?& alias=x;}",
+        "void Change(int& value){value=2;}export void Probe(){int value=1;Change(value);}",
+        "int value=1;int& Read(){return value;}",
+        "struct S{int value;};export void Probe(){S value=S(1);S& alias=value;}",
+        "struct S{int value;};export void Probe(){S value=S(1);int& alias=value.value;}",
+        "struct S{int value;};void Change(S& value){}",
+        "struct S{int value;};S value=S(1);S& Read(){return value;}",
+        "export void Probe(){Vector3 value=Vector3();Vector3& alias=value;}",
+        "void Change(Vector3& value){}",
+        "export void Probe(){array<int> value=array<int>();array<int>& alias=value;}",
+        "void Change(list<int>& value){}",
+        "void Change(map<string,int>& value){}"
+    };
+    for (std::size_t index = 0; index < sizeof(sources) / sizeof(sources[0]); ++index)
+        {
+            NeoCore::StaticCompileResult checked;
+            Check(!NeoCore::CompileStaticSource(sources[index], checked) && !checked.success &&
+                !checked.errorMessage.empty() && checked.errorLine > 0,
+                "reference syntax is rejected " + std::to_string(index));
+        }
+}
+
+// 호출 경계마다 인자 순서와 값 소유권을 확인하고, 이미지에서도 같은 결과를 요구한다.
+void CallTransfers(IRuntime& runtime, bool debug)
+{
+    struct Case { const char* source; std::int64_t expected; const char* label; };
+    const Case cases[] = {
+        {"int Fib(int n){if(n<2)return n;return Fib(n-1)+Fib(n-2);}export int Probe(){return Fib(10);}",
+            55, "recursive call results survive the second recursive call"},
+        {"export int Probe(){return Later(6);}int Later(int x){return x*7;}",
+            42, "forward call resolves the checked function"},
+        {"bool Even(int n){if(n==0)return true;return Odd(n-1);}bool Odd(int n){if(n==0)return false;return Even(n-1);}"
+            "export int Probe(){if(Even(12)&&Odd(9)&&!Odd(12))return 1;return 0;}",
+            1, "mutual calls preserve boolean results"},
+        {"int order=0;int Mark(int x){order=order*10+x;return x;}int Pack(int a,int b,int c){return a*100+b*10+c;}"
+            "export int Probe(){int value=Pack(Mark(1),Pack(Mark(2),Mark(3),Mark(4)),Mark(5));return order*10000+value;}",
+            123452445, "nested arguments execute once from left to right"},
+        {"int target=2;int Step(){target=7;return 3;}int Compose(int x,int y){target+=y;return x*100+target;}"
+            "export int Probe(){int value=Compose(target,Step());return value*10+target;}",
+            2110, "value argument snapshots before a later argument mutates its source"},
+        {"int source=1;int Change(){source=9;return 0;}float Read(float first,int unused){return first;}"
+            "export int Probe(){return int(Read(source,Change())*10)+source;}",
+            19, "widened argument snapshots before a later call"},
+        {"struct S{int x;};S source=S(1);int Replace(){source=S(9);return 0;}int Read(S copy,int unused){source.x+=1;return copy.x*100+source.x;}"
+            "export int Probe(){return Read(source,Replace())*10+source.x;}",
+            1110, "struct argument snapshot survives source replacement and later field mutation"},
+        {"struct Inner{int x;};struct Outer{Inner value;string name;};Outer source=Outer(Inner(2),\"old\");"
+            "Outer Read(){return source;}Outer Relay(Outer value){value.value.x+=1;return value;}"
+            "export int Probe(){Outer copy=Relay(Read());source=Outer(Inner(9),\"new\");if(copy.name!=\"old\")return -1;return source.value.x*10+copy.value.x;}",
+            93, "nested struct return copies survive source replacement"},
+        {"Vector3 source=Vector3(1,2,3);int Change(){source.x=9;return 0;}Vector3 Read(Vector3 value,int unused){value.z=7;return value;}"
+            "export int Probe(){Vector3 result=Read(source,Change());return int(result.x*100+result.z*10+source.x);}",
+            179, "inline vector argument and return preserve value copies"},
+        {"Vector4 source=Vector4(1,2,3,4);Vector4 Read(){return source;}Vector4 Relay(Vector4 value){value.w+=1;return value;}"
+            "export int Probe(){Vector4 result=Relay(Read());source.w=9;return int(result.w*10+source.w);}",
+            59, "heap vector argument and return preserve copy on write"},
+        {"string source=\"old\";string Read(){return source;}int Change(){source=\"new\";return 0;}string Relay(string text,int unused){return text..\"!\";}"
+            "export int Probe(){string result=Relay(Read(),Change());if(result==\"old!\"&&source==\"new\")return 1;return 0;}",
+            1, "string return survives later call and concatenation"},
+        {"int? Maybe(bool present){if(present)return 7;return null;}string? Text(bool present){if(present)return \"ok\";return null;}"
+            "export int Probe(){int? number=Maybe(true);string? text=Text(true);if(number==7&&Maybe(false)==null&&text==\"ok\"&&Text(false)==null)return 1;return 0;}",
+            1, "nullable result transfers retain null and nonnull alternatives"},
+        {"list<string> Make(){list<string> value=[\"old\"];return value;}list<string> Relay(list<string> value){value[0]=\"new\";return value;}"
+            "export int Probe(){list<string> a=Make();list<string> b=Relay(a);b.resize(2,\"tail\");if(a[0]==\"new\"&&a[1]==\"tail\")return a.len();return 0;}",
+            2, "returned list lifetime and shared identity survive local release"},
+        {"map<string,int> Make(){map<string,int> value={};value[\"x\"]=3;return value;}map<string,int> Relay(map<string,int> value){value[\"x\"]=7;return value;}"
+            "export int Probe(){map<string,int> a=Make();map<string,int> b=Relay(a);b[\"y\"]=9;return a.get(\"x\",0)*10+a.get(\"y\",0);}",
+            79, "returned map lifetime and shared identity survive local release"},
+        {"array<Vector4> Make(){return array<Vector4>(1,Vector4(1,2,3,4));}array<Vector4> Relay(array<Vector4> value){value[0].w=7;return value;}"
+            "export int Probe(){array<Vector4> a=Make();array<Vector4> b=Relay(a);b[0].w=9;return int(a[0].w);}",
+            9, "returned vector array retains its element storage"},
+        {"int state=0;void Explicit(int value){state=state*10+value;return;}void Implicit(int value){state=state*10+value;}"
+            "void Relay(){Explicit(1);Implicit(2);return;}export int Probe(){Relay();Implicit(3);return state;}",
+            123, "void calls support explicit and implicit returns"},
+        {"int saved=0;int Next(){return 7;}int Assign(){saved=Next();return saved;}export int Probe(){int result=Assign();return result*10+saved;}",
+            77, "return after call assignment retains observable global write"},
+        {"int calls=0;int Ignored(){calls+=1;return calls;}export int Probe(){Ignored();Ignored();return calls;}",
+            2, "discarded scalar call results retain effects"}
+    };
+    for (const auto& item : cases)
+        for (bool image : {false, true})
+        {
+            const Value direct = Run(runtime, item.source, debug, image, std::string(item.label) + " IR");
+            Check(direct.status == RunStatus::Completed && direct.type == ValueType::Int && direct.integer == item.expected,
+                std::string(item.label) + " expected value");
+        }
+    for (const char* source : {"export void Probe(){return;}", "export void Probe(){}"})
+        for (bool image : {false, true})
+        {
+            const Value direct = Run(runtime, source, debug, image, "void host result IR");
+            Check(direct.status == RunStatus::Completed && direct.type == ValueType::None, "void host call returns no value");
+        }
+}
+
+void CallReturnKinds(IRuntime& runtime, bool debug)
+{
+    struct FloatCase { const char* source; double expected; const char* label; };
+    const FloatCase floats[] = {
+        {"float Echo(float value){return value;}export float Probe(){return Echo(-0.0);}",
+            -0.0, "call and return retain signed zero"},
+        {"float Widen(int value){return value;}export float Probe(){return Widen(9007199254740993);}",
+            9007199254740992.0, "return widens integer to binary64 once"},
+        {"float Echo(float value){return value;}export float Probe(){float zero=0.0;return Echo(zero/zero);}",
+            (std::numeric_limits<double>::quiet_NaN)(), "call and return retain NaN"}
+    };
+    for (const auto& item : floats)
+        for (bool image : {false, true})
+        {
+            const Value direct = Run(runtime, item.source, debug, image, std::string(item.label) + " IR");
+            Check(direct.status == RunStatus::Completed && direct.type == ValueType::Float &&
+                ((std::isnan(item.expected) && std::isnan(direct.number)) ||
+                    std::memcmp(&direct.number, &item.expected, sizeof(double)) == 0), std::string(item.label) + " expected value");
+        }
+    for (bool image : {false, true})
+    {
+        const char* text = "string Make(){return \"ret\"..\"urn\";}string Relay(string value){return value;}export string Probe(){return Relay(Make());}";
+
+        const Value direct = Run(runtime, text, debug, image, "owned string return IR");
+        Check(direct.status == RunStatus::Completed && direct.type == ValueType::String && direct.text == "return",
+            "returned string remains alive until copied across the host boundary");
+        const char* nullable = "int? Maybe(){return null;}int? Relay(){return Maybe();}export int? Probe(){return Relay();}";
+
+        const Value directNull = Run(runtime, nullable, debug, image, "null return IR");
+        Check(directNull.status == RunStatus::Completed && directNull.type == ValueType::None,
+            "nullable return is null at the host boundary");
+    }
+}
+
+// 앞선 인자나 함수 본문이 실패하면 뒤 인자와 호출자 후속 문장이 실행되지 않아야 한다.
+void CallErrors(IRuntime& runtime, bool debug)
+{
+    struct Case { const char* source; std::int64_t expected; const char* frame; };
+    const Case cases[] = {
+        {"int state=0;\nint Fail(){\nstate=1;int zero=0;\nreturn 1/zero;\n}\n"
+            "int Later(){state=2;return 2;}int Take(int a,int b){state=3;return a+b;}\n"
+            "export int Probe(){int result=Take(Fail(),Later());state=4;return result;}\nexport int State(){return state;}", 1, "Fail"},
+        {"int state=0;\nint Take(int a,int b){\nstate=3;int zero=0;\nreturn 1/zero;\n}\n"
+            "int Mark(int value){state=state*10+value;return value;}\n"
+            "export int Probe(){int result=Take(Mark(1),Mark(2));state=4;return result;}\nexport int State(){return state;}", 3, "Take"},
+        {"int state=0;int target=2;\nint Fail(){\ntarget=8;state=1;int zero=0;\nreturn 1/zero;\n}\n"
+            "int Later(){state=2;return 2;}int Take(int a,int b){state=3;return a+b;}\n"
+            "export int Probe(){return Take(Fail(),Later());}\nexport int State(){return target*10+state;}", 81, "Fail"}
+    };
+    for (std::size_t index = 0; index < sizeof(cases) / sizeof(cases[0]); ++index)
+            for (bool image : {false, true})
+            {
+                const std::string label = "call failure " + std::to_string(index) + " IR";
+                NeoCore::StaticCompileResult checked;
+                Check(NeoCore::CompileStaticSource(cases[index].source, checked), label + " frontend");
+                if (!checked.success) continue;
+                ProgramHandle program = Compile(runtime, checked, debug, image, label);
+                if (!program) continue;
+                InstanceHandle instance = runtime.CreateInstance(program);
+                Check(bool(instance), label + " instance");
+                if (instance)
+                {
+                    const Value value = Invoke(runtime, instance, "Probe");
+                    Check(value.status == RunStatus::Failed && value.error.message.find("integer division by zero") == 0,
+                        label + " expected runtime error: " + value.error.message);
+                    const Value state = Invoke(runtime, instance, "State");
+                    Check(state.status == RunStatus::Completed && state.type == ValueType::Int && state.integer == cases[index].expected,
+                        label + " retains completed argument effects and allows the next call");
+                    if (debug)
+                    {
+                        Check(value.error.line == 4, label + " reports the failing callee source line: " + value.error.message);
+                        Check(value.error.message.find(cases[index].frame) != std::string::npos &&
+                            value.error.message.find("Probe") != std::string::npos, label + " retains callee and caller frames");
+                        if (!image) Check(value.error.sourceName == "ir-regression.nc", label + " retains source filename");
+                    }
+                    runtime.DestroyInstance(instance);
+                }
+                runtime.DestroyProgram(program);
+            }
+}
 }
 
 int main()
@@ -341,12 +799,22 @@ int main()
     if (!runtime) return 1;
     runtime->FreezeBindings();
     Structure();
+    StorageStructure();
+    CallStructure();
+    RejectReferences();
     for (bool debug : {false, true})
     {
         MutationAndLifetime(*runtime, debug);
         InvalidMetadata(*runtime, debug);
+        InvalidStorageMetadata(*runtime, debug);
+        InvalidCallMetadata(*runtime, debug);
         EvaluationOrder(*runtime, debug);
         ErrorOrder(*runtime, debug);
+        ScalarWrites(*runtime, debug);
+        ScalarWriteErrors(*runtime, debug);
+        CallTransfers(*runtime, debug);
+        CallReturnKinds(*runtime, debug);
+        CallErrors(*runtime, debug);
     }
     DestroyRuntime(runtime);
     std::printf("NeoCore IR regression: %d/%d passed\n", checks - failures, checks);

@@ -39,7 +39,6 @@ static void CheckInvalidTypes()
     rejected.push_back(types.FunctionOf(types.Void(), std::vector<TypeId>()));
     rejected.push_back(structure);
     rejected.push_back(types.NullableOf(structure));
-    rejected.push_back(types.ReferenceOf(types.Int()));
     rejected.push_back(foreign);
     rejected.push_back(types.NullableOf(foreign));
     for (TypeId type : rejected)

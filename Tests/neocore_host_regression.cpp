@@ -286,6 +286,36 @@ void CheckPropertyOrder(bool debug)
         "floating compound properties widen integer RHS before typed arithmetic");
 }
 
+void CheckIntegerPropertyOperators(bool debug)
+{
+    struct Case { const char* operation; std::int64_t initial; std::int64_t expected; };
+    const Case cases[] = {
+        {"%=", 11, 3}, {"&=", 13, 4}, {"|=", 9, 13},
+        {"^=", 13, 9}, {"<<=", 3, 48}, {">>=", -32, -2}
+    };
+    for (const Case& item : cases)
+    {
+        Fixture fixture;
+        fixture.objects[1].value = item.initial;
+        const std::string source = "export int Probe(){return Object.Target().Value" + std::string(item.operation) + "Object.Rhs();}";
+        ExpectInt(Invoke(fixture, source.c_str(), "integer property compound", debug), item.expected,
+            "integer property compound uses typed arithmetic and returns stored value");
+        Check(fixture.trace == "RTGS" && fixture.objects[1].value == item.expected,
+            "integer property compound preserves RHS target getter setter order");
+    }
+    for (const char* operation : {"%=", "<<=", ">>="})
+    {
+        Fixture fixture;
+        const char* divisor = std::string(operation) == "%=" ? "0" : "64";
+        const std::string source = "export int Probe(){\nObject.Value" + std::string(operation) + divisor + ";\nreturn 1;}";
+        const NeoCore::Result result = Invoke(fixture, source.c_str(), "integer property error", debug);
+        ExpectError(result, "integer property errors stop before setter", std::string(operation) == "%=" ? "zero" : "shift");
+        Check(fixture.trace == "G" && fixture.objects[1].value == 10,
+            "failed integer property arithmetic does not call setter or alter the value");
+        if (debug) Check(result.error.line == 2, "integer property error retains source line");
+    }
+}
+
 void CheckRebinding(bool debug)
 {
     Fixture fixture;
@@ -607,6 +637,7 @@ int main()
         const bool debug = mode != 0;
         CheckScalarBindings(debug);
         CheckPropertyOrder(debug);
+        CheckIntegerPropertyOperators(debug);
         CheckRebinding(debug);
         CheckInvalidObjects(debug);
         CheckReentry(debug);

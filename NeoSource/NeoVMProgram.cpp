@@ -366,12 +366,7 @@ bool CNeoVMProgram::Load(CNArchive& ar, std::string* err)
 	auto IsRefWriteOpcode = [](eNOperation op) {
 		switch (op) {
 		case NOP_CLT_MOV:
-		case NOP_CLT_MOV_L:
-		case NOP_TABLE_ADD2:
-		case NOP_TABLE_SUB2:
-		case NOP_TABLE_MUL2:
-		case NOP_TABLE_DIV2:
-		case NOP_TABLE_PERSENT2: return true;
+		case NOP_CLT_MOV_L: return true;
 		default: return false;
 		}
 	};
@@ -698,8 +693,11 @@ bool CNeoVMProgram::VerifyCode(const std::vector<int>& owners, std::string* err)
             slots = writes = 1;
             if (op.n23 < 0 || op.n23 >= header._iStaticVarCount) return reject("Invalid constant operand");
             break;
+#if NEOSCRIPT_LEGACY_ARITHMETIC
         case NOP_MOV_MINUS:
+#endif
         case NOP_LOG_NOT:
+#if NEOSCRIPT_LEGACY_ARITHMETIC
         case NOP_ADD2:
         case NOP_SUB2:
         case NOP_MUL2:
@@ -709,10 +707,13 @@ bool CNeoVMProgram::VerifyCode(const std::vector<int>& owners, std::string* err)
         case NOP_RSHIFT2:
         case NOP_AND2:
         case NOP_OR2:
-        case NOP_XOR2: slots = 3; writes = 1; break;
+        case NOP_XOR2:
+#endif
+            slots = 3; writes = 1; break;
         case NOP_VAR_CLEAR:
         case NOP_INC:
         case NOP_DEC: slots = writes = 1; break;
+#if NEOSCRIPT_LEGACY_ARITHMETIC
         case NOP_ADD3:
         case NOP_SUB3:
         case NOP_MUL3:
@@ -721,14 +722,17 @@ bool CNeoVMProgram::VerifyCode(const std::vector<int>& owners, std::string* err)
         case NOP_LSHIFT3:
         case NOP_RSHIFT3:
         case NOP_XOR3:
+#endif
         case NOP_GREAT:
         case NOP_GREAT_EQ:
         case NOP_LESS:
         case NOP_LESS_EQ:
         case NOP_EQUAL2:
         case NOP_NEQUAL:
+#if NEOSCRIPT_LEGACY_ARITHMETIC
         case NOP_AND:
         case NOP_OR:
+#endif
         case NOP_LOG_AND:
         case NOP_LOG_OR: slots = 7; writes = 1; break;
         case NOP_JMP: jump = terminal = true; break;
@@ -781,25 +785,24 @@ bool CNeoVMProgram::VerifyCode(const std::vector<int>& owners, std::string* err)
         case NOP_RETURN: slots = noResult ? 0 : 1; terminal = true; break;
         case NOP_TABLE_ALLOC: slots = writes = 1; break;
         case NOP_CLT_READ: slots = 7; writes = 4; break;
-        case NOP_CLT_MOV:
-        case NOP_TABLE_ADD2:
-        case NOP_TABLE_SUB2:
-        case NOP_TABLE_MUL2:
-        case NOP_TABLE_DIV2:
-        case NOP_TABLE_PERSENT2: slots = 7; writes = 1; break;
+        case NOP_CLT_MOV: slots = 7; writes = 1; break;
         case NOP_LIST_ALLOC: slots = writes = 1; break;
         case NOP_CHANGE_INT: slots = writes = 1; break;
         case NOP_YIELD: break;
         case NOP_JMP_RANGE_INSIDE:
         case NOP_JMP_RANGE_OUTSIDE: slots = 2; jump = true; break;
         case NOP_CLT_WRITE_REF: slots = 7; writes = 5; break;
-        case NOP_CLT_READ_RESULT: slots = 7; writes = 4; break;
+        case NOP_CLT_READ_RESULT:
+            if (op.argFlag & ~(L1 | L2 | L3 | NEOS_OP_REF_LOADED)) return reject("Invalid assignment-result read flags");
+            slots = 7; writes = 4; break;
+#if NEOSCRIPT_LEGACY_ARITHMETIC
         case NOP_READ_ADD:
         case NOP_READ_SUB:
         case NOP_READ_MUL:
         case NOP_READ_DIV:
             if (op.argFlag & ~(L1 | L2 | L3)) return reject("Invalid read-arith flags");
             slots = 7; writes = 4; break;
+#endif
         case NOP_NONE: break;
         case NOP_ERROR: terminal = true; break;
         default:
@@ -844,7 +847,7 @@ bool CNeoVMProgram::VerifyCode(const std::vector<int>& owners, std::string* err)
             const int64_t target = (int64_t)i + 1 + offset;
             if (target < 2 || target >= (int64_t)code.size() || owners[(size_t)target] != owners[i]) return false;
             const auto targetOp = code[(size_t)target].op;
-            const bool writeTail = targetOp == NOP_CLT_MOV || (targetOp >= NOP_TABLE_ADD2 && targetOp <= NOP_TABLE_PERSENT2);
+            const bool writeTail = targetOp == NOP_CLT_MOV;
             return !(writeTail && (code[(size_t)target].argFlag & NEOS_OP_REF_WRITE));
         };
         if (jump && !validJump(op.n1)) return reject("Invalid branch target");
@@ -945,8 +948,10 @@ bool CNeoVMProgram::PatchLocalOps(std::string* err)
 		{
 		// n1, n2
 		case NOP_MOV:          if ((f & (L1|L2)) == (L1|L2)) to = NOP_MOV_L;        break;
+#if NEOSCRIPT_LEGACY_ARITHMETIC
 		case NOP_MOV_MINUS:    if ((f & (L1|L2)) == (L1|L2)) to = NOP_MOV_MINUS_L;  break;
 		case NOP_ADD2:         if ((f & (L1|L2)) == (L1|L2)) to = NOP_ADD2_L;       break;
+#endif
 		case NOP_TOINT:        if ((f & (L1|L2)) == (L1|L2)) to = NOP_TOINT_L;      break;
 		// n1 만
 		case NOP_MOVI:         if (f & L1) to = NOP_MOVI_L;                         break;
@@ -958,10 +963,12 @@ bool CNeoVMProgram::PatchLocalOps(std::string* err)
 		case NOP_LIST_ALLOC:   if (f & L1) to = NOP_LIST_ALLOC_L;                   break;
 		case NOP_CHANGE_INT:   if (f & L1) to = NOP_CHANGE_INT_L;                   break;
 		// n1, n2, n3
+#if NEOSCRIPT_LEGACY_ARITHMETIC
 		case NOP_ADD3:         if ((f & (L1|L2|L3)) == (L1|L2|L3)) to = NOP_ADD3_L;      break;
 		case NOP_SUB3:         if ((f & (L1|L2|L3)) == (L1|L2|L3)) to = NOP_SUB3_L;      break;
 		case NOP_MUL3:         if ((f & (L1|L2|L3)) == (L1|L2|L3)) to = NOP_MUL3_L;      break;
 		case NOP_AND:          if ((f & (L1|L2|L3)) == (L1|L2|L3)) to = NOP_AND_L;       break;
+#endif
 		case NOP_CLT_READ:     if ((f & (L1|L2|L3)) == (L1|L2|L3)) to = NOP_CLT_READ_L;  break;
 		case NOP_CLT_MOV:      if ((f & (L1|L2|L3)) == (L1|L2|L3)) to = NOP_CLT_MOV_L;   break;
 		// n2, n3 (n1 은 점프 offset)
@@ -1038,12 +1045,14 @@ static eNOperation NormalizeLocalOp(eNOperation op, bool* outIsLocal)
 	case NOP_MOV_L:          base = NOP_MOV;          break;
 	case NOP_MOVI_L:         base = NOP_MOVI;         break;
 	case NOP_MOVF_L:         base = NOP_MOVF;         break;
+#if NEOSCRIPT_LEGACY_ARITHMETIC
 	case NOP_MOV_MINUS_L:    base = NOP_MOV_MINUS;    break;
 	case NOP_ADD2_L:         base = NOP_ADD2;         break;
 	case NOP_ADD3_L:         base = NOP_ADD3;         break;
 	case NOP_SUB3_L:         base = NOP_SUB3;         break;
 	case NOP_MUL3_L:         base = NOP_MUL3;         break;
 	case NOP_AND_L:          base = NOP_AND;          break;
+#endif
 	case NOP_JMP_GREAT_L:    base = NOP_JMP_GREAT;    break;
 	case NOP_JMP_GREAT_EQ_L: base = NOP_JMP_GREAT_EQ; break;
 	case NOP_JMP_LESS_L:     base = NOP_JMP_LESS;     break;
@@ -1110,14 +1119,17 @@ bool FormatDebugOperation(const DebugInstructionFormatContext& context, std::str
 		byteCount = OpFlagByteChars + 2 * 3;
 		outAssembly = FormatAsm("LOADK %s = K[%d]", context.operand(1).c_str(), v.n23);
 		break;
+#if NEOSCRIPT_LEGACY_ARITHMETIC
 	case NOP_MOV_MINUS:
 		byteCount = OpFlagByteChars + 2 * 2;
 		outAssembly = FormatAsm("MOV  %s = -%s", context.operand(1).c_str(), context.operand(2).c_str());
 		break;
+#endif
 	case NOP_LOG_NOT:
 		byteCount = OpFlagByteChars + 2 * 2;
 		outAssembly = FormatAsm("NOT  %s = !%s", context.operand(1).c_str(), context.operand(2).c_str());
 		break;
+#if NEOSCRIPT_LEGACY_ARITHMETIC
 	case NOP_ADD2:
 		byteCount = OpFlagByteChars + 2 * 2;
 		outAssembly = FormatAsm("ADD  %s += %s", context.operand(1).c_str(), context.operand(2).c_str());
@@ -1158,6 +1170,7 @@ bool FormatDebugOperation(const DebugInstructionFormatContext& context, std::str
 		byteCount = OpFlagByteChars + 2 * 2;
 		outAssembly = FormatAsm("XOR  %s ^= %s", context.operand(1).c_str(), context.operand(2).c_str());
 		break;
+#endif
 	case NOP_VAR_CLEAR:
 		byteCount = OpFlagByteChars + 2 * 1;
 		outAssembly = FormatAsm("CLR  %s", context.operand(1).c_str());
@@ -1170,6 +1183,7 @@ bool FormatDebugOperation(const DebugInstructionFormatContext& context, std::str
 		byteCount = OpFlagByteChars + 2 * 1;
 		outAssembly = FormatAsm("DEC  %s", context.operand(1).c_str());
 		break;
+#if NEOSCRIPT_LEGACY_ARITHMETIC
 	case NOP_ADD3:
 		byteCount = OpFlagByteChars + 2 * 3;
 		outAssembly = FormatAsm("ADD  %s = %s + %s", context.operand(1).c_str(), context.operand(2).c_str(), context.operand(3).c_str());
@@ -1202,6 +1216,7 @@ bool FormatDebugOperation(const DebugInstructionFormatContext& context, std::str
 		byteCount = OpFlagByteChars + 2 * 3;
 		outAssembly = FormatAsm("XOR  %s = %s ^ %s", context.operand(1).c_str(), context.operand(2).c_str(), context.operand(3).c_str());
 		break;
+#endif
 	case NOP_GREAT:		// >
 		byteCount = OpFlagByteChars + 2 * 3;
 		outAssembly = FormatAsm("GR   %s = %s > %s", context.operand(1).c_str(), context.operand(2).c_str(), context.operand(3).c_str());
@@ -1226,6 +1241,7 @@ bool FormatDebugOperation(const DebugInstructionFormatContext& context, std::str
 		byteCount = OpFlagByteChars + 2 * 3;
 		outAssembly = FormatAsm("NE   %s = %s != %s", context.operand(1).c_str(), context.operand(2).c_str(), context.operand(3).c_str());
 		break;
+#if NEOSCRIPT_LEGACY_ARITHMETIC
 	case NOP_AND:	// &
 		byteCount = OpFlagByteChars + 2 * 3;
 		outAssembly = FormatAsm("AND  %s = %s & %s", context.operand(1).c_str(), context.operand(2).c_str(), context.operand(3).c_str());
@@ -1234,6 +1250,7 @@ bool FormatDebugOperation(const DebugInstructionFormatContext& context, std::str
 		byteCount = OpFlagByteChars + 2 * 3;
 		outAssembly = FormatAsm("OR   %s = %s | %s", context.operand(1).c_str(), context.operand(2).c_str(), context.operand(3).c_str());
 		break;
+#endif
 	case NOP_LOG_AND:	// &&
 		byteCount = OpFlagByteChars + 2 * 3;
 		outAssembly = FormatAsm("AND2 %s = %s && %s", context.operand(1).c_str(), context.operand(2).c_str(), context.operand(3).c_str());
@@ -1413,26 +1430,6 @@ bool FormatDebugOperation(const DebugInstructionFormatContext& context, std::str
 		byteCount = OpFlagByteChars + 2 * 3;
 		outAssembly = FormatAsm("MOV  %s.%s = %s", context.operand(1).c_str(), context.operand(2).c_str(), context.operand(3).c_str());
 		break;
-	case NOP_TABLE_ADD2:
-		byteCount = OpFlagByteChars + 2 * 3;
-		outAssembly = FormatAsm("TADD %s.%s += %s", context.operand(1).c_str(), context.operand(2).c_str(), context.operand(3).c_str());
-		break;
-	case NOP_TABLE_SUB2:
-		byteCount = OpFlagByteChars + 2 * 3;
-		outAssembly = FormatAsm("TSUB %s.%s -= %s", context.operand(1).c_str(), context.operand(2).c_str(), context.operand(3).c_str());
-		break;
-	case NOP_TABLE_MUL2:
-		byteCount = OpFlagByteChars + 2 * 3;
-		outAssembly = FormatAsm("TMUL %s.%s *= %s", context.operand(1).c_str(), context.operand(2).c_str(), context.operand(3).c_str());
-		break;
-	case NOP_TABLE_DIV2:
-		byteCount = OpFlagByteChars + 2 * 3;
-		outAssembly = FormatAsm("TDIV %s.%s /= %s", context.operand(1).c_str(), context.operand(2).c_str(), context.operand(3).c_str());
-		break;
-	case NOP_TABLE_PERSENT2:
-		byteCount = OpFlagByteChars + 2 * 3;
-		outAssembly = FormatAsm("TPER %s.%s %= %s", context.operand(1).c_str(), context.operand(2).c_str(), context.operand(3).c_str());
-		break;
 	case NOP_LIST_ALLOC:
 		byteCount = OpFlagByteChars + 2 * 3;
 		outAssembly = FormatAsm("List Alloc %s, %d", context.operand(1).c_str(), v.n23);
@@ -1468,8 +1465,10 @@ bool FormatDebugOperation(const DebugInstructionFormatContext& context, std::str
         break;
 	case NOP_CLT_READ_RESULT:
         byteCount = OpFlagByteChars + 2 * 3;
-        outAssembly = FormatAsm("RRES %s = %s.%s", context.operand(3).c_str(), context.operand(1).c_str(), context.operand(2).c_str());
+        outAssembly = FormatAsm("RRES%s %s = %s.%s", v.argFlag & NEOS_OP_REF_LOADED ? ".REFRESH" : "",
+            context.operand(3).c_str(), context.operand(1).c_str(), context.operand(2).c_str());
         break;
+#if NEOSCRIPT_LEGACY_ARITHMETIC
 	case NOP_READ_ADD:
 	case NOP_READ_SUB:
 	case NOP_READ_MUL:
@@ -1481,6 +1480,7 @@ bool FormatDebugOperation(const DebugInstructionFormatContext& context, std::str
 			context.operand(1).c_str(), context.operand(2).c_str());
 		break;
 	}
+#endif
 	case NOP_ERROR:
 		outAssembly = FormatAsm("Begin");
 		break;

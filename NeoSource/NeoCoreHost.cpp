@@ -139,8 +139,15 @@ struct HostRuntimeAccess
     {
         explicit State(const HostBindings& value) : bindings(value) {}
         HostBindings bindings;
-        Program* program = nullptr;
         std::vector<Entry> entries;
+    };
+    struct InstanceState
+    {
+        InstanceState(State& shared, Instance& instance)
+            : state(&shared), owner(&instance), globals(shared.bindings.globals_) {}
+        State* state;
+        Instance* owner;
+        std::vector<ObjectHandle> globals;
     };
     static bool Dispatch(NeoScript::CallContext& ctx, NeoScript::StringView);
     static bool Link(State& state, NeoScript::IRuntime& runtime, const std::string& prefix, std::string& error);
@@ -155,6 +162,7 @@ struct HostRuntimeAccess
 struct HostCall::Impl
 {
     HostRuntimeAccess::Entry* entry = nullptr;
+    Instance* instance = nullptr;
     ObjectHandle receiver;
     void* receiverPointer = nullptr;
     bool receiverResolved = false;
@@ -258,7 +266,7 @@ Result HostCall::CallScript(const std::string& name, const std::vector<Scalar>& 
 {
     // 호스트가 빌린 포인터는 중첩 실행을 넘겨 보관하지 않는다. 새 접근은 다시 ID를 조회한다.
     impl_->InvalidatePointers();
-    Result result = impl_->entry->state->program->Call(name, arguments);
+    Result result = impl_->instance->Call(name, arguments);
     impl_->InvalidatePointers();
     if (!result.ok()) impl_->Fail(result.error.message);
     return result;
@@ -315,9 +323,15 @@ bool HostRuntimeAccess::Dispatch(NeoScript::CallContext& ctx, NeoScript::StringV
     Entry& entry = *static_cast<Entry*>(ctx.userData());
     try
     {
+        InstanceState* instance = static_cast<InstanceState*>(ctx.instanceUserData());
+        if (!instance || instance->state != entry.state)
+        {
+            ctx.fail(0, "invalid NeoCore instance binding context");
+            return false;
+        }
         if (!entry.binding)
         {
-            const ObjectHandle object = entry.state->bindings.globals_[entry.global];
+            const ObjectHandle object = instance->globals[entry.global];
             if (object) ctx.retInt(HandleBits(object)); else ctx.retNull();
             return true;
         }
@@ -328,6 +342,7 @@ bool HostRuntimeAccess::Dispatch(NeoScript::CallContext& ctx, NeoScript::StringV
         }
         std::unique_ptr<HostCall::Impl> impl(new HostCall::Impl());
         impl->entry = &entry;
+        impl->instance = instance->owner;
         impl->receiver = ReadHandle(NeoCoreBackend::ReadInt(ctx, 0));
         impl->arguments.resize(entry.arguments.size());
         for (std::size_t i = 0; i < entry.arguments.size(); ++i)
@@ -422,12 +437,37 @@ bool HostRuntime::Link(NeoScript::IRuntime& runtime, const std::string& prefix, 
 {
     return HostRuntimeAccess::Link(impl_->state, runtime, prefix, error);
 }
-void HostRuntime::SetProgram(Program* program) { impl_->state.program = program; }
-bool HostRuntime::SetGlobal(const std::string& name, ObjectHandle object, std::string& error)
+struct HostInstance::Impl
 {
-    const bool result = impl_->state.bindings.BindGlobal(name, object);
-    error = impl_->state.bindings.LastError();
-    return result;
+    Impl(HostRuntimeAccess::State& shared, Instance& instance) : state(shared, instance) {}
+    HostRuntimeAccess::InstanceState state;
+};
+HostInstance::HostInstance(std::unique_ptr<Impl> impl) : impl_(std::move(impl)) {}
+HostInstance::~HostInstance() = default;
+void* HostInstance::UserData() { return &impl_->state; }
+std::unique_ptr<HostInstance> HostRuntime::CreateInstance(Instance& instance)
+{
+    std::unique_ptr<HostInstance::Impl> context(new HostInstance::Impl(impl_->state, instance));
+    return std::unique_ptr<HostInstance>(new HostInstance(std::move(context)));
+}
+bool HostInstance::SetGlobal(const std::string& name, ObjectHandle object, std::string& error)
+{
+    error.clear();
+    const HostSchema& schema = impl_->state.state->bindings.Schema();
+    const auto& globals = schema.Globals();
+    for (std::size_t i = 0; i < globals.size(); ++i)
+    {
+        if (globals[i].name != name) continue;
+        if (!object && !schema.Types().IsNullable(globals[i].type))
+        {
+            error = "non-null host global requires an object ID: " + name;
+            return false;
+        }
+        impl_->state.globals[i] = object;
+        return true;
+    }
+    error = "unknown host global: " + name;
+    return false;
 }
 
 }

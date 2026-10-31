@@ -36,8 +36,7 @@ enum class TypeKind : std::uint8_t
     Set,
     Function,
     Struct,
-    Native,
-    Reference
+    Native
 };
 
 struct StructField
@@ -80,18 +79,20 @@ public:
 
     TypeId LookupBuiltin(const std::string& name) const;
     TypeId LookupNamed(const std::string& qualifiedName) const;
-    const TypeDesc& Get(TypeId id) const;
+    const TypeDesc& Get(TypeId id) const { return id < types_.size() ? types_[id] : types_.front(); }
     std::string DisplayName(TypeId id) const;
 
     bool IsNumeric(TypeId id) const;
-    bool IsNullable(TypeId id) const;
-    bool IsReference(TypeId id) const;
-    bool IsStorable(TypeId id) const;
+    bool IsNullable(TypeId id) const { return Get(id).kind == TypeKind::Nullable; }
+    bool IsStorable(TypeId id) const
+    {
+        const TypeKind kind = Get(id).kind;
+        return kind != TypeKind::Invalid && kind != TypeKind::Void && kind != TypeKind::Null;
+    }
     bool CanAssign(TypeId target, TypeId source) const;
     TypeId CommonNumericType(TypeId left, TypeId right) const;
 
     TypeId NullableOf(TypeId element);
-    TypeId ReferenceOf(TypeId element);
     TypeId ArrayOf(TypeId element);
     TypeId Array32Of(TypeId element);
     TypeId ListOf(TypeId element);

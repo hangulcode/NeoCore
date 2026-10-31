@@ -13,7 +13,7 @@ the inherited `.ns` parser/LSP is not a NeoCore type checker.
 ## Implementation boundary
 
 The frontend tokenizes source, builds typed expressions and statements,
-collects function signatures, and checks types before producing numeric IR and a
+collects function signatures, and checks types before producing typed IR and a
 transitional backend statement skeleton. The checked program then runs on the
 existing bytecode VM. This is not a dynamic compatibility mode for NeoCore source.
 Unsupported syntax and unknown types are compilation errors; they do not fall back
@@ -33,8 +33,8 @@ equality, less-than, and less-than-or-equal. They cover `==`, `!=`, `<`, `<=`, `
 to right before any slot swap, so `>` and `>=` do not reverse side effects. Six matching
 direct-branch forms avoid producing a temporary bool when a condition consumes the
 comparison. Integer remainder, bitwise AND/OR/XOR, and left/right shifts add six
-instructions, preserving checked divisor and shift-count rules. There are 28
-numeric typed instructions in total.
+instructions, preserving checked divisor and shift-count rules. Two numeric-negation
+instructions complete the 30 numeric typed instructions.
 
 An int/int comparison remains an exact signed 64-bit comparison. A mixed int/float
 comparison converts the integer to binary64, matching the existing generic comparison
@@ -50,7 +50,7 @@ the NaN behavior of each original comparison is preserved.
 Compound `while` conditions retain the inherited multi-instruction path; a single
 numeric comparison in `while` uses a direct typed branch.
 
-Numeric expressions now reach the bytecode emitter as `TypedIR` in `NeoCoreIR.h`.
+Numeric expressions and named scalar writes reach the bytecode emitter as `TypedIR` in `NeoCoreIR.h`.
 Nodes retain the semantic operation, checked type ID, numeric storage type, literal
 value or resolved symbol identity, ordered operand indices, and original source span.
 Mixed arithmetic has explicit conversion nodes. A collision-free marker in the
@@ -59,14 +59,39 @@ text. The emitter validates the graph and emits instructions directly from its n
 The compile descriptor borrows the IR only until compilation returns; compiled
 programs and saved images do not retain pointers to the graph.
 
-Calls, assignments, and selectors that have not migrated to IR use typed
+Host/builtin calls, container/host writes, and selectors that have not migrated to IR use typed
 `LegacyExpression` leaves. Each leaf is compiled when traversal reaches its original
 evaluation position, with the current lexical scope and original source coordinates.
 For example, `(1 / 0) + F()` must fail before `F()` executes. Earlier operands are
 snapshotted before later effects, including assignments hidden inside an IR marker.
 Logical short-circuiting remains in the existing statement/expression compiler.
-Unary negation, bitwise negation, and logical inversion also have semantic IR nodes;
-some still use existing general-purpose VM instructions after compilation.
+Unary negation, bitwise negation, and logical inversion also have semantic IR nodes.
+Numeric negation selects `NOP_I64_NEG` or `NOP_F64_NEG`; bitwise negation uses typed
+integer XOR. `NOP_LOG_NOT` reads a checked bool payload in NeoCore, without dynamic
+truthiness conversion. The inherited backend retains its original truthiness rules.
+
+Named `int`, `float`, `bool`, and `string` assignments have explicit storage targets
+in IR. Numeric compound assignments and prefix/postfix increment/decrement use the
+same path. A target records a resolved variable and an ordered flat struct-field
+path. This includes local/file variables and parameters,
+and scalar fields of named structs; nullable scalars, host properties, vector
+components, and collection elements retain their existing write paths.
+
+The RHS finishes before the target path is resolved or a compound assignment reads
+the old target value. Explicit numeric widening precedes the operation. Assignment
+and prefix results retain the stored value; postfix results retain the old value,
+even when later operands modify the same storage. Typed arithmetic errors occur before
+the write, preserving the destination while retaining already completed RHS effects.
+Struct fields store values directly, without alias cells. Whole-struct assignment
+replaces the destination with an independent copy. Internal boxed vector locals
+remain only for component writes.
+
+Named script calls carry resolved function signatures and ordered argument nodes.
+Arguments finish left to right before being moved to the shared call window.
+Struct copy and nullable adaptation are explicit IR operations. Return records
+carry their owner function, value and source location; the emitter verifies their
+types and reuses the existing call/return instructions. Void fallthrough and
+generated helper bodies still use the transitional statement compiler.
 
 Arrays, vectors, and generated helpers retain private compile-only intrinsics in
 the textual skeleton. Their metadata carries types and source lines, and each
@@ -91,24 +116,45 @@ not create script helper frames or invoke native library constructors. Three/fou
 input operations use a validated contiguous temporary-slot range. Each instruction
 still occupies eight bytes; there are no extension slots or hidden resume states.
 
-Constant initializers retain the existing constant evaluator. Ordinary scalar
-compound assignments, user/host calls, lists/maps, struct helpers and host property
+Constant initializers retain the existing constant evaluator. Host/builtin calls,
+lists/maps, whole-struct helpers and host property
 write composition retain their existing paths. Host vector calculations use the
 new instructions inside the write helper, while getter/setter calls independently
 revalidate the saved receiver ID. Bool/string conversions remain checked generic
 conversions. Numeric expressions now emit from structured IR; the remaining
 compile-only intrinsics and compatibility leaves are explicit migration boundaries,
 not a complete typed-AST-to-bytecode backend replacement.
-Bytecode images use version `0147` and must be regenerated. The unused
-`NOP_AND3`, `NOP_OR3`, and `NOP_VERIFY_TYPE` instructions and their dedicated
-handlers have been removed; active bitwise operators and range-loop conversions
+NeoCore bytecode images use version `0149` and must be regenerated. The five generic `NOP_TABLE_*` arithmetic-write instructions, their handlers and
+unused table-update helpers have been removed. Compound collection writes now
+emit a read, arithmetic operation and ordinary write; WREF pairs only with
+`CLT_MOV`. In inherited dynamic code, vector compound RHS values no longer
+round to float32 before arithmetic: they round on storage, as NeoCore already did.
+Out-of-range compound writes fail at the initial read and report a read-index
+error; the destination remains unchanged.
+The unused `NOP_AND3`, `NOP_OR3`, and `NOP_VERIFY_TYPE` instructions were also removed; active bitwise operators and range-loop conversions
 retain their existing behavior. Earlier images are rejected because opcode numbers
-changed. A generic lowering
-mode remains available for differential tests.
+changed.
+
+Generic three-operand arithmetic and bitwise instructions (`NOP_ADD3`, its local
+variant, and the corresponding subtraction, multiplication, division, remainder,
+shift, XOR, AND, and OR forms), generic compound arithmetic (`NOP_ADD2` through
+`NOP_XOR2`), `NOP_MOV_MINUS` and its local variant, and fused
+`NOP_READ_ADD`/`SUB`/`MUL`/`DIV` are excluded from the NeoCore opcode set and VM
+dispatch. The frontend always emits the checked typed path; its generic lowering
+mode has been removed. Literal folding uses compiler semantic operations rather
+than generic VM opcode numbers. Comparisons still needed for bool, string, and
+nullable values, and other unmigrated operations, remain available.
+
+CMake links `NeoCore::Runtime` to `neocore_backend`, compiled with
+`NEOSCRIPT_LEGACY_ARITHMETIC=0`. Inherited `.ns` regressions and legacy hosts use a
+separate `neoscript` backend with `NEOSCRIPT_LEGACY_ARITHMETIC=1`; their image marker
+is `L149`. Neither backend accepts the other's images. The legacy arithmetic
+implementation is not compiled into the default NeoCore library. Do not link the
+two backend profiles into one executable.
 
 The current frontend covers scalar and vector declarations, nominal structs and their fields,
-typed arrays and scalar lists/maps, named functions, forward and recursive calls, mutable references
-to named variables and struct fields, block scopes, conditions, loops, returns, and
+typed arrays and scalar lists/maps, named functions, forward and recursive calls,
+block scopes, conditions, loops, returns, and
 scalar intrinsics. The limited `math` and `system`
 imports expose only `math.sin`, `math.cos`, and `system.clock` in this milestone.
 Explicit host schemas additionally expose nominal native objects, host globals,
@@ -119,7 +165,7 @@ nullable unwrapping is not implemented. For example, an `int?` cannot be added t
 an `int`, or passed to an `int` parameter, merely because it was compared with null.
 
 Typed sets, nested collections, imported script modules, richer host
-signatures, closures, JSON, and coroutine integration are later milestones. Some types already
+signatures, closures, JSON, and richer coroutine scheduling are later milestones. Some types already
 have compiler-side descriptors; that alone does not make their syntax executable.
 The existing Unity package, LSP/DAP adapters, and legacy console have not been
 converted into NeoCore entry points.
@@ -191,47 +237,13 @@ string concatenation in constant initializers are rejected until the typed
 constant evaluator is implemented. The same operators remain available in ordinary
 runtime expressions. `export const` is rejected; use `public const` for a module constant.
 
-## Mutable references
+## Value parameters
 
-The reference form is a mutable, non-rebindable alias to existing storage:
-
-```cpp
-void Adjust(float& value, int& count)
-{
-    value += 0.5;
-    count += 1;
-}
-
-float value = 1.0;
-int count = 0;
-float& alias = value;
-alias = 3.0;
-Adjust(value, count);
-```
-
-`alias = 3.0` writes `value`; it does not make the alias point elsewhere. A reference
-binds once at declaration or function invocation, must have an initializer, and
-requires an exact-type assignable location. A conversion or temporary value cannot
-bind to a reference parameter. For example, an `int` cannot bind to `float&` even
-though an ordinary float parameter accepts an integer conversion.
-
-The implementation supports named local/file variables, parameters, and their struct
-fields as targets, including reference forwarding and multiple arguments referring to the
-same variable. A reference to a by-value parameter changes that parameter's local
-storage. A reference declaration cannot be `const`, `public`, or `export`.
-Binding a reference to a range-loop iteration variable is explicitly unsupported.
-
-The transitional backend represents address-taken scalar variables with internal
-shared cells. A reference aliases that cell directly; it does not copy a value in
-and write it back after the call. This preserves overlapping aliases and evaluation
-order, but is not the final storage layout or a performance optimization. Ordinary
-variables whose address is never taken keep their existing backend representation.
-
-There are no pointers, reference rebinding operators, reference return values, or
-escaping references. The scalar host-call API does not bind reference parameters;
-these bindings currently happen in checked script code. Struct and scalar-field
-references follow the same binding rules. Collection element references are rejected
-because collection resizing can invalidate their locations.
+NeoCore does not support pointers or `T&` local declarations, parameters or returns.
+Functions return changed scalar, vector or struct values, which callers assign explicitly.
+Structs and vectors have value semantics. Collections retain shared-container semantics,
+and native objects remain validated IDs; removing language references does not change
+these identity or lifetime rules.
 
 ## Scalar types and conversions
 
@@ -290,14 +302,30 @@ targets are supported. Type checks and conversions must not reorder side effects
 
 ## Current host-call boundary
 
-`NeoCore::Program::Call` invokes exported scalar functions and validates arguments
-before executing the program. Host scalar arguments cannot bind script reference
-parameters. Null return values are supported; null arguments from the host are
-explicitly rejected until the backend call adapter supports them. This is narrower
+`NeoCore::Instance::Call` invokes exported scalar functions and validates arguments
+before executing the instance. Compile once with `Program::Compile`, then create
+independent execution states with `Program::CreateInstance(error)`. Each instance
+owns its script globals, host-global IDs, and pending invocation while retaining
+the shared code. `Program::Call` and the other convenience methods delegate to one
+default instance. Instances sharing a program execute serially on the host thread.
+Null return values are supported; null arguments from the host are explicitly rejected until the backend call adapter supports them. This is narrower
 than the nullable values that checked script code can pass internally.
 Host-initiated script reentry is rejected while top-level initialization is still
 running. Initialization runs at most once, and a failed initialization remains a
 failure on subsequent `Run`/`Call` requests.
+
+An instance can suspend through `sleep(int)` and resume through `Resume(deltaTime)`.
+`Result::status` distinguishes `Completed`, `Suspended`, and `Failed`; successful
+suspension still has `ok() == true`. Check `suspended()` or `IsSuspended()` and let
+the host drive subsequent frames. `sleep(0)` yields once. Positive sleep uses real
+elapsed time in integer milliseconds; negative durations clamp to zero and
+durations above `INT32_MAX` milliseconds fail at runtime. The finite, nonnegative
+`deltaTime` parameter is currently reserved and does not advance its timer. A busy
+instance rejects another exported call without replacing its pending execution; the host owns event queuing. If file
+initialization suspends during `Call`, the original function and argument values
+are retained. `Resume` finishes initialization and then executes that retained call
+without a retry. Callback reentry remains synchronous and targets the calling instance.
+
 Struct, collection, and native-object results are rejected before top-level initialization or the
 requested function executes; the current host adapter only marshals scalar values.
 
@@ -306,7 +334,7 @@ The separate script-to-host direction uses `HostSchema` and `HostBindings` from
 configuration, checks the source against its schema, and links each member to a
 fixed callback. It supports `int`, `float`, `bool`, `string`, declared native object
 types, vectors/quaternions, nullable forms of those types, and `void` results. Host structs,
-collections, reference parameters, overloads, and default arguments are deferred.
+collections, overloads, and default arguments are deferred.
 See [the host binding contract](HostBindings.md) for setup, object ownership,
 callback failures, and reentry rules.
 
@@ -318,21 +346,22 @@ or strings, or print their internal representation. Equality compares compatible
 native handles; unrelated native types are incompatible.
 
 Host globals are read-only handle bindings in script code. Their writable
-properties can still be changed. `Program::SetHostObject` replaces a global ID
-in that program; existing script variables holding an older ID keep that value.
+properties can still be changed. `Instance::SetHostObject` replaces a global ID
+in that instance; existing script variables holding an older ID keep that value.
+Set instance-specific IDs before `Run` when global initializers use those objects.
+`Program::SetHostObject` changes only the default instance.
 Native parameters and results are supported between checked script functions,
-but do not extend the scalar `Program::Call` entry point.
+but do not extend the scalar host `Call` entry point.
 
 Property reads call the registered getter. Assignments evaluate the right-hand
 side before the complete target object path; compound assignments then call the
 getter, compute the result, and call the setter. The receiver is evaluated once.
 Pre/post-increments preserve their respective result values. Read-only and
-write-only restrictions are compile errors, and properties cannot bind `T&`
-because a getter/setter pair is not an addressable storage location.
+write-only restrictions are compile errors.
 Nullable native values can be stored, passed to nullable host parameters, and
 compared with null. A null comparison in `if` refines a named, unaliased native
 local or by-value parameter for member access in its non-null branch. Reassignment
-or exposing a mutable reference invalidates this proof. Globals, nullable fields,
+invalidates this proof. Globals, nullable fields,
 and general nullable scalar/vector unwrapping are not refined by this feature.
 Object liveness is still validated by the runtime resolver on every host call.
 
@@ -344,7 +373,7 @@ With debug metadata enabled, generated property-helper locations are mapped to
 their original property operation's source line. Internal helper frames can still
 appear in the call stack. No performance claim follows from this binding milestone.
 
-## Structs and field references
+## Struct values
 
 Structs are file-scoped nominal value types. Fields have explicit types and keep
 their declaration order:
@@ -362,25 +391,23 @@ struct Particle
     int age;
 };
 
-void Advance(Particle& particle, float dt)
+Particle Advance(Particle particle, float dt)
 {
     particle.position.x += dt;
     particle.age += 1;
+    return particle;
 }
 
 Particle particle = Particle(Position(1.0, 2.0), 0);
 Particle snapshot = particle;
-float& x = particle.position.x;
 particle = Particle(Position(10.0, 20.0), 3);
-x = 12.0;
-Advance(particle, 0.5);
+particle.position.x = 12.0;
+particle = Advance(particle, 0.5);
 ```
 
 The final `particle.position.x` is `12.5`; `snapshot.position.x` is still `1.0`.
-The field alias follows the original variable's storage through whole-struct
-assignment. Writing `x` modifies the current `particle`, not a detached old value.
-The [complete sample](../Samples/neocore/scripts/structs.nc) also retains a nested
-struct alias and prints `12.5`, `1`, `21`, and `4` on separate lines.
+The [complete sample](../Samples/neocore/scripts/structs.nc) prints
+`12.5`, `1`, `21`, and `4` on separate lines.
 
 `Position(x, y)` is a positional constructor with one argument per field. Ordinary
 numeric conversion rules apply to each field. `Position()` and `Position p;` use
@@ -395,17 +422,16 @@ or return creates an independent value, including nested structs. By-value argum
 are captured at their evaluation point before later arguments can modify the source.
 Different struct names remain incompatible even when their fields have identical
 names and types. Whole-struct assignment completes its right-hand value evaluation
-before updating the target's fields.
+before replacing the destination value.
 
-Struct references and references to fields require an exact-type mutable lvalue
-rooted in a named variable or parameter. Existing aliases survive assignment to the
-referenced struct or any containing struct. Temporaries and function return values
-cannot be reference targets. References cannot be struct fields or escape through
-return values. Recursive by-value field layouts, nullable structs, and struct
-`==`/`!=` are rejected in this milestone. Nullable scalar fields remain supported.
+The backend stores a struct as a flat field list. Nested structs occupy nested
+field lists; individual fields and the root are not boxed into alias cells.
+The clone helper recursively copies nested structs. There is no in-place assignment
+helper to preserve field aliases. Recursive by-value layouts, nullable structs and
+struct `==`/`!=` are rejected. Nullable scalar fields remain supported.
 
 The scalar host-call API does not marshal structs. A call requiring a struct result
-is rejected before top-level initialization; struct values and references remain
+is rejected before top-level initialization; struct values remain
 available inside checked script code. Transitional generated helpers are appended
 after the original source to preserve its line numbering; backend call stacks may
 include those internal helper frames.
@@ -508,8 +534,7 @@ independent value, while `positions[i].x = value` updates the stored element.
 Assignments evaluate the RHS first, then the array and index once in that order;
 component writes read and update the selected vector after those evaluations.
 Compound operations and pre/post-increments preserve their stored/previous results.
-Named array variables can bind exact-type references, but element and component
-references are rejected because resizing can move their storage.
+Array variables and elements cannot bind language references.
 
 String/struct/native-object elements, nested/nullable arrays, array literals,
 compact 32-bit arrays, collection fields in structs, and typed host array
@@ -549,7 +574,11 @@ integers. `list.resize(size)` preserves retained elements and initializes newly
 added numeric/bool elements with zero/false. `list.resize(size, fill)` uses an
 explicit fill value evaluated once; string lists require that form. Regrowth does
 not expose stale or null entries. Lists support indexed assignment, compatible
-compound assignment, and increments/decrements.
+compound assignment, and increments/decrements. Numeric compound writes and
+increments/decrements lower through checked `ci64write`/`cf64write` intrinsics.
+They emit element reads, typed arithmetic, and ordinary writes without generic
+compound-arithmetic instructions or runtime numeric type dispatch. Receiver, index,
+and RHS evaluation retain their existing order, including prefix/postfix results.
 
 Maps currently start with `{}` and gain entries through `m[key] = value`. Direct
 `m[key]` reads have type `V?`; an absent key produces null. `m.get(key, fallback)`
@@ -629,17 +658,17 @@ callback reentrancy, coroutine suspension, and error unwinding continue to apply
 
 ## Remaining implementation stages
 
-1. Expand typed operations to compound assignments, collection reads/writes, and
+1. Expand typed operations to remaining collection reads/writes and
    function argument/result transfers. Preserve the VM dispatch, frame, and
    execution-control architecture.
 2. Replace the private textual intermediate representation with direct typed bytecode
    emission and slot-lifetime metadata. Remove destination cleanup only where lifetime
    analysis proves that the slot cannot own a reference.
-3. Validate loaded bytecode against type/signature metadata and measure each conversion
-   stage against the generic path with matching results.
+3. Validate loaded bytecode against type/signature metadata and compare each conversion
+   stage with a preserved baseline build and matching results.
 4. Expand the frontend to typed sets, compact arrays, nested collections, script modules,
    richer host signatures, and function values.
-5. Connect JSON, coroutine APIs, the C ABI, Unity, and editor tooling to those types,
+5. Connect JSON, richer coroutine APIs, the C ABI, Unity, and editor tooling to those types,
    and migrate the remaining backend samples and documentation.
 
 The current backend still stores dynamic tags and performs generic work outside the

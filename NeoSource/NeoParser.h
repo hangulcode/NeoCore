@@ -47,8 +47,6 @@ bool IsTempVar(int iVar);
 extern bool g_neoFuseCollectionReads;
 
 eNOperation	GetOpTypeFromOp(eNOperation op);
-eNOperation GetTableOpTypeFromOp(eNOperation op);
-eNOperation GetListOpTypeFromOp(eNOperation op);
 int		GetOpLength(eNOperation op);
 
 struct SJumpValue
@@ -362,9 +360,12 @@ struct SFunctionInfo
 		case NOP_MOV:
 		case NOP_MOVF:
 		case NOP_LOADK:
+#if NEOSCRIPT_LEGACY_ARITHMETIC
 		case NOP_MOV_MINUS:
+#endif
 		case NOP_LOG_NOT:
 		case NOP_VAR_CLEAR:
+#if NEOSCRIPT_LEGACY_ARITHMETIC
 		case NOP_ADD3:
 		case NOP_SUB3:
 		case NOP_MUL3:
@@ -373,16 +374,17 @@ struct SFunctionInfo
 		case NOP_LSHIFT3:
 		case NOP_RSHIFT3:
 		case NOP_XOR3:
+#endif
 		case NOP_GREAT:		// >
 		case NOP_GREAT_EQ:	// >=
 		case NOP_LESS:		// <
 		case NOP_LESS_EQ:	// <=
 		case NOP_EQUAL2:	// ==
 		case NOP_NEQUAL:	// !=
-		// 비트 &, | 는 (3-피연산자 산술과 달리) 비교 그룹의 NOP_AND/NOP_OR 로 생성된다.
-		// 여기 빠져 있어서 `var x = a & b;` 뒤에 잉여 MOV 가 남았다 — dst 재타겟으로 제거.
+#if NEOSCRIPT_LEGACY_ARITHMETIC
 		case NOP_AND:		// &
 		case NOP_OR:		// |
+#endif
 		case NOP_LOG_AND:	// &&
 		case NOP_LOG_OR:	// ||
 		case NOP_STR_ADD:
@@ -611,7 +613,7 @@ struct SFunctionInfo
 		//_code->Write(&r, sizeof(r));
 		Push_NoFlag(0, 0, 0);
 	}
-	void	Push_RETURN(CArchiveRdWC& ar, int r, bool b1)
+	void	Push_RETURN(CArchiveRdWC& ar, int r, bool b1, int debugLine = -1)
 	{
 		OperandTemps temps(*this);
 		r = ReadOperand(ar, r);
@@ -639,6 +641,11 @@ struct SFunctionInfo
 						*preArgFlag = NEOS_ARG_N1_IMMEDIATE;
 					else
 						*preArgFlag = 0;
+                    if (ar._debug && debugLine != -1)
+                    {
+                        CheckCompileRange("debug line", debugLine, 0, USHRT_MAX);
+                        (*_pDebugData)[_iLastOPOffset / 8] = debug_info(ar.CurFile(), debugLine);
+                    }
 					return;
 				}
 				break;
@@ -647,7 +654,7 @@ struct SFunctionInfo
 				break;
 			}
 		}
-		AddDebugData(ar);
+		AddDebugData(ar, debugLine);
 		_iLastOPOffset = _code->GetBufferOffset();
 
 		_code->Write(&optype, sizeof(optype));
@@ -788,30 +795,14 @@ struct SFunctionInfo
 		AddDebugData(ar);
 		_iLastOPOffset = _code->GetBufferOffset();
 
-		eNOperation optype = GetTableOpTypeFromOp(op);
+		eNOperation optype = GetOpTypeFromOp(op == NOP_MOV ? NOP_CLT_MOV : op);
 		_code->Write(&optype, sizeof(optype));
 		Push_NoFlag(nTable, nArray, nValue);
 	}
-	void	Push_List_MASMDP(CArchiveRdWC& ar, eNOperation op, int nTable, int nArray, int nValue, bool b1, bool b2, bool b3)
-	{
-		OperandTemps temps(*this);
-		nTable = ReadOperand(ar, nTable); nArray = ReadOperand(ar, nArray);
-		if (op != NOP_FMOV2) nValue = ReadOperand(ar, nValue);
-		// 목록의 null 대입도 일반 대입으로 유지한다. 원소 삭제와 의미가 다르다.
-		AddDebugData(ar);
-		_iLastOPOffset = _code->GetBufferOffset();
-
-		eNOperation optype = GetListOpTypeFromOp(op);
-		_code->Write(&optype, sizeof(optype));
-		//_code->Write(&nTable, sizeof(nTable));
-		//_code->Write(&nArray, sizeof(nArray));
-		//_code->Write(&nValue, sizeof(nValue));
-		Push_NoFlag(nTable, nArray, nValue);
-	}
-	void Push_TableWriteRef(CArchiveRdWC& ar, eNOperation op, int owner, int key,
+	void Push_TableWriteRef(CArchiveRdWC& ar, int owner, int key,
         int temp, int component, int value, bool loaded)
     {
-        // LOADK must never split the guarded sequence: lower operands first.
+        // LOADK가 쓰기 참조 쌍을 나누지 않도록 피연산자를 먼저 확정한다.
         OperandTemps temps(*this);
         owner = ReadOperand(ar, owner); key = ReadOperand(ar, key);
         component = ReadOperand(ar, component); value = ReadOperand(ar, value);
@@ -822,7 +813,7 @@ struct SFunctionInfo
         Push_Flag(loaded ? NEOS_OP_REF_LOADED : 0, owner, key, temp);
         AddDebugData(ar);
         _iLastOPOffset = _code->GetBufferOffset();
-        type = GetTableOpTypeFromOp(op);
+        type = GetOpTypeFromOp(NOP_CLT_MOV);
         _code->Write(&type, sizeof(type));
         Push_Flag(NEOS_OP_REF_WRITE, temp, component, value);
     }

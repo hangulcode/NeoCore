@@ -137,7 +137,7 @@ typedef u8	ArgFlag;
 // PatchLocalOps 도 이 비트를 봐야 해서 argFlag 비트 정의와 같은 곳에 둔다.
 #define NEOS_OP_CALL_NORESULT	(1 << 7) // 0x80
 #define NEOS_OP_COMPARE_INVERT (1 << 6) // ordered jump: negate the comparison result
-#define NEOS_OP_REF_LOADED (1 << 6) // postfix consumer already read the parent
+#define NEOS_OP_REF_LOADED (1 << 6) // WREF는 부모 읽기 생략, RRES는 저장된 벡터만 새로 읽기
 #define NEOS_OP_REF_WRITE (1 << 7) // ordinary collection write following WREF
 
 // NOP_JMP_RANGE_* descriptor 전용 플래그. opcode의 argFlag와 분리해
@@ -160,9 +160,12 @@ enum eNOperation : OpType
 	// The destination flag selects local/global storage; no separate _L opcode is needed.
 	NOP_LOADK,
 
+#if NEOSCRIPT_LEGACY_ARITHMETIC
 	NOP_MOV_MINUS,
 	NOP_MOV_MINUS_L,
+#endif
 	NOP_LOG_NOT,	// !
+#if NEOSCRIPT_LEGACY_ARITHMETIC
 	NOP_ADD2,		// +
 	NOP_ADD2_L,
 	NOP_SUB2,		// -
@@ -174,6 +177,7 @@ enum eNOperation : OpType
 	NOP_AND2,		// &
 	NOP_OR2,		// |
 	NOP_XOR2,		// ^
+#endif
 	//NOP_NOT2,		// ~
 	//NOP_LOG_NOT2,	// ! not support ( a != 0x01; if(a != b) ... bit / logic )
 
@@ -181,6 +185,8 @@ enum eNOperation : OpType
 	NOP_INC,
 	NOP_DEC,
 
+
+#if NEOSCRIPT_LEGACY_ARITHMETIC
 	NOP_ADD3,
 	NOP_ADD3_L,
 	NOP_SUB3,
@@ -193,6 +199,7 @@ enum eNOperation : OpType
 	NOP_RSHIFT3,
 	NOP_XOR3,
 	//NOP_NOT3,
+#endif
 
 	NOP_GREAT,		// >
 	NOP_GREAT_EQ,	// >=
@@ -200,9 +207,11 @@ enum eNOperation : OpType
 	NOP_LESS_EQ,	// <=
 	NOP_EQUAL2,		// ==
 	NOP_NEQUAL,		// !=
+#if NEOSCRIPT_LEGACY_ARITHMETIC
 	NOP_AND,		// &
 	NOP_AND_L,
 	NOP_OR,			// |
+#endif
 	NOP_LOG_AND,	// &&
 	NOP_LOG_OR,	// ||
 
@@ -261,12 +270,6 @@ enum eNOperation : OpType
 	NOP_CLT_MOV,
 	NOP_CLT_MOV_L,
 
-	NOP_TABLE_ADD2,
-	NOP_TABLE_SUB2,
-	NOP_TABLE_MUL2,
-	NOP_TABLE_DIV2,
-	NOP_TABLE_PERSENT2,
-
 	NOP_LIST_ALLOC,
 	NOP_LIST_ALLOC_L,
 
@@ -297,10 +300,12 @@ enum eNOperation : OpType
 	// dest op= clt[key]. READ 가 임시 슬롯에 복사하고 산술 명령이 다시 읽는 두 단계를 한 명령으로 합친다.
 	// n1 = 컨테이너, n2 = 키, n3 = dest(읽고 쓴다). 산술 종류는 opcode 다. 로컬 전용(_L) 변형은 두지 않는다.
 	// 3-피연산자 형태(x = a[i] op b[j])와 저장 형태는 측정 결과 분리 명령보다 느려 두지 않는다(ReadMe Methodology).
+#if NEOSCRIPT_LEGACY_ARITHMETIC
 	NOP_READ_ADD,
 	NOP_READ_SUB,
 	NOP_READ_MUL,
 	NOP_READ_DIV,
+#endif
 	// 정적 프런트엔드가 입력 타입을 보증한다. 목적지 슬롯의 기존 값 정리는 유지한다.
 #define NEOCORE_TYPED_ENUM(op, name, suffix, arity, slots, writes, comparison, jump, branchOp) op,
 	NEOCORE_TYPED_OPS(NEOCORE_TYPED_ENUM)
@@ -336,30 +341,15 @@ inline const AggregateOpInfo* GetAggregateOpInfo(eNOperation op)
 	return index < sizeof(operations) / sizeof(operations[0]) ? &operations[index] : nullptr;
 }
 
-inline eNOperation GetTypedGenericArithmetic(eNOperation op)
+inline bool IsReadArithOp(eNOperation op)
 {
-	// 상수 접기는 기존 숫자 계산 규칙을 재사용하며 실행 시 타입 분기는 다시 넣지 않는다.
-	switch (op)
-	{
-	case NOP_I64_ADD: return NOP_ADD3;
-	case NOP_I64_SUB: return NOP_SUB3;
-	case NOP_I64_MUL: return NOP_MUL3;
-	case NOP_I64_DIV: return NOP_DIV3;
-	case NOP_I64_MOD: return NOP_PERSENT3;
-	case NOP_I64_AND: return NOP_AND;
-	case NOP_I64_OR: return NOP_OR;
-	case NOP_I64_XOR: return NOP_XOR3;
-	case NOP_I64_SHL: return NOP_LSHIFT3;
-	case NOP_I64_SHR: return NOP_RSHIFT3;
-	case NOP_F64_ADD: return NOP_ADD3;
-	case NOP_F64_SUB: return NOP_SUB3;
-	case NOP_F64_MUL: return NOP_MUL3;
-	case NOP_F64_DIV: return NOP_DIV3;
-	default: return NOP_NONE;
-	}
+#if NEOSCRIPT_LEGACY_ARITHMETIC
+    return op >= NOP_READ_ADD && op <= NOP_READ_DIV;
+#else
+    (void)op;
+    return false;
+#endif
 }
-
-inline bool IsReadArithOp(eNOperation op) { return op >= NOP_READ_ADD && op <= NOP_READ_DIV; }
 
 enum eYield_Type : s16
 {

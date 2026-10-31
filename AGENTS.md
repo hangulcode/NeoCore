@@ -26,11 +26,11 @@ Read [StaticTyping.md](docs/StaticTyping.md) before changing the language. The i
 - Nullability is explicit (`T?`); reject unproven null access. Numeric/bool/vector defaults are initialized; nonnullable references require initializers.
 - Functions can call later functions and recurse. Variables and constants must be declared before use, including file variables referenced from function bodies.
 - Keep evaluation order, overflow/division behavior, value/reference semantics, and host error unwinding unless a language change is explicitly approved.
-- Numeric expressions emit from typed IR; declarations/control flow and aggregate intrinsics retain a textual bridge. Calls/assignments/selectors inside IR use ordered compatibility leaves. Array/vector writes expand without runtime helpers; lists/maps, structs and host write composition retain generic paths. Unsupported features must fail explicitly.
-- Preserve typed operand provenance; never infer a payload type from a variable name or debug line. Slot reuse still requires destination reference cleanup. Typed op metadata is centralized in `NeoVMTypedOps.h`.
+- Numeric expressions, scalar writes, script calls and returns emit from typed IR. Struct scalar targets use flat raw field paths; resolve writes after the RHS and preserve expression results. Calls carry exact signatures, ordered arguments and explicit value copies. Host/builtin calls, aggregate intrinsics, declarations/control flow and unmigrated selectors retain ordered transitional paths. Unsupported features must fail explicitly.
+- Preserve typed operand provenance; never infer a payload type from a variable name or debug line. Slot reuse still requires destination reference cleanup. Typed op metadata is centralized in `NeoVMTypedOps.h`; default builds exclude generic arithmetic/negation/read-arithmetic instructions, and `NOP_LOG_NOT` consumes checked bools.
 - Structs, vector arithmetic, typed arrays, scalar lists/maps, and scalar/vector/native host schemas are checked today; compact arrays/sets, nested collections, imports, closures, and tooling remain separate milestones. Do not claim the static VM is finished.
 - Vector components are float32; scalar reads are float64. Quaternion constructors/host values use w,x,y,z. Component writes preserve value semantics and stored-value results; host writes resolve the saved receiver ID separately for getter and setter.
-- Mutable `T&` references bind once to exact-type named variables/parameters or struct fields. Preserve field aliases across whole-struct assignment. No pointers, rebinding, reference returns/escape, collection-element/host-property refs, or range-loop refs. The host scalar API does not bind refs.
+- No pointers or `T&` declarations, parameters, or returns. Structs/vectors copy by value; functions return modified values for explicit caller assignment. Struct clone helpers preserve nested copies; fields have no alias cells or in-place assignment helper. Internal boxed vector locals serve component writes only. Collections/native IDs keep their existing shared identity semantics.
 - Keep the core, public API, C ABI, console, and mini game C++11-compatible. Do not introduce C++14+ syntax or library dependencies. Vendored PCRE2 requires C99.
 - Order `switch` cases by actual enum/numeric value; put `default` last and preserve fallthrough.
 
@@ -42,7 +42,7 @@ cmake --build Build/neocore --config Release --parallel
 ctest --test-dir Build/neocore -C Release --output-on-failure
 ```
 
-- Check both accepted and rejected typed programs, lowering semantics, and the public `NeoCore.h` boundary. Keep inherited backend regressions passing.
+- Check accepted/rejected typed programs, lowering semantics, and `NeoCore.h`. NeoCore links `neocore_backend` with `NEOSCRIPT_LEGACY_ARITHMETIC=0`; inherited `.ns` regressions link `neoscript` with `=1`. Keep both suites passing, but never link the two profiles into one executable.
 - The inherited `host_argument_buffer_regression` zero-allocation assertions fail with MSVC Debug's STL iterator proxies; report this separately from functional checks. Release verifies the zero-allocation expectation.
 - `Samples/bench/check.nc` checks the eight workloads without timers; `bench.nc` is the timed suite. Its explicit map fallback and string conversions preserve results, not identical bytecode.
 - The CLI defaults to non-debug execution. Use `neocore --debug --file source.nc` for runtime source locations; keep timed benchmarks in non-debug mode.

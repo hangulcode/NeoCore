@@ -239,10 +239,10 @@ static void CollectionErrorCases(IRuntime* runtime, bool debug, bool image)
     for (const char* op : {"+=", "-=", "*=", "/=", "%="})
         Run(runtime, std::string("list compound bounds diagnostic ") + op,
             std::string("export fun Probe(){var values=[1];values[3]") + op +
-            "1;return false;}", debug, image, "list index out of range on assign");
+            "1;return false;}", debug, image, "cannot read by index from list");
     Run(runtime, "vector array component write bounds diagnostic",
         "export fun Probe(){var values=system.array(math.Vector2(1,2),1);values[3][0]+=1;return false;}",
-        debug, image, "array index out of range on assign");
+        debug, image, "array index out of range on read");
 }
 
 static void NumericCases(IRuntime* runtime, bool debug, bool image)

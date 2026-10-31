@@ -30,6 +30,8 @@ bool IsNull(const NeoScript::CallContext& context, std::size_t index);
 // 컴파일 직후 인스턴스 생성 전에만 호출한다. 루트 소스의 생성된 헬퍼 행을 원본 행으로 돌린다.
 bool RemapSourceLines(NeoScript::IRuntime& runtime, NeoScript::ProgramHandle program,
     const std::vector<std::pair<int, int>>& mappings);
+// NeoCore 인스턴스의 sleep을 실행 제한과 무관하게 협력적 대기로 설정한다.
+bool EnableCooperativeSleep(NeoScript::IRuntime& runtime, NeoScript::InstanceHandle instance);
 // 전역 초기화처럼 Invocation이 없는 실행에서도 이미 저장된 오류 위치를 읽는다. 오류를 소비하지 않는다.
 bool ReadLastCallError(NeoScript::IRuntime& runtime, NeoScript::InstanceHandle instance, NeoScript::Error& error);
 }

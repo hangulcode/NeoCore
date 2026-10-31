@@ -11,6 +11,8 @@
 
 using namespace NeoScript;
 
+static_assert(!NEOSCRIPT_LEGACY_ARITHMETIC, "NeoCore tests require the static opcode profile");
+
 static int checks = 0;
 static int failures = 0;
 
@@ -179,15 +181,14 @@ static Outcome RunBackend(IRuntime* runtime, const std::string& source,
     return result;
 }
 
-static Outcome RunChecked(IRuntime* runtime, const std::string& source, bool typed,
+static Outcome RunChecked(IRuntime* runtime, const std::string& source,
     bool debug, bool image, const std::string& label)
 {
     NeoCore::StaticCompileResult checked;
-    const bool accepted = NeoCore::CompileStaticSource(source, checked, typed);
+    const bool accepted = NeoCore::CompileStaticSource(source, checked);
     Check(accepted, label + " frontend: " + checked.errorMessage);
     if (!accepted) return Outcome();
-    Check(typed ? !checked.backendIntrinsicPrefix.empty() : checked.backendIntrinsicPrefix.empty(),
-        label + " backend mode is explicit");
+    Check(!checked.backendIntrinsicPrefix.empty(), label + " typed backend is required");
     return RunBackend(runtime, checked.loweredSource, checked.backendIntrinsicPrefix,
         debug, image, label, &checked.typedIR);
 }
@@ -198,9 +199,9 @@ static void Compare(IRuntime* runtime, const std::string& source, const Outcome&
     const std::string complete = source + "\nexport int Recovery(){return 29;}";
     for (bool image : {false, true})
     {
-        const Outcome generic = RunChecked(runtime, complete, false, debug, image, label + " generic");
-        const Outcome typed = RunChecked(runtime, complete, true, debug, image, label + " typed");
-        Check(Same(generic, typed), label + " same value/type/error after typed lowering");
+
+        const Outcome typed = RunChecked(runtime, complete, debug, image, label + " typed");
+
         if (reason)
         {
             Check(typed.valid && typed.status == RunStatus::Failed && typed.text.find(reason) == 0,
@@ -228,6 +229,11 @@ static void Arithmetic(IRuntime* runtime, bool debug)
         {"export int Probe(){int a=-9223372036854775808;int b=1;return a-b;}", Int(maximum), "integer subtraction wraps"},
         {"export int Probe(){int a=9223372036854775807;int b=2;return a*b;}", Int(-2), "integer multiplication wraps"},
         {"export int Probe(){int a=-7;int b=3;return a/b;}", Int(-2), "integer division truncates"},
+        {"export int Probe(){int a=-9223372036854775808;return -a;}", Int(minimum), "integer negation wraps minimum"},
+        {"export float Probe(){float a=0.0;return -a;}", Float(-0.0), "float negation creates negative zero"},
+        {"export float Probe(){float a=-0.0;return -a;}", Float(0.0), "float negation restores positive zero"},
+        {"export bool Probe(){bool a=false;return !a;}", Bool(true), "logical not remains bool"},
+        {"export bool Probe(){bool a=true;return !a;}", Bool(false), "logical not reverses true"},
         {"export int Probe(){int a=-9223372036854775808;int b=1;return a/b;}", Int(minimum), "minimum division boundary"},
         {"export int Probe(){int a=0;int b=-1;return a/b;}", Int(0), "zero integer quotient"},
         {"export float Probe(){float a=7.5;float b=2.0;return a+b;}", Float(9.5), "float addition"},
@@ -249,9 +255,9 @@ static void Arithmetic(IRuntime* runtime, bool debug)
         {"export int Probe(){int a=7;int b=3;a=a-b;b=a*b;return b;}", Int(12), "destination aliases inputs"},
         {"export float Probe(){float a=7.5;float b=2.0;a=b+a;b=a/b;return b;}", Float(4.75), "float destination aliases inputs"},
         {"int x=1;int Change(){x=5;return 2;}export int Probe(){int value=x+Change();return value*10+x;}", Int(35), "left operand snapshot"},
-        {"int Change(int& x){x=8;return 2;}int Pair(int a,int b){return a*10+b;}export int Probe(){int x=3;return Pair(x,Change(x));}", Int(32), "argument snapshot before ref mutation"},
+        {"int x=3;int Change(){x=8;return 2;}int Pair(int a,int b){return a*10+b;}export int Probe(){return Pair(x,Change());}", Int(32), "argument snapshot before global mutation"},
         {"int count=0;bool Bump(){count=count+1;return true;}export bool Probe(){bool a=false&&Bump();bool b=true||Bump();return count==0&&!a&&b;}", Bool(true), "short circuit excludes typed operations"},
-        {"struct S{int x;};int Change(S& s){s=S(8);return 2;}export int Probe(){S s=S(3);int& x=s.x;int value=x+Change(s);return value*10+x;}", Int(58), "field reference snapshot and stable identity"},
+        {"struct S{int x;};S s=S(3);int Change(){s=S(8);return 2;}export int Probe(){int value=s.x+Change();return value*10+s.x;}", Int(58), "field value snapshot before struct replacement"},
         {"export int Probe(){list<int> a=[3];int x=a[0];return x*4+1;}", Int(13), "collection read feeds typed arithmetic"},
         {"int __neocore_iadd=3;export int Probe(){int a=2;return __neocore_iadd+a;}", Int(5), "source identifier does not hijack intrinsic prefix"}
     };
@@ -446,15 +452,16 @@ static void Shapes(IRuntime* runtime, bool debug)
         {"export float Probe(float a,float b){return a-b;}", NOP_F64_SUB},
         {"export float Probe(float a,float b){return a*b;}", NOP_F64_MUL},
         {"export float Probe(float a,float b){return a/b;}", NOP_F64_DIV},
+        {"export int Probe(int a){return -a;}", NOP_I64_NEG},
+        {"export float Probe(float a){return -a;}", NOP_F64_NEG},
         {"export float Probe(int a){return float(a);}", NOP_I64_TO_F64},
         {"export int Probe(float a){return int(a);}", NOP_F64_TO_I64}
     };
     for (const auto& shape : shapes)
     {
-        for (bool typed : {false, true})
         {
             NeoCore::StaticCompileResult checked;
-            Check(NeoCore::CompileStaticSource(shape.body, checked, typed), "shape frontend");
+            Check(NeoCore::CompileStaticSource(shape.body, checked), "shape frontend");
             if (!checked.success) continue;
             CompileDesc desc;
             desc.source = checked.loweredSource;
@@ -467,13 +474,12 @@ static void Shapes(IRuntime* runtime, bool debug)
             Check(error.ok(), std::string("shape image: ") + error.message);
             if (!error.ok()) continue;
             const auto operations = Operations(bytes);
-            Check(typed ? CountTyped(operations, shape.expected) == 1 && CountTyped(operations) == 1
-                : CountTyped(operations) == 0, "typed opcode emitted exactly once only in typed mode");
+            Check(CountTyped(operations, shape.expected) == 1 && CountTyped(operations) == 1,
+                "typed opcode emitted exactly once");
             Error loadError;
             ProgramHandle loaded = runtime->LoadProgram(bytes, &loadError);
             Check(bool(loaded) && loadError.ok(), "typed opcode image accepted");
             if (loaded) runtime->DestroyProgram(loaded);
-            if (typed)
             {
                 for (std::size_t index = 0; index < operations.size(); ++index)
                 {
@@ -507,7 +513,7 @@ static void Shapes(IRuntime* runtime, bool debug)
     }
 
     NeoCore::StaticCompileResult checked;
-    Check(NeoCore::CompileStaticSource("export int Probe(int a,int b){return a+b;}", checked, true),
+    Check(NeoCore::CompileStaticSource("export int Probe(int a,int b){return a+b;}", checked),
         "disabled-intrinsic frontend");
     CompileDesc disabled;
     disabled.source = checked.loweredSource;
@@ -558,7 +564,7 @@ static void ComparisonShapes(IRuntime* runtime, bool debug)
             else source += "if(" + condition + ")return 1;return 0;}";
 
             NeoCore::StaticCompileResult checked;
-            Check(NeoCore::CompileStaticSource(source, checked, true), "comparison shape frontend");
+            Check(NeoCore::CompileStaticSource(source, checked), "comparison shape frontend");
             if (!checked.success) continue;
             CompileDesc desc;
             desc.source = checked.loweredSource;
@@ -631,7 +637,7 @@ static void ComparisonShapes(IRuntime* runtime, bool debug)
     for (const char* source : genericSources)
     {
         NeoCore::StaticCompileResult checked;
-        Check(NeoCore::CompileStaticSource(source, checked, true), "generic comparison shape frontend");
+        Check(NeoCore::CompileStaticSource(source, checked), "generic comparison shape frontend");
         if (!checked.success) continue;
         CompileDesc desc;
         desc.source = checked.loweredSource;
@@ -656,7 +662,7 @@ static void ComparisonShapes(IRuntime* runtime, bool debug)
         const std::string source = "export int Probe(float x,float lo,float hi){if(" +
             std::string(range.condition) + ")return 1;return 0;}";
         NeoCore::StaticCompileResult checked;
-        Check(NeoCore::CompileStaticSource(source, checked, true), "range shape frontend");
+        Check(NeoCore::CompileStaticSource(source, checked), "range shape frontend");
         if (!checked.success) continue;
         CompileDesc desc;
         desc.source = checked.loweredSource;
@@ -694,6 +700,7 @@ static void ReferenceCleanup(IRuntime* runtime, bool debug)
         {"imul", "7", "2", Int(17)}, {"idiv", "7", "2", Int(6)},
         {"fadd", "7.0", "2.0", Float(12.0)}, {"fsub", "7.0", "2.0", Float(8.0)},
         {"fmul", "7.0", "2.0", Float(17.0)}, {"fdiv", "7.0", "2.0", Float(6.5)},
+        {"ineg", "7", nullptr, Int(-4)}, {"fneg", "7.0", nullptr, Float(-4.0)},
         {"itof", "7", nullptr, Float(10.0)}, {"ftoi", "7.9", nullptr, Int(10)}
     };
     const std::string prefix = "__typed_cleanup_";
@@ -703,7 +710,9 @@ static void ReferenceCleanup(IRuntime* runtime, bool debug)
         const std::string source = "export fun Probe(){var a=" + std::string(item.a) +
             ";var b=" + (item.b ? item.b : "0") + ";var cell=[3];var witness=cell;" +
             "for(var i in 0,32){cell=[i];cell=" + prefix + item.suffix + "_L1(" + arguments +
-            ");}return cell+witness[0];}export fun Recovery(){return 29;}";
+            ");}return " + prefix + (item.expected.type == ValueType::Float ? "fadd" : "iadd")
+            + "_L1(cell," + (item.expected.type == ValueType::Float ? prefix + "itof_L1(witness[0])" : "witness[0]")
+            + ");}export fun Recovery(){return 29;}";
         AllocStats before; GetAllocStats(before);
         const Outcome result = RunBackend(runtime, source, prefix, debug, true, item.suffix);
         AllocStats after; GetAllocStats(after);
@@ -724,7 +733,7 @@ static void ReferenceCleanup(IRuntime* runtime, bool debug)
         const std::string source = "var witness=null;export fun Probe(){var a=" +
             std::string(integer ? "3" : "3.0") + ";var b=" + (integer ? "2" : "2.0") +
             ";var cell=[3];witness=cell;for(var i in 0,32){cell=[i];cell=" + prefix + item.suffix +
-            "_L1(a,b);}return cell;}export fun Recovery(){return witness[0]+26;}";
+            "_L1(a,b);}return cell;}export fun Recovery(){return " + prefix + "iadd_L1(witness[0],26);}";
         AllocStats before; GetAllocStats(before);
         const Outcome result = RunBackend(runtime, source, prefix, debug, true, item.suffix);
         AllocStats after; GetAllocStats(after);
@@ -750,12 +759,44 @@ static void ReferenceCleanup(IRuntime* runtime, bool debug)
     }
 }
 
+static void StaticProfile(IRuntime* runtime)
+{
+    CompileDesc dynamic;
+    dynamic.source = "export fun Probe(var x){return x+1;}";
+    const CompileResult rejected = runtime->Compile(dynamic);
+    Check(!rejected.program && !rejected.error.ok() &&
+        rejected.error.message.find("numeric expressions require typed IR") != std::string::npos,
+        "static backend rejects dynamic arithmetic instead of emitting a generic opcode");
+    if (rejected.program) runtime->DestroyProgram(rejected.program);
+
+    NeoCore::StaticCompileResult checked;
+    Check(NeoCore::CompileStaticSource("export int Probe(){return 1+2;}", checked), "constant static frontend");
+    CompileDesc desc;
+    desc.source = checked.loweredSource;
+    desc.coreIntrinsicPrefix = checked.backendIntrinsicPrefix;
+    desc.coreTypedIR = &checked.typedIR;
+    std::vector<uint8_t> bytes;
+    const Error error = runtime->CompileToBytecode(desc, bytes);
+    Check(error.ok() && bytes.size() >= sizeof(SNeoVMHeader), "static profile image compilation");
+    if (!error.ok() || bytes.size() < sizeof(SNeoVMHeader)) return;
+    SNeoVMHeader header;
+    std::memcpy(&header, bytes.data(), sizeof(header));
+    Check(header._dwNeoVersion == NEO_VER, "static image records its own opcode profile");
+    header._dwNeoVersion = ('L' << 24) | ('1' << 16) | ('4' << 8) | '9';
+    std::memcpy(bytes.data(), &header, sizeof(header));
+    Error loadError;
+    ProgramHandle invalid = runtime->LoadProgram(bytes, &loadError);
+    Check(!invalid && !loadError.ok(), "static loader rejects legacy opcode-profile images");
+    if (invalid) runtime->DestroyProgram(invalid);
+}
+
 int main()
 {
     IRuntime* runtime = CreateRuntime();
     Check(runtime != nullptr, "runtime creation");
     if (!runtime) return 1;
     runtime->FreezeBindings();
+    StaticProfile(runtime);
     for (bool debug : {false, true})
     {
         Arithmetic(runtime, debug);

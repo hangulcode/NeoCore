@@ -121,7 +121,8 @@ static void InvalidChainedWrites(IRuntime* rt, bool debug)
     while (index < ops.size() && ops[index].op != NOP_CLT_WRITE_REF) ++index;
     Check(index + 1 < ops.size(), "chained write pair emitted");
     if (index + 1 >= ops.size()) return;
-    Check(ops[index + 1].op == NOP_TABLE_ADD2, "tail is a normal write opcode");
+    Check(ops[index + 1].op == NOP_CLT_MOV || ops[index + 1].op == NOP_CLT_MOV_L,
+        "tail is a normal value write opcode");
     for (int corruption = 0; corruption < 11; ++corruption)
     {
         auto changed = ops;
@@ -163,7 +164,7 @@ int main()
     {
         SNeoVMHeader oldHeader{};
         std::memcpy(&oldHeader, oldImage.data(), sizeof(oldHeader));
-        for (const char* version : {"0122", "0125", "0126", "0127", "0146"})
+        for (const char* version : {"0122", "0125", "0126", "0127", "0146", "0147"})
         {
             oldHeader._dwNeoVersion = (uint32_t(version[0]) << 24) | (uint32_t(version[1]) << 16)
                 | (uint32_t(version[2]) << 8) | uint32_t(version[3]);

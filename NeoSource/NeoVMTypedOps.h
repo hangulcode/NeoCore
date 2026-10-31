@@ -17,6 +17,8 @@
     X(NOP_F64_SUB, "F64_SUB", "fsub", 2, 7, 1, false, false, NOP_NONE) \
     X(NOP_F64_MUL, "F64_MUL", "fmul", 2, 7, 1, false, false, NOP_NONE) \
     X(NOP_F64_DIV, "F64_DIV", "fdiv", 2, 7, 1, false, false, NOP_NONE) \
+    X(NOP_I64_NEG, "I64_NEG", "ineg", 1, 3, 1, false, false, NOP_NONE) \
+    X(NOP_F64_NEG, "F64_NEG", "fneg", 1, 3, 1, false, false, NOP_NONE) \
     X(NOP_I64_TO_F64, "I64_TO_F64", "itof", 1, 3, 1, false, false, NOP_NONE) \
     X(NOP_F64_TO_I64, "F64_TO_I64", "ftoi", 1, 3, 1, false, false, NOP_NONE) \
     X(NOP_I64_EQ, "I64_EQ", "ieq", 2, 7, 1, true, false, NOP_JMP_I64_EQ) \

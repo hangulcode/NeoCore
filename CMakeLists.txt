@@ -58,13 +58,18 @@ set(NEOSCRIPT_SOURCES
     NeoSource/NeoVMWorker.cpp
 )
 
-add_library(neoscript STATIC ${NEOSCRIPT_SOURCES})
-target_include_directories(neoscript PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/NeoSource)
-target_compile_features(neoscript PUBLIC cxx_std_11 PRIVATE c_std_99)
-
-if(WIN32)
-    target_compile_definitions(neoscript PRIVATE WIN_PRJ)
-endif()
+# NeoCore 실행 파일에는 정적 산술 백엔드만 링크한다. 동적 산술은 기존 .ns 시험/호스트 전용이다.
+add_library(neocore_backend STATIC ${NEOSCRIPT_SOURCES})
+add_library(neoscript STATIC EXCLUDE_FROM_ALL ${NEOSCRIPT_SOURCES})
+target_compile_definitions(neocore_backend PUBLIC NEOSCRIPT_LEGACY_ARITHMETIC=0)
+target_compile_definitions(neoscript PUBLIC NEOSCRIPT_LEGACY_ARITHMETIC=1)
+foreach(backend_target neocore_backend neoscript)
+    target_include_directories(${backend_target} PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/NeoSource)
+    target_compile_features(${backend_target} PUBLIC cxx_std_11 PRIVATE c_std_99)
+    if(WIN32)
+        target_compile_definitions(${backend_target} PRIVATE WIN_PRJ)
+    endif()
+endforeach()
 
 # 정적 프런트엔드와 호스트 진입점을 기존 VM 백엔드에서 분리한다.
 find_package(Threads REQUIRED)
@@ -74,7 +79,8 @@ target_compile_features(neocore_type_model PUBLIC cxx_std_11)
 add_library(neocore_frontend STATIC NeoSource/NeoCoreCompiler.cpp)
 target_link_libraries(neocore_frontend PUBLIC neocore_type_model)
 add_library(neocore_runtime STATIC NeoSource/NeoCore.cpp NeoSource/NeoCoreHost.cpp)
-target_link_libraries(neocore_runtime PUBLIC neocore_frontend PRIVATE neoscript Threads::Threads)
+target_link_libraries(neocore_runtime PUBLIC neocore_frontend PRIVATE neocore_backend Threads::Threads)
+target_compile_definitions(neocore_runtime PUBLIC NEOSCRIPT_LEGACY_ARITHMETIC=0)
 add_library(NeoCore::Runtime ALIAS neocore_runtime)
 add_executable(neocore Samples/neocore/main.cpp)
 target_link_libraries(neocore PRIVATE neocore_runtime)
@@ -94,7 +100,7 @@ if(NEOSCRIPT_BUILD_SHARED)
         ${CMAKE_CURRENT_SOURCE_DIR}/NeoSource
         ${NEOSCRIPT_C_ABI_DIR})
     target_compile_features(NeoScriptShared PUBLIC cxx_std_11 PRIVATE c_std_99)
-    target_compile_definitions(NeoScriptShared PRIVATE NEOSCRIPT_C_BUILD_SHARED)
+    target_compile_definitions(NeoScriptShared PUBLIC NEOSCRIPT_LEGACY_ARITHMETIC=1 PRIVATE NEOSCRIPT_C_BUILD_SHARED)
     # The DLL name is load-bearing: Unity resolves DllImport("NeoScript") by it.
     # Its Windows import library would then be NeoScript.lib, which is the same
     # file as the static neoscript.lib on a case-insensitive filesystem and
@@ -155,6 +161,7 @@ if(NEOSCRIPT_BUILD_STATIC_C_ABI)
         ${CMAKE_CURRENT_SOURCE_DIR}/NeoSource
         ${NEOSCRIPT_C_ABI_DIR})
     target_compile_features(NeoScriptStatic PUBLIC cxx_std_11 PRIVATE c_std_99)
+    target_compile_definitions(NeoScriptStatic PUBLIC NEOSCRIPT_LEGACY_ARITHMETIC=1)
     # NEOSCRIPT_C_BUILD_SHARED is deliberately absent: NS_API must stay empty so
     # the symbols are ordinary static-library symbols the linker can resolve.
     set_target_properties(NeoScriptStatic PROPERTIES OUTPUT_NAME NeoScriptUnity)
@@ -196,6 +203,10 @@ if(NEOSCRIPT_BUILD_SMOKE)
     target_link_libraries(neocore_typed_collection_ops PRIVATE neocore_runtime)
     add_test(NAME neocore_typed_collection_ops COMMAND neocore_typed_collection_ops)
     set_tests_properties(neocore_typed_collection_ops PROPERTIES TIMEOUT 60)
+    add_executable(neocore_instance_regression Tests/neocore_instance_regression.cpp)
+    target_link_libraries(neocore_instance_regression PRIVATE neocore_runtime)
+    add_test(NAME neocore_instance_regression COMMAND neocore_instance_regression)
+    set_tests_properties(neocore_instance_regression PROPERTIES TIMEOUT 60)
     add_executable(neocore_ir_regression Tests/neocore_ir_regression.cpp)
     target_link_libraries(neocore_ir_regression PRIVATE neocore_runtime)
     add_test(NAME neocore_ir_regression COMMAND neocore_ir_regression)
@@ -213,7 +224,7 @@ if(NEOSCRIPT_BUILD_SMOKE)
     add_test(NAME neocore_collection_regression COMMAND neocore_collection_regression)
     set_tests_properties(neocore_collection_regression PROPERTIES TIMEOUT 60)
     add_executable(neocore_typed_ops_regression Tests/neocore_typed_ops_regression.cpp)
-    target_link_libraries(neocore_typed_ops_regression PRIVATE neocore_runtime neoscript)
+    target_link_libraries(neocore_typed_ops_regression PRIVATE neocore_runtime)
     add_test(NAME neocore_typed_ops_regression COMMAND neocore_typed_ops_regression)
     set_tests_properties(neocore_typed_ops_regression PROPERTIES TIMEOUT 60)
     add_test(NAME neocore_sample COMMAND neocore --file ${CMAKE_CURRENT_SOURCE_DIR}/Samples/neocore/scripts/fibonacci.nc)
@@ -435,13 +446,18 @@ if(NEOSCRIPT_BUILD_SMOKE)
     set_tests_properties(neoscript_selector_regression PROPERTIES TIMEOUT 120)
 endif()
 
+# 정적 호스트 예제도 기능 회귀 시험에 포함한다.
+if(NEOSCRIPT_BUILD_SMOKE OR NEOSCRIPT_BUILD_EXAMPLES)
+    add_subdirectory(Samples/neocore/minigame)
+endif()
+
 # A desktop host example; disabled by default for Android/iOS cross builds.
 if(NEOSCRIPT_BUILD_EXAMPLES)
     add_subdirectory(Samples/minigame)
 endif()
 
 # Keep licenses beside standalone host artifacts, including multi-config builds.
-foreach(json_host neoscript NeoScriptShared NeoScriptStatic neocore)
+foreach(json_host neocore_backend neoscript NeoScriptShared NeoScriptStatic neocore)
     if(TARGET ${json_host})
         add_custom_command(TARGET ${json_host} POST_BUILD
             COMMAND ${CMAKE_COMMAND} -E copy_if_different

@@ -88,7 +88,7 @@
       <WarningLevel>Level3</WarningLevel>
       <Optimization>Disabled</Optimization>
       <SDLCheck>true</SDLCheck>
-      <PreprocessorDefinitions>_WIN32;_WINDOWS;WIN_PRJ</PreprocessorDefinitions>
+      <PreprocessorDefinitions>NEOSCRIPT_LEGACY_ARITHMETIC=1;_WIN32;_WINDOWS;WIN_PRJ</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
       <RuntimeLibrary>MultiThreadedDebug</RuntimeLibrary>
       <ExceptionHandling>Async</ExceptionHandling>
@@ -107,7 +107,7 @@
       <WarningLevel>Level3</WarningLevel>
       <Optimization>Disabled</Optimization>
       <SDLCheck>true</SDLCheck>
-      <PreprocessorDefinitions>_WIN32;_WIN64;WIN_PRJ</PreprocessorDefinitions>
+      <PreprocessorDefinitions>NEOSCRIPT_LEGACY_ARITHMETIC=1;_WIN32;_WIN64;WIN_PRJ</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
       <RuntimeLibrary>MultiThreadedDebug</RuntimeLibrary>
       <ExceptionHandling>Async</ExceptionHandling>
@@ -125,7 +125,7 @@
       <FunctionLevelLinking>true</FunctionLevelLinking>
       <IntrinsicFunctions>true</IntrinsicFunctions>
       <SDLCheck>true</SDLCheck>
-      <PreprocessorDefinitions>_WIN32;_WINDOWS;WIN_PRJ</PreprocessorDefinitions>
+      <PreprocessorDefinitions>NEOSCRIPT_LEGACY_ARITHMETIC=1;_WIN32;_WINDOWS;WIN_PRJ</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
       <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
       <ExceptionHandling>Async</ExceptionHandling>
@@ -149,7 +149,7 @@
       <FunctionLevelLinking>true</FunctionLevelLinking>
       <IntrinsicFunctions>true</IntrinsicFunctions>
       <SDLCheck>true</SDLCheck>
-      <PreprocessorDefinitions>_WIN32;_WIN64;WIN_PRJ</PreprocessorDefinitions>
+      <PreprocessorDefinitions>NEOSCRIPT_LEGACY_ARITHMETIC=1;_WIN32;_WIN64;WIN_PRJ</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
       <ExceptionHandling>Async</ExceptionHandling>
       <!-- Static CRT so the copied console.exe runs on machines without Visual Studio or the VC++ redistributable -->

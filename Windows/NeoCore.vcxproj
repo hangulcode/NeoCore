@@ -49,7 +49,7 @@
       <DebugInformationFormat>ProgramDatabase</DebugInformationFormat>
       <ProgramDataBaseFileName>$(IntDir)NeoCore.pdb</ProgramDataBaseFileName>
       <AdditionalOptions>/utf-8 %(AdditionalOptions)</AdditionalOptions>
-      <PreprocessorDefinitions>WIN_PRJ;_WINDOWS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <PreprocessorDefinitions>NEOSCRIPT_LEGACY_ARITHMETIC=0;WIN_PRJ;_WINDOWS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <AdditionalIncludeDirectories>$(ProjectDir)..\NeoSource;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ClCompile>
   </ItemDefinitionGroup>
@@ -136,6 +136,7 @@
   <ItemGroup>
     <None Include="..\NeoSource\NeoVMWorker.inl" />
     <None Include="..\NeoSource\NeoVMWorker_Handlers.inl" />
+    <None Include="..\NeoSource\NeoVMWorker_LegacyArithmetic.inl" />
     <None Include="..\NeoSource\NeoVMWorker_Typed.inl" />
     <None Include="..\NeoSource\NeoVMWorker_Move.inl" />
     <None Include="..\NeoSource\NeoVMWorker_Var.inl" />

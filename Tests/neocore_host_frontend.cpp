@@ -23,7 +23,7 @@ static void CheckGlobalInitialization(const HostSchema& schema)
         "string text=Make(2); string Make(int n){if(n>0)return Make(n-1);return text;}",
         "int count=First(2); int First(int n){if(n==0)return count;return Second(n-1);} int Second(int n){return First(n);}",
         "int count=Fill(); int Fill(){count=7;return 2;}",
-        "int count=Fill(); int Fill(){Set(count);return 2;} void Set(int& value){value=7;}",
+        "int count=Fill(); int Fill(){Set();return 2;} void Set(){count=7;}",
         "Touch(); string text=\"ready\"; void Touch(){Object.Name=text;}",
         "Touch(); int count; void Touch(){Object.Count=count;}",
         "Object.Scale(Get()); int count=5; int Get(){return count;}",
@@ -43,19 +43,18 @@ static void CheckGlobalInitialization(const HostSchema& schema)
         "string text=\"ready\"; void Touch(){Object.Name=text;} export void Probe(){Touch();}",
         "int count=Make(); int Make(){return 1;} export int Read(){return count;}"
     };
-    for (bool typed : { false, true })
     {
         for (const char* source : rejected)
         {
             StaticCompileResult result;
-            Check(!CompileStaticSource(source, result, typed, &schema) &&
+            Check(!CompileStaticSource(source, result, &schema) &&
                 result.errorMessage.find("initializer completes") != std::string::npos,
                 std::string("reject incomplete global through call graph: ") + source + " : " + result.errorMessage);
         }
         for (const char* source : accepted)
         {
             StaticCompileResult result;
-            Check(CompileStaticSource(source, result, typed, &schema),
+            Check(CompileStaticSource(source, result, &schema),
                 std::string("accept initialized or independent globals: ") + source + " : " + result.errorMessage);
         }
     }
@@ -71,7 +70,7 @@ static void CheckPropertySourceLines(const HostSchema& schema)
 {
     StaticCompileResult result;
     const std::string source = "Object.Value=1;\nObject.Value+=2;\nObject.Count++;\n// trailing comment";
-    Check(CompileStaticSource(source, result, true, &schema), "property source mapping fixture compiles");
+    Check(CompileStaticSource(source, result, &schema), "property source mapping fixture compiles");
     Check(result.hostWriteSourceLines.size() == 3, "every generated write helper has a source mapping");
     for (std::size_t i = 0; i < result.hostWriteSourceLines.size(); ++i)
     {
@@ -86,7 +85,7 @@ static void CheckPropertySourceLines(const HostSchema& schema)
             result.loweredSource.compare(begin, 4, "fun ") == 0,
             "mapping resolves generated function line to original write expression");
     }
-    Check(CompileStaticSource("Object.Value=1;\n", result, true, &schema) &&
+    Check(CompileStaticSource("Object.Value=1;\n", result, &schema) &&
         result.hostWriteSourceLines.size() == 1 && result.hostWriteSourceLines[0].first == 3 &&
         result.hostWriteSourceLines[0].second == 1, "trailing newline is counted before helper line");
     Check(CompileStaticSource("int value=1;", result) && result.hostWriteSourceLines.empty(),
@@ -135,16 +134,15 @@ int main()
         "Services.Accept(null); Services.Accept(Object); Services.Accept(Object.Maybe());",
         "Object? o; bool a=Object==Object.Child; bool b=Optional!=null;",
         "struct Holder{Object item;}; Holder h=Holder(Object); h.item.Count=2;",
-        "Object o=Object; Object& alias=o; alias=Object.Child;",
+        "Object o=Object; Object copy=o; copy=Object.Child;",
         "int f(){Object.Child.Count=7;return 2;} Object.Child.Count+=f();",
         "Object Get(){return Object;} Get().Count=4; Get().Count++;"
     };
-    for (bool typed : { false, true })
     {
         for (const char* source : accepted)
         {
             StaticCompileResult result;
-            Check(CompileStaticSource(source, result, typed, &schema), std::string("accept ") + source + " : " + result.errorMessage);
+            Check(CompileStaticSource(source, result, &schema), std::string("accept ") + source + " : " + result.errorMessage);
             Check(result.success && !result.hostPrefix.empty(), "accepted source exposes private host prefix");
         }
     }
@@ -155,6 +153,8 @@ int main()
         "Object.ReadOnly=2;", "Object.ReadOnly++;", "int x=Object.WriteOnly;", "Object.WriteOnly+=2;",
         "float& x=Object.Value;", "void Set(int& x){} Set(Object.Count);",
         "Object=Object.Child;", "Object& x=Object;",
+        "Object o=Object; Object& alias=o; alias=Object.Child;",
+        "void Set(Object& value){}", "Object& Get(){return Object;}",
         "Object o;", "Object o=null;", "Object o=5;", "Object o=OtherObject;",
         "Object o=Object();", "Object? o=Object; o.Count=2;", "Object? o=Object; o.Take(Object);",
         "Optional.Count=2;", "Object o=Optional;", "int x=Object;", "int x=toint(Object);",
@@ -168,7 +168,7 @@ int main()
     for (const char* source : rejected)
     {
         StaticCompileResult result;
-        Check(!CompileStaticSource(source, result, true, &schema) && !result.errorMessage.empty(), std::string("reject ") + source);
+        Check(!CompileStaticSource(source, result, &schema) && !result.errorMessage.empty(), std::string("reject ") + source);
     }
 
     StaticCompileResult result;
