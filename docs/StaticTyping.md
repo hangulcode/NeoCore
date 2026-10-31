@@ -880,7 +880,9 @@ the same executable; see the [historical paired measurement](TypedVmBenchmark.md
 That snapshot predates the current IR and aggregate instructions. The later
 [typed IR snapshot](TypedIrBenchmark.md) of commit `fd0e229` measured the sum of
 case medians at 75.1% above the archived NeoScript baseline, with `loop_sum` at
-1.92× and `map_str` at 7.44×, without a paired generic-op control. Local operand
+1.92× and `map_str` at 7.44×, without a paired generic-op control. The
+[three-way snapshot](ThreeWayBenchmark.md) of commit `91d6d58` measured 1.14× the
+Lua sum, with `loop_sum` at 1.79× and `map_str` at 6.10× Lua. Local operand
 handling, constant localization, and numeric conversion costs require fresh paired
 measurements before claiming an improvement or attributing that difference.
 Performance claims require paired baseline/trial runs with matching results; inherited NeoScript benchmark

@@ -127,8 +127,11 @@ An early numeric-VM snapshot measured on 2026-10-31 showed a 7.5% increase in th
 sum of eight case medians versus its paired generic-op control; see the historical
 [measurement report](docs/TypedVmBenchmark.md). A later
 [typed IR snapshot](docs/TypedIrBenchmark.md) of commit `fd0e229` measured a sum of
-case medians 75.1% above the archived NeoScript baseline in the same session.
-The typed path has not yet been measured as faster than the inherited VM.
+case medians 75.1% above the archived NeoScript baseline in the same session. The
+[three-way snapshot](docs/ThreeWayBenchmark.md) of commit `91d6d58` measured a sum
+14.3% above Lua, faster than Lua in five of eight cases and slower in `loop_sum`,
+`array_rw` and `map_str`. The typed path has not been measured against the
+inherited VM since `fd0e229`.
 The typed host boundary also supports collections, structs and retained function
 values. VS Code uses the same frontend for diagnostics and debugging. The
 remaining compiler/VM migration is described in the
@@ -244,8 +247,9 @@ early typed/generic comparison in the same executable, alongside NeoScript, Lua,
 and C++. The [typed IR snapshot](docs/TypedIrBenchmark.md) measures commit `fd0e229`,
 the first build with generic arithmetic compiled out, against the same NeoScript,
 Lua, and C++ binaries; its NeoCore sum of case medians is 75.1% above NeoScript
-without a paired generic-op control. Each report identifies its measured snapshot;
-none of them reports a later build.
+without a paired generic-op control. The [three-way snapshot](docs/ThreeWayBenchmark.md)
+measures commit `91d6d58` against Lua and C++ only. Each report identifies its
+measured snapshot; none of them reports a later build.
 
 For embedding, `NeoSource/NeoCore.h` is the static entry point in namespace
 `NeoCore`. A public `Runtime` owns the shared backend VM and fixed host bindings;
