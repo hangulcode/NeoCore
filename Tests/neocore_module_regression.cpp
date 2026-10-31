@@ -93,6 +93,19 @@ void CheckExecution(bool debug)
     ExpectInt(modules, "import math;import trig;export int Probe(){return trig.Read()+toint(math.cos(0));}",
         2, "builtins imported independently by each file", debug);
 
+    modules["shape"] = "public struct Target{int id;float x;};struct Hidden{int v;};"
+        "public Target Make(int id,float x){return Target(id,x);}public list<Target> targets=[];public Hidden MakeHidden(){return Hidden(1);}";
+    ExpectInt(modules, "import shape;shape.Target t=shape.Make(1,2.5);list<shape.Target> items=[t];items.append(shape.Target(4,0.5));"
+        "shape.targets.append(items[1]);map<string,shape.Target> named={\"a\":t};int Sum(shape.Target v){return v.id;}"
+        "export int Probe(){return Sum(items[0])*1000+items[1].id*100+shape.targets[0].id*10+named.get(\"a\",items[1]).id+toint(t.x);}",
+        1443, "public struct types across modules", debug);
+    modules["holder"] = "import shape;public shape.Target current=shape.Make(7,1.0);public list<shape.Target> all=[current];"
+        "public int Id(shape.Target v){return v.id;}public fn(shape.Target)->int picker=fn(shape.Target v)->int{return v.id*2;};";
+    ExpectInt(modules, "import shape;import holder;export int Probe(){shape.Target c=holder.current;return holder.Id(c)*100+holder.all[0].id*10+holder.picker(c)/2;}",
+        777, "qualified struct types declared inside another module", debug);
+    ExpectInt(modules, "import shape;export int Probe(){return shape.MakeHidden().v;}",
+        1, "private struct values remain usable without naming the type", debug);
+
     NeoCore::ModuleBundle bundle;
     NeoCore::Error error;
     Check(NeoCore::BundleModules("import calc;export int Probe(){return 1;}", "root.nc", Loader(modules), bundle, error),
@@ -147,6 +160,10 @@ void CheckRejections()
     Check(!program, "undeclared module name cannot capture root globals");
     bundle.Translate(error);
     Check(error.sourceName == "isolated.nc" && error.line == 1, "isolated module error source location");
+    Sources shapes;
+    shapes["shape"] = "public struct Target{int id;};struct Hidden{int v;};public Hidden MakeHidden(){return Hidden(1);}";
+    Reject(shapes, "import shape;shape.Hidden h=shape.MakeHidden();", "module member is not public: Hidden", "private struct type name");
+    Reject(shapes, "import shape;list<shape.Hidden> items=[];", "module member is not public: Hidden", "private struct type in a generic argument");
 }
 
 void CheckLocations()

@@ -45,6 +45,10 @@ int main()
         Expect("struct S{int x;};export int Probe(){S original=S(3);fn(S)->S f=fn(S item)->S{item.x+=4;return item;};S result=f(original);return original.x*10+result.x;}", 37, "indirect struct argument return copies", debug);
         Expect("int F(int x){return x+1;}export int Probe(){map<string,fn(int)->int> m={\"x\":F};return m.get(\"x\",F)(7);}", 8, "function map and result call", debug);
         Expect("struct Box{fn(int)->int callback;};export int Probe(){Box box=Box(fn(int x)->int{return x*2;});return box.callback(7);}", 14, "function-valued struct field", debug);
+        Expect("public struct S{int x;};export int Probe(){S s=S(5);return s.x;}", 5, "public struct accepted at file scope", debug);
+        Reject("export struct S{int x;};export int Probe(){return 1;}", "export struct rejected");
+        Reject("const struct S{int x;};export int Probe(){return 1;}", "const struct rejected");
+        Reject("export int Probe(){public struct S{int x;};return 1;}", "public struct inside a function rejected");
         Expect("export int Probe(){list<list<int>> m=[[1,2],[3]];m.append([4,5]);int sum=0;foreach(list<int> row in m)foreach(int x in row)sum+=x;return sum;}", 15, "nested lists and foreach", debug);
         Expect("export int Probe(){map<string,list<int>> m={\"a\":[1,2]};list<int>? a=m[\"a\"];if(a!=null)return a[1];return 0;}", 2, "nullable collection refinement", debug);
         Expect("export int Probe(){list<int>? a=[1,2,3];int total=0;if(a!=null)foreach(int value in a)total+=value;return total;}", 6, "guarded nullable foreach", debug);

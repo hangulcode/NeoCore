@@ -97,8 +97,9 @@ See [the converted coroutine sample](../Samples/neocore/scripts/coroutine.nc).
 ## Modules and host objects
 
 A module import loads another `.nc` file and checks it with the same compiler.
-Only public declarations are accessible through its alias. Import cycles and
-untyped source are rejected. A host module loader supplies canonical source names
+Only public declarations are accessible through its alias; `public struct` makes a
+type nameable as `alias.Type` in declarations and generic arguments. Import cycles
+and untyped source are rejected. A host module loader supplies canonical source names
 and contents; diagnostics and debugger locations retain the original module.
 
 Host object types, properties and methods come from a `HostSchema`. The compiler

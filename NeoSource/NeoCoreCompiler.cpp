@@ -619,6 +619,32 @@ private:
         return result;
     }
 
+    // 구조체 선언. public 은 모듈 결합기가 가시성에 쓰고, 루트 파일에서는 효과가 없다.
+    std::unique_ptr<Statement> ParseStruct(const Token& at, bool topLevel, bool isPublic)
+    {
+        if (!topLevel) Fail(at, "structures are only allowed at file scope");
+        std::unique_ptr<Statement> s(new Statement(StatementKind::Struct, at));
+        s->isPublic = isPublic;
+        s->name = Name();
+        s->declared.type = types_.LookupNamed(s->name.text);
+        Expect("{");
+        std::vector<StructField> fields;
+        while (!At("}"))
+        {
+            Parameter field;
+            field.type = ParseType();
+            field.name = Name();
+            if (At("=")) Fail(Peek(), "structure field initializers are not supported; use the positional constructor");
+            Expect(";");
+            fields.push_back(StructField(field.name.text, field.type.type));
+            s->parameters.push_back(field);
+        }
+        Take(); s->end = Expect(";").end;
+        std::string error;
+        if (!types_.DefineStructFields(s->declared.type, fields, &error)) Fail(s->name, error);
+        return s;
+    }
+
     std::unique_ptr<Statement> ParseStatement(bool topLevel)
     {
         Depth guard(depth_, Peek());
@@ -637,29 +663,7 @@ private:
         }
         if (At("var") || At("fun")) Fail(at, "NeoCore requires explicit types; 'var' and 'fun' declarations are not supported");
         if (At("int32") || At("float32") || At("any")) Fail(at, "this name is not a user-declarable type");
-        if (Accept("struct"))
-        {
-            if (!topLevel) Fail(at, "structures are only allowed at file scope");
-            std::unique_ptr<Statement> s(new Statement(StatementKind::Struct, at));
-            s->name = Name();
-            s->declared.type = types_.LookupNamed(s->name.text);
-            Expect("{");
-            std::vector<StructField> fields;
-            while (!At("}"))
-            {
-                Parameter field;
-                field.type = ParseType();
-                field.name = Name();
-                if (At("=")) Fail(Peek(), "structure field initializers are not supported; use the positional constructor");
-                Expect(";");
-                fields.push_back(StructField(field.name.text, field.type.type));
-                s->parameters.push_back(field);
-            }
-            Take(); s->end = Expect(";").end;
-            std::string error;
-            if (!types_.DefineStructFields(s->declared.type, fields, &error)) Fail(s->name, error);
-            return s;
-        }
+        if (Accept("struct")) return ParseStruct(at, topLevel, false);
         if (At("class")) Fail(at, "this statement is not supported by this compiler stage");
         if (At("case") || At("default")) Fail(at, "'case' and 'default' are only allowed inside a switch");
         if (Accept("switch"))
@@ -770,6 +774,14 @@ private:
                 bool& flag = modifier.text == "public" ? s->isPublic : modifier.text == "export" ? s->isExported : s->isConst;
                 if (flag) Fail(modifier, "duplicate declaration modifier");
                 flag = true;
+            }
+            if (At("struct"))
+            {
+                // 구조체 타입은 모듈에 공개할 수 있지만 호스트 export 대상이나 상수는 아니다.
+                if (s->isExported) Fail(Peek(), "a structure cannot be exported; export the functions or variables that use it");
+                if (s->isConst) Fail(Peek(), "a structure cannot be const");
+                Take();
+                return ParseStruct(at, topLevel, s->isPublic);
             }
             if (At("var") || At("fun") || At("int32") || At("float32") || At("any"))
                 Fail(Peek(), "declarations require a supported explicit type");

@@ -808,9 +808,14 @@ does not marshal coroutine handles.
 `import name;` and `import name as alias;` resolve `.nc` source through the host's
 `CompileOptions.moduleLoader`. A dependency initializes at its first import site,
 after preceding importer statements and before following ones. Repeated imports
-share the same module state within an instance. Only `public`
-members are visible across modules; imported `export` declarations do not expose
-new entry points to the outer host. Private module declarations are isolated by
+share the same module state within an instance. Only `public` members are visible
+across modules, including `public struct` types: an importer names such a type as
+`alias.Type` in every type position, including local, parameter and return types,
+generic arguments such as `list<alias.Type>` and `map<string, alias.Type>`, function
+types, and constructor calls. All importers share one type identity. `export struct`
+and `const struct` are rejected. A private struct may still appear in a public
+signature; importers can use such values but cannot name their type. Imported
+`export` declarations do not expose new entry points to the outer host. Private module declarations are isolated by
 name rewriting. Self-imports, import cycles, inconsistent loader results, and
 untyped module contents are rejected. Diagnostics translate rewritten locations
 back to the source module. The runtime `system.load`/`pcall` functions have been

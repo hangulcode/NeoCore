@@ -182,6 +182,8 @@ static bool SkipType(const std::vector<Token>& tokens, std::size_t& index, unsig
 {
     if (depth > 128 || index >= tokens.size() || !tokens[index].identifier) return false;
     const std::string type = tokens[index++].text;
+    // 다른 모듈의 공개 구조체는 alias.Type 으로 쓴다. 제네릭 인자와 함수 타입 안에서도 같은 규칙이다.
+    if (type != "fn" && At(tokens, index, ".") && index + 1 < tokens.size() && tokens[index + 1].identifier) index += 2;
     if (type == "fn")
     {
         if (!At(tokens, index++, "(")) return false;
@@ -297,7 +299,7 @@ static void Analyze(Unit& unit, const std::vector<CompileDefine>* defines)
             if (exported && constant) Fail(unit.input.sourceName, tokens[i], "export const is not supported");
             if (At(tokens, name, "struct") && name + 2 < tokens.size() && tokens[name + 1].identifier && At(tokens, name + 2, "{"))
             {
-                unit.symbols[tokens[name + 1].text] = false;
+                unit.symbols[tokens[name + 1].text] = publicSymbol;
                 std::size_t field = name + 3;
                 while (field < tokens.size() && !At(tokens, field, "}"))
                 {
@@ -305,6 +307,8 @@ static void Analyze(Unit& unit, const std::vector<CompileDefine>* defines)
                     unit.fieldNames.insert(field++);
                     if (!At(tokens, field++, ";")) break;
                 }
+                // 수식어 뒤의 struct 토큰을 다시 선언 시작으로 보지 않도록 건너뛴다. 가시성이 덮어써지지 않는다.
+                i = name;
             }
             else if (SkipType(tokens, name) && name < tokens.size() && tokens[name].identifier &&
                 (At(tokens, name + 1, "(") || At(tokens, name + 1, "=") || At(tokens, name + 1, ";")))
