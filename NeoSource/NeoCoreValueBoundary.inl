@@ -109,7 +109,8 @@ NeoCoreBackend::ValuePtr BoundaryAccess::Copy(NeoScript::IRuntime& runtime,
     type = Underlying(types,type);
     if (value.bound_)
     {
-        if (value.bound_->runtime != &runtime) throw std::invalid_argument("cannot transfer a value between independent programs");
+        if (value.bound_->runtime != &runtime || value.bound_->lifetime.get() != lifetime.get())
+            throw std::invalid_argument("cannot transfer a value between independent programs");
         if (types.Get(type).kind != TypeKind::Struct) return value.bound_->value;
         // 구조체는 필드를 복사하되 내부 컬렉션의 공유 정체성은 유지한다.
         const auto result = NewCollection(runtime,types,type,lifetime);

@@ -2,7 +2,9 @@
 
 NeoCore resolves registered host members and their signatures before script
 execution. Include [`NeoCoreHost.h`](../NeoSource/NeoCoreHost.h), link
-`NeoCore::Runtime`, and supply bindings to `Program::Compile`.
+the `NeoCore::Runtime` CMake target. Create a public `Runtime` with the bindings
+when several programs must share one backend VM. The static `Program::Compile`
+overload remains a convenience for an isolated program/runtime.
 The frontend fixes signatures before execution; the backend is not a completely
 tagless VM.
 
@@ -20,8 +22,8 @@ Methods also support `void` results. Every member has one exact signature; scrip
 ordinary int-to-float widening before the call. The language has no reference parameters.
 
 Create all schema entries before constructing `HostBindings`. Bind every method,
-getter, setter, and global before compilation, even if a source file does not use
-them. Failed registration/connection operations return failure and set
+getter, setter, and global before creating the runtime, even if a source file
+does not use them. Failed registration/connection operations return failure and set
 `LastError()`; `Validate(error)` checks the complete configuration.
 
 For example, the metadata for a mutable counter can be declared as follows:
@@ -119,8 +121,10 @@ remain null without calling the resolver. The resolver must be a side-effect-fre
 lookup: do not reenter scripts, destroy objects/programs, or invalidate pointers
 while another argument is being resolved.
 
-`Program::Compile` snapshots the schema, function connections, and global IDs.
-Changing the original `HostBindings` afterward does not update that program.
+`Runtime` snapshots the schema, function connections, and initial global IDs once.
+Its programs share that immutable registration set; changing the original
+`HostBindings` afterward does not update the runtime. Static `Program::Compile`
+creates the equivalent snapshot in its isolated convenience runtime.
 The resolver's user-data pointer and any pointers captured by callbacks are not
 deep-copied or owned by NeoCore; keep their target registry/data alive for the
 lifetime of every instance that can use them. The host also controls object
@@ -135,22 +139,43 @@ previous ID. `Program::SetHostObject` targets only the program's default instanc
 Nonnullable globals reject ID zero. The host validates actual object state when
 the ID is resolved for a later member call.
 
-## Shared programs and execution instances
+## Shared runtime, programs and execution instances
 
-`Program::Compile` creates the shared code and binding snapshot.
+The host ownership hierarchy is one `Runtime`, several compiled `Program` objects,
+and independent `Instance` objects for each program. `Runtime::Compile` and
+`Runtime::LoadImage` use the same backend VM, binding snapshot and execution-context
+pool. This avoids allocating a separate backend runtime for every script asset.
+Static `Program::Compile` and `Program::LoadImage` remain isolated convenience
+entry points; use the runtime methods for engine-wide sharing.
+
 `Program::CreateInstance(error)` creates an independent set of globals, bound
 global IDs, and invocation state. Each instance initializes its globals at most
 once through `Run`; `Call` initializes them first if necessary. An initialization
 failure stays a failure rather than rerunning partially completed side effects.
 Instances retain the shared code even if the `Program` factory is destroyed.
-This public wrapper reuses the existing backend Runtime/Program/Worker ownership
-and shared execution-context pool from the inherited host sample. It adds no
-separate VM or per-object runtime.
+Programs and instances retain their shared runtime implementation. They do not
+allocate a separate VM per object. The public `Runtime` wrapper is the host's
+entry point for looking up live instances and should remain available while the
+host has queued events.
 
 `Program::Run`, `Call`, `Resume`, `IsSuspended`, and `SetHostObject` are convenience
 operations on one default instance. Explicit instances are suitable for several
-objects using the same compiled script. Instances sharing a program must execute
-serially on one host thread; this interface does not promise parallel VM access.
+objects using the same compiled script. All programs and instances sharing a
+runtime must execute serially on one host thread; this interface does not promise
+parallel VM access.
+
+The runtime fixes its binding snapshot and HTTP transport at creation. Supply
+module loaders, definitions and assembly output options to each compile call;
+runtime creation does not establish defaults for those options. Compilation,
+image loading and image saving are rejected during execution in that runtime.
+Perform them between host execution calls, including while instances are suspended.
+
+Shared allocation does not make program-local types or function indices
+interchangeable. Runtime-owned collections, structs and functions still cannot
+be passed between different programs, even in the same runtime. A host may copy
+plain scalar/vector values or reconstruct data under the destination program's
+declared type. Cross-program calls and exported-value exchange need an explicit
+typed host contract.
 
 `Instance::Call` and `Resume` return `Result` with `ExecutionStatus::Completed`,
 `Suspended`, or `Failed`. `ok()` is true for both successful completion and a
@@ -176,6 +201,26 @@ shared by three instances, frame/event dispatch, callback reentry, suspension, a
 object destruction between sleep and resume.
 
 ## Reentry, borrowing, and execution order
+
+`HostCall::CallerInstance()` identifies the instance executing the callback.
+It is independent of `ReceiverId()`: a script can call a method on another object
+or on a shared service. `Instance::SetUserData`/`GetUserData` associate a non-owning
+host context with that instance; `HostCall::InstanceUserData()` reads the same
+context. In contrast, `HostCall::UserData()` is the shared resolver/binding context.
+NeoCore neither owns nor frees either user-data pointer.
+
+For delayed events, retain the caller's `Id()` and an owning function value from
+`HostCall::Argument`, rather than a `HostCall` or an `Instance*`. On delivery,
+look the ID up with `Runtime::FindInstance`, discard an event whose caller no
+longer exists, and invoke the value on that resolved instance through `Call`.
+The returned instance pointer is borrowed only for the current synchronous host
+operation. A live instance can be suspended; queue the event until it becomes
+idle. An instance keeps its ID across `Reset`; the host must cancel queued events
+that belong to the previous script state. Reset invalidates captured closures,
+so a retained callback can still fail even when the host finds an instance.
+Treat that failure as an expired callback instead of redirecting it to another
+instance. Neither the caller ID nor its user-data pointer pins an engine object;
+continue resolving engine object IDs separately on each access.
 
 `HostCall` copies scalar/string/vector arguments and object IDs before resolver callbacks
 run. These snapshots survive synchronous script reentry. Object pointers returned
@@ -203,7 +248,7 @@ through `CallScript`, use `ResolveReceiver`/`ResolveObject` to force a new looku
 Check returned pointers before dereferencing them. Never continue using an old
 local C++ pointer merely because the wrapper's cache was invalidated. Do not
 destroy the executing `Instance` (or a `Program` owning its executing default
-instance), and do not invoke instances sharing the program concurrently from
+instance), and do not invoke instances sharing the runtime concurrently from
 another thread. Retaining a `HostCall`, borrowed pointer, or argument reference for later
 asynchronous execution is unsupported. Retain an owning function value instead
 and invoke it through the checked instance/host-call API. Closures remain bound to
@@ -269,8 +314,32 @@ values. [Unity.md](Unity.md) describes the corresponding C ABI and managed
 adapters. Overloads, default arguments and general asynchronous script reentry
 remain unsupported. Basic sleep and host-driven resume use the instance API.
 
+For an embedded editor, include `NeoCoreDebugger.h` and obtain the runtime-owned
+debugger through `Runtime::GetDebugger()`. It attaches to typed `Instance` objects,
+uses original `.nc` source locations, and exposes typed stack/variable snapshots.
+See [Embedding.md](Embedding.md#embedded-debugging) for execution and lifetime rules;
+hosts do not need backend worker handles or the private `DebugAccess` interface.
+
 Type and binding IDs are local to their schema snapshot. Serialized program
 images include the schema and validate the supplied host registrations at load;
 the current format requires matching registration order. Callbacks, resolvers,
 object IDs and transports are reattached rather than serialized. Do not persist
 live pointers or treat IDs as stable across independently constructed schemas.
+
+## Host migration responsibilities
+
+- Create one runtime from a complete, fixed schema and binding set. Compile each
+  script asset through that runtime and cache its program.
+- Create instances for individual script attachments. Set their host context and
+  global object IDs before running file initialization.
+- Keep engine object registries, ID generation checks and capability checks such
+  as UI membership in the host resolver/adapters. Static signatures do not prove
+  that an object still exists or has the required current state.
+- Replace dynamically shaped arguments/results with exact typed contracts, such
+  as separate methods or declared result structs. Optional arguments, overloads
+  and arbitrary cross-program aggregate transfers need explicit adaptation.
+- Drive frame calls and resume pending execution from the host. Queue delayed
+  callbacks by caller instance ID and owning function value; resolve the ID at
+  delivery and cancel old queued events on reset or script replacement.
+- Connect editor breakpoints, stack inspection and stepping through the public
+  debugger. The editor still drives execution through the instance API.

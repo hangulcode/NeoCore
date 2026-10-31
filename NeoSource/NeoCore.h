@@ -10,7 +10,9 @@ namespace NeoCore
 {
 
 class HostBindings;
+class Program;
 class Instance;
+class Debugger;
 struct ObjectHandle;
 
 struct Error
@@ -114,8 +116,42 @@ struct Result
     bool ok() const { return error.ok(); }
 };
 
+// 런타임 하나가 고정된 호스트 계약과 여러 프로그램의 VM 자원을 공유한다.
+// 같은 런타임에 속한 프로그램과 인스턴스는 한 스레드에서 사용한다.
+class Runtime
+{
+public:
+    static std::unique_ptr<Runtime> Create(Error& error, const CompileOptions& options = CompileOptions());
+    static std::unique_ptr<Runtime> Create(const HostBindings& bindings, Error& error,
+        const CompileOptions& options = CompileOptions());
+    ~Runtime();
+    Runtime(const Runtime&) = delete;
+    Runtime& operator=(const Runtime&) = delete;
+    std::unique_ptr<Program> Compile(const std::string& source, Error& error,
+        const std::string& sourceName = "<source>", bool debug = false,
+        const CompileOptions& options = CompileOptions());
+    std::unique_ptr<Program> LoadImage(const std::vector<std::uint8_t>& image,
+        Error& error, const CompileOptions& options = CompileOptions());
+    // 반환 포인터는 인스턴스를 소유하지 않는다. 파괴될 수 있는 호출을 거치면 ID로 다시 찾는다.
+    Instance* FindInstance(std::uint64_t id) const;
+    Debugger* GetDebugger();
+    std::int64_t TrimMemory(bool force = false);
+    std::int64_t CollectCycles(bool force = false);
+    void SetEmptyPageHoldSeconds(float seconds);
+    void SetTrimPagesPerCall(int pages);
+private:
+    friend class Program;
+    friend class Instance;
+    friend class Debugger;
+    struct Impl;
+    explicit Runtime(std::shared_ptr<Impl> impl);
+    static std::unique_ptr<Runtime> CreateImpl(const HostBindings* bindings, Error& error,
+        const CompileOptions& options);
+    std::shared_ptr<Impl> impl_;
+};
+
 // 컴파일 결과와 바인딩 메타데이터를 공유한다. 각 인스턴스의 전역 값과 실행 상태는 독립적이다.
-// 같은 프로그램에 속한 인스턴스는 한 스레드에서 순서대로 실행한다.
+// 같은 런타임에 속한 인스턴스는 한 스레드에서 순서대로 실행한다.
 class Program
 {
 public:
@@ -155,20 +191,22 @@ public:
     std::string ToJson(const Scalar& value, Error& error, bool sortKeys = false);
     // 전역 객체의 ID만 바꾼다. 다음 멤버 호출에서 호스트가 실제 생존 여부를 검사한다.
     bool SetHostObject(const std::string& name, ObjectHandle object, Error& error);
-    // 이 프로그램과 생성된 인스턴스가 공유하는 런타임의 빈 풀 페이지만 반환한다.
+    // 다른 프로그램도 포함해 공유 런타임 전체의 빈 풀 페이지만 반환한다.
     // force는 보유 시간과 호출당 페이지 예산을 무시하며 살아 있는 값을 해제하지 않는다.
     std::int64_t TrimMemory(bool force = false);
     std::int64_t CollectCycles(bool force = false);
     void SetEmptyPageHoldSeconds(float seconds);
     void SetTrimPagesPerCall(int pages);
 private:
+    friend class Runtime;
     friend class Instance;
+    friend class Debugger;
     friend struct DebugAccess;
     struct Impl;
     static std::unique_ptr<Program> CompileImpl(const std::string& source, Error& error,
-        const std::string& sourceName, bool debug, const HostBindings* bindings, const CompileOptions& options);
+        const std::string& sourceName, bool debug, const std::shared_ptr<Runtime::Impl>& runtime, const CompileOptions& options);
     static std::unique_ptr<Program> LoadImageImpl(const std::vector<std::uint8_t>& image,
-        Error& error, const HostBindings* bindings, const CompileOptions& options);
+        Error& error, const std::shared_ptr<Runtime::Impl>& runtime, const CompileOptions& options);
     explicit Program(std::shared_ptr<Impl> impl);
     std::shared_ptr<Impl> impl_;
     std::unique_ptr<Instance> defaultInstance_;
@@ -196,8 +234,14 @@ public:
     Result ReadGlobal(const std::string& name);
     Result WriteGlobal(const std::string& name, const Scalar& value);
     bool SetHostObject(const std::string& name, ObjectHandle object, Error& error);
+    // ID와 사용자 포인터는 Reset 후에도 유지된다. 지연 이벤트 취소는 호스트가 담당한다.
+    std::uint64_t Id() const;
+    void SetUserData(void* value);
+    void* GetUserData() const;
 private:
     friend class Program;
+    friend class Runtime;
+    friend class Debugger;
     friend struct DebugAccess;
     friend struct BoundaryAccess;
     struct Impl;

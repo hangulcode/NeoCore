@@ -101,6 +101,8 @@
     <ClInclude Include="..\NeoSource\NeoCoreBuiltins.h" />
     <ClInclude Include="..\NeoSource\NeoCoreCompiler.h" />
     <ClInclude Include="..\NeoSource\NeoCoreImage.h" />
+    <ClInclude Include="..\NeoSource\NeoCoreDebugger.h" />
+    <ClInclude Include="..\NeoSource\NeoCoreDebugger.inl" />
     <ClInclude Include="..\NeoSource\NeoCoreValues.inl" />
     <ClInclude Include="..\NeoSource\NeoCoreIR.h" />
     <ClInclude Include="..\NeoSource\NeoNumberLiteral.h" />

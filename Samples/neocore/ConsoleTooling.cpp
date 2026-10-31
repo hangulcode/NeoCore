@@ -1,6 +1,8 @@
 ﻿#include "ConsoleTooling.h"
 #include "HttpTransport.h"
-#include "../../NeoSource/NeoCoreDebugAccess.h"
+#include "../../NeoSource/NeoCoreDebugger.h"
+#include "../../NeoSource/NeoCoreCompiler.h"
+#include "../../NeoSource/NeoCoreModules.h"
 #include "../../NeoSource/NeoCoreBuiltins.h"
 #include "../../ThirdParty/yyjson/yyjson.h"
 #include <algorithm>
@@ -37,9 +39,21 @@
 static int _pipe(int fd[2], unsigned, int) { return pipe(fd); }
 #endif
 
-using namespace NeoScript;
+using NeoCore::IDebugListener;
+using NeoCore::DebugStopReason;
+using NeoCore::DebugLocation;
+using NeoCore::DebugStackFrame;
+using NeoCore::DebugVariable;
 namespace
 {
+struct BuiltinInfo
+{
+    std::string module;
+    std::string name;
+    int argCount = -1;
+    std::string ret;
+    std::vector<std::string> params;
+};
 static std::string FullPathOrSelf(const std::string& path)
 {
 #ifdef _WIN32
@@ -330,13 +344,11 @@ class NeoDapSession : public IDebugListener
 public:
 	std::string libraryPath;
     std::unique_ptr<NeoCore::Program> owner;
-    const NeoCore::StaticCompileResult* checked = nullptr;
-    const NeoCore::ModuleBundle* bundle = nullptr;
+
 	int seq = 1;
-	IRuntime* runtime = nullptr;   // v2: VM/worker 대신 Runtime + 핸들
-	IDebugger* dbg = nullptr;
-	ProgramHandle program;
-	InstanceHandle instance;
+    std::unique_ptr<NeoCore::Runtime> runtime;
+    NeoCore::Debugger* dbg = nullptr;
+    std::unique_ptr<NeoCore::Instance> instance;
 	std::string sourcePath;
 	NeoCore::Error compileError;
 	std::vector<std::string> sourceFiles;
@@ -363,7 +375,7 @@ public:
     std::thread outputThread;
     std::ios::fmtflags oldCoutFlags{};
 
-    ~NeoDapSession() { StopCapture(); if (dbg) dbg->SetListener(nullptr); owner.reset(); }
+    ~NeoDapSession() { StopCapture(); if (dbg) dbg->SetListener(nullptr); instance.reset(); owner.reset(); runtime.reset(); }
 
 
 	void ClearVariableReferences()
@@ -383,8 +395,7 @@ public:
         if (found != frameVariables.end()) return found->second;
         if (faultStopped || !dbg) return empty;
         auto& vars = frameVariables[frame];
-        dbg->GetFrameVariables(instance, frame, vars);
-        TranslateVariables(vars);
+        dbg->GetFrameVariables(*instance, frame, vars);
         return vars;
     }
     int StoreVariableChildren(const std::vector<DebugVariable>& children)
@@ -411,23 +422,17 @@ public:
 		os << "]}";
 	}
 
-    virtual void OnStopped(InstanceHandle, const DebugLocation& location, DebugStopReason reason) override
+    virtual void OnStopped(NeoCore::Instance&, const DebugLocation& location, DebugStopReason reason) override
     {
         ClearVariableReferences();
         faultStopped = false;
         lastStopReason = reason;
         lastStopLocation = location;
-        TranslateLocation(lastStopLocation.file, lastStopLocation.line);
         pendingStop = true;
         lastStopError.clear();
         if (dbg)
         {
-            dbg->GetStackTrace(instance, stoppedFrames);
-            for (DebugStackFrame& frame : stoppedFrames)
-            {
-                TranslateLocation(frame.file, frame.line);
-                frame.functionName = SourceSymbolName(frame.functionName);
-            }
+            dbg->GetStackTrace(*instance, stoppedFrames);
             if (stoppedFrames.size() > 64) stoppedFrames.resize(64);
             if (reason == DebugStopReason::Exception)
                 for (const auto& frame : stoppedFrames) GetFrameVariables(frame.frameId);
@@ -488,72 +493,6 @@ public:
 		return path;
 	}
 
-    std::string SourceSymbolName(const std::string& name) const
-    {
-        if (bundle)
-        {
-            const auto found = bundle->symbolNames.find(name);
-            if (found != bundle->symbolNames.end()) return found->second;
-        }
-        return name;
-    }
-
-    void TranslateLocation(int& file, int& line) const
-    {
-        if (!bundle || line <= 0 || static_cast<std::size_t>(line) > bundle->lines.size()) return;
-        const NeoCore::ModuleSourceLine& source = bundle->lines[static_cast<std::size_t>(line - 1)];
-        file = FileIdFromSourcePath(source.sourceName);
-        line = source.line;
-    }
-
-    void TranslateValue(DebugVariable& value, NeoCore::TypeId id, unsigned depth = 0) const
-    {
-        if (!checked || depth > 16) return;
-        const NeoCore::TypeDesc& type = checked->types.Get(id);
-        value.type = checked->types.DisplayName(id);
-        if (type.kind == NeoCore::TypeKind::Nullable)
-        {
-            if (value.value != "null") TranslateValue(value, type.element, depth + 1);
-        }
-        else if (type.kind == NeoCore::TypeKind::Struct)
-        {
-            value.type = SourceSymbolName(type.name);
-            value.value = value.type;
-            for (std::size_t i = 0; i < value.children.size() && i < type.fields.size(); ++i)
-            {
-                value.children[i].name = type.fields[i].name;
-                TranslateValue(value.children[i], type.fields[i].type, depth + 1);
-            }
-        }
-        else if (type.kind == NeoCore::TypeKind::List || type.kind == NeoCore::TypeKind::Array || type.kind == NeoCore::TypeKind::Set)
-            for (DebugVariable& child : value.children) TranslateValue(child, type.element, depth + 1);
-        else if (type.kind == NeoCore::TypeKind::Map)
-            for (DebugVariable& child : value.children) TranslateValue(child, type.value, depth + 1);
-    }
-
-    void TranslateVariables(std::vector<DebugVariable>& values) const
-    {
-        if (!checked) return;
-        std::set<std::string> names;
-        std::vector<DebugVariable> visible;
-        for (DebugVariable& value : values)
-        {
-            const auto found = std::find_if(checked->debugSymbols.begin(), checked->debugSymbols.end(),
-                [&](const NeoCore::StaticDebugSymbol& symbol) { return symbol.backendName == value.name; });
-            if (found == checked->debugSymbols.end()) continue;
-            if (found->boxed && !value.children.empty())
-            {
-                DebugVariable unboxed = value.children.front();
-                value = std::move(unboxed);
-            }
-            value.name = SourceSymbolName(found->name);
-            if (!names.insert(value.name).second) continue;
-            TranslateValue(value, found->type);
-            visible.push_back(std::move(value));
-        }
-        values.swap(visible);
-    }
-
 	int FileIdFromSourcePath(const std::string& path) const
 	{
 		if (path.empty())
@@ -593,41 +532,23 @@ public:
 		return name;
 	}
 
-	void ApplyBreakpoints()
-	{
-		if (!instance || !dbg)
-			return;
-		std::vector<DebugBreakpoint> activeBreakpoints;
-		for (std::map<int, std::vector<int>>::const_iterator it = breakpointsByFile.begin(); it != breakpointsByFile.end(); ++it)
-		{
-			int file = it->first;
-			const std::vector<int>& lines = it->second;
-			for (size_t i = 0; i < lines.size(); ++i)
-			{
-				int line = lines[i];
-				if (IsExecutableLine(file, line))
-				{
-                    for (std::size_t index = 0; bundle && index < bundle->lines.size(); ++index)
-                    {
-                        const NeoCore::ModuleSourceLine& source = bundle->lines[index];
-                        if (source.line != line || FileIdFromSourcePath(source.sourceName) != file) continue;
-                        DebugBreakpoint bp;
-                        bp.file = 0;
-                        bp.line = static_cast<int>(index + 1);
-                        activeBreakpoints.push_back(bp);
-                    }
-				}
-			}
-		}
-		dbg->SetBreakpoints(instance, activeBreakpoints);
-	}
+    void ApplyBreakpoints()
+    {
+        if (!instance || !dbg) return;
+        std::vector<DebugLocation> points;
+        for (const auto& file : breakpointsByFile)
+            for (int line : file.second)
+                if (IsExecutableLine(file.first, line))
+                { DebugLocation point; point.sourceName = SourcePathFromFileId(file.first); point.line = line; points.push_back(point); }
+        NeoCore::Error error;
+        dbg->SetBreakpoints(*instance, points, error);
+    }
 
 	bool LoadProgram(const std::string& path, std::string& err, bool enableDebug)
     {
         StopCapture();
         if (dbg) dbg->SetListener(nullptr);
-        owner.reset();
-        runtime = nullptr; dbg = nullptr; instance = {}; program = {}; checked = nullptr; bundle = nullptr;
+        instance.reset(); owner.reset(); runtime.reset(); dbg = nullptr;
         running = pendingStop = faultStopped = initialRunStarted = false;
         sourceFiles.clear(); sourcePath.clear();
         executableLines.clear(); executableLinesByFile.clear(); breakpointsByFile.clear();
@@ -645,27 +566,25 @@ public:
 #ifdef NEOCORE_CONSOLE_HTTP
         options.httpTransport = CreateConsoleHttpTransport();
 #endif
-        owner = NeoCore::Program::Compile(source, compileError, fullPath, enableDebug, options);
+        runtime = NeoCore::Runtime::Create(compileError, options);
+        if (!runtime) { err = compileError.message; return false; }
+        owner = runtime->Compile(source, compileError, fullPath, enableDebug, options);
         if (!owner) { err = compileError.message; return false; }
-        if (!NeoCore::DebugAccess::Get(*owner, runtime, program, instance, checked, bundle))
-        { err = "cannot access typed debug instance"; owner.reset(); return false; }
+        instance = owner->CreateInstance(compileError);
+        if (!instance) { err = compileError.message; return false; }
         sourcePath = fullPath;
-        sourceFiles.push_back(fullPath);
-        for (const NeoCore::ModuleSourceLine& line : bundle->lines)
-            if (FileIdFromSourcePath(line.sourceName) < 0) sourceFiles.push_back(line.sourceName);
         dbg = runtime->GetDebugger();
-        if (!dbg) { err = "debugger is not available in this build"; owner.reset(); return false; }
-        dbg->SetSliceBudget(instance, 4096);
+        if (!dbg || !dbg->Attach(*instance, compileError))
+        { err = compileError.message.empty() ? "debugger is not available in this build" : compileError.message; return false; }
+        dbg->GetSourceFiles(*owner, sourceFiles);
+        dbg->SetSliceBudget(*instance, 4096);
         if (enableDebug)
         {
             dbg->SetListener(this);
             std::vector<DebugLocation> locations;
-            dbg->GetExecutableLocations(program, locations);
-            for (DebugLocation location : locations)
-            {
-                TranslateLocation(location.file, location.line);
-                executableLinesByFile[location.file].insert(location.line);
-            }
+            dbg->GetExecutableLocations(*owner, locations);
+            for (const DebugLocation& location : locations)
+                executableLinesByFile[FileIdFromSourcePath(location.sourceName)].insert(location.line);
         }
         lastStopReason = DebugStopReason::Pause;
         lastStopLocation = DebugLocation();
@@ -723,16 +642,14 @@ public:
         if (!instance || terminated || faultStopped) { running = false; return; }
         if (initial) SendOutput(noDebugMode ? "[NeoCore] Run started.\n" : "[NeoCore] Debug started.\n");
         StartCapture();
-        const RunStatus status = initial ? runtime->RunGlobalInit(instance) :
-            (dbg ? dbg->Run(instance) : RunStatus::Failed);
-        const bool paused = dbg && dbg->IsPaused(instance);
-        running = status == RunStatus::Suspended && !paused && !pendingStop;
+        const NeoCore::Result result = initial ? instance->Run() : instance->Resume(0.0, 4096);
+        const bool paused = dbg && dbg->IsPaused(*instance);
+        running = result.suspended() && !paused && !pendingStop;
         if (running) { fflush(stdout); return; }
         StopCapture(); // 정지 이벤트보다 앞선 출력을 모두 전송한다.
-        StringView error;
-        if (runtime && runtime->PeekLastError(error))
+        if (!result.ok())
         {
-            lastStopError.assign(error.data(), error.size());
+            lastStopError = result.error.message;
             if (!lastStopError.empty()) SendErrorOutput(lastStopError + "\n");
         }
         if (pendingStop) { PublishStopped(); return; }
@@ -757,7 +674,7 @@ public:
         { SendResponse(requestSeq, command, "{}", false, "Script is running"); return; }
         if (command == "continue" || command == "stepIn" || command == "next" || command == "stepOut")
         {
-            if (!initialRunStarted || !instance || !dbg || !dbg->IsPaused(instance) || faultStopped)
+            if (!initialRunStarted || !instance || !dbg || !dbg->IsPaused(*instance) || faultStopped)
             { SendResponse(requestSeq, command, "{}", false, "No resumable paused script"); return; }
         }
 		if (command == "initialize")
@@ -850,25 +767,25 @@ public:
 		}
 		else if (command == "continue")
 		{
-			if (dbg) dbg->Continue(instance);
+			if (dbg) dbg->Continue(*instance);
 			SendResponse(requestSeq, command, "{\"allThreadsContinued\":true}");
 			RunCurrent(false);
 		}
 		else if (command == "stepIn")
 		{
-			if (dbg) dbg->StepInto(instance);
+			if (dbg) dbg->StepInto(*instance);
 			SendResponse(requestSeq, command);
 			RunCurrent(false);
 		}
 		else if (command == "next")
 		{
-			if (dbg) dbg->StepOver(instance);
+			if (dbg) dbg->StepOver(*instance);
 			SendResponse(requestSeq, command);
 			RunCurrent(false);
 		}
 		else if (command == "stepOut")
 		{
-			if (dbg) dbg->StepOut(instance);
+			if (dbg) dbg->StepOut(*instance);
 			SendResponse(requestSeq, command);
 			RunCurrent(false);
 		}
@@ -880,11 +797,11 @@ public:
 			for (size_t i = 0; i < frames.size(); ++i)
 			{
 				if (i) os << ",";
-				std::string name = frames[i].functionName.empty() ? ("function #" + std::to_string(frames[i].functionId)) : frames[i].functionName;
-				std::string frameSourcePath = SourcePathFromFileId(frames[i].file);
+				std::string name = frames[i].functionName.empty() ? "<function>" : frames[i].functionName;
+				std::string frameSourcePath = frames[i].location.sourceName;
 				std::string frameSourceName = SourceNameFromPath(frameSourcePath);
 				os << "{\"id\":" << frames[i].frameId << ",\"name\":\"" << JsonEscape(name)
-					<< "\",\"line\":" << frames[i].line << ",\"column\":1,\"source\":{\"path\":\""
+					<< "\",\"line\":" << frames[i].location.line << ",\"column\":1,\"source\":{\"path\":\""
 					<< JsonEscape(frameSourcePath) << "\",\"name\":\"" << JsonEscape(frameSourceName) << "\"}}";
 			}
 			os << "],\"totalFrames\":" << frames.size() << "}";
@@ -955,7 +872,7 @@ public:
         else if (command == "pause")
         {
             if (!running || !dbg || noDebugMode) SendResponse(requestSeq, command, "{}", false, "No running debug script");
-            else { dbg->Pause(instance); SendResponse(requestSeq, command); }
+            else { dbg->Pause(*instance); SendResponse(requestSeq, command); }
         }
         else if (command == "setExceptionBreakpoints") SendResponse(requestSeq, command);
         else if (command == "disconnect")

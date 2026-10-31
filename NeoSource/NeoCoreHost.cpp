@@ -203,6 +203,8 @@ struct HostCall::Impl
 HostCall::HostCall(std::unique_ptr<Impl> impl) : impl_(std::move(impl)) {}
 HostCall::~HostCall() = default;
 void* HostCall::UserData() const { return HostRuntimeAccess::UserData(*impl_->entry->state); }
+Instance& HostCall::CallerInstance() const { return *impl_->instance; }
+void* HostCall::InstanceUserData() const { return impl_->instance->GetUserData(); }
 ObjectHandle HostCall::ReceiverId() const { return impl_->receiver; }
 void* HostCall::Receiver() { return impl_->receiverResolved ? impl_->receiverPointer : impl_->ResolveReceiver(); }
 void* HostCall::ResolveReceiver() { return impl_->ResolveReceiver(); }

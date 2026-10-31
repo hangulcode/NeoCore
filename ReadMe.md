@@ -240,13 +240,20 @@ and C++. Both reports identify their measured snapshots; neither reports current
 build performance.
 
 For embedding, `NeoSource/NeoCore.h` is the static entry point in namespace
-`NeoCore`. `Program::Compile` creates a checked program, and `CreateInstance`
-creates independent execution state while sharing the compiled program. `Run`
+`NeoCore`. A public `Runtime` owns the shared backend VM and fixed host bindings;
+its `Compile`/`LoadImage` methods create programs, and each program's `CreateInstance`
+creates independent execution state while sharing compiled code. Hosts with many
+script assets use this runtime/program/instance hierarchy. Static `Program::Compile`
+remains a convenient isolated entry point. `Run`
 executes top-level code once; `Call` checks an exported function's declared
 signature before invoking the VM. Host values include scalars, nullable values,
 vectors, typed native IDs, collections, structs, and function values. Structs and
 vectors copy by value; collections retain shared identity. Retained closures are
 bound to their creating instance and become invalid after its reset or destruction.
+Host callbacks expose the caller instance separately from the receiver object.
+Delayed events retain an instance ID and resolve it through `Runtime::FindInstance`
+before invoking a callback. Runtime-owned values remain program-local even when
+programs share a VM.
 Include `NeoSource/NeoCoreHost.h` and supply `HostBindings` to expose methods and
 properties with statically checked signatures. Object resolvers still validate
 IDs at runtime. Saved program images include static contracts and debug metadata;
@@ -254,6 +261,9 @@ loading rebinds the host schema without recompiling source. Images must come fro
 a trusted matching compiler.
 The underlying NeoScript API remains implementation infrastructure.
 It is not a substitute for the NeoCore type-checking boundary.
+Embedded editors use `NeoCoreDebugger.h` through `Runtime::GetDebugger()` for
+breakpoints, stepping, source locations, call stacks and typed variable snapshots.
+Debug controls configure the next stop; execution remains in the instance API.
 
 ## Documentation and tools
 

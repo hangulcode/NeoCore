@@ -38,6 +38,8 @@
     <ClInclude Include="..\NeoSource\NeoCore.h"><Filter>NeoCore</Filter></ClInclude>
     <ClInclude Include="..\NeoSource\NeoCoreCompiler.h"><Filter>NeoCore</Filter></ClInclude>
     <ClInclude Include="..\NeoSource\NeoCoreImage.h"><Filter>NeoCore</Filter></ClInclude>
+    <ClInclude Include="..\NeoSource\NeoCoreDebugger.h"><Filter>NeoCore</Filter></ClInclude>
+    <ClInclude Include="..\NeoSource\NeoCoreDebugger.inl"><Filter>NeoCore</Filter></ClInclude>
     <ClInclude Include="..\NeoSource\NeoCoreValues.inl"><Filter>NeoCore</Filter></ClInclude>
     <ClInclude Include="..\NeoSource\NeoCoreIR.h"><Filter>NeoCore</Filter></ClInclude>
     <ClInclude Include="..\NeoSource\NeoNumberLiteral.h"><Filter>NeoCore</Filter></ClInclude>

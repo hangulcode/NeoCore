@@ -3,6 +3,7 @@
 #include "NeoCoreCompiler.h"
 #include "NeoCoreImage.h"
 #include "NeoCoreDebugAccess.h"
+#include "NeoCoreDebugger.h"
 #include "NeoCoreHostRuntime.h"
 #include "NeoCoreHostBridge.h"
 #include "NeoCoreValueBoundary.h"
@@ -13,6 +14,8 @@
 #include <utility>
 #include <cstring>
 #include <algorithm>
+#include <atomic>
+#include <unordered_map>
 
 namespace NeoCore
 {
@@ -102,8 +105,25 @@ AllocationStats GetAllocationStats()
 
 static Error TranslateError(const NeoScript::Error& backend, const std::string& name);
 
+struct Runtime::Impl
+{
+    NeoScript::IRuntime* runtime = nullptr;
+    std::shared_ptr<HostRuntime> host;
+    std::shared_ptr<NeoScript::IHttpTransport> httpTransport;
+    std::unique_ptr<Debugger> debugger;
+    std::unordered_map<std::uint64_t, Instance*> instances;
+    unsigned executing = 0;
+    unsigned debugNotifications = 0;
+    ~Impl()
+    {
+        debugger.reset();
+        if (runtime) NeoScript::DestroyRuntime(runtime);
+    }
+};
+
 struct Program::Impl
 {
+    std::shared_ptr<Runtime::Impl> runtimeState;
     StaticCompileResult checked;
     ModuleBundle bundle;
     std::string sourceName;
@@ -111,12 +131,11 @@ struct Program::Impl
     std::vector<std::uint8_t> imageBytecode;
     NeoScript::IRuntime* runtime = nullptr;
     NeoScript::ProgramHandle program;
-    std::unique_ptr<HostRuntime> host;
+    std::shared_ptr<HostRuntime> host;
     ~Impl()
     {
         if (!runtime) return;
         if (program) runtime->DestroyProgram(program);
-        NeoScript::DestroyRuntime(runtime);
     }
     Error BackendError(const std::string& fallback)
     {
@@ -140,18 +159,22 @@ static Result Failure(const std::string& message, const std::string& source)
 struct Instance::Impl
 {
     explicit Impl(std::shared_ptr<Program::Impl> shared)
-        : module(std::move(shared)), checked(module->checked), sourceName(module->sourceName), runtime(module->runtime) {}
+        : module(std::move(shared)), checked(module->checked), sourceName(module->sourceName), runtime(module->runtime), debugLifetime(new int(0)) {}
     std::shared_ptr<Program::Impl> module;
     StaticCompileResult& checked;
     const std::string& sourceName;
     NeoScript::IRuntime* runtime;
     NeoScript::InstanceHandle instance;
     std::unique_ptr<HostInstance> host;
+    std::shared_ptr<int> debugLifetime;
+    std::uint64_t id = 0;
+    void* userData = nullptr;
     bool initialized = false;
     bool initializing = false;
     bool suspended = false;
     unsigned executing = 0;
     Result initialization;
+    std::uint32_t debugSliceBudget = 0;
     NeoScript::Invocation pending;
     const StaticFunctionSignature* pendingSignature = nullptr;
     StaticFunctionSignature pendingOwnedSignature;
@@ -189,14 +212,81 @@ struct Instance::Impl
 // 재진입 호출은 허용하되 실행 중인 인스턴스를 Resume으로 다시 진행하지 않는다.
 struct ExecutionScope
 {
-    explicit ExecutionScope(unsigned& count) : count_(count) { ++count_; }
-    ~ExecutionScope() { --count_; }
+    ExecutionScope(unsigned& count, unsigned& runtimeCount) : count_(count), runtimeCount_(runtimeCount) { ++count_; ++runtimeCount_; }
+    ~ExecutionScope() { --runtimeCount_; --count_; }
     unsigned& count_;
+    unsigned& runtimeCount_;
 };
+Runtime::Runtime(std::shared_ptr<Impl> impl) : impl_(std::move(impl)) {}
+Runtime::~Runtime() = default;
 Program::Program(std::shared_ptr<Impl> impl) : impl_(std::move(impl)) {}
 Program::~Program() = default;
 Instance::Instance(std::unique_ptr<Impl> impl) : impl_(std::move(impl)) {}
-Instance::~Instance() = default;
+Instance::~Instance()
+{
+    if (impl_->module->runtimeState->debugger) impl_->module->runtimeState->debugger->Detach(*this);
+    impl_->debugLifetime.reset();
+    impl_->module->runtimeState->instances.erase(impl_->id);
+}
+
+std::unique_ptr<Runtime> Runtime::Create(Error& error, const CompileOptions& options)
+{ return CreateImpl(nullptr, error, options); }
+std::unique_ptr<Runtime> Runtime::Create(const HostBindings& bindings, Error& error, const CompileOptions& options)
+{ return CreateImpl(&bindings, error, options); }
+std::unique_ptr<Runtime> Runtime::CreateImpl(const HostBindings* bindings, Error& error, const CompileOptions& options)
+{
+    error = Error();
+    if (bindings && !bindings->Validate(error.message)) return std::unique_ptr<Runtime>();
+    std::shared_ptr<Impl> state(new Impl());
+    state->httpTransport = options.httpTransport;
+    NeoScript::RuntimeDesc desc;
+    desc.httpTransport = options.httpTransport;
+    state->runtime = NeoScript::CreateRuntime(desc);
+    if (!state->runtime) { error.message = "could not create NeoCore runtime"; return std::unique_ptr<Runtime>(); }
+    if (bindings)
+    {
+        state->host.reset(new HostRuntime(*bindings));
+        // 바인딩 항목 주소와 인자 계획은 모든 프로그램이 공유하므로 한 번만 등록한다.
+        if (!state->host->Link(*state->runtime, "$neocore_host_", error.message)) return std::unique_ptr<Runtime>();
+    }
+    state->runtime->FreezeBindings();
+    return std::unique_ptr<Runtime>(new Runtime(std::move(state)));
+}
+std::unique_ptr<Program> Runtime::Compile(const std::string& source, Error& error,
+    const std::string& sourceName, bool debug, const CompileOptions& options)
+{
+    error = Error();
+    error.sourceName = sourceName;
+    if (impl_->executing) { error.message = "cannot compile while the runtime is executing"; return std::unique_ptr<Program>(); }
+    if (options.httpTransport && options.httpTransport != impl_->httpTransport)
+    { error.message = "HTTP transport is fixed when the runtime is created"; return std::unique_ptr<Program>(); }
+    return Program::CompileImpl(source, error, sourceName, debug, impl_, options);
+}
+std::unique_ptr<Program> Runtime::LoadImage(const std::vector<std::uint8_t>& image, Error& error, const CompileOptions& options)
+{
+    error = Error();
+    if (impl_->executing) { error.message = "cannot load an image while the runtime is executing"; return std::unique_ptr<Program>(); }
+    if (options.httpTransport && options.httpTransport != impl_->httpTransport)
+    { error.message = "HTTP transport is fixed when the runtime is created"; return std::unique_ptr<Program>(); }
+    return Program::LoadImageImpl(image, error, impl_, options);
+}
+Instance* Runtime::FindInstance(std::uint64_t id) const
+{
+    const auto found = impl_->instances.find(id);
+    return found == impl_->instances.end() ? nullptr : found->second;
+}
+Debugger* Runtime::GetDebugger()
+{
+    if (!impl_->debugger) impl_->debugger.reset(new Debugger(*this));
+    return impl_->debugger.get();
+}
+std::int64_t Runtime::TrimMemory(bool force) { return impl_->runtime->TrimMemory(force); }
+std::int64_t Runtime::CollectCycles(bool force) { return impl_->runtime->CollectCycles(force); }
+void Runtime::SetEmptyPageHoldSeconds(float seconds) { impl_->runtime->SetEmptyPageHoldSeconds(seconds); }
+void Runtime::SetTrimPagesPerCall(int pages) { impl_->runtime->SetTrimPagesPerCall(pages); }
+std::uint64_t Instance::Id() const { return impl_->id; }
+void Instance::SetUserData(void* value) { impl_->userData = value; }
+void* Instance::GetUserData() const { return impl_->userData; }
 
 bool DebugAccess::Get(Program& owner, NeoScript::IRuntime*& runtime,
     NeoScript::ProgramHandle& program, NeoScript::InstanceHandle& instance,
@@ -229,32 +319,32 @@ static Error TranslateError(const NeoScript::Error& backend, const std::string& 
 std::unique_ptr<Program> Program::Compile(const std::string& source, Error& error,
     const std::string& sourceName, bool debug, const CompileOptions& options)
 {
-    return CompileImpl(source, error, sourceName, debug, nullptr, options);
+    std::unique_ptr<Runtime> runtime = Runtime::Create(error, options);
+    return runtime ? runtime->Compile(source, error, sourceName, debug, options) : std::unique_ptr<Program>();
 }
 
 std::unique_ptr<Program> Program::Compile(const std::string& source, const HostBindings& bindings,
     Error& error, const std::string& sourceName, bool debug, const CompileOptions& options)
 {
-    return CompileImpl(source, error, sourceName, debug, &bindings, options);
+    std::unique_ptr<Runtime> runtime = Runtime::Create(bindings, error, options);
+    return runtime ? runtime->Compile(source, error, sourceName, debug, options) : std::unique_ptr<Program>();
 }
 
 std::unique_ptr<Program> Program::CompileImpl(const std::string& source, Error& error,
-    const std::string& sourceName, bool debug, const HostBindings* bindings, const CompileOptions& options)
+    const std::string& sourceName, bool debug, const std::shared_ptr<Runtime::Impl>& runtime, const CompileOptions& options)
 {
     error = Error();
     std::shared_ptr<Impl> impl(new Impl());
+    impl->runtimeState = runtime;
+    impl->runtime = runtime->runtime;
+    impl->host = runtime->host;
     impl->sourceName = sourceName;
     impl->includeDebugInfo = debug;
-    if (bindings)
-    {
-        if (!bindings->Validate(error.message)) { error.sourceName = sourceName; return std::unique_ptr<Program>(); }
-        impl->host.reset(new HostRuntime(*bindings));
-    }
     std::vector<std::string> externalNames;
     for(const auto& define:options.defines) externalNames.push_back(define.name);
-    if (bindings)
+    if (impl->host)
     {
-        const HostSchema& schema = bindings->Schema();
+        const HostSchema& schema = impl->host->Schema();
         for (const auto& global : schema.Globals()) externalNames.push_back(global.name);
         for (const auto& type : schema.Types().NamedTypes())
             if (schema.Types().Get(type.second).kind == TypeKind::Native || schema.Types().Get(type.second).kind == TypeKind::Struct) externalNames.push_back(type.first);
@@ -270,21 +360,6 @@ std::unique_ptr<Program> Program::CompileImpl(const std::string& source, Error& 
         impl->bundle.Translate(error);
         return std::unique_ptr<Program>();
     }
-    NeoScript::RuntimeDesc runtimeDesc;
-    runtimeDesc.httpTransport = options.httpTransport;
-    impl->runtime = NeoScript::CreateRuntime(runtimeDesc);
-    if (!impl->runtime)
-    {
-        error.message = "could not create NeoCore runtime";
-        error.sourceName = sourceName;
-        return std::unique_ptr<Program>();
-    }
-    if (impl->host && !impl->host->Link(*impl->runtime, impl->checked.hostPrefix, error.message))
-    {
-        error.sourceName = sourceName;
-        return std::unique_ptr<Program>();
-    }
-    impl->runtime->FreezeBindings();
     NeoScript::CompileDesc desc;
     desc.source = impl->checked.loweredSource;
     desc.coreIntrinsicPrefix = impl->checked.backendIntrinsicPrefix;
@@ -318,6 +393,7 @@ bool Program::SaveImage(std::vector<std::uint8_t>& image, Error& error) const
     image.clear();
     error = Error();
     error.sourceName = impl_->sourceName;
+    if (impl_->runtimeState->executing) { error.message = "cannot save an image while the runtime is executing"; return false; }
     if (impl_->imageBytecode.empty())
     {
         // 정적 검사 결과의 IR에서 저장용 코드를 만든다. 로드할 때 소스나 파서를 다시 실행하지 않는다.
@@ -347,39 +423,34 @@ bool Program::SaveImage(std::vector<std::uint8_t>& image, Error& error) const
 std::unique_ptr<Program> Program::LoadImage(const std::vector<std::uint8_t>& image,
     Error& error, const CompileOptions& options)
 {
-    return LoadImageImpl(image, error, nullptr, options);
+    std::unique_ptr<Runtime> runtime = Runtime::Create(error, options);
+    return runtime ? runtime->LoadImage(image, error, options) : std::unique_ptr<Program>();
 }
 
 std::unique_ptr<Program> Program::LoadImage(const std::vector<std::uint8_t>& image,
     const HostBindings& bindings, Error& error, const CompileOptions& options)
 {
-    return LoadImageImpl(image, error, &bindings, options);
+    std::unique_ptr<Runtime> runtime = Runtime::Create(bindings, error, options);
+    return runtime ? runtime->LoadImage(image, error, options) : std::unique_ptr<Program>();
 }
 
 std::unique_ptr<Program> Program::LoadImageImpl(const std::vector<std::uint8_t>& image,
-    Error& error, const HostBindings* bindings, const CompileOptions& options)
+    Error& error, const std::shared_ptr<Runtime::Impl>& runtime, const CompileOptions&)
 {
     error = Error();
-    if (bindings && !bindings->Validate(error.message)) return std::unique_ptr<Program>();
     Image::Data data;
-    if (!Image::Read(image, bindings ? &bindings->Schema() : nullptr, data, error)) return std::unique_ptr<Program>();
-    if (bindings && data.checked.hostPrefix.empty())
-    { error.message = "NeoCore host image is missing its binding prefix"; return std::unique_ptr<Program>(); }
+    if (!Image::Read(image, runtime->host ? &runtime->host->Schema() : nullptr, data, error)) return std::unique_ptr<Program>();
+    if (runtime->host && data.checked.hostPrefix != "$neocore_host_")
+    { error.message = "NeoCore host image has an incompatible binding prefix"; return std::unique_ptr<Program>(); }
     std::shared_ptr<Impl> impl(new Impl());
+    impl->runtimeState = runtime;
+    impl->runtime = runtime->runtime;
+    impl->host = runtime->host;
     impl->checked = std::move(data.checked);
     impl->bundle = std::move(data.bundle);
     impl->sourceName = std::move(data.sourceName);
     impl->includeDebugInfo = data.debug;
     impl->imageBytecode = std::move(data.bytecode);
-    if (bindings) impl->host.reset(new HostRuntime(*bindings));
-    NeoScript::RuntimeDesc runtimeDesc;
-    runtimeDesc.httpTransport = options.httpTransport;
-    impl->runtime = NeoScript::CreateRuntime(runtimeDesc);
-    if (!impl->runtime)
-    { error.message = "could not create NeoCore image runtime"; error.sourceName = impl->sourceName; return std::unique_ptr<Program>(); }
-    if (impl->host && !impl->host->Link(*impl->runtime, impl->checked.hostPrefix, error.message))
-    { error.sourceName = impl->sourceName; return std::unique_ptr<Program>(); }
-    impl->runtime->FreezeBindings();
     NeoScript::Error backendError;
     impl->program = impl->runtime->LoadProgram(
         NeoScript::Span<const std::uint8_t>(impl->imageBytecode.data(), impl->imageBytecode.size()), &backendError);
@@ -418,6 +489,10 @@ std::unique_ptr<Instance> Program::CreateInstance(Error& error)
         error = result->impl_->BackendError("could not create NeoCore instance");
         return std::unique_ptr<Instance>();
     }
+    static std::atomic<std::uint64_t> nextId(1);
+    result->impl_->id = nextId.fetch_add(1, std::memory_order_relaxed);
+    if (!result->impl_->id) throw std::overflow_error("NeoCore instance ID space exhausted");
+    impl_->runtimeState->instances.emplace(result->impl_->id, result.get());
     return result;
 }
 Result Program::Run() { return defaultInstance_->Run(); }
@@ -452,6 +527,7 @@ bool Instance::Cancel(Error& error)
     error = Error();
     if (impl_->executing) { error.message = "cannot cancel an executing instance"; return false; }
     if (!impl_->runtime->Cancel(impl_->instance)) { error = impl_->BackendError("could not cancel instance"); return false; }
+    if (impl_->module->runtimeState->debugger) impl_->module->runtimeState->debugger->ClearStop(*this);
     impl_->pending = NeoScript::Invocation();
     impl_->pendingSignature = nullptr;
     impl_->pendingName.clear();
@@ -471,6 +547,8 @@ bool Instance::Reset(Error& error)
     error = Error();
     if (impl_->executing) { error.message = "cannot reset an executing instance"; return false; }
     if (impl_->suspended && !Cancel(error)) return false;
+    if (impl_->module->runtimeState->debugger) impl_->module->runtimeState->debugger->Detach(*this);
+    impl_->debugLifetime.reset(new int(0));
     impl_->pending = NeoScript::Invocation();
     if (!impl_->runtime->ResetInstance(impl_->instance)) { error = impl_->BackendError("could not reset instance"); return false; }
     if (!NeoCoreBackend::EnableCooperativeSleep(*impl_->runtime, impl_->instance))
@@ -482,6 +560,8 @@ bool Instance::Reset(Error& error)
 
 Result Instance::Run()
 {
+    if (impl_->module->runtimeState->debugNotifications)
+        return Failure("cannot execute from a debugger stop notification", impl_->sourceName);
     if (impl_->initializing)
     {
         if (impl_->suspended) return impl_->initialization;
@@ -489,9 +569,10 @@ Result Instance::Run()
     }
     if (impl_->suspended) return Failure("instance has a suspended call; resume it before starting another call", impl_->sourceName);
     if (impl_->initialized) return impl_->initialization;
+    if (impl_->module->runtimeState->debugger) impl_->module->runtimeState->debugger->ClearStop(*this);
     impl_->initialized = true;
     impl_->initializing = true;
-    ExecutionScope executing(impl_->executing);
+    ExecutionScope executing(impl_->executing, impl_->module->runtimeState->executing);
     const NeoScript::RunStatus status = impl_->runtime->RunGlobalInit(impl_->instance);
     if (status == NeoScript::RunStatus::Suspended || status == NeoScript::RunStatus::Yielded)
     {
@@ -668,7 +749,8 @@ Result Instance::WriteGlobal(const std::string& name, const Scalar& value)
         if (!global) return Failure("exported global not found: " + name,impl_->sourceName);
         if (!BoundaryAccess::Accepts(impl_->checked.types,global->type,value))
             return Failure("global value requires " + impl_->checked.types.DisplayName(global->type),impl_->sourceName);
-        if(value.bound_ && !NeoCoreBackend::CanPassValue(*impl_->runtime,impl_->instance,value.bound_->value))
+        if(value.bound_ && (value.bound_->lifetime.get() != impl_->module.get() ||
+            !NeoCoreBackend::CanPassValue(*impl_->runtime,impl_->instance,value.bound_->value)))
             return Failure("global value belongs to another program or contains an unavailable closure",impl_->sourceName);
         Result result=Run();
         if (!result.ok() || result.suspended()) return result;
@@ -691,6 +773,8 @@ Result Instance::Call(const Scalar& function, const std::vector<Scalar>& argumen
 { return Invoke("<callback>",&function,arguments,limits); }
 Result Instance::Invoke(const std::string& name, const Scalar* function, const std::vector<Scalar>& arguments, const ExecutionLimits& limits)
 {
+    if (impl_->module->runtimeState->debugNotifications)
+        return Failure("cannot execute from a debugger stop notification", impl_->sourceName);
     if (impl_->suspended) return Failure("instance has a suspended call; resume it before starting another call", impl_->sourceName);
     if (limits.timeoutMs < -1) return Failure("call timeout must be -1 or nonnegative", impl_->sourceName);
     Result result;
@@ -700,7 +784,8 @@ Result Instance::Invoke(const std::string& name, const Scalar* function, const s
     StaticFunctionSignature callable;
     if (function)
     {
-        if(function->kind()!=Scalar::Kind::Function || !function->bound_ || function->bound_->runtime!=impl_->runtime)
+        if(function->kind()!=Scalar::Kind::Function || !function->bound_ ||
+            function->bound_->runtime!=impl_->runtime || function->bound_->lifetime.get()!=impl_->module.get())
             return Failure("callback does not belong to this program",impl_->sourceName);
         if(!NeoCoreBackend::CanPassValue(*impl_->runtime,impl_->instance,function->bound_->value))
             return Failure("callback is unavailable in this instance",impl_->sourceName);
@@ -739,7 +824,8 @@ Result Instance::Invoke(const std::string& name, const Scalar* function, const s
     }
     for (std::size_t i = 0; i < arguments.size(); ++i)
     {
-        if(arguments[i].bound_ && !NeoCoreBackend::CanPassValue(*impl_->runtime,impl_->instance,arguments[i].bound_->value))
+        if(arguments[i].bound_ && (arguments[i].bound_->lifetime.get()!=impl_->module.get() ||
+            !NeoCoreBackend::CanPassValue(*impl_->runtime,impl_->instance,arguments[i].bound_->value)))
             return Failure("argument belongs to another program or contains an unavailable closure",impl_->sourceName);
         if (!BoundaryAccess::Accepts(types,signature->parameterTypes[i],arguments[i]) ||
             arguments[i].kind() == Scalar::Kind::Void)
@@ -761,6 +847,7 @@ Result Instance::Invoke(const std::string& name, const Scalar* function, const s
         impl_->deferredFunction = function ? *function : Scalar();
         return initialized;
     }
+    if (impl_->module->runtimeState->debugger) impl_->module->runtimeState->debugger->ClearStop(*this);
     NeoScript::Invocation call = function ? NeoCoreBackend::CallFunction(*impl_->runtime,impl_->instance,function->bound_->value)
         : impl_->runtime->Call(impl_->instance, name);
     if (!call)
@@ -813,8 +900,9 @@ Result Instance::Invoke(const std::string& name, const Scalar* function, const s
             break;
         }
     }
-    ExecutionScope executing(impl_->executing);
-    const NeoScript::RunStatus status = call.timeout(limits.timeoutMs).budget(limits.instructionBudget).invoke();
+    ExecutionScope executing(impl_->executing, impl_->module->runtimeState->executing);
+    const std::uint32_t budget = limits.instructionBudget ? limits.instructionBudget : impl_->debugSliceBudget;
+    const NeoScript::RunStatus status = call.timeout(limits.timeoutMs).budget(budget).invoke();
     if (status == NeoScript::RunStatus::Suspended || status == NeoScript::RunStatus::Yielded)
     {
         impl_->suspended = true;
@@ -867,10 +955,10 @@ Result Instance::Impl::ReadResult(NeoScript::Invocation& call, const StaticFunct
         if (expectedKind == TypeKind::Native)
         {
             const std::int64_t bits = call.retInt();
-            std::uint64_t id;
-            std::memcpy(&id, &bits, sizeof(id));
-            if (!id) { result.error.message = "backend returned an invalid object ID"; return result; }
-            result.value = Scalar::Object(types.Get(expected).name, id);
+            std::uint64_t objectId;
+            std::memcpy(&objectId, &bits, sizeof(objectId));
+            if (!objectId) { result.error.message = "backend returned an invalid object ID"; return result; }
+            result.value = Scalar::Object(types.Get(expected).name, objectId);
         }
         else result.value = Scalar::Int(call.retInt());
         break;
@@ -904,14 +992,16 @@ Result Instance::Impl::ReadResult(NeoScript::Invocation& call, const StaticFunct
 
 Result Instance::Resume(double deltaTime, std::uint32_t instructionBudget)
 {
+    if (impl_->module->runtimeState->debugNotifications)
+        return Failure("cannot execute from a debugger stop notification", impl_->sourceName);
     if (!std::isfinite(deltaTime) || deltaTime < 0.0 || deltaTime > (std::numeric_limits<float>::max)())
         return Failure("resume delta time must be finite and nonnegative", impl_->sourceName);
     if (impl_->executing) return Failure("cannot resume an executing instance", impl_->sourceName);
     if (!impl_->suspended) return Failure("instance has no suspended execution", impl_->sourceName);
     NeoScript::ResumeDesc desc;
     desc.deltaTime = static_cast<float>(deltaTime);
-    desc.instructionBudget = instructionBudget;
-    ExecutionScope executing(impl_->executing);
+    desc.instructionBudget = instructionBudget ? instructionBudget : impl_->debugSliceBudget;
+    ExecutionScope executing(impl_->executing, impl_->module->runtimeState->executing);
     impl_->suspended = false;
     const NeoScript::RunStatus status = impl_->runtime->Resume(impl_->instance, desc);
     Result result;
@@ -950,3 +1040,5 @@ Result Instance::Resume(double deltaTime, std::uint32_t instructionBudget)
 }
 
 }
+
+#include "NeoCoreDebugger.inl"

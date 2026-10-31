@@ -77,6 +77,9 @@ public:
     HostCall& operator=(const HostCall&) = delete;
 
     void* UserData() const;
+    // 수신 객체와 별개인 현재 호출 인스턴스다. 지연 이벤트에는 참조 대신 Id()를 보관한다.
+    Instance& CallerInstance() const;
+    void* InstanceUserData() const;
     ObjectHandle ReceiverId() const;
     void* Receiver();
     // 호스트가 별도 콜백이나 삭제 경로를 실행했다면 다시 조회한다.
