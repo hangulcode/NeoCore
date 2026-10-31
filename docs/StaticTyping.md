@@ -861,8 +861,11 @@ The current backend still stores dynamic tags and performs generic work outside 
 implemented typed operations. An early numeric-VM snapshot measured on 2026-10-31
 found a 7.5% increase in the sum of eight case medians versus generic lowering in
 the same executable; see the [historical paired measurement](TypedVmBenchmark.md).
-That snapshot predates the current IR and aggregate instructions and does not
-measure this build. Local operand handling, constant localization, and numeric
-conversion costs require fresh paired measurements before claiming an improvement.
+That snapshot predates the current IR and aggregate instructions. The later
+[typed IR snapshot](TypedIrBenchmark.md) of commit `fd0e229` measured the sum of
+case medians at 75.1% above the archived NeoScript baseline, with `loop_sum` at
+1.92× and `map_str` at 7.44×, without a paired generic-op control. Local operand
+handling, constant localization, and numeric conversion costs require fresh paired
+measurements before claiming an improvement or attributing that difference.
 Performance claims require paired baseline/trial runs with matching results; inherited NeoScript benchmark
 numbers are not NeoCore measurements. Ask the user before starting timed benchmarks.

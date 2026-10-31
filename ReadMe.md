@@ -124,9 +124,11 @@ Internal boxed vector locals still support component writes, without exposing
 language references. Host/builtin calls, remaining aggregate operations, and
 unmigrated selectors keep ordered compatibility paths. The typed VM is not complete.
 An early numeric-VM snapshot measured on 2026-10-31 showed a 7.5% increase in the
-sum of eight case medians versus its paired generic-op control. That historical
-[measurement report](docs/TypedVmBenchmark.md) predates the current IR and aggregate
-instructions; it is not a measurement of this build.
+sum of eight case medians versus its paired generic-op control; see the historical
+[measurement report](docs/TypedVmBenchmark.md). A later
+[typed IR snapshot](docs/TypedIrBenchmark.md) of commit `fd0e229` measured a sum of
+case medians 75.1% above the archived NeoScript baseline in the same session.
+The typed path has not yet been measured as faster than the inherited VM.
 The typed host boundary also supports collections, structs and retained function
 values. VS Code uses the same frontend for diagnostics and debugging. The
 remaining compiler/VM migration is described in the
@@ -238,8 +240,11 @@ rotated serial rounds against NeoScript, Lua, and C++, with all eight checksums
 matching. It measures the initial source-lowering backend before typed VM instructions.
 The historical [typed numeric VM comparison](docs/TypedVmBenchmark.md) records an
 early typed/generic comparison in the same executable, alongside NeoScript, Lua,
-and C++. Both reports identify their measured snapshots; neither reports current
-build performance.
+and C++. The [typed IR snapshot](docs/TypedIrBenchmark.md) measures commit `fd0e229`,
+the first build with generic arithmetic compiled out, against the same NeoScript,
+Lua, and C++ binaries; its NeoCore sum of case medians is 75.1% above NeoScript
+without a paired generic-op control. Each report identifies its measured snapshot;
+none of them reports a later build.
 
 For embedding, `NeoSource/NeoCore.h` is the static entry point in namespace
 `NeoCore`. A public `Runtime` owns the shared backend VM and fixed host bindings;
