@@ -102,7 +102,10 @@
     <ClInclude Include="..\NeoSource\NeoCoreCompiler.h" />
     <ClInclude Include="..\NeoSource\NeoCoreImage.h" />
     <ClInclude Include="..\NeoSource\NeoCoreDebugger.h" />
+    <ClInclude Include="..\NeoSource\NeoCoreDebugAccess.h" />
     <ClInclude Include="..\NeoSource\NeoCoreDebugger.inl" />
+    <ClInclude Include="..\NeoSource\NeoCoreValueBoundary.h" />
+    <ClInclude Include="..\NeoSource\NeoCoreValueBoundary.inl" />
     <ClInclude Include="..\NeoSource\NeoCoreValues.inl" />
     <ClInclude Include="..\NeoSource\NeoCoreIR.h" />
     <ClInclude Include="..\NeoSource\NeoNumberLiteral.h" />
@@ -116,7 +119,6 @@
     <ClInclude Include="..\NeoSource\NeoHttp.h" />
     <ClInclude Include="..\NeoSource\NeoRegex.h" />
     <ClInclude Include="..\NeoSource\NeoTime.h" />
-    <ClInclude Include="..\NeoSource\Neo.h" />
     <ClInclude Include="..\NeoSource\NeoArchive.h" />
     <ClInclude Include="..\NeoSource\NeoCompileLimits.h" />
     <ClInclude Include="..\NeoSource\NeoConfig.h" />
