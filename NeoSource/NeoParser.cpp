@@ -3411,8 +3411,10 @@ static bool EmitCoreIRNode(std::size_t index, SOperand& result,
         const TK_TYPE end = ParseShortCircuitLogic(true, result, fragment, funs, vars,
             TK_SEMICOLON, TK_NONE, TK_NONE, TK_NONE);
         std::string trailing;
+        // 이름 있는 함수 참조는 컴파일 타임 함수 ID 로 나온다. MaterializeValue 가 FMOV1 로 값 슬롯에 옮기므로
+        // 대입 경로와 같은 의미로 호출 인자·반환값에도 쓸 수 있다.
         const bool valid = end == TK_SEMICOLON && !result.IsInvalidValue() && !result.IsNone() &&
-            !result.IsFun() && GetToken(fragment, trailing) == TK_NONE && fragment.m_sErrorString.empty();
+            GetToken(fragment, trailing) == TK_NONE && fragment.m_sErrorString.empty();
         if (valid) MaterializeValue(result, fragment, funs);
         ar.CopyErrorFrom(fragment);
         if (!valid && ar.m_sErrorString.empty()) SetCompileError(ar, "invalid typed IR expression fragment");

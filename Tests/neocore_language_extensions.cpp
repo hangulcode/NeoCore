@@ -45,6 +45,10 @@ int main()
         Expect("struct S{int x;};export int Probe(){S original=S(3);fn(S)->S f=fn(S item)->S{item.x+=4;return item;};S result=f(original);return original.x*10+result.x;}", 37, "indirect struct argument return copies", debug);
         Expect("int F(int x){return x+1;}export int Probe(){map<string,fn(int)->int> m={\"x\":F};return m.get(\"x\",F)(7);}", 8, "function map and result call", debug);
         Expect("struct Box{fn(int)->int callback;};export int Probe(){Box box=Box(fn(int x)->int{return x*2;});return box.callback(7);}", 14, "function-valued struct field", debug);
+        Expect("int Twice(int x){return x*2;}int Apply(fn(int)->int f,int v){return f(v);}export int Probe(){return Apply(Twice,4);}", 8, "named function as call argument", debug);
+        Expect("int Add(int a,int b){return a+b;}int Apply(fn(int,int)->int f,int v){return f(v,1);}export int Probe(){return Apply(Add,1+2)*10+Apply(Add,5);}", 46, "named function argument mixed with typed arguments", debug);
+        Expect("int Three(){return 3;}fn()->int Pick(){return Three;}export int Probe(){return Pick()();}", 3, "named function returned as a value", debug);
+        Expect("int Base(){return 7;}fn()->int Choose(bool first,fn()->int other){if(first)return Base;return other;}export int Probe(){return Choose(true,fn()->int{return 1;})()+Choose(false,fn()->int{return 1;})();}", 8, "named function and lambda on different return paths", debug);
         Expect("public struct S{int x;};export int Probe(){S s=S(5);return s.x;}", 5, "public struct accepted at file scope", debug);
         Reject("export struct S{int x;};export int Probe(){return 1;}", "export struct rejected");
         Reject("const struct S{int x;};export int Probe(){return 1;}", "const struct rejected");
