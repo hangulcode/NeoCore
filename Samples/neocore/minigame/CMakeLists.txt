@@ -1,7 +1,11 @@
-add_executable(neocore_minigame main.cpp)
+add_executable(neocore_minigame main.cpp replay.cpp)
 target_link_libraries(neocore_minigame PRIVATE NeoCore::Runtime)
 target_compile_definitions(neocore_minigame PRIVATE
-    NEOCORE_MINIGAME_SCRIPT="${CMAKE_CURRENT_SOURCE_DIR}/scripts/mover.nc")
+    NEOCORE_MINIGAME_SCRIPT="${CMAKE_CURRENT_SOURCE_DIR}/scripts/mover.nc"
+    NEOCORE_REPLAY_SCRIPT="${CMAKE_CURRENT_SOURCE_DIR}/scripts/replay.nc")
+if(WIN32)
+    target_link_libraries(neocore_minigame PRIVATE shell32)
+endif()
 if(MSVC)
     target_compile_options(neocore_minigame PRIVATE /utf-8 /W4)
 endif()
@@ -10,8 +14,14 @@ set_target_properties(neocore_minigame PROPERTIES
 add_test(NAME neocore_minigame COMMAND neocore_minigame --verify)
 set_tests_properties(neocore_minigame PROPERTIES
     PASS_REGULAR_EXPRESSION "NeoCore minigame: all checks passed" TIMEOUT 30)
+add_test(NAME neocore_minigame_motion COMMAND neocore_minigame --motion --verify)
+set_tests_properties(neocore_minigame_motion PROPERTIES
+    PASS_REGULAR_EXPRESSION "NeoCore motion: all checks passed" TIMEOUT 30)
 
 add_custom_command(TARGET neocore_minigame POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        "${CMAKE_CURRENT_SOURCE_DIR}/viewer.html"
+        "$<TARGET_FILE_DIR:neocore_minigame>/viewer.html"
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
         "${CMAKE_CURRENT_SOURCE_DIR}/../../../THIRD_PARTY_NOTICES.txt"
         "$<TARGET_FILE_DIR:neocore_minigame>/NEOSCRIPT_THIRD_PARTY_NOTICES.txt"

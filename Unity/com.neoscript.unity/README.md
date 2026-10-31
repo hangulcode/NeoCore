@@ -1,5 +1,8 @@
 # NeoScript for Unity
 
+This is the inherited `.ns` package. For the migrated typed `.nc` Basic sample,
+use [com.neocore.unity](../com.neocore.unity/README.md) and its separate plugin.
+
 This UPM package provides the C# binding, editor integration, tests, and Basic
 sample for the NeoScript VM. See the [Unity integration guide](../../docs/Unity.md)
 for setup, native plugin builds, platform support, and test commands.

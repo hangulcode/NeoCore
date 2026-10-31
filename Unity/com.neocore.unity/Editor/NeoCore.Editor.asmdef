@@ -1,0 +1,6 @@
+{
+  "name": "NeoCore.Editor",
+  "rootNamespace": "NeoCore.Unity.Editor",
+  "references": [ "NeoCore.Runtime" ],
+  "includePlatforms": [ "Editor" ]
+}

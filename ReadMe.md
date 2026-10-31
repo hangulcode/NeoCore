@@ -11,6 +11,7 @@ as a typed NeoCore language service.
 
 **[Language design and implementation status](docs/StaticTyping.md)** ·
 **[Typed host bindings](docs/HostBindings.md)** ·
+**[Converted samples and run commands](docs/SampleMigration.md)** ·
 **[Source repository](https://github.com/hangulcode/NeoCore)**
 
 ## Why NeoCore
@@ -52,7 +53,7 @@ or performance work is complete. The current implementation is described below.
 
 ## Current milestone
 
-The frontend checks scalar/vector declarations, structs, typed arrays, scalar lists/maps, named functions,
+The frontend checks scalar/vector declarations, structs, typed arrays, nested lists/maps, sets, typed function values and closures, named functions,
 calls and returns, including forward calls and recursion. It rejects `var`, `fun`, undeclared types,
 and implicit dynamic fallback. Numeric defaults are initialized; non-null strings
 require an initializer. Nullable values do not implicitly unwrap; native object
@@ -68,8 +69,9 @@ Vector2/3/4 support same-dimension addition/subtraction and scalar multiplicatio
 division. Typed arrays keep a fixed element type and support vector element updates;
 the [particles sample](Samples/neocore/scripts/particles.nc) checks them against a
 scalar reference without timers.
-The limited built-in
-imports currently expose `math.sin`, `math.cos`, and `system.clock` only.
+Built-in imports expose the checked math, string/regex, collection, time and HTTP
+signatures used by the converted samples. Script modules, typed foreach and
+signature-bound coroutines are supported; see the [migration guide](docs/SampleMigration.md).
 
 Typed host schemas now declare nominal object types, globals, methods, and
 read/write properties before compilation. The frontend resolves members and
@@ -122,9 +124,7 @@ An early numeric-VM snapshot measured on 2026-10-31 showed a 7.5% increase in th
 sum of eight case medians versus its paired generic-op control. That historical
 [measurement report](docs/TypedVmBenchmark.md) predates the current IR and aggregate
 instructions; it is not a measurement of this build.
-Typed sets, compact arrays, nested collections,
-script imports, richer host signatures, closures, and coroutine scheduling remain
-future work. See the [status and roadmap](docs/StaticTyping.md).
+Compact arrays, richer host signatures and tooling remain future work. See the [status and roadmap](docs/StaticTyping.md).
 
 This NeoCore build uses bytecode image version `0149`; regenerate cached images.
 Generic three-operand arithmetic, compound arithmetic, numeric negation, and fused
@@ -193,7 +193,9 @@ execution backend into one static library. Reference it from a C++ host and incl
 
 Console output is `Build/Windows/bin/<platform>/<configuration>/neocore.exe`, using
 `Win32` for the x86 project platform. Match the host's platform, CRT, and toolset.
-The `.nc` console does not install an HTTP transport or build libcurl. The inherited
+The native Windows `.nc` console links libcurl for HTTPS. CMake enables that
+optional console transport with `-DNEOCORE_CONSOLE_HTTP=ON`; the core remains
+transport-independent. The inherited
 `.ns` runner and debugger remain in the `Samples/console/console.vcxproj` project; their
 `console.exe` output and command-line options are separate.
 
@@ -248,7 +250,7 @@ It is not a substitute for the NeoCore type-checking boundary.
 | [Typed host bindings](docs/HostBindings.md) | C++ schema, object IDs, property calls, and lifetime/reentry contract |
 | `NeoSource/NeoCore.h`, `neocore` | Static frontend entry points |
 | [Script authoring](docs/ScriptAuthoring.md), [API](docs/API.md) | Inherited NeoScript backend references; dynamic examples are not NeoCore syntax |
-| [Embedding](docs/Embedding.md), [Unity](docs/Unity.md) | Inherited host integration; typed C ABI and Unity bindings remain work to do |
+| [Embedding](docs/Embedding.md), [Unity](docs/Unity.md) | Inherited host integration; legacy integrations; see [typed Unity](Unity/NeoCore/README.md) for the new .nc package |
 | [Legacy console guide](docs/ScriptAuthoring.md#13-run-scripts-in-the-console-and-locate-errors), [VS Code extension](Tools/vscode-neo-script/README.md), existing `.ns` samples | Legacy backend tools and regression fixtures |
 
 The inherited [NeoScript engine demo](https://www.youtube.com/watch?v=Wi3EgWx38Vs)

@@ -1,0 +1,11 @@
+{
+  "name": "com.neocore.unity",
+  "license": "MIT",
+  "displayName": "NeoCore",
+  "version": "0.1.0",
+  "unity": "2022.3",
+  "description": "Typed NeoCore .nc compilation and scalar calls through the isolated NeoCoreUnity native plugin.",
+  "keywords": [ "scripting", "vm", "neocore" ],
+  "author": { "name": "NeoCore" },
+  "samples": [ { "displayName": "Basic", "description": "Drive a Transform with typed NeoCore code.", "path": "Samples~/Basic" } ]
+}

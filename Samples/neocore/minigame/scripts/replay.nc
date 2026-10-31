@@ -1,0 +1,37 @@
+﻿import math;
+
+// 하나의 컴파일 결과를 공유해도 원점·시간·속도·콜백은 인스턴스마다 따로 보관한다.
+Vector3 origin = GameObject.Position;
+float elapsed = 0.0;
+float speed = 1.0;
+int updates = 0;
+
+if (GameObject.Name == "Blue") speed = -0.5;
+
+void Move(float dt)
+{
+    elapsed += dt;
+    updates += 1;
+    Vector3 position = GameObject.Position;
+    position.x += speed * dt;
+    position.y = origin.y + math.sin(elapsed * 3.0) * 0.5;
+    GameObject.Position = position;
+    if (updates == 60)
+        Services.Log(GameObject.Name .. ": 60 updates in my own instance");
+}
+
+// 호스트는 검사한 이벤트 ID를 보관하고, 실제 함수 값은 스크립트 인스턴스가 보관한다.
+fn(float)->void updateCallback = Move;
+
+export void OnEvent(int eventId, float dt)
+{
+    if (eventId == 1) updateCallback(dt);
+}
+
+export int UpdateCount()
+{
+    return updates;
+}
+
+GameObject.AddEvent("OnUpdate", 1);
+Services.Log(GameObject.Name .. ": script attached");

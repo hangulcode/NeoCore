@@ -1,4 +1,4 @@
-﻿<?xml version="1.0" encoding="utf-8"?>
+<?xml version="1.0" encoding="utf-8"?>
 <Project DefaultTargets="Build" TreatAsLocalProperty="OutDir;IntDir;TargetName" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
   <ItemGroup Label="ProjectConfigurations">
     <ProjectConfiguration Include="Debug|Win32"><Configuration>Debug</Configuration><Platform>Win32</Platform></ProjectConfiguration>
@@ -47,7 +47,7 @@
       <DebugInformationFormat>ProgramDatabase</DebugInformationFormat>
       <AdditionalOptions>/utf-8 %(AdditionalOptions)</AdditionalOptions>
       <AdditionalIncludeDirectories>$(ProjectDir)..\..\NeoSource;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
-      <PreprocessorDefinitions>WIN_PRJ;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <PreprocessorDefinitions>WIN_PRJ;NEOCORE_CONSOLE_HTTP;%(PreprocessorDefinitions)</PreprocessorDefinitions>
     </ClCompile>
     <Link>
       <SubSystem>Console</SubSystem>
@@ -76,13 +76,48 @@
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
+    <None Include="scripts\regression.nc" />
+    <None Include="scripts\literal_totype.nc" />
+    <None Include="scripts\cycle.nc" />
     <ClCompile Include="main.cpp" />
+    <ClInclude Include="SampleHost.h" />
+    <None Include="scripts\9_times.nc" />
+    <None Include="scripts\callback.nc" />
+    <None Include="scripts\contailer.nc" />
+    <None Include="scripts\coroutine.nc" />
+    <None Include="scripts\cycle.nc" />
+    <None Include="scripts\delegate.nc" />
+    <None Include="scripts\divide_by_zero.nc" />
     <None Include="scripts\fibonacci.nc" />
-    <None Include="scripts\structs.nc" />
-    <None Include="scripts\vectors.nc" />
+    <None Include="scripts\hello.nc" />
+    <None Include="scripts\http.nc" />
+    <None Include="scripts\https.nc" />
+    <None Include="scripts\list.nc" />
+    <None Include="scripts\literal_totype.nc" />
+    <None Include="scripts\map.nc" />
+    <None Include="scripts\map_callback.nc" />
+    <None Include="scripts\module.nc" />
     <None Include="scripts\particles.nc" />
-    <None Include="..\bench\check.nc" />
+    <None Include="scripts\performance.nc" />
+    <None Include="scripts\regex.nc" />
+    <None Include="scripts\regression.nc" />
+    <None Include="scripts\slice_run.nc" />
+    <None Include="scripts\string.nc" />
+    <None Include="scripts\structs.nc" />
+    <None Include="scripts\time.nc" />
+    <None Include="scripts\time_limit.nc" />
+    <None Include="scripts\vectors.nc" />
     <None Include="..\bench\bench.nc" />
+    <None Include="..\bench\bench_call.nc" />
+    <None Include="..\bench\bench_call_check.nc" />
+    <None Include="..\bench\bench_dense.nc" />
+    <None Include="..\bench\bench_dense_check.nc" />
+    <None Include="..\bench\check.nc" />
+    <None Include="..\bench\mapbench.nc" />
+    <None Include="..\bench\mapbench_check.nc" />
+
+    <ClCompile Include="SampleHost.cpp" />
+    <ClCompile Include="..\console\HttpTransport.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\..\Windows\NeoCore.vcxproj">
@@ -92,6 +127,7 @@
     </ProjectReference>
   </ItemGroup>
   <Import Project="..\..\BuildConfig\MsvcOverrideWarnings.props" />
+  <Import Project="..\..\BuildConfig\ConsoleCurl.targets" />
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <Target Name="CopyNeoCoreNotices" AfterTargets="Build">
     <Copy SourceFiles="$(ProjectDir)..\..\THIRD_PARTY_NOTICES.txt;$(ProjectDir)..\..\LICENSE" DestinationFolder="$(TargetDir)" SkipUnchangedFiles="true" />

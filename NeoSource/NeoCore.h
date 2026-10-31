@@ -1,5 +1,6 @@
 ﻿#pragma once
 
+#include "NeoCoreOptions.h"
 #include <cstdint>
 #include <memory>
 #include <string>
@@ -61,9 +62,11 @@ class Program
 {
 public:
     static std::unique_ptr<Program> Compile(const std::string& source, Error& error,
-        const std::string& sourceName = "<source>", bool debug = false);
+        const std::string& sourceName = "<source>", bool debug = false,
+        const CompileOptions& options = CompileOptions());
     static std::unique_ptr<Program> Compile(const std::string& source, const HostBindings& bindings,
-        Error& error, const std::string& sourceName = "<source>", bool debug = false);
+        Error& error, const std::string& sourceName = "<source>", bool debug = false,
+        const CompileOptions& options = CompileOptions());
     ~Program();
     Program(const Program&) = delete;
     Program& operator=(const Program&) = delete;
@@ -73,9 +76,10 @@ public:
     // 편의 함수는 프로그램의 기본 인스턴스에 위임한다.
     // 최상위 코드는 한 번만 실행한다. 실패 후 재실행도 하지 않는다.
     Result Run();
-    // 스칼라를 반환하는 export 함수만 호출하며 실행 전에 서명과 인자 타입·개수를 검사한다.
-    Result Call(const std::string& name, const std::vector<Scalar>& arguments = {});
-    Result Resume(double deltaTime = 0.0);
+    // 스칼라 export 서명을 검사한다. limits는 함수 본문에 적용하며 선행 전역 초기화에는 적용하지 않는다.
+    Result Call(const std::string& name, const std::vector<Scalar>& arguments = {},
+        const ExecutionLimits& limits = ExecutionLimits());
+    Result Resume(double deltaTime = 0.0, std::uint32_t instructionBudget = 0);
     bool IsSuspended() const;
     // 전역 객체의 ID만 바꾼다. 다음 멤버 호출에서 호스트가 실제 생존 여부를 검사한다.
     bool SetHostObject(const std::string& name, ObjectHandle object, Error& error);
@@ -83,7 +87,7 @@ private:
     friend class Instance;
     struct Impl;
     static std::unique_ptr<Program> CompileImpl(const std::string& source, Error& error,
-        const std::string& sourceName, bool debug, const HostBindings* bindings);
+        const std::string& sourceName, bool debug, const HostBindings* bindings, const CompileOptions& options);
     explicit Program(std::shared_ptr<Impl> impl);
     std::shared_ptr<Impl> impl_;
     std::unique_ptr<Instance> defaultInstance_;
@@ -98,9 +102,10 @@ public:
     Instance(const Instance&) = delete;
     Instance& operator=(const Instance&) = delete;
     Result Run();
-    Result Call(const std::string& name, const std::vector<Scalar>& arguments = {});
+    Result Call(const std::string& name, const std::vector<Scalar>& arguments = {},
+        const ExecutionLimits& limits = ExecutionLimits());
     // sleep은 실제 경과 시간을 사용한다. deltaTime은 예약된 프레임 시간이며 현재 타이머를 앞당기지 않는다.
-    Result Resume(double deltaTime = 0.0);
+    Result Resume(double deltaTime = 0.0, std::uint32_t instructionBudget = 0);
     bool IsSuspended() const;
     bool SetHostObject(const std::string& name, ObjectHandle object, Error& error);
 private:

@@ -71,6 +71,7 @@
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClCompile Include="..\NeoSource\NeoCore.cpp" />
+    <ClCompile Include="..\NeoSource\NeoCoreModules.cpp" />
     <ClCompile Include="..\NeoSource\NeoCoreCompiler.cpp" />
     <ClCompile Include="..\NeoSource\NeoCoreTypes.cpp" />
     <ClCompile Include="..\NeoSource\NeoCoreHost.cpp" />
@@ -94,6 +95,9 @@
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="..\NeoSource\NeoCore.h" />
+    <ClInclude Include="..\NeoSource\NeoCoreOptions.h" />
+    <ClInclude Include="..\NeoSource\NeoCoreModules.h" />
+    <ClInclude Include="..\NeoSource\NeoCoreBuiltins.h" />
     <ClInclude Include="..\NeoSource\NeoCoreCompiler.h" />
     <ClInclude Include="..\NeoSource\NeoCoreIR.h" />
     <ClInclude Include="..\NeoSource\NeoNumberLiteral.h" />

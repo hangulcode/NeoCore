@@ -1,6 +1,7 @@
 ﻿#include "NeoCoreCompiler.h"
 
 #include "NeoCoreHostSchema.h"
+#include "NeoCoreBuiltins.h"
 #include "NeoNumberLiteral.h"
 
 #include <algorithm>
@@ -135,7 +136,7 @@ public:
                 token.kind = TokenKind::Symbol;
                 static const char* const operators[] = {
                     "<<=", ">>=", "++", "--", "==", "!=", "<=", ">=", "&&", "||", "<<", ">>",
-                    "+=", "-=", "*=", "/=", "%=", "&=", "|=", "^=", ".."
+                    "+=", "-=", "*=", "/=", "%=", "&=", "|=", "^=", "..", "->"
                 };
                 std::size_t length = 0;
                 for (const char* op : operators)
@@ -192,7 +193,8 @@ private:
 };
 
 struct Symbol;
-enum class ExprKind { Literal, Name, Unary, Binary, Assignment, Call, Member, Index, List, Map };
+struct Statement;
+enum class ExprKind { Literal, Name, Unary, Binary, Assignment, Call, Member, Index, List, Map, Lambda };
 struct Expr
 {
     ExprKind kind;
@@ -200,6 +202,9 @@ struct Expr
     std::size_t begin = 0, end = 0;
     std::string op;
     std::vector<std::unique_ptr<Expr>> children;
+    std::unique_ptr<Statement> lambda;
+    std::vector<Symbol*> captures;
+    std::vector<Symbol*> lambdaParameters;
     TypeId type = InvalidType;
     TypeId constructorType = InvalidType;
     bool constant = false;
@@ -212,6 +217,7 @@ struct Expr
     std::string callName;
     std::size_t functionIndex = static_cast<std::size_t>(-1);
     bool receiverArgument = false;
+    bool indirectCall = false;
     const HostProperty* hostProperty = nullptr;
     bool vectorComponent = false;
     bool nativeNonNull = false;
@@ -238,7 +244,7 @@ struct Parameter
     Token name;
 };
 
-enum class StatementKind { Empty, Block, Declaration, Function, Expression, If, While, For, Return, Break, Continue, Import, Struct };
+enum class StatementKind { Empty, Block, Declaration, Function, Expression, If, While, For, Return, Break, Continue, Import, Struct, Foreach, Yield };
 struct Statement
 {
     StatementKind kind;
@@ -281,7 +287,7 @@ public:
     }
 
 private:
-    const std::vector<Token>& tokens_;
+    std::vector<Token> tokens_;
     TypeRegistry& types_;
     std::size_t position_ = 0;
     int depth_ = 0;
@@ -301,6 +307,19 @@ private:
     {
         if (!At(text)) Fail(Peek(), std::string("expected '") + text + "'");
         return Take();
+    }
+
+    Token TypeClose()
+    {
+        if (At(">>"))
+        {
+            Token first = Peek();
+            first.text = ">"; --first.end;
+            Token& second = tokens_[position_];
+            second.text = ">"; ++second.begin; ++second.column;
+            return first;
+        }
+        return Expect(">");
     }
 
     static bool IsReserved(const std::string& name)
@@ -329,11 +348,26 @@ private:
         result.first = Take();
         result.end = result.first.end;
         result.type = FindType(result.first.text);
-        if (result.first.text == "list" || result.first.text == "map" || result.first.text == "array")
+        if (result.first.text == "fn")
+        {
+            Expect("(");
+            std::vector<TypeId> parameters;
+            if (!At(")")) do { parameters.push_back(ParseType().type); } while (Accept(","));
+            Expect(")"); Expect("->");
+            const TypeSyntax returnType = ParseType();
+            result.type = types_.FunctionOf(returnType.type, parameters);
+            result.end = returnType.end;
+        }
+        if (result.first.text == "list" || result.first.text == "map" || result.first.text == "array" || result.first.text == "set" || result.first.text == "coroutine")
         {
             Expect("<");
             const TypeSyntax first = ParseType();
-            if (result.first.text == "array")
+            if (result.first.text == "coroutine")
+            {
+                result.type = types_.CoroutineOf(first.type);
+                if (result.type == InvalidType) Fail(first.first, "a coroutine requires a complete function signature returning void");
+            }
+            else if (result.first.text == "array")
             {
                 const TypeKind element = types_.Get(first.type).kind;
                 if (element != TypeKind::Int && element != TypeKind::Float && element != TypeKind::Bool
@@ -343,30 +377,36 @@ private:
             }
             else if (result.first.text == "list")
             {
-                if (first.type != types_.Int() && first.type != types_.Float() && first.type != types_.Bool() && first.type != types_.String())
-                    Fail(first.first, "list elements must be non-null scalar types in this compiler stage");
+                if (!types_.IsStorable(first.type) || types_.IsNullable(first.type))
+                    Fail(first.first, "list elements must have a non-null value type");
                 result.type = types_.ListOf(first.type);
+            }
+            else if (result.first.text == "set")
+            {
+                if (first.type != types_.Int() && first.type != types_.Float() && first.type != types_.Bool() && first.type != types_.String())
+                    Fail(first.first, "set elements must be non-null scalar types");
+                result.type = types_.SetOf(first.type);
             }
             else
             {
                 if (first.type != types_.Int() && first.type != types_.String()) Fail(first.first, "map keys must be int or string");
                 Expect(",");
                 const TypeSyntax value = ParseType();
-                if (value.type != types_.Int() && value.type != types_.Float() && value.type != types_.Bool() && value.type != types_.String())
-                    Fail(value.first, "map values must be non-null scalar types in this compiler stage");
+                if (!types_.IsStorable(value.type) || types_.IsNullable(value.type))
+                    Fail(value.first, "map values must have a non-null value type");
                 result.type = types_.MapOf(first.type, value.type);
             }
-            result.end = Expect(">").end;
+            result.end = TypeClose().end;
         }
         if (result.type == InvalidType)
             Fail(result.first, "unknown type '" + result.first.text + "'");
         const TypeKind kind = types_.Get(result.type).kind;
-        if (kind != TypeKind::Void && kind != TypeKind::Int && kind != TypeKind::Float && kind != TypeKind::Bool && kind != TypeKind::String && kind != TypeKind::Vector2 && kind != TypeKind::Vector3 && kind != TypeKind::Vector4 && kind != TypeKind::Quaternion && kind != TypeKind::Struct && kind != TypeKind::List && kind != TypeKind::Map && kind != TypeKind::Array && kind != TypeKind::Native)
+        if (kind != TypeKind::Void && !types_.IsStorable(result.type))
             Fail(result.first, "type '" + result.first.text + "' is not supported by this compiler stage");
         if (At("?"))
         {
             const Token nullable = Take();
-            if (kind == TypeKind::Struct || kind == TypeKind::List || kind == TypeKind::Map || kind == TypeKind::Array) Fail(nullable, "nullable structures and collections are not supported by this compiler stage");
+            if (kind == TypeKind::Struct) Fail(nullable, "nullable structures are not supported by this compiler stage");
             result.end = nullable.end;
             result.type = types_.NullableOf(result.type);
             if (result.type == InvalidType) Fail(nullable, "this type cannot be nullable");
@@ -380,7 +420,7 @@ private:
     {
         Depth guard(depth_, Peek());
         const Token at = Peek();
-        if (Accept(";")) return std::unique_ptr<Statement>(new Statement(StatementKind::Empty, at));
+        if (Accept(";")) { std::unique_ptr<Statement> s(new Statement(StatementKind::Empty, at)); s->end = at.end; return s; }
         if (Accept("{"))
         {
             std::unique_ptr<Statement> s(new Statement(StatementKind::Block, at));
@@ -389,7 +429,7 @@ private:
                 if (Peek().kind == TokenKind::End) Fail(Peek(), "expected '}'");
                 s->children.push_back(ParseStatement(false));
             }
-            Take();
+            s->end = Take().end;
             return s;
         }
         if (At("var") || At("fun")) Fail(at, "NeoCore requires explicit types; 'var' and 'fun' declarations are not supported");
@@ -406,8 +446,6 @@ private:
             {
                 Parameter field;
                 field.type = ParseType();
-                if (types_.Get(field.type.type).kind == TypeKind::List || types_.Get(field.type.type).kind == TypeKind::Map || types_.Get(field.type.type).kind == TypeKind::Array)
-                    Fail(field.type.first, "collection fields are not supported by this compiler stage");
                 field.name = Name();
                 if (At("=")) Fail(Peek(), "structure field initializers are not supported; use the positional constructor");
                 Expect(";");
@@ -419,13 +457,13 @@ private:
             if (!types_.DefineStructFields(s->declared.type, fields, &error)) Fail(s->name, error);
             return s;
         }
-        if (At("class") || At("switch") || At("foreach")) Fail(at, "this statement is not supported by this compiler stage");
+        if (At("class") || At("switch")) Fail(at, "this statement is not supported by this compiler stage");
         if (Accept("import"))
         {
             if (!topLevel) Fail(at, "import is only allowed at file scope");
             std::unique_ptr<Statement> s(new Statement(StatementKind::Import, at));
             s->name = Name();
-            if (s->name.text != "math" && s->name.text != "system") Fail(s->name, "user modules are not supported by this compiler stage");
+            if (s->name.text != "math" && s->name.text != "system" && s->name.text != "coroutine") Fail(s->name, "user modules are not supported by this compiler stage");
             Expect(";");
             return s;
         }
@@ -435,6 +473,7 @@ private:
             Expect("("); s->expressions.push_back(ParseExpression()); Expect(")");
             s->children.push_back(ParseStatement(false));
             if (Accept("else")) s->children.push_back(ParseStatement(false));
+            s->end = s->children.back()->end;
             return s;
         }
         if (Accept("while"))
@@ -442,6 +481,7 @@ private:
             std::unique_ptr<Statement> s(new Statement(StatementKind::While, at));
             Expect("("); s->expressions.push_back(ParseExpression()); Expect(")");
             s->children.push_back(ParseStatement(false));
+            s->end = s->children.back()->end;
             return s;
         }
         if (Accept("for"))
@@ -451,6 +491,7 @@ private:
             s->expressions.push_back(ParseExpression()); Expect(","); s->expressions.push_back(ParseExpression());
             if (Accept(",")) s->expressions.push_back(ParseExpression());
             Expect(")"); s->children.push_back(ParseStatement(false));
+            s->end = s->children.back()->end;
             return s;
         }
         if (Accept("return"))
@@ -460,14 +501,33 @@ private:
             s->end = Expect(";").end;
             return s;
         }
+        if (Accept("foreach"))
+        {
+            std::unique_ptr<Statement> s(new Statement(StatementKind::Foreach, at));
+            Expect("(");
+            do { Parameter p; p.type = ParseType(); p.name = Name(); s->parameters.push_back(p); } while (Accept(","));
+            if (s->parameters.size() > 2) Fail(at, "foreach accepts one value or a key and value");
+            Expect("in"); s->expressions.push_back(ParseExpression()); Expect(")");
+            s->children.push_back(ParseStatement(false));
+            s->end = s->children.back()->end;
+            return s;
+        }
+        if (Accept("yield"))
+        {
+            std::unique_ptr<Statement> s(new Statement(StatementKind::Yield, at));
+            s->end = Expect(";").end;
+            return s;
+        }
         if (At("break") || At("continue"))
         {
             const StatementKind kind = At("break") ? StatementKind::Break : StatementKind::Continue;
-            Take(); Expect(";");
-            return std::unique_ptr<Statement>(new Statement(kind, at));
+            Take();
+            std::unique_ptr<Statement> s(new Statement(kind, at));
+            s->end = Expect(";").end;
+            return s;
         }
-        const bool arrayConstructor = At("array") && Peek(1).text == "<" && Peek(3).text == ">" && Peek(4).text == "(";
-        if (At("public") || At("export") || At("const") || At("list") || At("map") || (At("array") && !arrayConstructor) || (FindType(Peek().text) != InvalidType && (Peek(1).kind == TokenKind::Identifier || Peek(1).text == "?" || Peek(1).text == "&")))
+        const bool arrayConstructor = (At("array") || At("set")) && Peek(1).text == "<" && Peek(3).text == ">" && Peek(4).text == "(";
+        if (At("public") || At("export") || At("const") || At("fn") || At("list") || At("map") || (At("coroutine") && Peek(1).text == "<") || ((At("array") || At("set")) && !arrayConstructor) || (FindType(Peek().text) != InvalidType && (Peek(1).kind == TokenKind::Identifier || Peek(1).text == "?" || Peek(1).text == "&")))
         {
             std::unique_ptr<Statement> s(new Statement(StatementKind::Declaration, at));
             while (At("public") || At("export") || At("const"))
@@ -510,7 +570,7 @@ private:
         }
         std::unique_ptr<Statement> s(new Statement(StatementKind::Expression, at));
         s->expressions.push_back(ParseExpression());
-        Expect(";");
+        s->end = Expect(";").end;
         return s;
     }
 
@@ -587,17 +647,34 @@ private:
         else if (Accept("{"))
         {
             result.reset(new Expr(ExprKind::Map, token));
-            if (!At("}")) Fail(Peek(), "only an empty typed map literal is supported; assign entries by key");
+            if (!At("}")) do {
+                result->children.push_back(ParseExpression()); Expect(":");
+                result->children.push_back(ParseExpression());
+            } while (Accept(","));
             result->end = Expect("}").end;
+            CheckTreeDepth(*result);
+        }
+        else if (Accept("fn"))
+        {
+            result.reset(new Expr(ExprKind::Lambda, token));
+            result->lambda.reset(new Statement(StatementKind::Function, token));
+            Statement& function = *result->lambda;
+            Expect("(");
+            if (!At(")")) do { Parameter p; p.type = ParseType(); p.name = Name(); function.parameters.push_back(p); } while (Accept(","));
+            Expect(")"); Expect("->"); function.declared = ParseType();
+            if (!At("{")) Fail(Peek(), "an anonymous function requires a body");
+            function.children.push_back(ParseStatement(false));
+            result->end = tokens_[position_ - 1].end;
+            function.end = result->end;
         }
         else if (token.kind == TokenKind::Integer || token.kind == TokenKind::Float || token.kind == TokenKind::String || At("true") || At("false") || At("null"))
         {
             Take(); result.reset(new Expr(ExprKind::Literal, token));
         }
-        else if (At("array"))
+        else if (At("array") || At("set"))
         {
             const TypeSyntax type = ParseType();
-            if (types_.Get(type.type).kind != TypeKind::Array || !At("(")) Fail(token, "an array constructor requires array<T>(size, fill) or array<T>()");
+            if (!At("(")) Fail(token, "a collection constructor requires arguments in parentheses");
             result.reset(new Expr(ExprKind::Name, token));
             result->constructorType = type.type;
             result->end = type.end;
@@ -678,6 +755,7 @@ struct Symbol
     Statement* declaration = nullptr;
     std::size_t functionBody = 0;
     std::string defaultValue;
+    int functionDepth = 0;
     Symbol(TypeId t, bool c, const Token& n) : type(t), constant(c), name(n) {}
 };
 
@@ -768,8 +846,8 @@ public:
             result_.typedIR.returns.push_back(std::move(result));
             edits_.push_back(Edit(statement.token.begin, statement.end, marker));
         }
-        const std::string helpers = Helpers();
         result_.loweredSource = Lower();
+        const std::string helpers = Helpers();
         int generatedLine = 1 + static_cast<int>(std::count(result_.loweredSource.begin(), result_.loweredSource.end(), '\n'));
         for (const HostWrite& write : hostWrites_)
             result_.hostWriteSourceLines.push_back(std::make_pair(++generatedLine, write.line));
@@ -801,6 +879,11 @@ private:
     bool checkingConstant_ = false;
     std::string internalPrefix_ = "__neocore_";
     bool resizeHelper_ = false, getHelper_ = false;
+    bool concatHelper_ = false, unionHelper_ = false, intersectionHelper_ = false, differenceHelper_ = false;
+    std::set<TypeId> structListClones_, structMapClones_, structMapValues_, structListResizes_, structListConcats_;
+    int functionDepth_ = 0;
+    std::vector<Expr*> activeLambdas_;
+    std::vector<Expr*> lambdas_;
     std::set<Symbol*> nonNullLocals_;
     mutable std::map<TypeId, bool> defaultable_;
     mutable std::map<const Symbol*, std::size_t> irSymbols_;
@@ -825,6 +908,7 @@ private:
         // 전역 초기화가 호출하는 함수도 미완성 전역을 읽거나 쓰면 정적 타입 증거가 깨진다.
         // 재귀를 포함한 호출 그래프에 필요한 초기화 완료 위치를 역방향으로 전파한다.
         std::deque<std::string> pending;
+        for (const auto& function : requiredGlobalEnd_) pending.push_back(function.first);
         for (const auto& function : functions_) pending.push_back(function.first);
         while (!pending.empty())
         {
@@ -847,6 +931,11 @@ private:
     }
 
     bool IsStruct(TypeId type) const { return types_.Get(type).kind == TypeKind::Struct; }
+    bool IsScalarValue(TypeId type) const
+    {
+        if (types_.IsNullable(type)) type = types_.Get(type).element;
+        return type == types_.Int() || type == types_.Float() || type == types_.Bool() || type == types_.String() || type == types_.Null();
+    }
     bool IsVector(TypeId type) const
     {
         const TypeKind kind = types_.Get(type).kind;
@@ -869,7 +958,7 @@ private:
     bool IsNative(TypeId type) const { return types_.Get(type).kind == TypeKind::Native; }
     bool IsNativeValue(TypeId type) const { return IsNative(type) || (types_.IsNullable(type) && IsNative(types_.Get(type).element)); }
     bool IsArray(TypeId type) const { return types_.Get(type).kind == TypeKind::Array; }
-    bool IsCollection(TypeId type) const { return types_.Get(type).kind == TypeKind::List || types_.Get(type).kind == TypeKind::Map || IsArray(type); }
+    bool IsCollection(TypeId type) const { return types_.Get(type).kind == TypeKind::List || types_.Get(type).kind == TypeKind::Map || types_.Get(type).kind == TypeKind::Set || IsArray(type); }
     std::string Helper(const char* operation, TypeId type) const { return internalPrefix_ + operation + "_" + std::to_string(type); }
     std::string HostCall(HostBindingId binding) const { return result_.hostPrefix + "b" + std::to_string(binding) + ".call"; }
 
@@ -1019,7 +1108,7 @@ private:
     bool CanRefineNative(const Symbol* symbol) const
     {
         return symbol && !symbol->fileGlobal && !symbol->hostGlobal && !symbol->boxed
-            && types_.IsNullable(symbol->type) && IsNative(types_.Get(symbol->type).element);
+            && types_.IsNullable(symbol->type);
     }
 
     void ApplyNativeGuard(const Expr& condition, bool whenTrue)
@@ -1066,6 +1155,7 @@ private:
         symbol.fileGlobal = scopes_.size() == 1 && !parameter;
         symbol.backendName = scopes_.size() == 1 ? name.text : internalPrefix_ + std::to_string(symbols_.size());
         symbol.parameter = parameter;
+        symbol.functionDepth = functionDepth_;
         scopes_.back().insert(std::make_pair(name.text, &symbol));
         return symbol;
     }
@@ -1132,6 +1222,7 @@ private:
 
     void Contextualize(Expr& expression, TypeId expected)
     {
+        if (types_.IsNullable(expected)) expected = types_.Get(expected).element;
         if ((expression.kind == ExprKind::List && types_.Get(expected).kind == TypeKind::List)
             || (expression.kind == ExprKind::Map && types_.Get(expected).kind == TypeKind::Map)) expression.type = expected;
     }
@@ -1160,6 +1251,8 @@ private:
 
     TypeId BinaryType(const Token& token, const std::string& op, TypeId left, TypeId right)
     {
+        if (left == right && types_.Get(left).kind == TypeKind::List && op == "+") return left;
+        if (left == right && types_.Get(left).kind == TypeKind::Set && (op == "|" || op == "&" || op == "-")) return left;
         if (IsStruct(left) || IsStruct(right)) Fail(token, "structure operators and equality are not supported by this compiler stage");
         if (IsVectorValue(left) || IsVectorValue(right))
         {
@@ -1208,6 +1301,16 @@ private:
         return InvalidType;
     }
 
+    void CheckBuiltinSignature(Expr& expression, const BuiltinSignature& signature)
+    {
+        const std::size_t count = expression.children.size() - 1;
+        if (count < signature.minimum || count > signature.maximum)
+            Fail(expression.token, "builtin argument count does not match its declaration");
+        for (std::size_t i = 0; i < count; ++i)
+            Convert(*expression.children[i + 1], BuiltinSignatureType(types_, signature.parameters[i]));
+        expression.type = BuiltinSignatureType(types_, signature.result);
+    }
+
     void CheckMethod(Expr& expression)
     {
         Expr& member = *expression.children[0];
@@ -1215,8 +1318,35 @@ private:
         CheckExpr(receiver);
         const std::size_t count = expression.children.size() - 1;
         expression.receiverArgument = true;
-        for (std::size_t i = 1; i < expression.children.size(); ++i) CheckExpr(*expression.children[i]);
         const TypeDesc& type = types_.Get(receiver.type);
+        if (type.kind == TypeKind::Struct)
+        {
+            const StructField* field = types_.FindStructField(receiver.type, member.op, &member.fieldIndex);
+            if (field && types_.Get(field->type).kind == TypeKind::Function)
+            {
+                const TypeDesc& signature = types_.Get(field->type);
+                if (count != signature.parameters.size()) Fail(member.token, "function field argument count does not match its declaration");
+                member.type = field->type;
+                for (std::size_t i = 1; i < expression.children.size(); ++i)
+                {
+                    Contextualize(*expression.children[i], signature.parameters[i - 1]);
+                    CheckExpr(*expression.children[i]);
+                    Convert(*expression.children[i], signature.parameters[i - 1]);
+                }
+                expression.receiverArgument = false;
+                expression.indirectCall = true;
+                expression.type = signature.returnType;
+                return;
+            }
+        }
+        for (std::size_t i = 1; i < expression.children.size(); ++i)
+        {
+            if (type.kind == TypeKind::List && ((member.op == "append" && i == 1) || (member.op == "insert" && i == 2) || (member.op == "resize" && i == 2)))
+                Contextualize(*expression.children[i], type.element);
+            if (type.kind == TypeKind::Map && member.op == "get" && i == 2)
+                Contextualize(*expression.children[i], type.value);
+            CheckExpr(*expression.children[i]);
+        }
         if (IsNativeValue(receiver.type))
         {
             const TypeId ownerType = NativeReceiverType(receiver);
@@ -1246,6 +1376,11 @@ private:
                 expression.extraArgument = DefaultValue(type.element);
             }
             expression.callName = internalPrefix_ + "resize";
+            if (IsStruct(type.element))
+            {
+                structListResizes_.insert(type.element);
+                expression.callName += "_" + std::to_string(type.element);
+            }
             expression.type = types_.Void();
             resizeHelper_ = true;
             return;
@@ -1269,14 +1404,134 @@ private:
             getHelper_ = true;
             return;
         }
+        const BuiltinSignature* builtin = FindBuiltinSignature(type.name, member.op);
+        if (builtin && (receiver.type == types_.String() || type.kind == TypeKind::BuiltinObject))
+        {
+            CheckBuiltinSignature(expression, *builtin);
+            expression.receiverArgument = false;
+            expression.callName = "." + member.op;
+            return;
+        }
+        const bool list = type.kind == TypeKind::List;
+        const bool map = type.kind == TypeKind::Map;
+        const bool set = type.kind == TypeKind::Set;
+        const bool array = type.kind == TypeKind::Array;
+        if ((list || map) && member.op == "clone" && IsStruct(list ? type.element : type.value))
+        {
+            if (count) Fail(member.token, "clone requires no arguments");
+            const TypeId element = list ? type.element : type.value;
+            if (list) structListClones_.insert(element); else structMapClones_.insert(element);
+            expression.callName = internalPrefix_ + (list ? "clonelist_" : "clonemap_") + std::to_string(element);
+            expression.type = receiver.type;
+            return;
+        }
+        if (map && member.op == "values" && IsStruct(type.value))
+        {
+            if (count) Fail(member.token, "values requires no arguments");
+            structMapValues_.insert(type.value);
+            expression.callName = internalPrefix_ + "mapvalues_" + std::to_string(type.value);
+            expression.type = types_.ListOf(type.value);
+            return;
+        }
+        TypeId result = InvalidType;
+        if ((list || map || set || array) && (member.op == "clear" || member.op == "clone"))
+        {
+            if (count) Fail(member.token, "this collection method requires no arguments");
+            result = member.op == "clone" ? receiver.type : types_.Void();
+        }
+        else if (set && member.op == "len")
+        {
+            if (count) Fail(member.token, "len requires no arguments");
+            result = types_.Int();
+        }
+        else if ((list || map) && member.op == "reserve")
+        {
+            if (count != 1) Fail(member.token, "reserve requires one capacity argument");
+            Require(*expression.children[1], types_.Int(), "collection capacity");
+            result = types_.Void();
+        }
+        else if (list && (member.op == "append" || member.op == "insert"))
+        {
+            if (member.op == "append")
+            {
+                if (count != 1 && count != 2) Fail(member.token, "append requires a value and an optional index");
+                Convert(*expression.children[1], type.element);
+                if (count == 2) Require(*expression.children[2], types_.Int(), "list index");
+            }
+            else
+            {
+                if (count != 2) Fail(member.token, "insert requires an index and a value");
+                Require(*expression.children[1], types_.Int(), "list index");
+                Convert(*expression.children[2], type.element);
+            }
+            result = types_.Void();
+        }
+        else if (list && (member.op == "remove" || member.op == "remove_swap" || member.op == "pop"))
+        {
+            if (count != (member.op == "pop" ? 0u : 1u)) Fail(member.token, "list removal argument count does not match its declaration");
+            if (count) Require(*expression.children[1], types_.Int(), "list index");
+            result = type.element;
+        }
+        else if ((list || array) && (member.op == "find" || member.op == "contains" || (array && member.op == "fill")))
+        {
+            if (IsStruct(type.element)) Fail(member.token, "struct equality is not supported by collection search");
+            if (count != 1) Fail(member.token, "this collection method requires one value");
+            Convert(*expression.children[1], type.element);
+            result = member.op == "find" ? types_.Int() : member.op == "contains" ? types_.Bool() : types_.Void();
+        }
+        else if ((map || set) && (member.op == "contains" || member.op == "remove" || (set && member.op == "add")))
+        {
+            if (count != 1) Fail(member.token, "this collection method requires one key");
+            Convert(*expression.children[1], map ? type.key : type.element);
+            result = types_.Bool();
+        }
+        else if ((map || set) && (member.op == "values" || (map && member.op == "keys")))
+        {
+            if (count) Fail(member.token, "this collection method requires no arguments");
+            result = types_.ListOf(set ? type.element : member.op == "keys" ? type.key : type.value);
+        }
+        else if ((list || map) && member.op == "sort")
+        {
+            if (count != 1) Fail(member.token, "sort requires a comparator");
+            const TypeId element = list ? type.element : type.value;
+            if (IsStruct(element)) Fail(member.token, "native sort of struct values requires a value-copy callback adapter");
+            Require(*expression.children[1], types_.FunctionOf(types_.Bool(), std::vector<TypeId>(2, element)), "sort comparator");
+            result = types_.Void();
+        }
+        if (result != InvalidType)
+        {
+            expression.receiverArgument = false;
+            expression.callName = "." + member.op;
+            expression.type = result;
+            return;
+        }
         Fail(member.token, "unknown or unsupported typed method '" + member.op + "'");
     }
 
     void CheckCall(Expr& expression)
     {
         Expr& callee = *expression.children[0];
+        // 뒤의 인자가 nullable 지역을 덮어쓰면 저장된 수신자 증명을 재사용하지 않는다.
+        for (std::size_t i = 1; i < expression.children.size(); ++i) InvalidateNativeWrites(*expression.children[i]);
+        if ((callee.kind == ExprKind::Name && Lookup(callee.op)) ||
+            (callee.kind != ExprKind::Name && callee.kind != ExprKind::Member))
+        {
+            CheckExpr(callee);
+            const TypeDesc& signature = types_.Get(callee.type);
+            if (signature.kind != TypeKind::Function) Fail(callee.token, "this value is not callable without a non-null function signature");
+            if (expression.children.size() - 1 != signature.parameters.size()) Fail(callee.token, "function argument count does not match its declaration");
+            for (std::size_t i = 1; i < expression.children.size(); ++i)
+            {
+                Contextualize(*expression.children[i], signature.parameters[i - 1]);
+                CheckExpr(*expression.children[i]);
+                Convert(*expression.children[i], signature.parameters[i - 1]);
+            }
+            expression.indirectCall = true;
+            expression.type = signature.returnType;
+            return;
+        }
         if (callee.kind == ExprKind::Member && !(callee.children[0]->kind == ExprKind::Name
-            && (callee.children[0]->op == "math" || callee.children[0]->op == "system")))
+            && (callee.children[0]->op == "math" || callee.children[0]->op == "system" || callee.children[0]->op == "coroutine")))
         {
             CheckMethod(expression);
             return;
@@ -1289,16 +1544,62 @@ private:
         expression.callName = name;
         if (Lookup(name)) Fail(callee.token, "this value is not callable");
         const auto function = functions_.find(name);
+        const TypeId namedType = types_.LookupNamed(name);
         for (std::size_t i = 1; i < expression.children.size(); ++i)
         {
             if (function != functions_.end() && i <= function->second.parameterTypes.size())
                 Contextualize(*expression.children[i], function->second.parameterTypes[i - 1]);
+            if (callee.constructorType != InvalidType && types_.Get(callee.constructorType).kind == TypeKind::Set && i == 1)
+                Contextualize(*expression.children[i], types_.ListOf(types_.Get(callee.constructorType).element));
+            if (IsStruct(namedType) && i <= types_.Get(namedType).fields.size())
+                Contextualize(*expression.children[i], types_.Get(namedType).fields[i - 1].type);
+            if (name == "coroutine.resume" && i >= 2 && types_.Get(expression.children[1]->type).kind == TypeKind::Coroutine)
+            {
+                const TypeDesc& signature = types_.Get(types_.Get(expression.children[1]->type).element);
+                if (i - 2 < signature.parameters.size()) Contextualize(*expression.children[i], signature.parameters[i - 2]);
+            }
             CheckExpr(*expression.children[i]);
             if (expression.children[i]->type == types_.Void()) Fail(expression.children[i]->token, "a void call cannot be used as an argument");
         }
         const std::size_t count = expression.children.size() - 1;
+        if (name == "coroutine.create" || name == "coroutine.resume" || name == "coroutine.status" || name == "coroutine.close")
+        {
+            if (!imports_.count("coroutine")) Fail(callee.token, "coroutine must be imported before use");
+            if (name == "coroutine.create")
+            {
+                if (count != 1) Fail(callee.token, "coroutine.create requires one function");
+                expression.type = types_.CoroutineOf(expression.children[1]->type);
+                if (expression.type == InvalidType) Fail(callee.token, "coroutine.create requires a function returning void");
+                return;
+            }
+            if (!count || types_.Get(expression.children[1]->type).kind != TypeKind::Coroutine)
+                Fail(callee.token, "a non-null typed coroutine is required");
+            const TypeDesc& signature = types_.Get(types_.Get(expression.children[1]->type).element);
+            if (name == "coroutine.resume")
+            {
+                if (count - 1 != signature.parameters.size()) Fail(callee.token, "coroutine.resume arguments must match the entry signature");
+                for (std::size_t i = 0; i < signature.parameters.size(); ++i) Convert(*expression.children[i + 2], signature.parameters[i]);
+                expression.type = types_.Void();
+            }
+            else
+            {
+                if (count != 1) Fail(callee.token, "this coroutine operation requires one handle");
+                expression.type = name == "coroutine.status" ? types_.String() : types_.Void();
+            }
+            return;
+        }
         if (callee.constructorType != InvalidType)
         {
+            if (types_.Get(callee.constructorType).kind == TypeKind::Set)
+            {
+                if (count > 1) Fail(callee.token, "set constructor requires no arguments or one list");
+                if (count) Require(*expression.children[1], types_.ListOf(types_.Get(callee.constructorType).element), "set initializer");
+                else expression.extraArgument = "[]";
+                expression.callName = "system.set";
+                expression.type = callee.constructorType;
+                if (!imports_.count("system")) Fail(callee.token, "system must be imported before constructing a set");
+                return;
+            }
             if (count > 2) Fail(callee.token, "array constructor requires a size and optional fill value, or no arguments");
             const TypeId element = types_.Get(callee.constructorType).element;
             if (count) Require(*expression.children[1], types_.Int(), "array size");
@@ -1368,7 +1669,7 @@ private:
         {
             if (count < 1 || count > 2) Fail(callee.token, "print requires one or two arguments");
             for (std::size_t i = 1; i < expression.children.size(); ++i)
-                if (IsStruct(expression.children[i]->type) || IsVectorValue(expression.children[i]->type) || IsCollection(expression.children[i]->type) || IsNativeValue(expression.children[i]->type) || types_.Get(expression.children[i]->type).kind == TypeKind::Function) Fail(expression.children[i]->token, "print supports scalar values only");
+                if (!IsScalarValue(expression.children[i]->type)) Fail(expression.children[i]->token, "print supports scalar values only");
             expression.type = types_.Void();
             return;
         }
@@ -1378,7 +1679,7 @@ private:
             const TypeId argument = expression.children[1]->type;
             if (name == "tostring")
             {
-                if (IsStruct(argument) || IsVectorValue(argument) || IsCollection(argument) || IsNativeValue(argument) || types_.Get(argument).kind == TypeKind::Function) Fail(callee.token, "tostring supports scalar values only");
+                if (!IsScalarValue(argument)) Fail(callee.token, "tostring supports scalar values only");
                 expression.type = types_.String();
             }
             else
@@ -1390,20 +1691,28 @@ private:
             }
             return;
         }
-        if (name == "math.sin" || name == "math.cos")
-        {
-            if (!imports_.count("math")) Fail(callee.token, "math must be imported before use");
-            if (count != 1) Fail(callee.token, "this math function requires one argument");
-            Convert(*expression.children[1], types_.Float());
-            expression.type = types_.Float();
-            return;
-        }
-        if (name == "system.clock")
+        if (name == "system.set")
         {
             if (!imports_.count("system")) Fail(callee.token, "system must be imported before use");
-            if (count != 0) Fail(callee.token, "system.clock requires no arguments");
-            expression.type = types_.Float();
+            if (count != 1 || types_.Get(expression.children[1]->type).kind != TypeKind::List)
+                Fail(callee.token, "system.set requires one typed list");
+            const TypeId element = types_.Get(expression.children[1]->type).element;
+            if (element != types_.Int() && element != types_.Float() && element != types_.Bool() && element != types_.String()) Fail(callee.token, "set elements must be non-null scalar types");
+            expression.type = types_.SetOf(element);
             return;
+        }
+        const std::size_t dot = name.find('.');
+        if (dot != std::string::npos)
+        {
+            const std::string owner = name.substr(0, dot);
+            const BuiltinSignature* builtin = FindBuiltinSignature(owner, name.substr(dot + 1));
+            if (builtin && (owner == "math" || owner == "system"))
+            {
+                if (!imports_.count(owner)) Fail(callee.token, owner + " must be imported before use");
+                CheckBuiltinSignature(expression, *builtin);
+                if (name == "system.async_create") expression.callName = "system.aysnc_create";
+                return;
+            }
         }
         Fail(callee.token, "unknown or untyped function '" + name + "'");
     }
@@ -1443,13 +1752,70 @@ private:
         case ExprKind::Name:
         {
             Symbol* symbol = Lookup(expression.op);
-            if (!symbol) Fail(expression.token, "unknown variable '" + expression.op + "'");
+            if (!symbol)
+            {
+                const auto function = functions_.find(expression.op);
+                if (function == functions_.end()) Fail(expression.token, "unknown variable '" + expression.op + "'");
+                expression.type = types_.FunctionOf(function->second.returnType, function->second.parameterTypes);
+                expression.callName = expression.op;
+                RecordScriptCall(expression.token, expression.op);
+                return;
+            }
             expression.type = symbol->type;
             expression.constant = symbol->constant;
             expression.symbol = symbol;
             expression.nativeNonNull = CanRefineNative(symbol) && nonNullLocals_.count(symbol) != 0;
+            if (expression.nativeNonNull && !expression.writeTarget) expression.type = types_.Get(symbol->type).element;
+            if (!symbol->fileGlobal && !symbol->hostGlobal)
+                for (std::size_t i = 0; i < activeLambdas_.size(); ++i)
+                {
+                    Expr* lambda = activeLambdas_[i];
+                    if (symbol->functionDepth < static_cast<int>(lambda->fieldIndex) &&
+                        std::find(lambda->captures.begin(), lambda->captures.end(), symbol) == lambda->captures.end())
+                        lambda->captures.push_back(symbol);
+                }
             if (symbol->fileGlobal && !currentFunction_.empty())
                 requiredGlobalEnd_[currentFunction_] = std::max(requiredGlobalEnd_[currentFunction_], symbol->declaration->end);
+            return;
+        }
+        case ExprKind::Lambda:
+        {
+            if (checkingConstant_) Fail(expression.token, "a function value is not a constant initializer");
+            Statement& function = *expression.lambda;
+            std::vector<TypeId> parameters;
+            for (const Parameter& parameter : function.parameters) parameters.push_back(parameter.type.type);
+            expression.type = types_.FunctionOf(function.declared.type, parameters);
+            if (expression.type == InvalidType) Fail(expression.token, "invalid anonymous function signature");
+            expression.callName = internalPrefix_ + "lambda_" + std::to_string(lambdas_.size());
+            lambdas_.push_back(&expression);
+            RecordScriptCall(expression.token, expression.callName);
+            const TypeId savedReturn = returnType_;
+            const std::string savedFunction = currentFunction_;
+            const int savedLoop = loopDepth_;
+            const std::set<Symbol*> savedNonNull = nonNullLocals_;
+            currentFunction_ = expression.callName;
+            returnType_ = function.declared.type;
+            loopDepth_ = 0;
+            nonNullLocals_.clear();
+            ++functionDepth_;
+            expression.fieldIndex = static_cast<std::size_t>(functionDepth_);
+            activeLambdas_.push_back(&expression);
+            scopes_.push_back(std::map<std::string, Symbol*>());
+            for (const Parameter& parameter : function.parameters)
+            {
+                Symbol& symbol = Define(parameter.name, parameter.type.type, false, true);
+                symbol.functionBody = function.children[0]->token.end;
+                expression.lambdaParameters.push_back(&symbol);
+            }
+            const int flow = CheckStatement(*function.children[0]);
+            if (returnType_ != types_.Void() && (flow & FallsThrough)) Fail(expression.token, "not all anonymous function paths return a value");
+            scopes_.pop_back();
+            activeLambdas_.pop_back();
+            --functionDepth_;
+            returnType_ = savedReturn;
+            currentFunction_ = savedFunction;
+            loopDepth_ = savedLoop;
+            nonNullLocals_ = savedNonNull;
             return;
         }
         case ExprKind::Unary:
@@ -1476,7 +1842,25 @@ private:
         case ExprKind::Binary:
             CheckExpr(*expression.children[0]); CheckExpr(*expression.children[1]);
             expression.type = BinaryType(expression.token, expression.op, expression.children[0]->type, expression.children[1]->type);
-            if (expression.op == "*" && types_.IsNumeric(expression.children[0]->type) && IsArithmeticVector(expression.children[1]->type))
+            if (types_.Get(expression.type).kind == TypeKind::List && expression.op == "+")
+            {
+                concatHelper_ = true;
+                expression.callName = internalPrefix_ + "concat";
+                const TypeId element = types_.Get(expression.type).element;
+                if (IsStruct(element))
+                {
+                    structListConcats_.insert(element);
+                    structListClones_.insert(element);
+                    expression.callName += "_" + std::to_string(element);
+                }
+            }
+            else if (types_.Get(expression.type).kind == TypeKind::Set)
+            {
+                if (expression.op == "|") { unionHelper_ = true; expression.callName = internalPrefix_ + "union"; }
+                else if (expression.op == "&") { intersectionHelper_ = true; expression.callName = internalPrefix_ + "intersection"; }
+                else { differenceHelper_ = true; expression.callName = internalPrefix_ + "difference"; }
+            }
+            else if (expression.op == "*" && types_.IsNumeric(expression.children[0]->type) && IsArithmeticVector(expression.children[1]->type))
             {
                 Convert(*expression.children[0], types_.Float());
                 expression.callName = Intrinsic("v" + std::to_string(VectorSize(expression.type)) + "rmul", expression.token.line);
@@ -1554,6 +1938,7 @@ private:
         {
             Expr& owner = *expression.children[0];
             Expr& key = *expression.children[1];
+            InvalidateNativeWrites(key);
             CheckExpr(owner); CheckExpr(key);
             const TypeDesc& type = types_.Get(owner.type);
             if (type.kind == TypeKind::List || type.kind == TypeKind::Array)
@@ -1573,12 +1958,21 @@ private:
         {
             if (types_.Get(expression.type).kind != TypeKind::List) Fail(expression.token, "a list literal requires an explicit list type context");
             const TypeId element = types_.Get(expression.type).element;
-            for (const auto& value : expression.children) { CheckExpr(*value); Convert(*value, element); }
+            for (const auto& value : expression.children) { Contextualize(*value, element); CheckExpr(*value); Convert(*value, element); }
             return;
         }
         case ExprKind::Map:
+        {
             if (types_.Get(expression.type).kind != TypeKind::Map) Fail(expression.token, "a map literal requires an explicit map type context");
+            const TypeDesc& type = types_.Get(expression.type);
+            for (std::size_t i = 0; i < expression.children.size(); i += 2)
+            {
+                CheckExpr(*expression.children[i]); Require(*expression.children[i], type.key, "map key");
+                Contextualize(*expression.children[i + 1], type.value);
+                CheckExpr(*expression.children[i + 1]); Convert(*expression.children[i + 1], type.value);
+            }
             return;
+        }
         }
     }
 
@@ -1650,6 +2044,7 @@ private:
             nonNullLocals_.clear();
             returnType_ = statement.declared.type;
             currentFunction_ = statement.name.text;
+            ++functionDepth_;
             scopes_.push_back(std::map<std::string, Symbol*>());
             for (const Parameter& parameter : statement.parameters)
             {
@@ -1659,6 +2054,7 @@ private:
             }
             const int flow = CheckStatement(*statement.children[0]);
             scopes_.pop_back();
+            --functionDepth_;
             if (returnType_ != types_.Void() && (flow & FallsThrough)) Fail(statement.name, "not all paths return a value");
             returnType_ = previousReturn;
             currentFunction_ = previousFunction;
@@ -1731,8 +2127,62 @@ private:
                 Contextualize(*statement.expressions[0], returnType_);
                 CheckExpr(*statement.expressions[0]); Convert(*statement.expressions[0], returnType_);
             }
-            returns_.push_back(std::make_pair(&statement, irFunctions_.at(currentFunction_)));
+            if (activeLambdas_.empty()) returns_.push_back(std::make_pair(&statement, irFunctions_.at(currentFunction_)));
+            else if (!statement.expressions.empty()) roots_.push_back(statement.expressions[0].get());
             return Returns;
+        case StatementKind::Foreach:
+        {
+            CheckExpr(*statement.expressions[0]);
+            nonNullLocals_.clear();
+            const TypeId source = statement.expressions[0]->type;
+            const TypeDesc& collection = types_.Get(source);
+            std::vector<TypeId> expected;
+            if (collection.kind == TypeKind::Map)
+            {
+                if (statement.parameters.size() != 2) Fail(statement.token, "map foreach requires a key and value; use values() to iterate values alone");
+                expected.push_back(collection.key); expected.push_back(collection.value);
+            }
+            else
+            {
+                if (statement.parameters.size() != 1) Fail(statement.token, "this foreach requires one iteration variable");
+                if (source == types_.String()) expected.push_back(types_.String());
+                else if (collection.kind == TypeKind::List || collection.kind == TypeKind::Array || collection.kind == TypeKind::Set) expected.push_back(collection.element);
+                else Fail(statement.token, "foreach requires a non-null string or collection");
+            }
+            scopes_.push_back(std::map<std::string, Symbol*>());
+            std::vector<Symbol*> variables;
+            for (std::size_t i = 0; i < expected.size(); ++i)
+            {
+                const Parameter& parameter = statement.parameters[i];
+                if (parameter.type.type != expected[i]) Fail(parameter.name, "foreach variable type must exactly match the element type");
+                variables.push_back(&Define(parameter.name, expected[i], false));
+                ReplaceType(parameter.type, i == 0 ? "var" : "");
+            }
+            ++loopDepth_;
+            const int body = CheckStatement(*statement.children[0]);
+            --loopDepth_;
+            std::string initialization;
+            for (Symbol* symbol : variables)
+            {
+                std::string value;
+                if (source == types_.String()) value = "tostring(" + symbol->backendName + ")";
+                else if (IsStruct(symbol->type)) value = Helper("clone", symbol->type) + "(" + symbol->backendName + ")";
+                if (symbol->boxed) value = Intrinsic("cellnew", symbol->name.line) + "(" + symbol->backendName + ")";
+                if (!value.empty()) initialization += symbol->backendName + "=" + value + ";";
+            }
+            if (!initialization.empty())
+            {
+                edits_.push_back(Edit(statement.children[0]->token.begin, statement.children[0]->token.begin, "{" + initialization));
+                edits_.push_back(Edit(statement.children[0]->end, statement.children[0]->end, "}"));
+            }
+            scopes_.pop_back();
+            nonNullLocals_.clear();
+            return FallsThrough | (body & Returns);
+        }
+        case StatementKind::Yield:
+            if (returnType_ == InvalidType) Fail(statement.token, "yield is only allowed in a function");
+            nonNullLocals_.clear();
+            return FallsThrough;
         case StatementKind::Break:
             if (!loopDepth_) Fail(statement.token, "break is only allowed in a loop");
             return Breaks;
@@ -1974,7 +2424,7 @@ private:
             node.number = expression.floatValue;
             node.boolean = expression.op == "true";
         }
-        else if (expression.kind == ExprKind::Name && !expression.symbol->constant &&
+        else if (expression.kind == ExprKind::Name && expression.symbol && !expression.symbol->constant &&
             !expression.symbol->hostGlobal && !expression.symbol->boxed)
         {
             node.op = IROp::Symbol;
@@ -2045,6 +2495,11 @@ private:
             text = Lines(expression.begin, expression.token.begin) + text + Lines(expression.token.end, expression.end);
             break;
         case ExprKind::Name:
+            if (!expression.symbol)
+            {
+                text = Lines(expression.begin, expression.token.begin) + expression.callName + Lines(expression.token.end, expression.end);
+                break;
+            }
             text = expression.symbol->hostGlobal ? result_.hostPrefix + "g" + std::to_string(expression.symbol->hostGlobalIndex) + ".call()" : expression.symbol->backendName;
             if (!expression.cellStorage && expression.symbol->boxed)
                 text = IsVector(expression.type) && !expression.writeTarget
@@ -2130,13 +2585,18 @@ private:
         {
             const Expr& callee = *expression.children[0];
             std::string callName = expression.callName;
+            if (expression.indirectCall) callName = "(" + RenderExpr(callee) + ")";
+            const bool builtinMethod = !callName.empty() && callName[0] == '.';
+            if (builtinMethod)
+                callName = "(" + RenderExpr(*callee.children[0]) + ")" + callName;
             text = Lines(expression.begin, callee.begin) + callName + "(";
             if (expression.receiverArgument)
             {
                 const Expr& receiver = *callee.children[0];
                 text += Lines(callee.begin, receiver.begin) + RenderExpr(receiver) + Lines(receiver.end, callee.end);
             }
-            else text += Lines(callee.begin, callee.end);
+            else if (builtinMethod) text += Lines(callee.children[0]->end, callee.end);
+            else if (!expression.indirectCall) text += Lines(callee.begin, callee.end);
             std::size_t previous = callee.end;
             for (std::size_t i = 1; i < expression.children.size(); ++i)
             {
@@ -2194,7 +2654,26 @@ private:
             break;
         }
         case ExprKind::Map:
-            text = "{" + Lines(expression.begin, expression.end) + "}";
+        {
+            text = "{";
+            std::size_t previous = expression.begin;
+            for (std::size_t i = 0; i < expression.children.size(); ++i)
+            {
+                if (i) text += i % 2 ? ":" : ",";
+                text += Lines(previous, expression.children[i]->begin) + RenderExpr(*expression.children[i]);
+                previous = expression.children[i]->end;
+            }
+            text += Lines(previous, expression.end) + "}";
+            break;
+        }
+        case ExprKind::Lambda:
+            text = expression.callName + "(";
+            for (std::size_t i = 0; i < expression.captures.size(); ++i)
+            {
+                if (i) text += ",";
+                text += CaptureValue(*expression.captures[i], expression.token.line);
+            }
+            text += ")" + Lines(expression.begin, expression.end);
             break;
         }
         if (applyWrappers && expression.widen) text = expression.constantWiden ? "(" + text + "+0.0)"
@@ -2217,6 +2696,15 @@ private:
         if (operation == "<<") return "shl";
         if (operation == ">>") return "shr";
         throw std::logic_error("unsupported typed arithmetic operation");
+    }
+
+    std::string CaptureValue(const Symbol& symbol, int line) const
+    {
+        std::string value = symbol.backendName;
+        if (symbol.boxed) value = Intrinsic("cellget", line) + "(" + value + ")";
+        if (IsStruct(symbol.type)) value = Helper("clone", symbol.type) + "(" + value + ")";
+        if (symbol.boxed) value = Intrinsic("cellnew", line) + "(" + value + ")";
+        return value;
     }
 
     std::string Helpers() const
@@ -2311,35 +2799,79 @@ private:
             result += "\nfun " + internalPrefix_ + "resize(var a,var n,var fill){if(n<0)n=0;var old=tosize(a);a.reserve(n);if(n<old){a.resize(n);}else{for(var i in old,n){a.append(fill);}}}";
         }
         if (getHelper_) result += "\nfun " + internalPrefix_ + "get(var m,var k,var fallback){var v=m[k];if(v==null)return fallback;return v;}";
+        if (concatHelper_) result += "\nfun " + internalPrefix_ + "concat(var a,var b){var r=a.clone();foreach(var v in b)r.append(v);return r;}";
+        if (unionHelper_) result += "\nfun " + internalPrefix_ + "union(var a,var b){var r=a.clone();foreach(var v in b)r.add(v);return r;}";
+        if (intersectionHelper_) result += "\nfun " + internalPrefix_ + "intersection(var a,var b){var r=a.clone();foreach(var v in a)if(!b.contains(v))r.remove(v);return r;}";
+        if (differenceHelper_) result += "\nfun " + internalPrefix_ + "difference(var a,var b){var r=a.clone();foreach(var v in b)r.remove(v);return r;}";
+        for (TypeId type : structListClones_)
+            result += "\nfun " + internalPrefix_ + "clonelist_" + std::to_string(type) + "(var a){var r=[];foreach(var v in a)r.append(" + Helper("clone", type) + "(v));return r;}";
+        for (TypeId type : structMapClones_)
+            result += "\nfun " + internalPrefix_ + "clonemap_" + std::to_string(type) + "(var a){var r={};foreach(var k,v in a)r[k]=" + Helper("clone", type) + "(v);return r;}";
+        for (TypeId type : structMapValues_)
+            result += "\nfun " + internalPrefix_ + "mapvalues_" + std::to_string(type) + "(var a){var r=[];foreach(var k,v in a)r.append(" + Helper("clone", type) + "(v));return r;}";
+        for (TypeId type : structListResizes_)
+            result += "\nfun " + internalPrefix_ + "resize_" + std::to_string(type) + "(var a,var n,var fill){if(n<0)n=0;var old=tosize(a);a.reserve(n);if(n<old)a.resize(n);else for(var i in old,n)a.append(" + Helper("clone", type) + "(fill));}";
+        for (TypeId type : structListConcats_)
+            result += "\nfun " + internalPrefix_ + "concat_" + std::to_string(type) + "(var a,var b){var r=" + internalPrefix_ + "clonelist_" + std::to_string(type) + "(a);foreach(var v in b)r.append(" + Helper("clone", type) + "(v));return r;}";
+        for (const Expr* lambda : lambdas_)
+        {
+            result += "\nfun " + lambda->callName + "(";
+            for (std::size_t i = 0; i < lambda->captures.size(); ++i)
+            {
+                if (i) result += ",";
+                result += "var " + lambda->captures[i]->backendName;
+            }
+            result += "){return fun(";
+            for (std::size_t i = 0; i < lambda->lambdaParameters.size(); ++i)
+            {
+                if (i) result += ",";
+                result += "var " + lambda->lambdaParameters[i]->backendName;
+            }
+            const Statement& body = *lambda->lambda->children[0];
+            const std::string loweredBody = ApplyEdits(body.token.begin, body.end);
+            const int generatedLine = 1 + static_cast<int>(std::count(result_.loweredSource.begin(), result_.loweredSource.end(), '\n'))
+                + static_cast<int>(std::count(result.begin(), result.end(), '\n'));
+            const int bodyLines = static_cast<int>(std::count(loweredBody.begin(), loweredBody.end(), '\n'));
+            for (int line = 0; line <= bodyLines; ++line)
+                result_.hostWriteSourceLines.push_back(std::make_pair(generatedLine + line, body.token.line + line));
+            result += ")" + loweredBody + ";}";
+        }
         return result;
     }
 
-    std::string Lower()
+    std::string ApplyEdits(std::size_t begin, std::size_t end) const
     {
-        std::stable_sort(edits_.begin(), edits_.end(), [](const Edit& a, const Edit& b)
+        std::vector<const Edit*> selected;
+        for (const Edit& edit : edits_)
+            if (edit.begin >= begin && edit.end <= end) selected.push_back(&edit);
+        std::stable_sort(selected.begin(), selected.end(), [](const Edit* a, const Edit* b)
         {
-            if (a.begin != b.begin) return a.begin < b.begin;
-            return a.end == a.begin && b.end != b.begin;
+            if (a->begin != b->begin) return a->begin < b->begin;
+            if (a->end == a->begin || b->end == b->begin) return a->end == a->begin && b->end != b->begin;
+            return a->end > b->end;
         });
         std::string output;
         std::size_t edit = 0;
-        for (std::size_t position = 0; position <= source_.size();)
+        for (std::size_t position = begin; position <= end;)
         {
-            while (edit < edits_.size() && edits_[edit].begin == position && edits_[edit].end == position)
-                output += edits_[edit++].text;
-            if (edit < edits_.size() && edits_[edit].begin == position)
+            while (edit < selected.size() && selected[edit]->begin < position) ++edit;
+            while (edit < selected.size() && selected[edit]->begin == position && selected[edit]->end == position)
+                output += selected[edit++]->text;
+            if (edit < selected.size() && selected[edit]->begin == position)
             {
-                output += edits_[edit].text;
-                position = edits_[edit++].end;
+                output += selected[edit]->text;
+                position = selected[edit++]->end;
             }
             else
             {
-                if (position == source_.size()) break;
+                if (position == end) break;
                 output += source_[position++];
             }
         }
         return output;
     }
+
+    std::string Lower() const { return ApplyEdits(0, source_.size()); }
 };
 
 }

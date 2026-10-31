@@ -1,4 +1,4 @@
-﻿<?xml version="1.0" encoding="utf-8"?>
+<?xml version="1.0" encoding="utf-8"?>
 <Project ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
   <ItemGroup>
     <Filter Include="NeoCore" />
@@ -7,6 +7,7 @@
     <Filter Include="Implementation" />
   </ItemGroup>
   <ItemGroup>
+    <ClCompile Include="..\NeoSource\NeoCoreModules.cpp"><Filter>NeoCore</Filter></ClCompile>
     <ClCompile Include="..\NeoSource\NeoCore.cpp"><Filter>NeoCore</Filter></ClCompile>
     <ClCompile Include="..\NeoSource\NeoCoreCompiler.cpp"><Filter>NeoCore</Filter></ClCompile>
     <ClCompile Include="..\NeoSource\NeoCoreTypes.cpp"><Filter>NeoCore</Filter></ClCompile>
@@ -30,6 +31,9 @@
     <ClCompile Include="..\NeoSource\NeoVMWorker.cpp"><Filter>Source Files</Filter></ClCompile>
   </ItemGroup>
   <ItemGroup>
+    <ClInclude Include="..\NeoSource\NeoCoreOptions.h"><Filter>NeoCore</Filter></ClInclude>
+    <ClInclude Include="..\NeoSource\NeoCoreModules.h"><Filter>NeoCore</Filter></ClInclude>
+    <ClInclude Include="..\NeoSource\NeoCoreBuiltins.h"><Filter>NeoCore</Filter></ClInclude>
     <ClInclude Include="..\NeoSource\NeoCore.h"><Filter>NeoCore</Filter></ClInclude>
     <ClInclude Include="..\NeoSource\NeoCoreCompiler.h"><Filter>NeoCore</Filter></ClInclude>
     <ClInclude Include="..\NeoSource\NeoCoreIR.h"><Filter>NeoCore</Filter></ClInclude>

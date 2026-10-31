@@ -1,13 +1,44 @@
-﻿<?xml version="1.0" encoding="utf-8"?>
+<?xml version="1.0" encoding="utf-8"?>
 <Project ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
   <ItemGroup><Filter Include="Scripts" /><Filter Include="Benchmarks" /></ItemGroup>
-  <ItemGroup><ClCompile Include="main.cpp" /></ItemGroup>
+  <ItemGroup><ClCompile Include="main.cpp" /><ClCompile Include="SampleHost.cpp" /><ClCompile Include="..\console\HttpTransport.cpp" /><ClInclude Include="SampleHost.h" /></ItemGroup>
   <ItemGroup>
+    <None Include="scripts\regression.nc"><Filter>Scripts</Filter></None>
+    <None Include="scripts\literal_totype.nc"><Filter>Scripts</Filter></None>
+    <None Include="scripts\cycle.nc"><Filter>Scripts</Filter></None>
+    <None Include="scripts\9_times.nc"><Filter>Scripts</Filter></None>
+    <None Include="scripts\callback.nc"><Filter>Scripts</Filter></None>
+    <None Include="scripts\contailer.nc"><Filter>Scripts</Filter></None>
+    <None Include="scripts\coroutine.nc"><Filter>Scripts</Filter></None>
+    <None Include="scripts\cycle.nc"><Filter>Scripts</Filter></None>
+    <None Include="scripts\delegate.nc"><Filter>Scripts</Filter></None>
+    <None Include="scripts\divide_by_zero.nc"><Filter>Scripts</Filter></None>
     <None Include="scripts\fibonacci.nc"><Filter>Scripts</Filter></None>
-    <None Include="scripts\structs.nc"><Filter>Scripts</Filter></None>
-    <None Include="scripts\vectors.nc"><Filter>Scripts</Filter></None>
+    <None Include="scripts\hello.nc"><Filter>Scripts</Filter></None>
+    <None Include="scripts\http.nc"><Filter>Scripts</Filter></None>
+    <None Include="scripts\https.nc"><Filter>Scripts</Filter></None>
+    <None Include="scripts\list.nc"><Filter>Scripts</Filter></None>
+    <None Include="scripts\literal_totype.nc"><Filter>Scripts</Filter></None>
+    <None Include="scripts\map.nc"><Filter>Scripts</Filter></None>
+    <None Include="scripts\map_callback.nc"><Filter>Scripts</Filter></None>
+    <None Include="scripts\module.nc"><Filter>Scripts</Filter></None>
     <None Include="scripts\particles.nc"><Filter>Scripts</Filter></None>
-    <None Include="..\bench\check.nc"><Filter>Benchmarks</Filter></None>
+    <None Include="scripts\performance.nc"><Filter>Scripts</Filter></None>
+    <None Include="scripts\regex.nc"><Filter>Scripts</Filter></None>
+    <None Include="scripts\regression.nc"><Filter>Scripts</Filter></None>
+    <None Include="scripts\slice_run.nc"><Filter>Scripts</Filter></None>
+    <None Include="scripts\string.nc"><Filter>Scripts</Filter></None>
+    <None Include="scripts\structs.nc"><Filter>Scripts</Filter></None>
+    <None Include="scripts\time.nc"><Filter>Scripts</Filter></None>
+    <None Include="scripts\time_limit.nc"><Filter>Scripts</Filter></None>
+    <None Include="scripts\vectors.nc"><Filter>Scripts</Filter></None>
     <None Include="..\bench\bench.nc"><Filter>Benchmarks</Filter></None>
+    <None Include="..\bench\bench_call.nc"><Filter>Benchmarks</Filter></None>
+    <None Include="..\bench\bench_call_check.nc"><Filter>Benchmarks</Filter></None>
+    <None Include="..\bench\bench_dense.nc"><Filter>Benchmarks</Filter></None>
+    <None Include="..\bench\bench_dense_check.nc"><Filter>Benchmarks</Filter></None>
+    <None Include="..\bench\check.nc"><Filter>Benchmarks</Filter></None>
+    <None Include="..\bench\mapbench.nc"><Filter>Benchmarks</Filter></None>
+    <None Include="..\bench\mapbench_check.nc"><Filter>Benchmarks</Filter></None>
   </ItemGroup>
 </Project>

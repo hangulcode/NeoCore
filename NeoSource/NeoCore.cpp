@@ -1,4 +1,5 @@
 ﻿#include "NeoCore.h"
+#include "NeoCoreModules.h"
 #include "NeoCoreCompiler.h"
 #include "NeoCoreHostRuntime.h"
 #include "NeoCoreHostBridge.h"
@@ -42,6 +43,7 @@ static Error TranslateError(const NeoScript::Error& backend, const std::string& 
 struct Program::Impl
 {
     StaticCompileResult checked;
+    ModuleBundle bundle;
     std::string sourceName;
     NeoScript::IRuntime* runtime = nullptr;
     NeoScript::ProgramHandle program;
@@ -92,6 +94,7 @@ struct Instance::Impl
     bool deferredCall = false;
     std::string deferredName;
     std::vector<Scalar> deferredArguments;
+    ExecutionLimits deferredLimits;
 
     ~Impl()
     {
@@ -107,7 +110,11 @@ struct Instance::Impl
     {
         NeoScript::Error backend;
         if (instance && NeoCoreBackend::ReadLastCallError(*runtime, instance, backend))
-            return TranslateError(backend, sourceName);
+        {
+            Error error = TranslateError(backend, sourceName);
+            module->bundle.Translate(error);
+            return error;
+        }
         return module->BackendError(fallback);
     }
     Result ReadResult(NeoScript::Invocation& call, const StaticFunctionSignature& signature, const std::string& name);
@@ -136,19 +143,19 @@ static Error TranslateError(const NeoScript::Error& backend, const std::string& 
 }
 
 std::unique_ptr<Program> Program::Compile(const std::string& source, Error& error,
-    const std::string& sourceName, bool debug)
+    const std::string& sourceName, bool debug, const CompileOptions& options)
 {
-    return CompileImpl(source, error, sourceName, debug, nullptr);
+    return CompileImpl(source, error, sourceName, debug, nullptr, options);
 }
 
 std::unique_ptr<Program> Program::Compile(const std::string& source, const HostBindings& bindings,
-    Error& error, const std::string& sourceName, bool debug)
+    Error& error, const std::string& sourceName, bool debug, const CompileOptions& options)
 {
-    return CompileImpl(source, error, sourceName, debug, &bindings);
+    return CompileImpl(source, error, sourceName, debug, &bindings, options);
 }
 
 std::unique_ptr<Program> Program::CompileImpl(const std::string& source, Error& error,
-    const std::string& sourceName, bool debug, const HostBindings* bindings)
+    const std::string& sourceName, bool debug, const HostBindings* bindings, const CompileOptions& options)
 {
     error = Error();
     std::shared_ptr<Impl> impl(new Impl());
@@ -158,15 +165,28 @@ std::unique_ptr<Program> Program::CompileImpl(const std::string& source, Error& 
         if (!bindings->Validate(error.message)) { error.sourceName = sourceName; return std::unique_ptr<Program>(); }
         impl->host.reset(new HostRuntime(*bindings));
     }
-    if (!CompileStaticSource(source, impl->checked, impl->host ? &impl->host->Schema() : nullptr))
+    std::vector<std::string> externalNames;
+    if (bindings)
+    {
+        const HostSchema& schema = bindings->Schema();
+        for (const auto& global : schema.Globals()) externalNames.push_back(global.name);
+        for (const auto& type : schema.Types().NamedTypes())
+            if (schema.Types().Get(type.second).kind == TypeKind::Native) externalNames.push_back(type.first);
+    }
+    if (!BundleModules(source, sourceName, options.moduleLoader, impl->bundle, error, externalNames))
+        return std::unique_ptr<Program>();
+    if (!CompileStaticSource(impl->bundle.source, impl->checked, impl->host ? &impl->host->Schema() : nullptr))
     {
         error.message = impl->checked.errorMessage;
         error.sourceName = sourceName;
         error.line = impl->checked.errorLine;
         error.column = impl->checked.errorColumn;
+        impl->bundle.Translate(error);
         return std::unique_ptr<Program>();
     }
-    impl->runtime = NeoScript::CreateRuntime();
+    NeoScript::RuntimeDesc runtimeDesc;
+    runtimeDesc.httpTransport = options.httpTransport;
+    impl->runtime = NeoScript::CreateRuntime(runtimeDesc);
     if (!impl->runtime)
     {
         error.message = "could not create NeoCore runtime";
@@ -190,6 +210,7 @@ std::unique_ptr<Program> Program::CompileImpl(const std::string& source, Error& 
     if (!impl->program || !compiled.error.ok())
     {
         error = TranslateError(compiled.error, sourceName);
+        impl->bundle.Translate(error);
         if (error.ok()) error = impl->BackendError("backend compilation failed");
         return std::unique_ptr<Program>();
     }
@@ -224,11 +245,11 @@ std::unique_ptr<Instance> Program::CreateInstance(Error& error)
     return result;
 }
 Result Program::Run() { return defaultInstance_->Run(); }
-Result Program::Call(const std::string& name, const std::vector<Scalar>& arguments)
+Result Program::Call(const std::string& name, const std::vector<Scalar>& arguments, const ExecutionLimits& limits)
 {
-    return defaultInstance_->Call(name, arguments);
+    return defaultInstance_->Call(name, arguments, limits);
 }
-Result Program::Resume(double deltaTime) { return defaultInstance_->Resume(deltaTime); }
+Result Program::Resume(double deltaTime, std::uint32_t budget) { return defaultInstance_->Resume(deltaTime, budget); }
 bool Program::IsSuspended() const { return defaultInstance_->IsSuspended(); }
 bool Program::SetHostObject(const std::string& name, ObjectHandle object, Error& error)
 {
@@ -287,9 +308,10 @@ static TypeId ScalarType(const TypeRegistry& types, Scalar::Kind kind)
     return InvalidType;
 }
 
-Result Instance::Call(const std::string& name, const std::vector<Scalar>& arguments)
+Result Instance::Call(const std::string& name, const std::vector<Scalar>& arguments, const ExecutionLimits& limits)
 {
     if (impl_->suspended) return Failure("instance has a suspended call; resume it before starting another call", impl_->sourceName);
+    if (limits.timeoutMs < -1) return Failure("call timeout must be -1 or nonnegative", impl_->sourceName);
     Result result;
     result.status = ExecutionStatus::Failed;
     result.error.sourceName = impl_->sourceName;
@@ -341,6 +363,7 @@ Result Instance::Call(const std::string& name, const std::vector<Scalar>& argume
         impl_->deferredCall = true;
         impl_->deferredName = name;
         impl_->deferredArguments = arguments;
+        impl_->deferredLimits = limits;
         return initialized;
     }
     NeoScript::Invocation call = impl_->runtime->Call(impl_->instance, name);
@@ -368,7 +391,7 @@ Result Instance::Call(const std::string& name, const std::vector<Scalar>& argume
         }
     }
     ExecutionScope executing(impl_->executing);
-    const NeoScript::RunStatus status = call.invoke();
+    const NeoScript::RunStatus status = call.timeout(limits.timeoutMs).budget(limits.instructionBudget).invoke();
     if (status == NeoScript::RunStatus::Suspended || status == NeoScript::RunStatus::Yielded)
     {
         impl_->suspended = true;
@@ -381,6 +404,7 @@ Result Instance::Call(const std::string& name, const std::vector<Scalar>& argume
     if (status != NeoScript::RunStatus::Completed)
     {
         result.error = TranslateError(call.error(), impl_->sourceName);
+        impl_->module->bundle.Translate(result.error);
         if (result.error.ok()) result.error = impl_->BackendError("function did not complete");
         return result;
     }
@@ -415,7 +439,7 @@ Result Instance::Impl::ReadResult(NeoScript::Invocation& call, const StaticFunct
 }
 
 
-Result Instance::Resume(double deltaTime)
+Result Instance::Resume(double deltaTime, std::uint32_t instructionBudget)
 {
     if (!std::isfinite(deltaTime) || deltaTime < 0.0 || deltaTime > (std::numeric_limits<float>::max)())
         return Failure("resume delta time must be finite and nonnegative", impl_->sourceName);
@@ -423,6 +447,7 @@ Result Instance::Resume(double deltaTime)
     if (!impl_->suspended) return Failure("instance has no suspended execution", impl_->sourceName);
     NeoScript::ResumeDesc desc;
     desc.deltaTime = static_cast<float>(deltaTime);
+    desc.instructionBudget = instructionBudget;
     ExecutionScope executing(impl_->executing);
     impl_->suspended = false;
     const NeoScript::RunStatus status = impl_->runtime->Resume(impl_->instance, desc);
@@ -454,7 +479,7 @@ Result Instance::Resume(double deltaTime)
         const std::string name = std::move(impl_->deferredName);
         std::vector<Scalar> arguments = std::move(impl_->deferredArguments);
         impl_->deferredCall = false;
-        if (result.ok()) return Call(name, arguments);
+        if (result.ok()) return Call(name, arguments, impl_->deferredLimits);
     }
     return result;
 }

@@ -96,3 +96,5 @@ crashlytics-build.properties
 # Importer settings live in NeoPluginImportSettings.cs instead.
 /Unity/com.neoscript.unity/Runtime/Plugins/
 /Unity/com.neoscript.unity/Runtime/Plugins.meta
+/Unity/com.neocore.unity/Runtime/Plugins/
+/Unity/com.neocore.unity/Runtime/Plugins.meta

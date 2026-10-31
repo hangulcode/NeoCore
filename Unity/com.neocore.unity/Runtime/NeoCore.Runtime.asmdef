@@ -1,0 +1,5 @@
+{
+  "name": "NeoCore.Runtime",
+  "rootNamespace": "NeoCore.Unity",
+  "autoReferenced": true
+}

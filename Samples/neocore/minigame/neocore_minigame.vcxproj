@@ -32,6 +32,7 @@
     <IntDir>$(ProjectDir)..\..\..\Build\Windows\obj\NeoCoreMiniGame\$(Platform)\$(Configuration)\</IntDir>
     <TargetName>neocore_minigame</TargetName>
     <NeoCoreSampleScript>$([System.String]::Copy('$(ProjectDir)').Replace('\', '/'))scripts/mover.nc</NeoCoreSampleScript>
+    <NeoCoreReplayScript>$([System.String]::Copy('$(ProjectDir)').Replace('\', '/'))scripts/replay.nc</NeoCoreReplayScript>
     <LinkIncremental>false</LinkIncremental>
     <LocalDebuggerCommandArguments>--verify</LocalDebuggerCommandArguments>
     <LocalDebuggerWorkingDirectory>$(ProjectDir)..\..\..\</LocalDebuggerWorkingDirectory>
@@ -48,7 +49,7 @@
       <DebugInformationFormat>ProgramDatabase</DebugInformationFormat>
       <AdditionalOptions>/utf-8 %(AdditionalOptions)</AdditionalOptions>
       <AdditionalIncludeDirectories>$(ProjectDir)..\..\..\NeoSource;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
-      <PreprocessorDefinitions>NEOSCRIPT_LEGACY_ARITHMETIC=0;NEOCORE_MINIGAME_SCRIPT=&quot;$(NeoCoreSampleScript)&quot;;WIN_PRJ;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <PreprocessorDefinitions>NEOSCRIPT_LEGACY_ARITHMETIC=0;NEOCORE_MINIGAME_SCRIPT=&quot;$(NeoCoreSampleScript)&quot;;NEOCORE_REPLAY_SCRIPT=&quot;$(NeoCoreReplayScript)&quot;;WIN_PRJ;%(PreprocessorDefinitions)</PreprocessorDefinitions>
     </ClCompile>
     <Link>
       <SubSystem>Console</SubSystem>
@@ -78,7 +79,10 @@
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClCompile Include="main.cpp" />
+    <ClCompile Include="replay.cpp" />
     <None Include="scripts\mover.nc" />
+    <None Include="scripts\replay.nc" />
+    <None Include="viewer.html" />
     <None Include="README.md" />
     <None Include="CMakeLists.txt" />
   </ItemGroup>
@@ -92,6 +96,7 @@
   <Import Project="..\..\..\BuildConfig\MsvcOverrideWarnings.props" />
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <Target Name="CopyNeoCoreNotices" AfterTargets="Build">
+    <Copy SourceFiles="$(ProjectDir)viewer.html" DestinationFolder="$(TargetDir)" SkipUnchangedFiles="true" />
     <Copy SourceFiles="$(ProjectDir)..\..\..\THIRD_PARTY_NOTICES.txt;$(ProjectDir)..\..\..\LICENSE" DestinationFolder="$(TargetDir)" SkipUnchangedFiles="true" />
   </Target>
 </Project>

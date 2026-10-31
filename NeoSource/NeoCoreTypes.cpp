@@ -28,6 +28,9 @@ TypeRegistry::TypeRegistry()
         if (type.kind != TypeKind::Invalid && type.kind != TypeKind::Null)
             names_.insert(std::make_pair(type.name, i));
     }
+    DeclareBuiltinObject("TimeSpan");
+    DeclareBuiltinObject("Stopwatch");
+    DeclareBuiltinObject("AsyncRequest");
 }
 
 TypeId TypeRegistry::LookupBuiltin(const std::string& name) const
@@ -113,6 +116,10 @@ TypeId TypeRegistry::Intern(TypeKind kind, const std::vector<TypeId>& arguments,
         break;
     case TypeKind::Struct:
     case TypeKind::Native:
+    case TypeKind::BuiltinObject:
+        break;
+    case TypeKind::Coroutine:
+        desc.element = arguments[0];
         break;
     default:
         return InvalidType;
@@ -201,6 +208,12 @@ TypeId TypeRegistry::DeclareNominal(TypeKind kind, const std::string& qualifiedN
     return id;
 }
 
+TypeId TypeRegistry::CoroutineOf(TypeId function)
+{
+    if (Get(function).kind != TypeKind::Function || Get(function).returnType != Void()) return InvalidType;
+    return Unary(TypeKind::Coroutine, function);
+}
+
 TypeId TypeRegistry::DeclareStruct(const std::string& qualifiedName)
 {
     return DeclareNominal(TypeKind::Struct, qualifiedName);
@@ -209,6 +222,11 @@ TypeId TypeRegistry::DeclareStruct(const std::string& qualifiedName)
 TypeId TypeRegistry::DeclareNative(const std::string& qualifiedName)
 {
     return DeclareNominal(TypeKind::Native, qualifiedName);
+}
+
+TypeId TypeRegistry::DeclareBuiltinObject(const std::string& qualifiedName)
+{
+    return DeclareNominal(TypeKind::BuiltinObject, qualifiedName);
 }
 
 bool TypeRegistry::ContainsStructValue(TypeId value, TypeId structure) const
@@ -335,7 +353,10 @@ std::string TypeRegistry::DisplayName(TypeId id) const
     }
     case TypeKind::Struct:
     case TypeKind::Native:
+    case TypeKind::BuiltinObject:
         return type.name;
+    case TypeKind::Coroutine:
+        return "coroutine<" + DisplayName(type.element) + ">";
     default:
         return "<invalid>";
     }

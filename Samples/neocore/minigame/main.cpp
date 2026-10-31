@@ -220,10 +220,15 @@ void Verify(const std::string& filename)
 }
 }
 
+int RunMotion(int argc, char** argv);
+
 int main(int argc, char** argv)
 {
     try
     {
+        for (int i = 1; i < argc; ++i)
+            if (std::string(argv[i]) == "--motion" || std::string(argv[i]) == "--record")
+                return RunMotion(argc, argv);
         std::string filename = NEOCORE_MINIGAME_SCRIPT;
         for (int i = 1; i < argc; ++i)
         {

@@ -1,0 +1,14 @@
+﻿string digits = "01234567890";
+foreach (string character in digits) print(character .. "_", "");
+print("");
+print("find / sub : " .. digits.sub(digits.find("23"), 4));
+string alphabet = "AbCdEfGhIjKlMnOpQrStUvWxYz";
+print("upper : " .. alphabet.upper());
+print("lower : " .. alphabet.lower());
+string padded = "  12345    ";
+print("trim    : {" .. padded.trim() .. "}");
+print("ltrim   : {" .. padded.ltrim() .. "}");
+print("rtrim   : {" .. padded.rtrim() .. "}");
+print("replace : {" .. padded.replace("23", "AB") .. "}");
+list<string> words = "this,is,string".split(",");
+foreach (string word in words) print(word);

@@ -153,22 +153,26 @@ implementation is not compiled into the default NeoCore library. Do not link the
 two backend profiles into one executable.
 
 The current frontend covers scalar and vector declarations, nominal structs and their fields,
-typed arrays and scalar lists/maps, named functions, forward and recursive calls,
-block scopes, conditions, loops, returns, and
-scalar intrinsics. The limited `math` and `system`
-imports expose only `math.sin`, `math.cos`, and `system.clock` in this milestone.
+typed arrays, homogeneous lists/maps/sets, nested collections, named functions,
+function values and closures, forward and recursive calls, block scopes, conditions,
+range loops, `foreach`, returns, and checked library calls. String, regex, UTC time,
+TimeSpan, Stopwatch, HTTP requests, and script coroutines have explicit signatures.
+Script modules are resolved and combined before static checking; they do not enter
+the inherited dynamic compiler directly.
 Explicit host schemas additionally expose nominal native objects, host globals,
 methods, and read/write properties with scalar/vector/native signatures. Members and
 argument types are resolved before backend compilation; see [HostBindings.md](HostBindings.md).
-Nullable scalar/string types can be declared and compared with null, but implicit
-nullable unwrapping is not implemented. For example, an `int?` cannot be added to
-an `int`, or passed to an `int` parameter, merely because it was compared with null.
+Nullable scalar, string, collection, and object locals can be refined by a local
+null guard. The non-null branch may use the underlying type. Reassignment invalidates
+the proof; globals, fields, and arbitrary expressions do not acquire such a proof.
+Unchecked nullable access remains a compilation error.
 
-Typed sets, nested collections, imported script modules, richer host
-signatures, closures, JSON, and richer coroutine scheduling are later milestones. Some types already
-have compiler-side descriptors; that alone does not make their syntax executable.
-The existing Unity package, LSP/DAP adapters, and legacy console have not been
-converted into NeoCore entry points.
+Compact arrays, richer host signatures, JSON decoding, and richer coroutine scheduling
+remain later milestones. Function values in script do not add retained callbacks
+to the public C++ host schema or scalar host-call API.
+The [typed C ABI and Unity package](../Unity/NeoCore/README.md) provide separate
+NeoCore scalar entry points. The inherited Unity package, LSP/DAP adapters, and
+legacy console remain separate backend integrations.
 
 Frontend diagnostics identify the original source line and column in every mode.
 The CLI omits debug metadata by default; use `neocore --debug --file source.nc` for
@@ -270,10 +274,11 @@ Use an explicit conversion when assigning a floating-point value to an integer.
 Nullable values require a supported explicit access mechanism before use as `T`;
 they are never silently treated as a non-null value.
 
-Only `import math;` and `import system;` are available as built-in module imports.
-The frontend recognizes numeric `math.sin`/`math.cos` and zero-argument `system.clock`
-with declared signatures. Other library functions, host members absent from the supplied schema, and
-imported script modules are rejected rather than delegated to dynamic resolution.
+`math`, `system`, and `coroutine` are built-in imports. Numeric math calls currently
+include `sin`, `cos`, `sqrt`, `abs`, `floor`, `ceil`, and `pow`; integer arguments
+widen to float. The checked library table explicitly lists every supported signature.
+Other backend library functions and host members absent from the supplied schema
+are rejected rather than delegated to unchecked dynamic resolution.
 
 Integer arithmetic retains the backend's 64-bit wrapping rules for addition,
 subtraction, multiplication, and negation. Integer division and remainder reject
@@ -284,8 +289,8 @@ unchecked native operations simply because source types are known.
 
 ## Control flow
 
-The initial control-flow forms are blocks, `if`/`else`, `while`, range `for`,
-`break`, `continue`, and `return`. Range iteration uses an explicit integer declaration:
+Control-flow forms are blocks, `if`/`else`, `while`, range `for`, `foreach`,
+`break`, `continue`, `return`, and `yield`. Range iteration uses an explicit integer declaration:
 
 ```cpp
 int total = 0;
@@ -326,7 +331,7 @@ initialization suspends during `Call`, the original function and argument values
 are retained. `Resume` finishes initialization and then executes that retained call
 without a retry. Callback reentry remains synchronous and targets the calling instance.
 
-Struct, collection, and native-object results are rejected before top-level initialization or the
+Struct, collection, function, coroutine, builtin-object, and native-object results are rejected before top-level initialization or the
 requested function executes; the current host adapter only marshals scalar values.
 
 The separate script-to-host direction uses `HostSchema` and `HostBindings` from
@@ -414,8 +419,10 @@ numeric conversion rules apply to each field. `Position()` and `Position p;` use
 recursive defaults when every field supports one: numeric zero, `false`, nullable
 scalar null, or a nested struct whose fields have defaults. A nonnullable string
 field requires the full constructor; no uninitialized string is introduced.
-Default field initializer expressions, methods, and collection fields are not part
-of this syntax. `const` struct declarations are also deferred.
+Collection and function fields are supported and require explicit constructor values.
+Default field initializer expressions, methods, and `const` struct declarations
+remain deferred. Copying a struct copies its nested struct values, while its
+collection fields keep their shared-container identities.
 
 Copying a struct in a declaration, assignment, by-value argument, constructor field,
 or return creates an independent value, including nested structs. By-value arguments
@@ -465,8 +472,8 @@ containing vector. Scalar results of component mutations reflect the stored
 float32 value; a postfix result preserves the previous component value.
 
 Vectors copy by value through declarations, assignment, script arguments/returns,
-and struct fields. A `Vector3&` can bind to a named vector or a struct vector field;
-component references and host-property references are rejected. Vector indexing
+and struct fields. Language references, including `Vector3&`, component references,
+and host-property references, are rejected. Vector indexing
 and whole-vector equality are deferred rather than delegated to untyped operations.
 See the executable
 [vector sample](../Samples/neocore/scripts/vectors.nc).
@@ -536,8 +543,8 @@ component writes read and update the selected vector after those evaluations.
 Compound operations and pre/post-increments preserve their stored/previous results.
 Array variables and elements cannot bind language references.
 
-String/struct/native-object elements, nested/nullable arrays, array literals,
-compact 32-bit arrays, collection fields in structs, and typed host array
+String/struct/native-object elements, nested arrays, array literals,
+compact 32-bit arrays, and typed host array
 marshaling are separate milestones. Unsupported element types and mismatched
 writes fail during type checking, including a float written to an integer array.
 The typed path emits dedicated storage instructions and compile-time write
@@ -550,13 +557,16 @@ and velocity Vector2 arrays and compares every step with scalar array references
 It uses small, exactly representable inputs and checks a fixed checksum without
 timing the workload.
 
-## Scalar lists and maps
+## Lists, maps, sets, and iteration
 
-The list/map subset is `list<T>` and `map<K, V>`. List elements and map
-values must be nonnullable `int`, `float`, `bool`, or `string`; map keys must be
-`int` or `string`. Collection variables require initializers. Nested collections,
-nullable collections/elements, collection fields in structs, and element references
-are not supported yet. Mutable collection types are invariant.
+The collection forms are `list<T>`, `map<K, V>`, and `set<T>`. Lists and map
+values can contain nonnullable scalar, vector, struct, collection, function, or
+object values. Map keys must be `int` or `string`; set elements are nonnullable
+`int`, `float`, `bool`, or `string`. Nested collections and collection fields in
+structs are supported. Nonnullable collection variables require initializers;
+`list<T>?`, `map<K,V>?`, `set<T>?`, and `array<T>?` can represent null. Nullable
+elements and language element references remain unsupported. Mutable collection
+types are invariant.
 
 ```cpp
 list<float> values = [1, 2.5];
@@ -580,22 +590,142 @@ They emit element reads, typed arithmetic, and ordinary writes without generic
 compound-arithmetic instructions or runtime numeric type dispatch. Receiver, index,
 and RHS evaluation retain their existing order, including prefix/postfix results.
 
-Maps currently start with `{}` and gain entries through `m[key] = value`. Direct
+Maps accept `{}` or typed key/value literals, and gain entries through `m[key] = value`. Direct
 `m[key]` reads have type `V?`; an absent key produces null. `m.get(key, fallback)`
 returns `V` and requires an explicit compatible fallback. The receiver, key, and
 fallback are evaluated left to right before lookup; fallback evaluation is eager,
 even for a present key. Null is not a valid stored value or a removal operation.
-Map removal is not exposed by this initial method subset.
+`m.remove(key)` explicitly removes an entry and returns whether it existed.
 
-The supported methods are list `len`/`resize`, map `len`/`get`, and string `len`.
-String length counts Unicode code points. A stored map key such as `"get"` or
-`"len"` does not shadow those statically resolved methods. Other inherited backend
-methods require explicit frontend support before they can be called.
+Lists support `len`, `resize`, `reserve`, `append(value[, index])`,
+`insert(index, value)`, `remove(index)`, `remove_swap(index)`, `pop`, `find`,
+`contains`, `clear`, `clone`, and `sort`. Removal and pop return the removed value;
+an invalid index or empty pop fails at runtime. Maps support `len`, `get`,
+`contains`, `remove`, `reserve`, `keys`, `values`, `clear`, `clone`, and `sort`.
+Keys and values produce typed lists. A stored key such as `"get"` or `"len"`
+does not shadow these statically resolved methods.
+
+`sort` takes `fn(T,T)->bool`, where T is the list element or map value type.
+Map sorting rearranges values among the existing keys, retaining inherited behavior.
+The comparator runs synchronously; suspension and time-limited native sort calls
+retain their runtime rejection rules. Struct comparators remain rejected until
+the native callback adapter can provide independent by-value arguments.
+
+List concatenation `a + b` and collection `clone` allocate a new outer container.
+Nested collections retain shared identities. Struct elements are independently
+copied by clone, concatenation, map values, and each added resize fill. Searching
+for a struct with `find`/`contains` is rejected because struct equality is undefined.
+
+After `import system;`, `set<T>()`, `set<T>(typedList)`, or `system.set(typedList)`
+construct a typed set. Sets support `len`, `add`, `remove`, `contains`, `values`,
+`clear`, and `clone`. Union `|`, intersection `&`, and difference `-` return new
+sets of the same type and leave the operands unchanged.
+
+`foreach (T value in collection)` iterates lists, arrays, or sets. Map iteration
+uses `foreach (K key, V value in map)`; use `map.values()` to iterate values alone.
+Iteration variable types must match exactly. Struct iteration variables are
+independent value copies. `foreach (string character in text)` produces one
+ordinary string per Unicode code point, suitable for subsequent string methods.
 
 Lists and maps retain reference semantics: assignments, by-value parameters, and
 returns share the same container. Element writes and list resizing are visible
 through aliases. Rebinding one collection variable does not rebind another variable
 that refers to the original container. This differs from independent struct values.
+
+## Function values and closures
+
+Every function value has a complete signature. Named functions can be assigned,
+passed, returned, and stored in typed collections. Anonymous functions use the
+same explicit parameter and return types:
+
+```cpp
+int Add(int a, int b) { return a + b; }
+fn(int,int)->int operation = Add;
+int result = operation(2, 3);
+
+fn()->int MakeCounter(int initial)
+{
+    int count = initial;
+    return fn()->int { count += 1; return count; };
+}
+fn()->int counter = MakeCounter(10);
+print(counter()); // 11
+print(counter()); // 12
+```
+
+Signatures are invariant; assignment and invocation check all parameter and return
+types. Struct arguments/results keep their value-copy rules. Every non-void
+anonymous function must return a compatible value on all paths.
+
+Closures snapshot enclosing locals at creation. Scalars, structs, and vectors
+are independent captured values, including nested struct fields and vectors
+whose outer locals use internal component-write cells. Captured values persist
+between invocations. Collections and native handles retain their usual shared
+identities; globals remain globals. Nested returned closures retain their captures
+after enclosing calls finish. Capture creation and named function references are
+conservatively included in global-initialization dependency checks.
+
+Lowering uses private factory helpers and the existing backend closure storage.
+Lambda numeric expressions still use checked typed IR; lambda returns currently
+use checked expressions with the transitional return path. Generated callback
+frames can appear in debug stacks. This is not a replacement of the complete
+backend function representation or public host callback API.
+
+## Strings, time, HTTP, and coroutines
+
+Strings expose `len`, `sub(start,count)`, `codepoint(index)`, `find`, `upper`,
+`lower`, `trim`, `ltrim`, `rtrim`, `replace`, `replaceAll`, and `split`.
+`split` produces `list<string>`. String lengths and substring positions count
+Unicode code points; inherited case-conversion and trimming behavior is unchanged.
+`regex_match(pattern[, ignoreCase])` returns bool,
+`regex_search(pattern[, ignoreCase])` returns `list<string>?`, and
+`regex_replace(pattern,replacement[, ignoreCase])` returns string. A successful
+search includes the complete match at index zero followed by captured groups;
+no match returns null and must be guarded. Regex character classes retain their
+inherited byte-oriented behavior.
+
+`system.time`, `time_ms`, `utc_date`, `utc_time_ms`, `utc_parts`, `utc_format_ms`,
+and `utc_parse_ms` have checked signatures. UTC parts are `map<string,int>`.
+`TimeSpan` and `Stopwatch` are nominal opaque library objects requiring
+initializers, normally `system.time_span(...)`, `time_span_ms`,
+`time_span_seconds`, or `system.stopwatch()`.
+TimeSpan exposes `total_milliseconds`, `total_seconds`, `parts`, `format`,
+`add`, `subtract`, and `compare`. Stopwatch exposes `elapsed`, `elapsed_ms`,
+`elapsed_us`, `elapsed_seconds`, `start`, `stop`, `reset`, `restart`, and
+`is_running`. TimeSpan arithmetic returns new spans; Stopwatch methods share
+the same watch through aliases. Checked signatures preserve the backend's
+overflow, format, date-range, and monotonic-clock runtime checks.
+
+`AsyncRequest request = system.async_create();` creates an HTTP request object;
+the inherited `aysnc_create` spelling is also accepted. `get(timeoutMs,url,callback)`
+and `post(timeoutMs,url,body,callback)` require `fn(bool,string)->void` callbacks.
+The other methods are `add_header(string,string)`, `wait()->bool`, and `close()->void`.
+The host supplies a transport through `CompileOptions.httpTransport`; the library
+does not make an untyped host member available. Callbacks execute on the owning
+script worker when completions are processed. Backend reentry, suspension, and
+error-unwinding rules still apply. General JSON decoding remains deferred.
+
+After `import coroutine;`, `coroutine<fn(int)->void>` describes a coroutine whose
+entry takes an int and returns void. `coroutine.create(function)` fixes that
+signature; `resume(handle,args...)` checks it on every call, `status(handle)`
+returns a string, and `close(handle)` closes the handle. Entry arguments are
+consumed at initial start; subsequent resumes supply the same checked signature.
+`yield;` suspends execution through the existing VM scheduler. Coroutine values
+are distinct from host-driven `Instance::Resume`; the public scalar host boundary
+does not marshal coroutine handles.
+
+## Script modules
+
+`import name;` and `import name as alias;` resolve `.nc` source through the host's
+`CompileOptions.moduleLoader`. A dependency initializes at its first import site,
+after preceding importer statements and before following ones. Repeated imports
+share the same module state within an instance. Only `public`
+members are visible across modules; imported `export` declarations do not expose
+new entry points to the outer host. Private module declarations are isolated by
+name rewriting. Self-imports, import cycles, inconsistent loader results, and
+untyped module contents are rejected. Diagnostics translate rewritten locations
+back to the source module. Runtime `system.load`/`pcall` is not exposed: module
+contents must pass the same static frontend as the root script.
 
 ## NeoCore benchmark programs
 
@@ -618,7 +748,7 @@ These rules are agreed targets, not a claim that the initial frontend implements
 
 ### Collections and storage widths
 
-Ordinary arrays, lists, maps, and future sets have fixed element/key/value types.
+Ordinary arrays, lists, maps, and sets have fixed element/key/value types.
 An `array<int>` stores 64-bit integers and an `array<float>` stores binary64 values.
 Mutable collections are invariant: an integer collection is not automatically a
 float collection merely because individual integers can convert to floats.
@@ -643,8 +773,8 @@ The current struct implementation has declared fields, nominal identity, and val
 assignment. Collections and future host objects retain reference semantics. Class
 inheritance, user-defined generics, and function overloading are deferred. Built-in
 collection type parameters do not imply support for arbitrary user generics.
-Closure/function values require complete parameter and return signatures; their
-surface syntax and capture representation will be specified before enabling them.
+Function values use the complete `fn(...)->T` signatures described above. Public
+host retention and marshaling of arbitrary function signatures remains deferred.
 
 ### Host integration
 
@@ -653,7 +783,7 @@ property permissions. Its remaining extensions include typed host value structs,
 collections, overload/default-argument metadata, and complete retained
 callback signatures. A portable schema/link ABI for offline compiled images is
 also deferred; current type and binding IDs belong to a schema snapshot.
-The same contract must eventually reach the C ABI and Unity. Object lifetime,
+The C ABI and Unity scalar bridge still need these richer contracts. Object lifetime,
 callback reentrancy, coroutine suspension, and error unwinding continue to apply.
 
 ## Remaining implementation stages
@@ -666,10 +796,12 @@ callback reentrancy, coroutine suspension, and error unwinding continue to apply
    analysis proves that the slot cannot own a reference.
 3. Validate loaded bytecode against type/signature metadata and compare each conversion
    stage with a preserved baseline build and matching results.
-4. Expand the frontend to typed sets, compact arrays, nested collections, script modules,
-   richer host signatures, and function values.
-5. Connect JSON, richer coroutine APIs, the C ABI, Unity, and editor tooling to those types,
-   and migrate the remaining backend samples and documentation.
+4. Expand compact arrays and richer host signatures, including retained host
+   callbacks and typed aggregate marshaling.
+5. Add JSON and richer coroutine APIs, expand the typed C ABI/Unity scalar bridge
+   to aggregates and retained callbacks, and migrate backend documentation and
+   editor tooling. Public samples now have typed counterparts; the inherited
+   dynamic regression corpus intentionally remains separate.
 
 The current backend still stores dynamic tags and performs generic work outside the
 implemented typed operations. An early numeric-VM snapshot measured on 2026-10-31

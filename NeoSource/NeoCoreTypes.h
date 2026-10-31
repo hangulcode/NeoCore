@@ -36,7 +36,9 @@ enum class TypeKind : std::uint8_t
     Set,
     Function,
     Struct,
-    Native
+    Native,
+    BuiltinObject,
+    Coroutine
 };
 
 struct StructField
@@ -79,6 +81,7 @@ public:
 
     TypeId LookupBuiltin(const std::string& name) const;
     TypeId LookupNamed(const std::string& qualifiedName) const;
+    const std::map<std::string, TypeId>& NamedTypes() const { return names_; }
     const TypeDesc& Get(TypeId id) const { return id < types_.size() ? types_[id] : types_.front(); }
     std::string DisplayName(TypeId id) const;
 
@@ -99,10 +102,12 @@ public:
     TypeId MapOf(TypeId key, TypeId value);
     TypeId SetOf(TypeId element);
     TypeId FunctionOf(TypeId returnType, const std::vector<TypeId>& parameters);
+    TypeId CoroutineOf(TypeId function);
 
     // 구조체·호스트 객체의 이름을 먼저 등록한다. 구조체의 필드는 한 번만 확정한다.
     TypeId DeclareStruct(const std::string& qualifiedName);
     TypeId DeclareNative(const std::string& qualifiedName);
+    TypeId DeclareBuiltinObject(const std::string& qualifiedName);
     bool DefineStructFields(TypeId structure, const std::vector<StructField>& fields, std::string* error = nullptr);
     // 성공한 정의의 필드 주소·순서는 레지스트리 수명 동안 유지된다. 실패한 조회는 인덱스도 무효화한다.
     const StructField* FindStructField(TypeId structure, const std::string& name, std::size_t* index = nullptr) const;

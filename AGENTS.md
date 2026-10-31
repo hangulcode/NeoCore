@@ -28,7 +28,7 @@ Read [StaticTyping.md](docs/StaticTyping.md) before changing the language. The i
 - Keep evaluation order, overflow/division behavior, value/reference semantics, and host error unwinding unless a language change is explicitly approved.
 - Numeric expressions, scalar writes, script calls and returns emit from typed IR. Struct scalar targets use flat raw field paths; resolve writes after the RHS and preserve expression results. Calls carry exact signatures, ordered arguments and explicit value copies. Host/builtin calls, aggregate intrinsics, declarations/control flow and unmigrated selectors retain ordered transitional paths. Unsupported features must fail explicitly.
 - Preserve typed operand provenance; never infer a payload type from a variable name or debug line. Slot reuse still requires destination reference cleanup. Typed op metadata is centralized in `NeoVMTypedOps.h`; default builds exclude generic arithmetic/negation/read-arithmetic instructions, and `NOP_LOG_NOT` consumes checked bools.
-- Structs, vector arithmetic, typed arrays, scalar lists/maps, and scalar/vector/native host schemas are checked today; compact arrays/sets, nested collections, imports, closures, and tooling remain separate milestones. Do not claim the static VM is finished.
+- Structs, vectors, typed arrays, nested collections/sets, modules, function values/closures, coroutine signatures, and scalar/vector/native host schemas are checked today; compact arrays, richer host signatures and tooling remain separate milestones. Do not claim the static VM is finished.
 - Vector components are float32; scalar reads are float64. Quaternion constructors/host values use w,x,y,z. Component writes preserve value semantics and stored-value results; host writes resolve the saved receiver ID separately for getter and setter.
 - No pointers or `T&` declarations, parameters, or returns. Structs/vectors copy by value; functions return modified values for explicit caller assignment. Struct clone helpers preserve nested copies; fields have no alias cells or in-place assignment helper. Internal boxed vector locals serve component writes only. Collections/native IDs keep their existing shared identity semantics.
 - Keep the core, public API, C ABI, console, and mini game C++11-compatible. Do not introduce C++14+ syntax or library dependencies. Vendored PCRE2 requires C99.
@@ -44,7 +44,7 @@ ctest --test-dir Build/neocore -C Release --output-on-failure
 
 - Check accepted/rejected typed programs, lowering semantics, and `NeoCore.h`. NeoCore links `neocore_backend` with `NEOSCRIPT_LEGACY_ARITHMETIC=0`; inherited `.ns` regressions link `neoscript` with `=1`. Keep both suites passing, but never link the two profiles into one executable.
 - The inherited `host_argument_buffer_regression` zero-allocation assertions fail with MSVC Debug's STL iterator proxies; report this separately from functional checks. Release verifies the zero-allocation expectation.
-- `Samples/bench/check.nc` checks the eight workloads without timers; `bench.nc` is the timed suite. Its explicit map fallback and string conversions preserve results, not identical bytecode.
+- `docs/SampleMigration.md` maps converted samples; `Samples/bench/check.nc` checks the eight workloads without timers; `bench.nc` is the timed suite. Its explicit map fallback and string conversions preserve results, not identical bytecode.
 - The CLI defaults to non-debug execution. Use `neocore --debug --file source.nc` for runtime source locations; keep timed benchmarks in non-debug mode.
 - Native Windows NeoCore: open root `NeoCore.sln` (also available through `Samples/console/console.sln`). For the library alone, open `Windows/NeoCore.sln`. The `.nc` runner is `Build/Windows/bin/x64/Release/neocore.exe`; `Windows/NeoCore.vcxproj` builds `NeoCore32/64[-d].lib`.
 - Legacy Windows console: build `Samples/console/console.vcxproj` directly, Release x64. Run it from `Samples/console`, because tests resolve `../../TestScript` relative to the working directory. Keep its `.ns` runner separate from the NeoCore startup project.
@@ -56,9 +56,9 @@ ctest --test-dir Build/neocore -C Release --output-on-failure
 
 ## Inherited host integrations
 
-- The legacy C ABI is in `Unity/Native`; C# bindings are in `Unity/com.neoscript.unity`. They are not yet the typed NeoCore host surface.
+- Typed scalar C ABI/Unity live in `Unity/NeoCore` and `Unity/com.neocore.unity`; legacy counterparts stay in `Unity/Native` and `Unity/com.neoscript.unity`.
 - Keep the C ABI out of `NeoSource`: source-based hosts compile `NeoSource/*.cpp` wholesale.
-- Plugin binaries are not committed. Build with `pwsh Unity/build_windows.ps1` before opening Unity.
+- Plugin binaries are not committed. Build the typed package with `pwsh Unity/NeoCore/build_windows.ps1`; the legacy build remains `Unity/build_windows.ps1`.
 - Integration checks include `neoscript_c_abi_smoke` compiled as C and Unity smoke, PlayMode, and reload-cycle suites. See `docs/Unity.md`.
 - Host members use `HostSchema` plus `HostBindings`; follow [HostBindings.md](docs/HostBindings.md). Resolvers validate typed IDs without side effects; borrowed pointers cannot survive reentry or external deletion. Backend dynamic dispatch alone is not a static signature.
 

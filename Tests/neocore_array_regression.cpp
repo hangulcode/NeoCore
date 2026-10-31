@@ -198,7 +198,7 @@ void Rejections(bool debug)
 {
     const char* sources[] = {
         "array<int> a;", "array<string> a=array<string>();", "array<array<int>> a=array<array<int>>();",
-        "array<int?> a=array<int?>();", "array<int>? a=null;",
+        "array<int?> a=array<int?>();", "array<int>? a=null;int value=a[0];",
         "array<int> a=array<int>(1.5);", "array<int> a=array<int>(true);",
         "array<int> a=array<int>(1,1.5);", "array<float> a=array<float>(1,true);",
         "array<bool> a=array<bool>(1,1);", "array<int> a=array<int>(1,2,3);",

@@ -1,10 +1,18 @@
 ﻿# Unity
 
-Everything needed to run NeoScript from Unity. The full write-up is in
+The typed NeoCore `.nc` integration is in [NeoCore/](NeoCore/README.md), with its
+own [UPM package and Basic sample](com.neocore.unity/README.md). Start with
+`pwsh Unity/NeoCore/build_windows.ps1`, then import that package's Basic sample.
+
+The remaining instructions below describe the inherited NeoScript `.ns`
+integration. Its C ABI, package, and regression tests remain separate from the
+typed plugin. The full legacy write-up is in
 **[../docs/Unity.md](../docs/Unity.md)**.
 
 | Path | Contents |
 | :--- | :--- |
+| `NeoCore/` | Typed scalar C ABI, native build, C smoke and Unity validation |
+| `com.neocore.unity/` | Typed `.nc` UPM package and Basic Transform sample |
 | `Native/` | The C ABI (`NeoScriptC.h` / `.cpp`) — the C++ facade flattened to plain C |
 | `com.neoscript.unity/` | UPM package: C# binding, editor support, tests, sample |
 | `build_windows.ps1` | `NeoScript.dll` for the editor and the Win64 player |

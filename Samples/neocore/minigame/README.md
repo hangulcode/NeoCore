@@ -44,6 +44,45 @@ Successful execution prints:
 NeoCore minigame: all checks passed (1 program, 3 instances, frame/event/sleep/ID lifetime)
 ```
 
+## Original motion and offline replay
+
+The second mode ports the inherited two-object motion sample to
+[scripts/replay.nc](scripts/replay.nc). It runs 120 fixed 1/60-second simulation
+steps without timers. Red and Blue share one checked program and keep separate
+origins, elapsed time, speeds, update counters, and function values.
+
+```powershell
+Build/neocore/bin/Release/neocore_minigame.exe --motion --verify --record Build/neocore/bin/Release/scene-data.js
+```
+
+Open `Build/neocore/bin/Release/viewer.html` to play, pause, or scrub the 121
+recorded frames, including the initial state. Both CMake and the native Windows
+project copy the offline viewer beside the executable. The recording uses the
+inherited viewer format, `window.neoScene`, with `fps: 60` and two Vector3 positions
+per frame. The browser replays recorded native positions; it does not execute
+NeoCore. Recordings are generated artifacts and are not committed.
+
+`--record` also selects motion mode. `--motion --file path/to/replay.nc` selects a
+different typed script. Omit `--verify` after intentionally changing its motion.
+Verification compares every frame with an independent C++ scalar calculation,
+checks both update counters and four log messages, and checks the original final
+positions. It prints `NeoCore motion: all checks passed` on success.
+
+The original dynamic host retained a script `FunctionHandle` in C++.
+The typed adapter instead retains `fn(float)->void` inside each script instance.
+`GameObject.AddEvent("OnUpdate", 1)` registers a checked event name and integer ID;
+the host calls exported `OnEvent(int eventId, float dt)`, which invokes that
+instance's function value. `UpdateCount()` exposes the counter through the scalar
+host API. This preserves callback-driven movement and per-instance ownership
+without claiming native function-value marshaling. The host validates object IDs,
+rejects nonfinite position writes, and applies an instruction budget to each update.
+
+Run both mini game checks with:
+
+```sh
+ctest --test-dir Build/neocore -C Release -R '^neocore_minigame' --output-on-failure
+```
+
 ## One program, several instances
 
 [main.cpp](main.cpp) declares `GameObject` and `Services` in a `HostSchema`, then
