@@ -1385,7 +1385,7 @@ public:
 		{
 			static const char* keywords[] = {
 				"int", "float", "bool", "string", "void", "struct", "fn", "list", "map", "array", "array32", "set", "Vector2", "Vector3", "Vector4", "Quaternion",
-                "TimeSpan", "Stopwatch", "AsyncRequest", "export", "if", "else", "while", "for", "foreach", "in", "continue", "break", "return",
+                "TimeSpan", "Stopwatch", "AsyncRequest", "export", "if", "else", "switch", "case", "default", "while", "for", "foreach", "in", "continue", "break", "return",
 				"true", "false", "null", "import", "public", "const", "yield", "sleep"
 			};
 			for (const char* keyword : keywords)

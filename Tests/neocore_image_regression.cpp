@@ -61,7 +61,8 @@ void RoundTrip(bool debug)
         "export int Check() { fn(int)->int twice = fn(int x)->int { return x * 2; }; return twice(values[0]) + toint(point.x + point.y); }\n"
         "export int Wait(int x) { sleep(0); return x + count; }\n"
         "export int Broken() { return child.Broken(); }\n"
-        "export string Echo(string text) { return text; }\n", error, "image.nc", debug, options);
+        "export string Echo(string text) { return text; }\n"
+        "export int Pick(int state) { switch (state) { case 1, 2: return 20; case 3: return 30; default: return 90; } }\n", error, "image.nc", debug, options);
     Require(original && error.ok(), "compile typed image fixture: " + error.message);
     Require(moduleLoads == 1, "source imports resolved once before saving");
     Int(original->Call("Step", {NeoCore::Scalar::Int(1)}), 15, "original program executes");
@@ -78,6 +79,9 @@ void RoundTrip(bool debug)
     Require(loaded && error.ok(), "load typed image: " + error.message);
     Require(moduleLoads == 1, "load bypasses source/module compilation");
     Int(loaded->Call("Check"), 8, "struct, collection and function type metadata survives");
+    Int(loaded->Call("Pick", {NeoCore::Scalar::Int(2)}), 20, "switch jump table survives image reload");
+    Int(loaded->Call("Pick", {NeoCore::Scalar::Int(3)}), 30, "switch table second entry after reload");
+    Int(loaded->Call("Pick", {NeoCore::Scalar::Int(7)}), 90, "switch default after reload");
     Int(loaded->Call("Step", {NeoCore::Scalar::Int(2)}), 16, "loaded image initializes fresh globals");
     Require(!loaded->Call("Step", {NeoCore::Scalar::String("wrong")}).ok(), "loaded signature rejects invalid argument");
     Int(loaded->Call("Step", {NeoCore::Scalar::Int(0)}), 16, "rejected image call has no script effects");

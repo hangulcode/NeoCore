@@ -57,7 +57,27 @@ int main()
         Expect("export int Probe(){list<int> a=[3,1,2];a.sort(fn(int x,int y)->bool{return x<y;});return a[0]*100+a[1]*10+a[2];}", 123, "typed sort comparator", debug);
         Expect("import coroutine;int total=0;void Task(int x){total+=x;yield;total+=2;yield;total+=3;}export int Probe(){coroutine<fn(int)->void> c=coroutine.create(Task);coroutine.resume(c,4);int first=total;coroutine.resume(c,4);coroutine.resume(c,4);return first*10+total;}", 49, "typed coroutine suspension", debug);
         Expect("import system;export int Probe(){TimeSpan a=system.time_span_ms(5);TimeSpan b=a.add(system.time_span_ms(7));return b.total_milliseconds();}", 12, "opaque builtin methods", debug);
+        Expect("const int Idle=0;const int Moving=Idle+1;int Pick(int state){switch(state){case Idle:return 1;case Moving,2:return 2;case -1:return 3;default:return 9;}}export int Probe(){return Pick(0)*1000+Pick(2)*100+Pick(-1)*10+Pick(7);}", 1239, "int switch with const labels and default", debug);
+        Expect("int Code(string command){int code=0;switch(command){case \"start\",\"resume\":code=1;break;case \"stop\":code=2;break;default:code=9;}return code;}export int Probe(){return Code(\"resume\")*100+Code(\"stop\")*10+Code(\"x\");}", 129, "string switch dispatch", debug);
+        Expect("export int Probe(){int total=0;for(int i in 0,6){switch(i%3){case 0:continue;case 1:total+=10;break;default:int local=i*100;total+=local;}total+=1;}return total;}", 724, "switch break and continue inside a loop", debug);
+        Expect("export int Probe(){int x=5;int seen=0;switch(x){case 1:seen=1;break;case 2:seen=2;break;}return seen;}", 0, "unmatched switch without default skips", debug);
+        Expect("export int Probe(){list<int>? a=[4];int result=0;if(a!=null){switch(a[0]){case 4:a=null;break;default:result=a[0];}}return result;}", 0, "switch clause assignment invalidates nullable proof", debug);
     }
+    Reject("float f=1.0;switch(f){case 1:print(1);}", "float switch selector");
+    Reject("bool b=true;switch(b){case true:print(1);}", "bool switch selector");
+    Reject("string s=\"a\";switch(s){case 1:print(1);}", "int label on string selector");
+    Reject("int x=1;switch(x){case 1:print(1);case 1:print(2);}", "duplicate case literal");
+    Reject("const int A=2;int x=1;switch(x){case A:print(1);case 1+1:print(2);}", "duplicate case through constants");
+    Reject("int x=1;switch(x){case \"a\":print(1);}", "case label type mismatch");
+    Reject("int x=1;switch(x){case 1:print(1);default:print(2);default:print(3);}", "duplicate default");
+    Reject("int x=1;switch(x){case 1:case 2:print(1);}", "empty switch clause");
+    Reject("int x=1;int y=2;switch(x){case y:print(1);}", "non-constant case label");
+    Reject("int? x=1;switch(x){case 1:print(1);}", "nullable switch selector");
+    Reject("case 1:print(1);", "case outside switch");
+    Reject("int F(int x){switch(x){case 1:return 1;default:break;}}", "switch break path must still return");
+    Reject("int x=1;switch(x){case 1:continue;}", "continue needs a loop even inside switch");
+    Reject("int x=1;switch(x){case 1:int local=1;}print(local);", "switch clause scope");
+    Reject("list<int>? a=[4];if(a!=null){switch(a[0]){case 4:a=null;break;default:break;}print(a[0]);}", "nullable proof does not survive switch assignment");
     Reject("int F(int x){return x;}fn(string)->int f=F;", "incompatible function assignment");
     Reject("int F(int x){return x;}fn(int)->int f=F;f(\"wrong\");", "indirect argument type");
     Reject("fn()->int f=fn()->int{};", "missing lambda return");

@@ -54,6 +54,19 @@
       "}"
     ]
   },
+  "Switch": {
+    "prefix": "switch",
+    "body": [
+      "switch (${1:value})",
+      "{",
+      "case ${2:0}:",
+      "\t$0",
+      "\tbreak;",
+      "default:",
+      "\tbreak;",
+      "}"
+    ]
+  },
   "Import": {
     "prefix": "import",
     "body": "import ${1:system};"

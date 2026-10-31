@@ -439,7 +439,7 @@ struct Parameter
     Token name;
 };
 
-enum class StatementKind { Empty, Block, Declaration, Function, Expression, If, While, For, Return, Break, Continue, Import, Struct, Foreach, Yield };
+enum class StatementKind { Empty, Block, Declaration, Function, Expression, If, While, For, Return, Break, Continue, Import, Struct, Foreach, Yield, Switch, Case };
 struct Statement
 {
     StatementKind kind;
@@ -448,6 +448,8 @@ struct Statement
     TypeSyntax declared;
     std::size_t end = 0;
     bool isPublic = false, isExported = false, isConst = false;
+    // switch 의 default 절이다. case 절은 expressions 에 상수 레이블을 둔다.
+    bool isDefault = false;
     std::vector<Parameter> parameters;
     std::vector<std::unique_ptr<Expr>> expressions;
     std::vector<std::unique_ptr<Statement>> children;
@@ -658,7 +660,37 @@ private:
             if (!types_.DefineStructFields(s->declared.type, fields, &error)) Fail(s->name, error);
             return s;
         }
-        if (At("class") || At("switch")) Fail(at, "this statement is not supported by this compiler stage");
+        if (At("class")) Fail(at, "this statement is not supported by this compiler stage");
+        if (At("case") || At("default")) Fail(at, "'case' and 'default' are only allowed inside a switch");
+        if (Accept("switch"))
+        {
+            // 레거시 switch 와 같은 문법이다. 절 본문은 다음 case/default/'}' 까지이며 fallthrough 는 없다.
+            std::unique_ptr<Statement> s(new Statement(StatementKind::Switch, at));
+            Expect("("); s->expressions.push_back(ParseExpression()); Expect(")");
+            Expect("{");
+            while (!At("}"))
+            {
+                const Token label = Peek();
+                if (label.kind == TokenKind::End) Fail(label, "expected '}'");
+                std::unique_ptr<Statement> clause(new Statement(StatementKind::Case, label));
+                if (Accept("case"))
+                {
+                    do clause->expressions.push_back(ParseExpression()); while (Accept(","));
+                }
+                else if (Accept("default")) clause->isDefault = true;
+                else Fail(label, "expected 'case' or 'default' in switch");
+                clause->end = Expect(":").end;
+                while (!At("case") && !At("default") && !At("}"))
+                {
+                    if (Peek().kind == TokenKind::End) Fail(Peek(), "expected '}'");
+                    clause->children.push_back(ParseStatement(false));
+                    clause->end = clause->children.back()->end;
+                }
+                s->children.push_back(std::move(clause));
+            }
+            s->end = Take().end;
+            return s;
+        }
         if (Accept("import"))
         {
             if (!topLevel) Fail(at, "import is only allowed at file scope");
@@ -1090,6 +1122,8 @@ private:
     std::vector<Edit> edits_;
     TypeId returnType_ = InvalidType;
     int loopDepth_ = 0;
+    // break 는 switch 도 탈출하지만 continue 는 바깥 반복문에만 해당한다.
+    int switchDepth_ = 0;
     bool checkingConstant_ = false;
     const std::string internalPrefix_ = InternalSymbolPrefix();
     bool resizeHelper_ = false, getHelper_ = false;
@@ -2071,10 +2105,12 @@ private:
             const TypeId savedReturn = returnType_;
             const std::string savedFunction = currentFunction_;
             const int savedLoop = loopDepth_;
+            const int savedSwitch = switchDepth_;
             const std::set<Symbol*> savedNonNull = nonNullLocals_;
             currentFunction_ = expression.callName;
             returnType_ = function.declared.type;
             loopDepth_ = 0;
+            switchDepth_ = 0;
             nonNullLocals_.clear();
             ++functionDepth_;
             expression.fieldIndex = static_cast<std::size_t>(functionDepth_);
@@ -2094,6 +2130,7 @@ private:
             returnType_ = savedReturn;
             currentFunction_ = savedFunction;
             loopDepth_ = savedLoop;
+            switchDepth_ = savedSwitch;
             nonNullLocals_ = savedNonNull;
             return;
         }
@@ -2253,6 +2290,152 @@ private:
             return;
         }
         }
+    }
+
+    struct CaseKey
+    {
+        int kind = 0; // 0 int, 1 bool, 2 string
+        std::int64_t integer = 0;
+        bool boolean = false;
+        std::string text;
+        bool operator==(const CaseKey& other) const
+        {
+            if (kind != other.kind) return false;
+            return kind == 0 ? integer == other.integer : kind == 1 ? boolean == other.boolean : text == other.text;
+        }
+    };
+
+    // 중복 case 검사를 위한 프런트엔드 상수 평가다. const 초기화식에 허용되는 연산만 다루고,
+    // 여기서 평가하지 못한 레이블은 백엔드의 상수 평가와 중복 검사가 그대로 처리한다.
+    bool EvaluateCaseKey(const Expr& expression, CaseKey& out, int depth) const
+    {
+        if (depth > 64) return false;
+        switch (expression.kind)
+        {
+        case ExprKind::Literal:
+            if (expression.token.kind == TokenKind::Integer) { out.kind = 0; out.integer = expression.integerValue; return true; }
+            if (expression.token.kind == TokenKind::String) { out.kind = 2; out.text = expression.token.text; return true; }
+            if (expression.op == "true" || expression.op == "false") { out.kind = 1; out.boolean = expression.op == "true"; return true; }
+            return false;
+        case ExprKind::Name:
+            return expression.symbol && expression.symbol->constant && expression.symbol->declaration
+                && !expression.symbol->declaration->expressions.empty()
+                && EvaluateCaseKey(*expression.symbol->declaration->expressions[0], out, depth + 1);
+        case ExprKind::Unary:
+        {
+            CaseKey value;
+            if (!EvaluateCaseKey(*expression.children[0], value, depth + 1) || value.kind != 0) return false;
+            const std::uint64_t bits = static_cast<std::uint64_t>(value.integer);
+            std::uint64_t result;
+            if (expression.op == "-") result = 0u - bits;
+            else if (expression.op == "+") result = bits;
+            else if (expression.op == "~") result = ~bits;
+            else return false;
+            out.kind = 0; out.integer = static_cast<std::int64_t>(result);
+            return true;
+        }
+        case ExprKind::Binary:
+        {
+            CaseKey left, right;
+            if (!EvaluateCaseKey(*expression.children[0], left, depth + 1) || left.kind != 0) return false;
+            if (!EvaluateCaseKey(*expression.children[1], right, depth + 1) || right.kind != 0) return false;
+            const std::uint64_t a = static_cast<std::uint64_t>(left.integer), b = static_cast<std::uint64_t>(right.integer);
+            std::uint64_t result;
+            const std::string& op = expression.op;
+            if (op == "+") result = a + b;
+            else if (op == "-") result = a - b;
+            else if (op == "*") result = a * b;
+            else if (op == "/" || op == "%")
+            {
+                if (right.integer == 0 || (left.integer == (std::numeric_limits<std::int64_t>::min)() && right.integer == -1)) return false;
+                result = static_cast<std::uint64_t>(op == "/" ? left.integer / right.integer : left.integer % right.integer);
+            }
+            else if (op == "&") result = a & b;
+            else if (op == "|") result = a | b;
+            else if (op == "^") result = a ^ b;
+            else return false;
+            out.kind = 0; out.integer = static_cast<std::int64_t>(result);
+            return true;
+        }
+        default:
+            return false;
+        }
+    }
+
+    // 레거시 switch 와 같은 테이블 디스패치다. 선택식은 int/string 만 허용하고 bool 은 if 로 쓰게 한다.
+    // 레이블은 선택식과 같은 타입의 컴파일 상수이며 타입이 다르면 컴파일 오류다.
+    // fallthrough 없음, break 는 switch 만 탈출하고 continue 는 바깥 반복문으로 전달된다.
+    int CheckSwitch(Statement& statement)
+    {
+        Expr& selector = *statement.expressions[0];
+        CheckExpr(selector);
+        const TypeId key = selector.type;
+        if (key == types_.Float()) Fail(selector.token, "float is not allowed as a switch value because exact comparison is unreliable; use int or string");
+        if (key != types_.Int() && key != types_.String())
+            Fail(selector.token, "switch requires an int or string value, not '" + types_.DisplayName(key) + "'");
+        const std::set<Symbol*> before = nonNullLocals_;
+        std::set<Symbol*> after;
+        bool reachesEnd = false, hasDefault = false;
+        std::vector<CaseKey> seen;
+        int flow = 0;
+        ++switchDepth_;
+        for (const auto& child : statement.children)
+        {
+            Statement& clause = *child;
+            if (clause.isDefault)
+            {
+                if (hasDefault) Fail(clause.token, "'default' appears more than once in switch");
+                hasDefault = true;
+            }
+            const bool savedConstant = checkingConstant_;
+            checkingConstant_ = true;
+            for (const auto& label : clause.expressions)
+            {
+                CheckExpr(*label);
+                if (!label->constant) Fail(label->token, "case value must be a compile-time constant");
+                if (label->type != key)
+                    Fail(label->token, "case value type '" + types_.DisplayName(label->type) + "' does not match switch value type '" + types_.DisplayName(key) + "'");
+                CaseKey value;
+                if (EvaluateCaseKey(*label, value, 0))
+                {
+                    for (std::size_t i = 0; i < seen.size(); ++i)
+                        if (seen[i] == value) Fail(label->token, "duplicate case value in switch");
+                    seen.push_back(value);
+                }
+                roots_.push_back(label.get());
+            }
+            checkingConstant_ = savedConstant;
+            // fallthrough 가 없어 빈 본문은 조용히 아무 일도 하지 않는 함정이 된다. 의도를 명시하게 한다.
+            if (clause.children.empty()) Fail(clause.token, "a switch clause needs a body; combine labels as 'case a, b:' or write ';' for no action");
+            nonNullLocals_ = before;
+            scopes_.push_back(std::map<std::string, Symbol*>());
+            int body = FallsThrough;
+            for (const auto& inner : clause.children)
+            {
+                const int next = CheckStatement(*inner);
+                if (body & FallsThrough) body = (body & ~FallsThrough) | next;
+            }
+            scopes_.pop_back();
+            if (body & (FallsThrough | Breaks))
+            {
+                // 절의 끝과 break 는 모두 switch 다음으로 이어진다. 널 아님 증명은 모든 경로의 교집합만 남긴다.
+                if (!reachesEnd) after = nonNullLocals_;
+                else for (auto it = after.begin(); it != after.end();) if (!nonNullLocals_.count(*it)) it = after.erase(it); else ++it;
+                reachesEnd = true;
+                flow |= FallsThrough;
+            }
+            flow |= body & (Returns | Continues);
+        }
+        --switchDepth_;
+        if (!hasDefault)
+        {
+            if (!reachesEnd) after = before;
+            else for (auto it = after.begin(); it != after.end();) if (!before.count(*it)) it = after.erase(it); else ++it;
+            reachesEnd = true;
+            flow |= FallsThrough;
+        }
+        nonNullLocals_ = reachesEnd ? after : before;
+        return flow;
     }
 
     int ScopedStatement(Statement& statement)
@@ -2462,8 +2645,13 @@ private:
             if (returnType_ == InvalidType) Fail(statement.token, "yield is only allowed in a function");
             nonNullLocals_.clear();
             return FallsThrough;
+        case StatementKind::Switch:
+            return CheckSwitch(statement);
+        case StatementKind::Case:
+            Fail(statement.token, "'case' and 'default' are only allowed inside a switch");
+            return FallsThrough;
         case StatementKind::Break:
-            if (!loopDepth_) Fail(statement.token, "break is only allowed in a loop");
+            if (!loopDepth_ && !switchDepth_) Fail(statement.token, "break is only allowed in a loop or switch");
             return Breaks;
         case StatementKind::Continue:
             if (!loopDepth_) Fail(statement.token, "continue is only allowed in a loop");

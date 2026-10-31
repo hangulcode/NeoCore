@@ -71,6 +71,24 @@ Function types include every parameter and the return type. Closures capture
 values. Retained host callbacks use the same checked signatures; instance-owned
 closures cannot execute in another instance or after their owner is reset.
 
+`switch` dispatches on an `int` or `string` value through a jump table; `bool` and `float` selectors are rejected.
+Case labels are compile-time constants of the same type, several labels share one
+clause with commas, and there is no fallthrough between clauses:
+
+```cpp
+switch (command)
+{
+case "start", "resume":
+    Run();
+    break;
+case "stop":
+    Halt();
+    break;
+default:
+    Log("unknown command");
+}
+```
+
 `sleep(milliseconds)` and `yield;` use the existing VM execution machinery.
 Hosts resume suspended instances through `Instance::Resume`. Script coroutines
 use signature-bound `coroutine<fn(...)->void>` handles after `import coroutine;`.

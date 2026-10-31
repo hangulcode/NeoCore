@@ -311,7 +311,7 @@ unchecked native operations simply because source types are known.
 
 ## Control flow
 
-Control-flow forms are blocks, `if`/`else`, `while`, range `for`, `foreach`,
+Control-flow forms are blocks, `if`/`else`, `switch`, `while`, range `for`, `foreach`,
 `break`, `continue`, `return`, and `yield`. Range iteration uses an explicit integer declaration:
 
 ```cpp
@@ -326,6 +326,44 @@ C-style three-clause `for`. Ordinary expression operands and call arguments reta
 left-to-right evaluation. Assignments retain the backend's ordering rules, including
 evaluation of the right-hand side before resolving a nested target path once such
 targets are supported. Type checks and conversions must not reorder side effects.
+
+`switch` keeps the inherited table-dispatch form: the VM evaluates the selector
+once and jumps through a per-switch table, so matching does not grow into a
+comparison chain. The selector must be `int` or `string`. `float` is rejected
+because exact comparison is unreliable, `bool` is rejected because `if` already
+expresses a two-way choice, and nullable values must be unwrapped first. The
+selector type is known at compile time, so each `case` must list compile-time
+constants of exactly that type, including `const` names and constant arithmetic;
+a label of another type, a duplicate value, and a second `default` are compile errors.
+
+```cpp
+const int Idle = 0;
+const int Moving = 1;
+
+string Describe(int state, string tag)
+{
+    switch (state)
+    {
+    case Idle:
+        return "idle";
+    case Moving, 2:
+        if (tag == "fast")
+            break;
+        return "moving";
+    default:
+        return "unknown";
+    }
+    return "fast";
+}
+```
+
+There is no fallthrough: a clause ends at the next `case`, `default`, or `}` and
+continues after the switch. Combine labels with commas instead of stacking empty
+clauses; a clause without a body is rejected so that C-style fallthrough intent
+cannot be silently lost. `break` leaves the switch, `continue` applies to the enclosing
+loop, and each clause body is its own block scope. A switch returns on every path
+only when it has a `default` and every clause returns. The clause order does not
+affect matching, and an unmatched value runs `default` or skips the switch.
 
 ## Current host-call boundary
 

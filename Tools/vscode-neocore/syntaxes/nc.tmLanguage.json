@@ -25,7 +25,7 @@
     },
     {
       "name": "keyword.control.neocore",
-      "match": "\\b(struct|if|else|while|for|foreach|in|break|continue|return|import|as|yield)\\b"
+      "match": "\\b(struct|if|else|switch|case|default|while|for|foreach|in|break|continue|return|import|as|yield)\\b"
     },
     {
       "name": "constant.language.neocore",
