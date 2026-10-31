@@ -21,8 +21,13 @@ is enabled. With the Visual Studio CMake generator, run:
 Build/neocore/bin/Release/neocore_minigame.exe --verify
 ```
 
-For the checked-in Windows projects, open [NeoCore.sln](../../../NeoCore.sln)
-and select `NeoCoreMiniGame` as the startup project, or build its project directly:
+For the checked-in Windows projects, open
+[neocore_minigame.sln](neocore_minigame.sln), which includes both the mini game and
+its NeoCore library dependency. Alternatively, open [NeoCore.sln](../../../NeoCore.sln)
+and select `NeoCoreMiniGame` as the startup project. Both solutions map Debug/Release
+and x86/x64 to matching library configurations. Opening only the `.vcxproj` does
+not load the library into Visual Studio's solution build; use the `.sln` so the
+library is rebuilt when needed. Command-line MSBuild can also build the project directly:
 
 ```bat
 MSBuild Samples\neocore\minigame\neocore_minigame.vcxproj /p:Configuration=Release /p:Platform=x64 /m
@@ -35,7 +40,7 @@ as the NeoCore console.
 
 The build defines `NEOCORE_MINIGAME_SCRIPT` as the absolute source path to
 [scripts/mover.nc](scripts/mover.nc), so launching from another working directory
-still finds it. To use another script with the same exported interface, pass
+still finds it. To use another script with the same events and exported queries, pass
 `--file path/to/mover.nc`. `--verify` is optional; both forms run the checks.
 
 Successful execution prints:
@@ -68,14 +73,21 @@ Verification compares every frame with an independent C++ scalar calculation,
 checks both update counters and four log messages, and checks the original final
 positions. It prints `NeoCore motion: all checks passed` on success.
 
-The original dynamic host retained a script `FunctionHandle` in C++.
-The typed adapter instead retains `fn(float)->void` inside each script instance.
-`GameObject.AddEvent("OnUpdate", 1)` registers a checked event name and integer ID;
-the host calls exported `OnEvent(int eventId, float dt)`, which invokes that
-instance's function value. `UpdateCount()` exposes the counter through the scalar
-host API. This preserves callback-driven movement and per-instance ownership
-without claiming native function-value marshaling. The host validates object IDs,
-rejects nonfinite position writes, and applies an instruction budget to each update.
+The typed script uses the original registration shape:
+
+```nc
+void OnUpdate(float dt) { /* update this instance */ }
+GameObject.AddEvent("OnUpdate", OnUpdate);
+```
+
+The host declares `OnUpdate` with `HostSchema::AddEvent` and a
+`fn(float)->void` callback type. The compiler selects that event's binding and
+checks the callback signature before execution. C++ retains the function as a
+`Scalar` together with `HostCall::CallerInstance().Id()`. Each frame it finds that
+instance through the shared `Runtime` and calls `Instance::Call(callback, args)`.
+The callback is private: `export` is needed only for host lookup by function name,
+such as the sample's `UpdateCount()` query. The host validates object IDs, rejects
+nonfinite position writes, and applies an instruction budget to each update.
 
 Run both mini game checks with:
 
@@ -90,7 +102,8 @@ connects their members with `HostBindings`. Compilation resolves the member name
 argument types, and result types before execution. Registration selects each
 concrete member callback once; execution has no member-name switch.
 
-`Program::Compile(source, bindings, error, sourceName, true)` compiles once.
+`Runtime::Create(bindings, error)` creates one shared runtime with fixed bindings.
+`Runtime::Compile(source, error, sourceName, true)` compiles once.
 `Program::CreateInstance(error)` creates each independent execution state. Before
 `Instance::Run()` initializes file globals, the host calls
 `Instance::SetHostObject("GameObject", id, error)` for that instance. Consequently,
@@ -104,8 +117,21 @@ create a separate VM or runtime for each game object.
 
 ## Frame calls, events, and suspension
 
-The host drives exported `OnUpdate(float dt)` and `OnEvent(int strength)` through
-`Instance::Call`. `DelayedEvent()` saves an object handle and calls `sleep(0)`.
+The script registers private `OnUpdate(float dt)`, `OnEvent(int strength)`, and
+`DelayedEvent()` functions with `GameObject.AddEvent`. Their signatures are
+declared separately in the host schema, so an event name or callback signature
+mismatch is a compile error. Event names in these calls must be string literals;
+the language does not assume particular names such as `OnUpdate`.
+
+The host stores the receiver object's ID separately from the registering script
+instance's ID. An event on another object still invokes the original script
+instance and its own globals. Dispatch copies the stored callback before calling
+it, so a callback can replace its registration without invalidating that call.
+Registration only stores the callback; it does not invoke it during initialization.
+This sample keeps one callback per receiver/event pair, replacing a previous
+registration of the same pair. Hosts can implement multiple subscribers separately.
+
+`DelayedEvent()` saves an object handle and calls `sleep(0)`.
 Even zero-duration sleep yields execution: `Result::suspended()` and
 `Instance::IsSuspended()` report the pending invocation, and the next host frame
 uses `Instance::Resume(dt)` to continue it.
@@ -118,6 +144,14 @@ rejection; it does not implement an event queue. For a longer sleep, `Resume` ma
 return another suspended result, so the host must continue driving later frames.
 Sleep takes integer milliseconds and uses elapsed real time; the reserved
 `Resume(deltaTime)` parameter does not advance its timer. All sample instances run serially on the host thread.
+
+`World::CancelEvents(instanceId)` releases registrations before resetting or
+destroying an instance. `Reset()` preserves its public ID, so ID lookup alone
+cannot distinguish callbacks registered before reset. After reset, the host binds
+the instance's object and runs initialization to register fresh callbacks. Object
+destruction also removes its registrations. Stored function values keep their
+program and captures alive, but do not keep their caller instance alive;
+`Runtime::FindInstance` returns null after that instance is destroyed.
 
 `Services.Record` calls `HostCall::CallScript("UpdateCount")` from inside its
 callback. The nested call reads the invoking instance's counter, demonstrating
@@ -135,5 +169,7 @@ and rebinds the instance's `GameObject` global. The saved `target` local still h
 the old ID: accessing it after resume reports a script error with its source
 location instead of touching the replacement object. Destroying a suspended script
 instance also leaves its neighbors' counters and invocation state intact.
+Additional checks register an event on a different receiver, verify that it runs
+in the registering instance, then cancel/reset/re-register and destroy that instance.
 
 The complete host binding contract is in [HostBindings.md](../../../docs/HostBindings.md).

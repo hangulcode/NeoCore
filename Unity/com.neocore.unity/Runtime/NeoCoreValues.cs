@@ -271,6 +271,7 @@ namespace NeoCore.Unity
 
     public sealed partial class Instance
     {
+        public ulong Id { get { RequireAlive(); return Native.NcInstanceId(handle); } }
         public bool IsSuspended { get { RequireAlive(); return Native.NcIsSuspended(handle) != 0; } }
         public bool IsRunning { get { RequireAlive(); return Native.NcIsRunning(handle) != 0; } }
         public void Cancel() { RequireAlive(); Result.Take(Native.NcCancel(handle)).RequireCompleted(); }

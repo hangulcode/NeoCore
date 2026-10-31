@@ -184,7 +184,10 @@ the full workloads but do not run them as performance measurements.
 
 The [typed mini game](../Samples/neocore/minigame/README.md) keeps its shared-program
 instance acceptance scenario and adds the original movement/replay demonstration.
-The replay reuses the existing browser viewer format.
+Both modes register private callbacks with `GameObject.AddEvent("OnUpdate", OnUpdate)`;
+host schema event signatures are checked at compile time. The host retains each
+callback with its registering instance ID and dispatches it through the shared
+runtime. The replay reuses the existing browser viewer format.
 
 The [Unity package](../Unity/NeoCore/README.md) includes `.nc` examples, typed C ABI,
 C# ownership/status wrappers, static host schemas, an importer and instance-based

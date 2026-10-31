@@ -23,6 +23,8 @@ struct HostBinding
     HostBindingKind kind = HostBindingKind::Method;
     TypeId returnType = InvalidType;
     std::vector<TypeId> parameters;
+    // 비어 있지 않으면 이 이름의 이벤트 등록에만 사용하는 메서드다.
+    std::string eventName;
 };
 
 struct HostProperty
@@ -51,11 +53,15 @@ public:
     bool DefineStruct(TypeId type, const std::vector<StructField>& fields);
     HostBindingId AddMethod(TypeId owner, const std::string& name, TypeId result,
         const std::vector<TypeId>& parameters);
+    HostBindingId AddEvent(TypeId owner, const std::string& eventName, TypeId callbackType,
+        const std::string& registrationMethod = "AddEvent");
     bool AddProperty(TypeId owner, const std::string& name, TypeId type,
         bool readable = true, bool writable = true);
     bool AddGlobal(const std::string& name, TypeId nativeOrNullable);
 
     const HostBinding* FindMethod(TypeId owner, const std::string& name) const;
+    const HostBinding* FindEvent(TypeId owner, const std::string& registrationMethod,
+        const std::string& eventName) const;
     const HostProperty* FindProperty(TypeId owner, const std::string& name) const;
     const HostGlobal* FindGlobal(const std::string& name) const;
     const HostBinding* FindBinding(HostBindingId id) const;

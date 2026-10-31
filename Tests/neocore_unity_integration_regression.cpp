@@ -237,6 +237,87 @@ void BindingsAndImages(bool debug)
     Check(second.releases == 4, "loaded callbacks released once");
 }
 
+struct EventRegistration
+{
+    uint64_t caller;
+    uint64_t receiver;
+    std::string name;
+    Value function;
+    EventRegistration(NcHostCall* call, const std::string& event)
+        : caller(NcHostCallerInstanceId(call)), receiver(NcHostReceiverId(call)), name(event),
+          function(NcHostArgument(call, 1), &NcValueDestroy) {}
+};
+struct EventHost
+{
+    int releases = 0;
+    std::vector<EventRegistration> registrations;
+};
+void ReleaseEventHost(void* user) { ++static_cast<EventHost*>(user)->releases; }
+void* ResolveEventHost(void* user, uint32_t, uint64_t id) { return id == 7 ? user : nullptr; }
+int32_t RegisterEvent(void* user, NcHostCall* call)
+{
+    EventHost& host = *static_cast<EventHost*>(user);
+    uint32_t length = 0;
+    const char* text = NcHostString(call, 0, &length);
+    host.registrations.emplace_back(call, std::string(text, length));
+    return host.registrations.back().caller != 0 && host.registrations.back().function != nullptr;
+}
+void Events(bool debug)
+{
+    EventHost host;
+    Options options(NcOptionsCreate(), &NcOptionsDestroy);
+    const uint32_t owner = NcSchemaObject(options.get(), "Entity", 6);
+    const uint32_t number = NcTypeBuiltin(NC_FLOAT), text = NcTypeBuiltin(NC_STRING);
+    const uint32_t update = NcTypeFunction(options.get(), NcTypeBuiltin(NC_VOID), &number, 1);
+    const uint32_t query = NcTypeFunction(options.get(), NcTypeBuiltin(NC_INT), &text, 1);
+    Check(NcOptionsSetResolver(options.get(), ResolveEventHost, &host, ReleaseEventHost) != 0, "event resolver");
+    Check(NcSchemaGlobal(options.get(), "GameObject", 10, owner, 7) != 0, "event global");
+    Check(NcSchemaEvent(options.get(), owner, "OnUpdate", 8, update, "AddEvent", 8,
+        RegisterEvent, &host, ReleaseEventHost) != 0, "typed update event registration");
+    Check(NcSchemaEvent(options.get(), owner, "OnQuery", 7, query, "AddEvent", 8,
+        RegisterEvent, &host, ReleaseEventHost) != 0, "different callback signature on same method");
+    Check(NcSchemaEvent(options.get(), owner, "OnUpdate", 8, update, "AddEvent", 8,
+        RegisterEvent, &host, ReleaseEventHost) == 0, "duplicate event rejected");
+    Check(NcSchemaEvent(options.get(), owner, "Bad", 3, number, "AddEvent", 8,
+        RegisterEvent, &host, ReleaseEventHost) == 0, "nonfunction callback rejected");
+    Check(host.releases == 0, "failed event registration does not take callback ownership");
+    NcResult* rejectedRaw = nullptr;
+    const char* invalid = "void F(int dt){} GameObject.AddEvent(\"OnUpdate\",F);";
+    Program rejected(NcCompileWithOptions(invalid, Length(invalid), "event.nc", 8, debug, options.get(), &rejectedRaw), &NcProgramDestroy);
+    Rejected(rejectedRaw, "event callback mismatch rejected at compile time");
+    Check(!rejected, "invalid event callback has no program");
+    Program program = Compile(
+        "int count=0; void OnUpdate(float dt){count+=toint(dt);}\n"
+        "int OnQuery(string name){return count+name.len();}\n"
+        "GameObject.AddEvent(\"OnUpdate\",OnUpdate);\n"
+        "GameObject.AddEvent(\"OnQuery\",OnQuery);\n"
+        "export int Count(){return count;}\n", debug, options.get());
+    Instance first = Create(program.get()), second = Create(program.get());
+    const uint64_t firstId = NcInstanceId(first.get()), secondId = NcInstanceId(second.get());
+    Check(firstId != 0 && secondId != 0 && firstId != secondId, "instance identities are distinct");
+    Check(NcInstanceId(nullptr) == 0 && NcHostCallerInstanceId(nullptr) == 0, "null identity handles");
+    Done(NcRun(first.get()), "register first instance events");
+    Done(NcRun(second.get()), "register second instance events");
+    Check(host.registrations.size() == 4, "two event registrations per instance");
+    Check(host.registrations[0].caller == firstId && host.registrations[2].caller == secondId &&
+        host.registrations[0].receiver == 7 && host.registrations[2].receiver == 7,
+        "same receiver keeps distinct caller instance identities");
+    Arguments tick(NcArgumentsCreate(), &NcArgumentsDestroy);
+    Check(NcArgumentsFloat(tick.get(), 5.0) != 0, "event argument");
+    Done(NcCallFunction(first.get(), host.registrations[0].function.get(), tick.get(), -1, 0), "private update function event");
+    Int(Call(first.get(), "Count"), 5, "first event mutates caller globals");
+    Int(Call(second.get(), "Count"), 0, "peer instance remains unchanged");
+    Arguments name(NcArgumentsCreate(), &NcArgumentsDestroy);
+    Check(NcArgumentsString(name.get(), "abc", 3) != 0, "query event argument");
+    Int(NcCallFunction(first.get(), host.registrations[1].function.get(), name.get(), -1, 0), 8, "typed event return value");
+    Rejected(Call(first.get(), "OnUpdate", tick.get()), "callback remains private to named host lookup");
+    host.registrations.clear();
+    Done(NcReset(first.get()), "host clears old registrations before reset");
+    Check(NcInstanceId(first.get()) == firstId, "reset preserves caller ID");
+    options.reset(); program.reset(); first.reset(); second.reset();
+    Check(host.releases == 3, "event registrations release ownership once");
+}
+
 struct Services
 {
     int loads = 0;
@@ -481,7 +562,7 @@ void OwnershipPreflight()
 
 int main()
 {
-    try { for (bool debug : { false, true }) { Collections(debug); BindingsAndImages(debug); ModulesAndHttp(debug); JsonAndValueCopies(debug); HostStructObjects(debug); } HttpCancellation(); BulkArrays(); OwnershipPreflight(); }
+    try { for (bool debug : { false, true }) { Collections(debug); BindingsAndImages(debug); Events(debug); ModulesAndHttp(debug); JsonAndValueCopies(debug); HostStructObjects(debug); } HttpCancellation(); BulkArrays(); OwnershipPreflight(); }
     catch (const std::exception& error) { std::fprintf(stderr, "NeoCore Unity integration: %s\n", error.what()); return 1; }
     std::printf("NeoCore Unity integration: %d checks passed\n", checks); return 0;
 }

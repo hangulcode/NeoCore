@@ -343,13 +343,13 @@ std::string TypeRegistry::DisplayName(TypeId id) const
         return "set<" + DisplayName(type.element) + ">";
     case TypeKind::Function:
     {
-        std::string result = "function(";
+        std::string result = DisplayName(type.returnType) + " function(";
         for (std::size_t i = 0; i < type.parameters.size(); ++i)
         {
             if (i != 0) result += ", ";
             result += DisplayName(type.parameters[i]);
         }
-        return result + ") -> " + DisplayName(type.returnType);
+        return result + ")";
     }
     case TypeKind::Struct:
     case TypeKind::Native:

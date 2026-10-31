@@ -8,7 +8,7 @@ int updates = 0;
 
 if (GameObject.Name == "Blue") speed = -0.5;
 
-void Move(float dt)
+void OnUpdate(float dt)
 {
     elapsed += dt;
     updates += 1;
@@ -20,18 +20,10 @@ void Move(float dt)
         Services.Log(GameObject.Name .. ": 60 updates in my own instance");
 }
 
-// 호스트는 검사한 이벤트 ID를 보관하고, 실제 함수 값은 스크립트 인스턴스가 보관한다.
-fn(float)->void updateCallback = Move;
-
-export void OnEvent(int eventId, float dt)
-{
-    if (eventId == 1) updateCallback(dt);
-}
-
 export int UpdateCount()
 {
     return updates;
 }
 
-GameObject.AddEvent("OnUpdate", 1);
+GameObject.AddEvent("OnUpdate", OnUpdate);
 Services.Log(GameObject.Name .. ": script attached");

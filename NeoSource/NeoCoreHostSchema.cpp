@@ -1,6 +1,7 @@
 ﻿#include "NeoCoreHostSchema.h"
 
 #include <limits>
+#include <map>
 #include <set>
 
 namespace NeoCore
@@ -201,6 +202,49 @@ HostBindingId HostSchema::AddMethod(TypeId owner, const std::string& name, TypeI
     return binding.id;
 }
 
+HostBindingId HostSchema::AddEvent(TypeId owner, const std::string& eventName, TypeId callbackType,
+    const std::string& registrationMethod)
+{
+    lastError_.clear();
+    if (types_.Get(owner).kind != TypeKind::Native || !IsSupportedType(owner, false))
+    {
+        Fail("host event owner must be an object registered by AddObject");
+        return InvalidHostBinding;
+    }
+    if (!IsNameAllowed(registrationMethod) || eventName.empty() || eventName.find('\0') != std::string::npos)
+    {
+        Fail("host event needs a registration method identifier and a nonempty name without NUL");
+        return InvalidHostBinding;
+    }
+    const HostBinding* member = FindMethod(owner, registrationMethod);
+    if (FindProperty(owner, registrationMethod) || (member && member->eventName.empty()))
+    {
+        Fail("host event registration method conflicts with an existing member");
+        return InvalidHostBinding;
+    }
+    if (FindEvent(owner, registrationMethod, eventName))
+    {
+        Fail("host event name is already declared for this registration method");
+        return InvalidHostBinding;
+    }
+    if (types_.Get(callbackType).kind != TypeKind::Function || !IsSupportedType(callbackType, false))
+    {
+        Fail("host event callback must be a nonnullable function type");
+        return InvalidHostBinding;
+    }
+    if (!CheckBindingCapacity(1)) return InvalidHostBinding;
+    HostBinding binding;
+    binding.id = static_cast<HostBindingId>(bindings_.size() + 1);
+    binding.ownerType = owner;
+    binding.name = registrationMethod;
+    binding.returnType = types_.Void();
+    binding.parameters.push_back(types_.String());
+    binding.parameters.push_back(callbackType);
+    binding.eventName = eventName;
+    bindings_.push_back(binding);
+    return binding.id;
+}
+
 bool HostSchema::AddProperty(TypeId owner, const std::string& name, TypeId type,
     bool readable, bool writable)
 {
@@ -266,6 +310,17 @@ const HostBinding* HostSchema::FindMethod(TypeId owner, const std::string& name)
     return nullptr;
 }
 
+const HostBinding* HostSchema::FindEvent(TypeId owner, const std::string& registrationMethod,
+    const std::string& eventName) const
+{
+    if (eventName.empty()) return nullptr;
+    for (const HostBinding& binding : bindings_)
+        if (binding.ownerType == owner && binding.kind == HostBindingKind::Method &&
+            binding.name == registrationMethod && binding.eventName == eventName)
+            return &binding;
+    return nullptr;
+}
+
 const HostProperty* HostSchema::FindProperty(TypeId owner, const std::string& name) const
 {
     const Object* object = FindObject(owner);
@@ -304,13 +359,23 @@ bool HostSchema::Validate(std::string& error) const
             return Fail(error);
         }
         std::set<std::string> names;
+        std::map<std::string, std::set<std::string>> eventNames;
         for (const HostBinding& binding : bindings_)
             if (binding.ownerType == object.type && binding.kind == HostBindingKind::Method)
-                if (!names.insert(binding.name).second)
+            {
+                // 같은 등록 메서드의 이벤트만 이름별 서명을 갖는다. 일반 오버로드는 허용하지 않는다.
+                const bool event = !binding.eventName.empty();
+                if ((!event || eventNames.count(binding.name) == 0) && !names.insert(binding.name).second)
                 {
                     error = "duplicate host method name";
                     return Fail(error);
                 }
+                if (event && !eventNames[binding.name].insert(binding.eventName).second)
+                {
+                    error = "duplicate host event name";
+                    return Fail(error);
+                }
+            }
         for (const HostProperty& property : object.properties)
         {
             const HostBinding* getter = FindBinding(property.getter);
@@ -347,6 +412,14 @@ bool HostSchema::Validate(std::string& error) const
                 error = "unsupported host binding parameter type";
                 return Fail(error);
             }
+        if (!binding.eventName.empty() && (binding.kind != HostBindingKind::Method ||
+            binding.eventName.find('\0') != std::string::npos || binding.returnType != types_.Void() ||
+            binding.parameters.size() != 2 || binding.parameters[0] != types_.String() ||
+            types_.Get(binding.parameters[1]).kind != TypeKind::Function))
+        {
+            error = "invalid host event registration contract";
+            return Fail(error);
+        }
         if (binding.kind != HostBindingKind::Method)
         {
             const HostProperty* property = FindProperty(binding.ownerType, binding.name);

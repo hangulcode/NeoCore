@@ -165,6 +165,16 @@ Explicit host schemas additionally expose nominal native objects, host globals,
 methods, and read/write properties with scalar, vector, native, struct, collection
 and function signatures. Members and
 argument types are resolved before backend compilation; see [HostBindings.md](HostBindings.md).
+Host event schemas additionally associate a registration member and literal event
+name with an exact function type. `GameObject.AddEvent("OnUpdate", OnUpdate)`
+therefore checks `OnUpdate` against the host's declared signature without requiring
+`export`. Different event names may use different callback signatures; this is
+compile-time event selection, not general method overloading. Unknown names,
+nonliteral names (including `const` identifiers), and mismatched callbacks fail
+compilation. The existing host-call instruction invokes the selected binding.
+The host retains the callback value and caller instance ID, resolves its receiver
+object ID at runtime, and owns dispatch, suspension scheduling and registration
+cleanup on reset or destruction.
 Nullable scalar, string, collection, and object locals can be refined by a local
 null guard. The non-null branch may use the underlying type. Reassignment invalidates
 the proof; globals, fields, and arbitrary expressions do not acquire such a proof.
@@ -317,14 +327,15 @@ targets are supported. Type checks and conversions must not reorder side effects
 
 ## Current host-call boundary
 
-`NeoCore::Instance::Call` invokes exported scalar functions and validates arguments
-before executing the instance. Compile once with `Program::Compile`, then create
+`NeoCore::Instance::Call(name, arguments)` invokes exported functions and validates
+arguments before executing the instance. The function-value overload invokes a
+retained callback without requiring export. Compile once with `Runtime::Compile`
+(or isolated `Program::Compile`), then create
 independent execution states with `Program::CreateInstance(error)`. Each instance
 owns its script globals, host-global IDs, and pending invocation while retaining
 the shared code. `Program::Call` and the other convenience methods delegate to one
 default instance. Instances sharing a program execute serially on the host thread.
-Null return values are supported; null arguments from the host are explicitly rejected until the backend call adapter supports them. This is narrower
-than the nullable values that checked script code can pass internally.
+Nullable parameters and results accept null; nonnullable types reject it.
 Host-initiated script reentry is rejected while top-level initialization is still
 running. Initialization runs at most once, and a failed initialization remains a
 failure on subsequent `Run`/`Call` requests.
@@ -336,13 +347,16 @@ the host drive subsequent frames. `sleep(0)` yields once. Positive sleep uses re
 elapsed time in integer milliseconds; negative durations clamp to zero and
 durations above `INT32_MAX` milliseconds fail at runtime. The finite, nonnegative
 `deltaTime` parameter is currently reserved and does not advance its timer. A busy
-instance rejects another exported call without replacing its pending execution; the host owns event queuing. If file
+instance rejects another call without replacing its pending execution; the host owns event queuing. If file
 initialization suspends during `Call`, the original function and argument values
 are retained. `Resume` finishes initialization and then executes that retained call
 without a retry. Callback reentry remains synchronous and targets the calling instance.
 
-Struct, collection, function, coroutine, builtin-object, and native-object results are rejected before top-level initialization or the
-requested function executes; the current host adapter only marshals scalar values.
+The owning boundary marshals declared structs, collections, native IDs and function
+values as well as scalars and vectors. Runtime-owned values retain their source
+program and cannot cross into another program, even within a shared runtime.
+Closures are additionally restricted to their creating instance and expire on reset.
+Unsupported boundary kinds fail explicitly before the requested execution starts.
 
 The separate script-to-host direction uses `HostSchema` and `HostBindings` from
 `NeoCoreHost.h`. `Program::Compile(source, bindings, error, ...)` copies the binding

@@ -28,6 +28,7 @@
     <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
   </ImportGroup>
   <PropertyGroup>
+    <ShouldUnsetParentConfigurationAndPlatform>false</ShouldUnsetParentConfigurationAndPlatform>
     <OutDir>$(ProjectDir)..\..\Build\Windows\bin\$(Platform)\$(Configuration)\</OutDir>
     <IntDir>$(ProjectDir)..\..\Build\Windows\obj\Console\$(Platform)\$(Configuration)\</IntDir>
     <TargetName>neocore</TargetName>

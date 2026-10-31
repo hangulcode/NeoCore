@@ -80,6 +80,23 @@ functions belong to their program. Closures belong to their creating instance;
 calling one in a peer instance or after reset fails, including through containers.
 Host callbacks use `HostCall::Argument` and `ReturnValue` for aggregate values.
 
+Event callbacks do not have to be exported. Register their signatures with
+`HostSchema::AddEvent` and let the script pass the function value:
+
+```cpp
+void OnUpdate(float dt) { /* update script state */ }
+GameObject.AddEvent("OnUpdate", OnUpdate);
+```
+
+The compiler resolves the literal event name and checks the function signature.
+Each event has a direct host binding ID, including when different event names use
+different signatures. The registration adapter retains `Argument(1)`, the caller
+instance ID and receiver object ID; delivery uses `Instance::Call(function, args)`
+on that original caller. Calling `Call("OnUpdate", args)` instead still requires
+an exported function. The host owns registration storage and must remove old
+callbacks before reset, script replacement or destruction. See
+[typed event registration](HostBindings.md#typed-event-registration).
+
 ## Suspension and lifetime
 
 Calls return Completed, Suspended or Failed. `ok()` alone does not mean completion;

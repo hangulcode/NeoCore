@@ -114,7 +114,7 @@ int main()
         "nominal and builtin lookup remain distinct");
     Check(types.DisplayName(packedFloat) == "array32<float>", "array32 diagnostics use the exposed scalar name");
     Check(types.DisplayName(types.NullableOf(object)) == "host.GameObject?", "nullable nominal diagnostics");
-    Check(types.DisplayName(unaryInt) == "function(int) -> int", "function signature diagnostics");
+    Check(types.DisplayName(unaryInt) == "int function(int)", "function signature diagnostics");
 
     Check(types.LookupNamed("int&") == InvalidType && types.LookupNamed("geometry.Position&") == InvalidType,
         "reference spellings are not registered types");

@@ -272,6 +272,17 @@ std::vector<std::uint8_t> SchemaDescription(const HostSchema* schema)
     }
     writer.Count(schema->Globals().size());
     for (const HostGlobal& global : schema->Globals()) { writer.Text(global.name); writer.U32(global.type); }
+    // 기존 스키마의 이미지 계약은 유지하고 이벤트가 있을 때만 이름별 연결 정보를 덧붙인다.
+    std::size_t events = 0;
+    for (const HostBinding& binding : schema->Bindings())
+        if (!binding.eventName.empty()) ++events;
+    if (events != 0)
+    {
+        writer.Text("host-events");
+        writer.Count(events);
+        for (const HostBinding& binding : schema->Bindings())
+            if (!binding.eventName.empty()) { writer.U32(binding.id); writer.Text(binding.eventName); }
+    }
     return writer.bytes;
 }
 

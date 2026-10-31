@@ -183,6 +183,16 @@ namespace NeoCore.Unity
             Register(new HostPair { First = callback }, p => Native.NcSchemaMethod(Handle, ownerId, bytes,
                 checked((uint)bytes.Length), resultId, ids, checked((uint)ids.Length), first, p, release) != 0);
         }
+        public void Event(ScriptType owner, string eventName, ScriptType callbackType, Action<HostCall> callback,
+            string registrationMethod = "AddEvent")
+        {
+            if (callback == null) throw new ArgumentNullException(nameof(callback));
+            byte[] name = Encoding.UTF8.GetBytes(eventName ?? throw new ArgumentNullException(nameof(eventName)));
+            byte[] method = Encoding.UTF8.GetBytes(registrationMethod ?? throw new ArgumentNullException(nameof(registrationMethod)));
+            uint ownerId = TypeId(owner), functionId = TypeId(callbackType);
+            Register(new HostPair { First = callback }, p => Native.NcSchemaEvent(Handle, ownerId, name,
+                checked((uint)name.Length), functionId, method, checked((uint)method.Length), first, p, release) != 0);
+        }
         public void Property(ScriptType owner, string name, ScriptType type, Action<HostCall> getter, Action<HostCall> setter = null)
         {
             if (getter == null && setter == null) throw new ArgumentException("Property requires at least one accessor");
@@ -277,6 +287,7 @@ namespace NeoCore.Unity
         internal void Close() { handle = IntPtr.Zero; }
         public uint ArgumentCount { get { return Native.NcHostArgumentCount(Handle); } }
         public ulong ReceiverId { get { return Native.NcHostReceiverId(Handle); } }
+        public ulong CallerInstanceId { get { return Native.NcHostCallerInstanceId(Handle); } }
         public bool ResolveReceiver() { return Native.NcHostResolveReceiver(Handle) != IntPtr.Zero; }
         public bool ResolveObject(uint index) { return Native.NcHostResolveObject(Handle, index) != IntPtr.Zero; }
         public bool IsNull(uint index) { return Native.NcHostIsNull(Handle, index) != 0; }

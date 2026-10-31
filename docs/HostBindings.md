@@ -18,8 +18,10 @@ The schema contains no live object pointers or executable function addresses.
 Supported parameter/property types are `int` (int64), `float` (binary64), `bool`,
 `string`, `Vector2`, `Vector3`, `Vector4`, `Quaternion`, registered native object
 types, typed lists/maps/sets/arrays, structs, function values, and nullable forms.
-Methods also support `void` results. Every member has one exact signature; scripts receive
-ordinary int-to-float widening before the call. The language has no reference parameters.
+Methods also support `void` results. Ordinary methods have one exact signature;
+event registration selects a declared callback signature by a literal event name.
+Scripts receive ordinary int-to-float widening before the call. The language has
+no reference parameters.
 
 Create all schema entries before constructing `HostBindings`. Bind every method,
 getter, setter, and global before creating the runtime, even if a source file
@@ -74,6 +76,71 @@ An omitted/wrong result kind or a null nonnullable result fails the host call.
 `Fail(message)`, a `false` callback result, and thrown C++ exceptions also become
 script runtime errors. Object results are IDs; their liveness is checked when
 they are subsequently resolved for use.
+
+## Typed event registration
+
+Use `HostSchema::AddEvent(owner, eventName, callbackType, registrationMethod)` to
+declare an event whose callback is a nonnullable function type. The final argument
+defaults to `"AddEvent"`. Each event returns its own binding ID; connect that ID
+through `HostBindings::Bind` just like an ordinary method. Registration itself
+returns `void` and accepts `(string, callbackType)`. Callback results may have any
+supported function return type.
+
+```cpp
+const NeoCore::TypeId object = schema.AddObject("GameObjectType");
+const NeoCore::TypeId updateType = schema.Types().FunctionOf(
+    schema.Types().Void(), { schema.Types().Float() });
+const NeoCore::TypeId hitType = schema.Types().FunctionOf(
+    schema.Types().Void(), { schema.Types().Int() });
+const NeoCore::HostBindingId update = schema.AddEvent(object, "OnUpdate", updateType);
+const NeoCore::HostBindingId hit = schema.AddEvent(object, "OnHit", hitType);
+schema.AddGlobal("GameObject", object);
+```
+
+These signatures accept the original callback-registration style in checked `.nc`:
+
+```cpp
+void OnUpdate(float dt) { /* update script state */ }
+void OnHit(int damage) { /* handle the event */ }
+GameObject.AddEvent("OnUpdate", OnUpdate);
+GameObject.AddEvent("OnHit", OnHit);
+```
+
+The first argument must be a string literal. Escapes in that literal are decoded
+before lookup; event names are case-sensitive and must be nonempty without NUL.
+Variables, `const` names and computed strings are not accepted by this specialized
+registration path. An unknown event, mismatched callback signature or wrong argument
+count fails compilation. Function values and closures of the declared type are
+accepted; the callback function does **not** need `export`. `export` is required
+for host lookup by function name, not for passing a checked function value.
+
+Different events under one registration method may have different callback types.
+Duplicate event names, ordinary methods with the same member name, and conflicting
+properties are rejected. General method overloading is still unsupported. For
+hosts that intentionally accept dynamic event names with one uniform callback type,
+register an ordinary `AddMethod` instead and validate the name in the adapter.
+`FindEvent(owner, registrationMethod, eventName)` retrieves a specific event binding;
+`FindMethod` alone returns only the first member representative. Saved images include
+event names and signatures in their schema compatibility check.
+
+An event adapter receives the literal name in `HostCall::String(0)` and an owning
+function value in `HostCall::Argument(1)`. Store that function, the caller's
+`CallerInstance().Id()`, and the receiver's `ReceiverId()` separately. The receiver
+can be another object or a shared service; it does not identify the callback's
+script instance. Store the registration during initialization and dispatch it only
+after initialization returns. Resolve the original caller through
+`Runtime::FindInstance` and invoke `Instance::Call(function, arguments)` when idle.
+Keep a suspended invocation for `Resume`; queue or skip subsequent events according
+to the host's policy.
+
+NeoCore does not own an event dispatcher. The host controls duplicate-registration
+behavior, removal, event order and object lifetime. Remove registrations and dispose
+their function values on reset, script replacement or teardown; an instance ID
+survives reset and a named callback could otherwise run against the new state.
+Discard registrations whose caller or receiver has been destroyed. Retained
+function values keep program data alive, but do not keep an instance or engine
+object alive. The [mini game](../Samples/neocore/minigame/README.md) demonstrates
+registration, per-instance delivery and cleanup.
 
 ## Vector values and property components
 

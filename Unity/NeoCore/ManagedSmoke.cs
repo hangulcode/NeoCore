@@ -141,6 +141,61 @@ internal static class ManagedSmoke
         Diagnostics.ClearLogSink();
     }
 
+    private static void CheckHostEvents()
+    {
+        var callbacks = new System.Collections.Generic.Dictionary<ulong, Scalar[]>();
+        using (var options = new CompileOptions())
+        {
+            ScriptType entity = options.Object("Entity");
+            options.SetResolver((type, id) => id == 7);
+            options.Global("GameObject", entity, 7);
+            Action<HostCall> save = call =>
+            {
+                Require(call.ReceiverId == 7 && call.CallerInstanceId != 0, "event receiver and caller identity");
+                Scalar[] entries;
+                if (!callbacks.TryGetValue(call.CallerInstanceId, out entries))
+                {
+                    entries = new Scalar[2];
+                    callbacks.Add(call.CallerInstanceId, entries);
+                }
+                int index = call.String(0) == "OnUpdate" ? 0 : 1;
+                entries[index].Dispose();
+                entries[index] = call.Argument(1);
+            };
+            options.Event(entity, "OnUpdate", options.Function(ScriptTypes.Void, ScriptTypes.Float), save);
+            options.Event(entity, "OnQuery", options.Function(ScriptTypes.Int, ScriptTypes.String), save);
+            string source = "int count=0; void OnUpdate(float dt){count+=toint(dt);}\n"
+                + "int OnQuery(string name){return count+name.len();}\n"
+                + "GameObject.AddEvent(\"OnUpdate\",OnUpdate); GameObject.AddEvent(\"OnQuery\",OnQuery);\n"
+                + "export int Count(){return count;}\n";
+            bool rejected = false;
+            try { using (NeoCore.Unity.Program.Compile("void Bad(int dt){} GameObject.AddEvent(\"OnUpdate\",Bad);", "bad-event.nc", true, options)) {} }
+            catch (InvalidOperationException) { rejected = true; }
+            Require(rejected, "managed event callback signature checked before execution");
+            try
+            {
+                using (var program = NeoCore.Unity.Program.Compile(source, "events.nc", true, options))
+                using (var first = program.CreateInstance())
+                using (var second = program.CreateInstance())
+                {
+                    first.Run().RequireCompleted(); second.Run().RequireCompleted();
+                    Require(first.Id != second.Id && callbacks.Count == 2, "retained events keyed by caller instance");
+                    first.Call(callbacks[first.Id][0], Scalar.Float(5)).RequireCompleted();
+                    Require(first.Call(callbacks[first.Id][1], Scalar.String("abc")).RequireCompleted().AsInt() == 8,
+                        "private function event with distinct signature and result");
+                    Require(second.Call("Count").RequireCompleted().AsInt() == 0, "event does not execute on peer instance");
+                    Require(first.Call("OnUpdate", Scalar.Float(1)).Status == ExecutionStatus.Failed, "registered callback does not require export");
+                    ulong oldId = first.Id;
+                    foreach (Scalar value in callbacks[oldId]) value.Dispose();
+                    callbacks.Remove(oldId);
+                    first.Reset();
+                    Require(first.Id == oldId, "reset retains ID after host cancels registrations");
+                }
+            }
+            finally { foreach (Scalar[] entries in callbacks.Values) foreach (Scalar value in entries) value.Dispose(); }
+        }
+    }
+
     private static int Main(string[] args)
     {
         try
@@ -197,7 +252,8 @@ internal static class ManagedSmoke
             catch (InvalidOperationException error) { rejected = error.Message.Contains("reject.nc:1:"); }
             Require(rejected, "typed frontend rejection and diagnostics");
             CheckMigratedBoundaries();
-            Console.WriteLine("NeoCore managed smoke passed: typed schema, values, closures, JSON, modules, images, vectors, budgets, ownership, cleanup");
+            CheckHostEvents();
+            Console.WriteLine("NeoCore managed smoke passed: typed schema, events, values, closures, JSON, modules, images, vectors, budgets, ownership, cleanup");
             return 0;
         }
         catch (Exception error) { Console.Error.WriteLine(error); return 1; }

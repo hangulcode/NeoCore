@@ -73,6 +73,7 @@ NC_API NcResult* NcCancel(NcInstance* instance);
 NC_API NcResult* NcReset(NcInstance* instance);
 NC_API int32_t NcIsSuspended(const NcInstance* instance);
 NC_API int32_t NcIsRunning(const NcInstance* instance);
+NC_API uint64_t NcInstanceId(const NcInstance* instance);
 NC_API NcResult* NcInstanceSetHostObject(NcInstance* instance, const char* name, uint32_t length, uint64_t id);
 
 NC_API NcArguments* NcArgumentsCreate(void);
@@ -164,6 +165,9 @@ NC_API int32_t NcSchemaStructFields(NcOptions* options, uint32_t type, const NcF
 NC_API uint32_t NcSchemaMethod(NcOptions* options, uint32_t owner, const char* name, uint32_t length,
     uint32_t resultType, const uint32_t* parameters, uint32_t count,
     NcHostCallback callback, void* userData, NcRelease release);
+NC_API uint32_t NcSchemaEvent(NcOptions* options, uint32_t owner, const char* eventName, uint32_t eventLength,
+    uint32_t callbackType, const char* registrationMethod, uint32_t methodLength,
+    NcHostCallback callback, void* userData, NcRelease release);
 NC_API int32_t NcSchemaProperty(NcOptions* options, uint32_t owner, const char* name, uint32_t length,
     uint32_t type, NcHostCallback getter, NcHostCallback setter, void* userData, NcRelease release);
 NC_API int32_t NcSchemaGlobal(NcOptions* options, const char* name, uint32_t length, uint32_t type, uint64_t id);
@@ -180,6 +184,7 @@ NC_API const char* NcHostString(NcHostCall* call, uint32_t index, uint32_t* leng
 NC_API int32_t NcHostVector(NcHostCall* call, uint32_t index, float* output, uint32_t capacity);
 NC_API uint64_t NcHostObject(NcHostCall* call, uint32_t index);
 NC_API uint64_t NcHostReceiverId(const NcHostCall* call);
+NC_API uint64_t NcHostCallerInstanceId(const NcHostCall* call);
 NC_API void* NcHostResolveReceiver(NcHostCall* call);
 NC_API void* NcHostResolveObject(NcHostCall* call, uint32_t index);
 NC_API void NcHostReturnInt(NcHostCall* call, int64_t value);

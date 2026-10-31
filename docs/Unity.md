@@ -25,6 +25,32 @@ Object resolvers validate live IDs at use; do not retain an engine pointer acros
 script reentry. [HostBindings.md](HostBindings.md) defines the same contract for
 C++ and managed adapters.
 
+`CompileOptions.Event(owner, eventName, callbackType, adapter,
+registrationMethod = "AddEvent")` declares typed event registration. Build the
+callback type with `options.Function(resultType, parameterTypes...)`. For example,
+`options.Event(entity, "OnUpdate", options.Function(ScriptTypes.Void,
+ScriptTypes.Float), adapter)` accepts
+`GameObject.AddEvent("OnUpdate", OnUpdate)` with `void OnUpdate(float dt)`;
+`OnUpdate` need not be exported. Other events on the same member can have different
+callback signatures. The name must be a string literal; unknown names and wrong
+callback types fail compilation. C hosts use `NcSchemaEvent` with an explicit
+registration-method name and length. Schema registration returns a binding ID,
+or zero on failure; callback userdata ownership transfers only on success.
+
+Inside the adapter, `call.Argument(1)` returns the owning function value,
+`call.CallerInstanceId` identifies the script caller and `call.ReceiverId`
+identifies the event receiver. They are separate identities. `Instance.Id`
+(`NcInstanceId` in C) lets the host maintain its own live-instance lookup;
+`NcHostCallerInstanceId` exposes the callback caller in C. Do not treat either
+instance ID as an engine object ID or retain a borrowed `HostCall`. Invoke the
+stored function through the original live instance's `Call` overload. Queue or
+skip events while it is suspended, then resume the existing invocation. Remove
+registrations and dispose retained functions before reset, script replacement or
+instance disposal. Reset preserves the instance ID and does not remove host-owned
+registrations. Never invoke a newly registered callback before initialization
+returns. The C ABI and managed package expose registration and identity helpers,
+not an automatic event dispatcher or shared-runtime lookup wrapper.
+
 The Basic sample and managed smoke driver illustrate initialization, exported
 calls and transform updates. Build the native plugin before importing/playing:
 

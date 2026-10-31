@@ -53,6 +53,72 @@ static bool IdentifierPart(unsigned char c)
     return IdentifierStart(c) || (c >= '0' && c <= '9');
 }
 
+static unsigned EventUnicodeEscape(const Token& token, std::size_t& position)
+{
+    if (position + 4 > token.text.size() - 1) Fail(token, "incomplete Unicode escape in event name");
+    unsigned value = 0;
+    for (int i = 0; i < 4; ++i)
+    {
+        const char c = token.text[position++];
+        unsigned digit = 0;
+        if (c >= '0' && c <= '9') digit = c - '0';
+        else if (c >= 'a' && c <= 'f') digit = c - 'a' + 10;
+        else if (c >= 'A' && c <= 'F') digit = c - 'A' + 10;
+        else Fail(token, "invalid Unicode escape in event name");
+        value = value * 16 + digit;
+    }
+    return value;
+}
+
+static std::string EventLiteralName(const Token& token)
+{
+    std::string name;
+    // 백엔드 문자열 규칙대로 해석해야 바인딩 선택과 호스트가 받는 이름이 일치한다.
+    for (std::size_t position = 1; position < token.text.size() - 1;)
+    {
+        const char c = token.text[position++];
+        if (c != '\\') { name += c; continue; }
+        const char escaped = token.text[position++];
+        if (escaped == '"' || escaped == '\'' || escaped == '\\') name += escaped;
+        else if (escaped == 'n') name += '\n';
+        else if (escaped == 'r') name += '\r';
+        else if (escaped == 't') name += '\t';
+        else if (escaped == 'u')
+        {
+            unsigned value = EventUnicodeEscape(token, position);
+            if (value >= 0xd800 && value <= 0xdbff)
+            {
+                if (position + 2 > token.text.size() - 1 || token.text[position] != '\\' || token.text[position + 1] != 'u')
+                    Fail(token, "missing low surrogate in event name");
+                position += 2;
+                const unsigned low = EventUnicodeEscape(token, position);
+                if (low < 0xdc00 || low > 0xdfff) Fail(token, "invalid low surrogate in event name");
+                value = 0x10000 + (value - 0xd800) * 0x400 + low - 0xdc00;
+            }
+            else if (value == 0 || (value >= 0xdc00 && value <= 0xdfff))
+                Fail(token, "NUL or unpaired low surrogate in event name");
+            if (value < 0x80) name += static_cast<char>(value);
+            else
+            {
+                if (value < 0x800) name += static_cast<char>(0xc0 | (value >> 6));
+                else
+                {
+                    if (value < 0x10000) name += static_cast<char>(0xe0 | (value >> 12));
+                    else
+                    {
+                        name += static_cast<char>(0xf0 | (value >> 18));
+                        name += static_cast<char>(0x80 | ((value >> 12) & 0x3f));
+                    }
+                    name += static_cast<char>(0x80 | ((value >> 6) & 0x3f));
+                }
+                name += static_cast<char>(0x80 | (value & 0x3f));
+            }
+        }
+        else { name += '\\'; name += escaped; }
+    }
+    return name;
+}
+
 class Lexer
 {
 public:
@@ -1508,6 +1574,15 @@ private:
             const HostBinding* binding = hostSchema_ ? hostSchema_->FindMethod(ownerType, member.op) : nullptr;
             if (!binding) Fail(member.token, "unknown host method '" + member.op + "'");
             if (count != binding->parameters.size()) Fail(member.token, "host method argument count does not match its declaration");
+            if (!binding->eventName.empty())
+            {
+                const Expr& name = *expression.children[1];
+                if (name.kind != ExprKind::Literal || name.token.kind != TokenKind::String)
+                    Fail(name.token, "host event name must be a string literal so its callback signature is known at compile time");
+                const std::string eventName = EventLiteralName(name.token);
+                binding = hostSchema_->FindEvent(ownerType, member.op, eventName);
+                if (!binding) Fail(name.token, "unknown host event '" + eventName + "' for '" + member.op + "'");
+            }
             for (std::size_t i = 0; i < count; ++i) Convert(*expression.children[i + 1], binding->parameters[i]);
             expression.callName = HostCall(binding->id);
             expression.type = binding->returnType;

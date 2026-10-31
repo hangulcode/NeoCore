@@ -377,6 +377,7 @@ NcResult* NcReset(NcInstance* instance)
 }
 int32_t NcIsSuspended(const NcInstance* instance) { return instance && instance->value->IsSuspended(); }
 int32_t NcIsRunning(const NcInstance* instance) { return instance && instance->value->IsExecuting(); }
+uint64_t NcInstanceId(const NcInstance* instance) { return instance ? instance->value->Id() : 0; }
 NcResult* NcInstanceSetHostObject(NcInstance* instance, const char* name, uint32_t length, uint64_t id)
 {
     try
@@ -865,6 +866,31 @@ uint32_t NcSchemaMethod(NcOptions* options, uint32_t owner, const char* name, ui
     catch (const std::exception& error) { if (options) options->error = error.what(); return 0; }
     catch (...) { return 0; }
 }
+uint32_t NcSchemaEvent(NcOptions* options, uint32_t owner, const char* eventName, uint32_t eventLength,
+    uint32_t callbackType, const char* registrationMethod, uint32_t methodLength,
+    NcHostCallback callback, void* userData, NcRelease release)
+{
+    try
+    {
+        if (!options || !callback) return 0;
+        NeoCore::HostSchema schema = options->state.schema;
+        const uint32_t id = schema.AddEvent(owner, ReadText(eventName, eventLength), callbackType,
+            ReadText(registrationMethod, methodLength));
+        if (!id) { options->error = schema.LastError(); return 0; }
+        std::map<uint32_t, CallbackBinding> callbacks = options->state.callbacks;
+        CallbackBinding binding;
+        binding.callback = callback;
+        binding.owner = Own(userData, nullptr);
+        callbacks[id] = binding;
+        options->state.callbacks = std::move(callbacks);
+        options->state.schema = std::move(schema);
+        binding.owner->release = release;
+        options->error.clear();
+        return id;
+    }
+    catch (const std::exception& error) { if (options) options->error = error.what(); return 0; }
+    catch (...) { return 0; }
+}
 int32_t NcSchemaProperty(NcOptions* options, uint32_t owner, const char* name, uint32_t length,
     uint32_t type, NcHostCallback getter, NcHostCallback setter, void* userData, NcRelease release)
 {
@@ -988,6 +1014,8 @@ uint64_t NcHostObject(NcHostCall* call, uint32_t index)
     catch (...) { HostFailure(call, "host object access failed"); return 0; }
 }
 uint64_t NcHostReceiverId(const NcHostCall* call) { return call && call->value ? call->value->ReceiverId().value : 0; }
+uint64_t NcHostCallerInstanceId(const NcHostCall* call)
+{ return call && call->value ? call->value->CallerInstance().Id() : 0; }
 void* NcHostResolveReceiver(NcHostCall* call)
 { try { return call && call->value ? call->value->ResolveReceiver() : nullptr; } catch (...) { HostFailure(call, "host resolver failed"); return nullptr; } }
 void* NcHostResolveObject(NcHostCall* call, uint32_t index)

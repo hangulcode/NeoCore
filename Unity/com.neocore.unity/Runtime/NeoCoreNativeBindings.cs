@@ -104,6 +104,9 @@ namespace NeoCore.Unity
         [DllImport(Library, CallingConvention = Convention)] internal static extern uint NcTypeFunction(IntPtr options, uint resultType, uint[] parameters, uint count);
         [DllImport(Library, CallingConvention = Convention)] internal static extern uint NcSchemaObject(IntPtr options, byte[] name, uint length);
         [DllImport(Library, CallingConvention = Convention)] internal static extern uint NcSchemaMethod(IntPtr options, uint owner, byte[] name, uint length, uint resultType, uint[] parameters, uint count, HostCallback callback, IntPtr userData, ReleaseCallback release);
+        [DllImport(Library, CallingConvention = Convention)] internal static extern uint NcSchemaEvent(IntPtr options, uint owner, byte[] eventName, uint eventLength, uint callbackType, byte[] registrationMethod, uint methodLength, HostCallback callback, IntPtr userData, ReleaseCallback release);
+        [DllImport(Library, CallingConvention = Convention)] internal static extern ulong NcInstanceId(IntPtr instance);
+        [DllImport(Library, CallingConvention = Convention)] internal static extern ulong NcHostCallerInstanceId(IntPtr call);
         [DllImport(Library, CallingConvention = Convention)] internal static extern int NcSchemaProperty(IntPtr options, uint owner, byte[] name, uint length, uint type, HostCallback getter, HostCallback setter, IntPtr userData, ReleaseCallback release);
         [DllImport(Library, CallingConvention = Convention)] internal static extern int NcSchemaGlobal(IntPtr options, byte[] name, uint length, uint type, ulong id);
         [DllImport(Library, CallingConvention = Convention)] internal static extern uint NcHostArgumentCount(IntPtr call);

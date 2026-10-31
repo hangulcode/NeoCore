@@ -116,7 +116,8 @@ struct Body
     std::string name;
     NeoCore::Vector3Value position;
     NeoCore::Vector3Value reference;
-    std::int64_t eventId = 0;
+    std::uint64_t callerId = 0;
+    NeoCore::Scalar onUpdate;
     std::unique_ptr<NeoCore::Instance> instance;
 
     Body(std::uint64_t value, const char* label, float x, float y, float z)
@@ -128,6 +129,7 @@ class Scene
 public:
     NeoCore::HostSchema schema;
     std::unique_ptr<NeoCore::HostBindings> bindings;
+    std::unique_ptr<NeoCore::Runtime> runtime;
     std::unique_ptr<NeoCore::Program> program;
     std::vector<Body> bodies;
     std::vector<std::string> messages;
@@ -141,8 +143,8 @@ public:
         serviceType_ = schema.AddObject("SceneServices");
         Require(schema.AddProperty(objectType_, "Name", schema.Types().String(), true, false), schema.LastError());
         Require(schema.AddProperty(objectType_, "Position", schema.Types().Vector3()), schema.LastError());
-        Require(schema.AddMethod(objectType_, "AddEvent", schema.Types().Void(),
-            {schema.Types().String(), schema.Types().Int()}) != NeoCore::InvalidHostBinding, schema.LastError());
+        Require(schema.AddEvent(objectType_, "OnUpdate", schema.Types().FunctionOf(schema.Types().Void(),
+            {schema.Types().Float()})) != NeoCore::InvalidHostBinding, schema.LastError());
         Require(schema.AddMethod(serviceType_, "Log", schema.Types().Void(),
             {schema.Types().String()}) != NeoCore::InvalidHostBinding, schema.LastError());
         Require(schema.AddGlobal("GameObject", objectType_), schema.LastError());
@@ -162,15 +164,12 @@ public:
                     call.ReturnString(static_cast<Body*>(call.Receiver())->name);
                     return true;
                 });
-            else if (binding.name == "AddEvent")
+            else if (!binding.eventName.empty())
                 bound = bindings->Bind(binding.id, [](NeoCore::HostCall& call) {
-                    // 함수 값을 네이티브로 넘기지 않고 알려진 이벤트 이름·ID만 보관한다.
-                    if (call.String(0) != "OnUpdate" || call.Int(1) != 1)
-                    {
-                        call.Fail("expected AddEvent(\"OnUpdate\", 1)");
-                        return false;
-                    }
-                    static_cast<Body*>(call.Receiver())->eventId = call.Int(1);
+                    // OnUpdate의 서명은 컴파일 때 확정했다. 함수와 등록한 인스턴스의 ID를 보관한다.
+                    Body& body = *static_cast<Body*>(call.Receiver());
+                    body.onUpdate = call.Argument(1);
+                    body.callerId = call.CallerInstance().Id();
                     return true;
                 });
             else if (binding.kind == NeoCore::HostBindingKind::Getter)
@@ -193,12 +192,25 @@ public:
         }
         Require(bindings->BindGlobal("GameObject", NeoCore::ObjectHandle(1)), "default GameObject binding");
         Require(bindings->BindGlobal("Services", NeoCore::ObjectHandle(ServiceId)), "Services binding");
+        NeoCore::Error error;
+        runtime = NeoCore::Runtime::Create(*bindings, error);
+        Require(bool(runtime), "cannot create runtime: " + error.message);
+    }
+
+    ~Scene()
+    {
+        // 함수 값이 프로그램·캡처를 보유하므로 인스턴스 파괴 전에 호스트 등록을 해제한다.
+        for (Body& body : bodies)
+        {
+            body.onUpdate = NeoCore::Scalar();
+            body.callerId = 0;
+        }
     }
 
     void Load(const std::string& path)
     {
         NeoCore::Error error;
-        program = NeoCore::Program::Compile(Read(path), *bindings, error, path, true);
+        program = runtime->Compile(Read(path), error, path, true);
         Require(bool(program), error.sourceName + ":" + std::to_string(error.line) + ": " + error.message);
         for (Body& body : bodies)
         {
@@ -206,7 +218,8 @@ public:
             Require(bool(body.instance), "cannot create instance: " + error.message);
             Require(body.instance->SetHostObject("GameObject", NeoCore::ObjectHandle(body.id), error), error.message);
             Complete(body.instance->Run(), body.name + " initialization");
-            Require(body.eventId == 1, body.name + " did not register OnUpdate");
+            Require(body.onUpdate.kind() == NeoCore::Scalar::Kind::Function && body.callerId == body.instance->Id(),
+                body.name + " did not register OnUpdate");
         }
     }
 
@@ -220,9 +233,10 @@ public:
         for (std::size_t i = 0; i < bodies.size(); ++i)
         {
             Body& body = bodies[i];
-            Require(body.eventId == 1, "invalid retained event ID");
-            Complete(body.instance->Call("OnEvent", {NeoCore::Scalar::Int(body.eventId), NeoCore::Scalar::Float(dt)}, limits),
-                body.name + " update");
+            NeoCore::Instance* caller = runtime->FindInstance(body.callerId);
+            Require(caller != nullptr, "event caller instance no longer exists");
+            const NeoCore::Scalar callback = body.onUpdate;
+            Complete(caller->Call(callback, {NeoCore::Scalar::Float(dt)}, limits), body.name + " update");
             const double speed = i == 0 ? 1.0 : -0.5;
             body.reference.x = static_cast<float>(body.reference.x + speed * dt);
             body.reference.y = static_cast<float>((i == 0 ? 0.0 : 0.5) + std::sin(elapsed_ * 3.0) * 0.5);
