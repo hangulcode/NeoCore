@@ -72,7 +72,7 @@ struct SStaticConst
 // float 는 정확 비교가 불안정해서 case key 로 허용하지 않는다(컴파일 에러).
 struct ProgramSwitchKey
 {
-	VAR_TYPE	_type = VAR_NONE;   // VAR_BOOL / VAR_INT / VAR_STRING
+	VAR_TYPE	_type = VAR_NONE;   // VAR_INT / VAR_STRING
 	NS_INT			_int = 0;
 	bool		_bl = false;
 	std::string	_str;               // VAR_STRING 전용 (UTF-8 바이트 그대로)
@@ -214,9 +214,5 @@ struct DebugInstructionFormatContext
 // 에러로 볼지 말지는 호출자가 정한다 — 컴파일 타임은 컴파일 에러, 런타임은 표시만.
 bool FormatDebugOperation(const DebugInstructionFormatContext& context, std::string& outAssembly,
 	int* outByteCount = nullptr);
-
-// 로드/패치가 끝난 Program 이미지용 공통 포맷터 어댑터.
-void FormatDebugInstruction(const CNeoVMProgram& program, int opIndex,
-	std::string& outByteCode, std::string& outAssembly);
 
 };

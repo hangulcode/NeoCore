@@ -67,9 +67,6 @@ protected:
 };
 
 
-#if NEOSCRIPT_LEGACY_ARITHMETIC
-struct neo_DCalllibs;
-#endif
 struct neo_libs;
 class CNeoVM;
 class CNeoVMWorker : public INeoVMWorker, public AllocBase, public CoroutineBase
@@ -78,9 +75,6 @@ class CNeoVMWorker : public INeoVMWorker, public AllocBase, public CoroutineBase
 	friend		SVarWrapper;
 	friend		MapInfo;
 	friend		neo_libs;
-#if NEOSCRIPT_LEGACY_ARITHMETIC
-	friend		neo_DCalllibs;
-#endif
 private:
 	class NativeFrameScope;
 	// 컴파일 이미지(코드/함수테이블/디버그정보/상수)는 프로그램이 소유하고 워커들이 공유한다.
@@ -307,10 +301,8 @@ private:
     virtual void DebugStepOut() override;
     virtual void DebugPause() override;
     virtual bool DebugIsPaused() override;
-    virtual NeoDebugLocation DebugGetLocation() override;
     virtual void DebugGetStackTrace(std::vector<NeoDebugStackFrame>& frames) override;
     virtual void DebugGetFrameVariables(int frameId, std::vector<NeoDebugVariable>& vars) override;
-    virtual void DebugGetExecutableLines(std::vector<int>& lines) override;
     virtual void DebugGetExecutableLocations(std::vector<NeoDebugLocation>& locations) override;
 
 	bool	IsMainCoroutine(CoroutineInfo* p) { return (m_pMainCtx == p); }
@@ -381,7 +373,6 @@ private:
 
 public:
 	mRND m_sRand;
-	std::string m_jsonError;
 
 	virtual void Var_Move(VarInfo* v1, VarInfo* v2) override
 	{
@@ -407,50 +398,7 @@ private:
 	void DivI64(VarInfo* r, const VarInfo* left, const VarInfo* right);
 	bool CheckShiftCount(NS_INT count);
 
-#if NEOSCRIPT_LEGACY_ARITHMETIC
-	void MoveMinus(VarInfo* v1, VarInfo* v2);
-	void Add2(VarInfo* r, VarInfo* v2);
-	void Sub2(VarInfo* r, VarInfo* v2);
-	void Mul2(VarInfo* r, VarInfo* v2);
-	void Div2(VarInfo* r, VarInfo* v2);
-	void Per2(VarInfo* r, VarInfo* v2);
-	void LSh2(VarInfo* r, VarInfo* v2);
-	void RSh2(VarInfo* r, VarInfo* v2);
-	void LSh2Rare(VarInfo* r, VarInfo* v2);
-	void RSh2Rare(VarInfo* r, VarInfo* v2);
-	void And2(VarInfo* r, VarInfo* v2);
-	void Or2 (VarInfo* r, VarInfo* v2);
-	void Xor2(VarInfo* r, VarInfo* v2);
 
-	NEOS_NOINLINE void Add2Rare(VarInfo* r, VarInfo* v2);
-	NEOS_NOINLINE void Sub2Rare(VarInfo* r, VarInfo* v2);
-	NEOS_NOINLINE void Mul2Rare(VarInfo* r, VarInfo* v2);
-	NEOS_NOINLINE void Div2Rare(VarInfo* r, VarInfo* v2);
-
-	void And(VarInfo* r, VarInfo* v1, VarInfo* v2);
-	void Or(VarInfo* r, VarInfo* v1, VarInfo* v2);
-
-	void Add3(VarInfo* r, VarInfo* v1, VarInfo* v2);
-	NEOS_NOINLINE void Add3Rare(VarInfo* r, VarInfo* v1, VarInfo* v2);
-	NEOS_NOINLINE void Sub3Rare(VarInfo* r, VarInfo* v1, VarInfo* v2);
-	NEOS_NOINLINE void Mul3Rare(VarInfo* r, VarInfo* v1, VarInfo* v2);
-	NEOS_NOINLINE void Div3Rare(VarInfo* r, VarInfo* v1, VarInfo* v2);
-	void Sub3(VarInfo* r, VarInfo* v1, VarInfo* v2);
-	void Mul3(VarInfo* r, VarInfo* v1, VarInfo* v2);
-	void Div3(VarInfo* r, VarInfo* v1, VarInfo* v2);
-	// 벡터 산술: v1 은 VAR_VEC. op 0=+ 1=- 2=* 3=/. v2 는 성분 수가 같은 벡터(성분별) 또는 스칼라(*,/ 만).
-	bool VecArith(VarInfo* r, VarInfo* v1, VarInfo* v2, int op);
-	bool VecArithInline(VarInfo* r, VarInfo* v1, VarInfo* v2, int op);
-	void Per3(VarInfo* r, VarInfo* v1, VarInfo* v2);
-	void LSh3(VarInfo* r, VarInfo* v1, VarInfo* v2);
-	void RSh3(VarInfo* r, VarInfo* v1, VarInfo* v2);
-	void LSh3Rare(VarInfo* r, VarInfo* v1, VarInfo* v2);
-	void RSh3Rare(VarInfo* r, VarInfo* v1, VarInfo* v2);
-	void Xor3(VarInfo* r, VarInfo* v1, VarInfo* v2);
-#endif
-
-	void Inc(VarInfo* v1);
-	void Dec(VarInfo* v1);
 	bool CompareEQ(VarInfo* v1, VarInfo* v2);
 	bool CompareGR(VarInfo* v1, VarInfo* v2, bool reverseDiagnostic = false);
 	bool CompareGE(VarInfo* v1, VarInfo* v2, bool reverseDiagnostic = false);
@@ -489,7 +437,6 @@ private:
 	NS_INT ToInt(VarInfo* v1);
 	NS_FLOAT ToFloat(VarInfo* v1);
 	int ToSize(VarInfo* v1);
-	VarInfo* GetType(VarInfo* v1);
 
 	void CltInsert(VarInfo *pClt, VarInfo *pArray, VarInfo *pValue, const SVMOperation* write = nullptr);
 	void CommitRefVector(VarInfo* value);
@@ -499,16 +446,6 @@ private:
 	void CltInsert(VarInfo *pClt, NS_INT key, NS_INT v);
 	void CltRead(VarInfo *pClt, VarInfo *pArray, VarInfo *pValue);
 	void CltReadRare(VarInfo *pClt, VarInfo *pArray, VarInfo *pValue);
-#if NEOSCRIPT_LEGACY_ARITHMETIC
-	// READ_ADD/SUB/MUL/DIV: dest op= clt[key]. 빠른 경로는 디스패치 루프에 인라인되고 나머지는 ReadArithRare 로 간다.
-	// 산술 종류는 템플릿 인자라 호출 지점마다 접힌다.
-	template<eNOperation OPK> NEOS_FORCEINLINE void ReadArith(const SVMOperation& OP);
-	NEOS_NOINLINE void ReadArithRare(const SVMOperation& OP, eNOperation op);
-	bool ReadElementForArith(VarInfo* clt, VarInfo* key, VarInfo* value, int* deferredTransferFrame);
-	VarInfo* FindCollectionSlot(VarInfo* owner, VarInfo* key);
-	bool ReadArrayOrVectorElement(VarInfo* owner, VarInfo* key, VarInfo& value);
-	void ReadArith2(VarInfo* r, VarInfo* v, eNOperation op);
-#endif
 	void SetArrayAssignError(ArrayInfo* array, VarInfo* value);
 	void TableRemove(VarInfo *pTable, VarInfo *pArray);
 	VarInfo* GetTableItem(VarInfo *pTable, VarInfo *pArray);

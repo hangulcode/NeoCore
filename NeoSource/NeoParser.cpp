@@ -292,66 +292,21 @@ static void ReadElement(SOperand& operand, int dest, CArchiveRdWC& ar, SFunction
     }
     ResolveContainer(operand, ar, funs);
     funs._cur->Push_TableRead(ar, operand._iVar, operand._iArrayIndex, dest,
-        operand.IsHaveShort(), operand._assignedResult ? NOP_CLT_READ_RESULT : NOP_CLT_READ);
+        operand.IsHaveShort(), NOP_CLT_READ);
 }
 
-bool g_neoFuseCollectionReads = true;
 
-#if NEOSCRIPT_LEGACY_ARITHMETIC
-#define LEGACY_EMIT_OP(ar, op) op
-#else
 static eNOperation RejectLegacyArithmetic(CArchiveRdWC& ar)
 {
     SetCompileError(ar, "numeric expressions require typed IR");
     return NOP_ERROR;
 }
-#define LEGACY_EMIT_OP(ar, op) RejectLegacyArithmetic(ar)
-#endif
 
 
-#if NEOSCRIPT_LEGACY_ARITHMETIC
-// 복합 대입(x op= clt[key])에서 융합할 수 있는 산술이면 READ_* opcode 를, 아니면 NOP_NONE 을 돌려준다.
-static eNOperation ReadArithOpcode(eNOperation op)
-{
-	if (op == NOP_ADD2) return NOP_READ_ADD;
-	if (op == NOP_SUB2) return NOP_READ_SUB;
-	if (op == NOP_MUL2) return NOP_READ_MUL;
-	if (op == NOP_DIV2) return NOP_READ_DIV;
-	return NOP_NONE;
-}
-
-#endif
 
 static void WriteElement(SOperand& operand, eNOperation op, int value, bool immediate,
 	CArchiveRdWC& ar, SFunctions& funs)
 {
-#if NEOSCRIPT_LEGACY_ARITHMETIC
-    if (op == NOP_ADD2 || op == NOP_SUB2 || op == NOP_MUL2 || op == NOP_DIV2 || op == NOP_PERSENT2 ||
-        op == NOP_LSHIFT2 || op == NOP_RSHIFT2 || op == NOP_AND2 || op == NOP_OR2 || op == NOP_XOR2)
-    {
-        // 우변 값을 먼저 고정한다. 대상 getter가 같은 변수를 바꿔도 산술 입력은 바뀌지 않는다.
-        if (!IsTempVar(value) && !IsCompileConstant(value))
-        {
-            const int saved = funs._cur->AllocLocalTempVar();
-            funs._cur->Push_OP2(ar, NOP_MOV, saved, value, immediate);
-            value = saved;
-            immediate = false;
-        }
-        // 대입 뒤 보존된 벡터는 현재 소유자의 값으로 갱신한다. 호스트 getter는 반복하지 않는다.
-        if (operand._container.loaded && operand._container.owner != INVALID_ERROR_PARSEJOB)
-        {
-            funs._cur->Push_TableRead(ar, operand._container.owner, operand._container.key,
-                operand._iVar, false, NOP_CLT_READ_RESULT);
-            funs._cur->GetOPPointer(funs._cur->_iLastOPOffset)->argFlag |= NEOS_OP_REF_LOADED;
-        }
-        PrepareContainerPath(operand, ar, funs);
-        const int updated = funs._cur->AllocLocalTempVar();
-        ReadElement(operand, updated, ar, funs);
-        funs._cur->Push_OP2(ar, op, updated, value, immediate);
-        WriteElement(operand, NOP_MOV, updated, false, ar, funs);
-        return;
-    }
-#endif
     PrepareContainerPath(operand, ar, funs);
 	const auto access = operand._container;
     if (access.owner != INVALID_ERROR_PARSEJOB && op == NOP_MOV)
@@ -658,11 +613,6 @@ std::map<std::string, TK_TYPE> g_sStringToToken;
 
 #define TOKEN_STR1(key, str) g_sTokenToString[key] = STokenValue(str, 20, NOP_NONE)
 #define TOKEN_STR2(key, str) g_sTokenToString[key] = STokenValue(str, 20, NOP_NONE); g_sStringToToken[str] = key
-#if NEOSCRIPT_LEGACY_ARITHMETIC
-#define LEGACY_ARITHMETIC_OP(op) op
-#else
-#define LEGACY_ARITHMETIC_OP(op) NOP_NONE
-#endif
 
 #define TOKEN_STR3(key, str, pri, op) g_sTokenToString[key] = STokenValue(str, pri, op); g_sStringToToken[str] = key
 
@@ -722,7 +672,6 @@ int InitDefaultTokenString()
 	TOKEN_STR3(TK_TOINT, "toint", 20, NOP_TOINT);
 	TOKEN_STR3(TK_TOFLOAT, "tofloat", 20, NOP_TOFLOAT);
 	TOKEN_STR3(TK_TOSIZE, "tosize", 20, NOP_TOSIZE);
-	TOKEN_STR3(TK_GETTYPE, "type", 20, NOP_GETTYPE);
 	TOKEN_STR3(TK_SLEEP, "sleep", 20, NOP_SLEEP);
 
 	TOKEN_STR2(TK_RETURN, "return");
@@ -739,40 +688,39 @@ int InitDefaultTokenString()
 	TOKEN_STR2(TK_TRUE, "true");
 	TOKEN_STR2(TK_FALSE, "false");
 	TOKEN_STR2(TK_NULL, "null");
-	TOKEN_STR2(TK_SOURCE_LINE, "__LINE__");
 
-	TOKEN_STR3(TK_PLUS2, "++", 1, NOP_INC);
-	TOKEN_STR3(TK_MINUS2, "--", 1, NOP_DEC);
+	TOKEN_STR3(TK_PLUS2, "++", 1, NOP_NONE);
+	TOKEN_STR3(TK_MINUS2, "--", 1, NOP_NONE);
 
-	TOKEN_STR3(TK_PLUS, "+", 5, LEGACY_ARITHMETIC_OP(NOP_ADD3));
-	TOKEN_STR3(TK_PLUS_EQ, "+=", 15, LEGACY_ARITHMETIC_OP(NOP_ADD2));
-	TOKEN_STR3(TK_MINUS, "-", 5, LEGACY_ARITHMETIC_OP(NOP_SUB3));
-	TOKEN_STR3(TK_MINUS_EQ, "-=", 15, LEGACY_ARITHMETIC_OP(NOP_SUB2));
-	TOKEN_STR3(TK_MUL, "*", 4, LEGACY_ARITHMETIC_OP(NOP_MUL3));
-	TOKEN_STR3(TK_MUL_EQ, "*=", 15, LEGACY_ARITHMETIC_OP(NOP_MUL2));
-	TOKEN_STR3(TK_DIV, "/", 4, LEGACY_ARITHMETIC_OP(NOP_DIV3));
-	TOKEN_STR3(TK_DIV_EQ, "/=", 15, LEGACY_ARITHMETIC_OP(NOP_DIV2));
-	TOKEN_STR3(TK_PERCENT, "%", 4, LEGACY_ARITHMETIC_OP(NOP_PERSENT3));
-	TOKEN_STR3(TK_PERCENT_EQ, "%=", 15, LEGACY_ARITHMETIC_OP(NOP_PERSENT2));
+	TOKEN_STR3(TK_PLUS, "+", 5, NOP_NONE);
+	TOKEN_STR3(TK_PLUS_EQ, "+=", 15, NOP_NONE);
+	TOKEN_STR3(TK_MINUS, "-", 5, NOP_NONE);
+	TOKEN_STR3(TK_MINUS_EQ, "-=", 15, NOP_NONE);
+	TOKEN_STR3(TK_MUL, "*", 4, NOP_NONE);
+	TOKEN_STR3(TK_MUL_EQ, "*=", 15, NOP_NONE);
+	TOKEN_STR3(TK_DIV, "/", 4, NOP_NONE);
+	TOKEN_STR3(TK_DIV_EQ, "/=", 15, NOP_NONE);
+	TOKEN_STR3(TK_PERCENT, "%", 4, NOP_NONE);
+	TOKEN_STR3(TK_PERCENT_EQ, "%=", 15, NOP_NONE);
 
-	TOKEN_STR3(TK_LSHIFT, "<<", 6, LEGACY_ARITHMETIC_OP(NOP_LSHIFT3));
-	TOKEN_STR3(TK_LSHIFT_EQ, "<<=", 15, LEGACY_ARITHMETIC_OP(NOP_LSHIFT2));
-	TOKEN_STR3(TK_RSHIFT, ">>", 6, LEGACY_ARITHMETIC_OP(NOP_RSHIFT3));
-	TOKEN_STR3(TK_RSHIFT_EQ, ">>=", 15, LEGACY_ARITHMETIC_OP(NOP_RSHIFT2));
+	TOKEN_STR3(TK_LSHIFT, "<<", 6, NOP_NONE);
+	TOKEN_STR3(TK_LSHIFT_EQ, "<<=", 15, NOP_NONE);
+	TOKEN_STR3(TK_RSHIFT, ">>", 6, NOP_NONE);
+	TOKEN_STR3(TK_RSHIFT_EQ, ">>=", 15, NOP_NONE);
 
 	TOKEN_STR2(TK_NOT, "~");
-	TOKEN_STR3(TK_XOR, "^", 10, LEGACY_ARITHMETIC_OP(NOP_XOR3)); // C 우선순위: & (9) > ^ (10) > | (11)
-	TOKEN_STR3(TK_XOR_EQ, "^=", 15, LEGACY_ARITHMETIC_OP(NOP_XOR2));
+	TOKEN_STR3(TK_XOR, "^", 10, NOP_NONE); // C 우선순위: & (9) > ^ (10) > | (11)
+	TOKEN_STR3(TK_XOR_EQ, "^=", 15, NOP_NONE);
 	TOKEN_STR3(TK_EQUAL, "=", 15, NOP_MOV);
 	TOKEN_STR3(TK_EQUAL_EQ, "==", 8, NOP_EQUAL2);
 	TOKEN_STR3(TK_EQUAL_NOT, "!=", 8, NOP_NEQUAL);
 
-	TOKEN_STR3(TK_AND, "&", 9, LEGACY_ARITHMETIC_OP(NOP_AND));
-	TOKEN_STR3(TK_AND_EQ, "&=", 15, LEGACY_ARITHMETIC_OP(NOP_AND2));
-	TOKEN_STR3(TK_AND2, "&&", 12, NOP_LOG_AND);
-	TOKEN_STR3(TK_OR, "|", 11, LEGACY_ARITHMETIC_OP(NOP_OR));
-	TOKEN_STR3(TK_OR_EQ, "|=", 15, LEGACY_ARITHMETIC_OP(NOP_OR2));
-	TOKEN_STR3(TK_OR2, "||", 13, NOP_LOG_OR);
+	TOKEN_STR3(TK_AND, "&", 9, NOP_NONE);
+	TOKEN_STR3(TK_AND_EQ, "&=", 15, NOP_NONE);
+	TOKEN_STR3(TK_AND2, "&&", 12, NOP_NONE);
+	TOKEN_STR3(TK_OR, "|", 11, NOP_NONE);
+	TOKEN_STR3(TK_OR_EQ, "|=", 15, NOP_NONE);
+	TOKEN_STR3(TK_OR2, "||", 13, NOP_NONE);
 
 	TOKEN_STR2(TK_L_SMALL, "(");
 	TOKEN_STR2(TK_R_SMALL, ")");
@@ -791,10 +739,8 @@ int InitDefaultTokenString()
 	TOKEN_STR2(TK_COMMA, ",");
 	TOKEN_STR2(TK_DOT, ".");
 	TOKEN_STR3(TK_DOT2, "..", 6, NOP_STR_ADD);
-	TOKEN_STR2(TK_SHARP, "#");
 	TOKEN_STR2(TK_QUOTE2, "\"");
 	TOKEN_STR2(TK_QUOTE1, "'");
-	TOKEN_STR2(TK_QUESTION, "?");
 	TOKEN_STR2(TK_LOGIC_NOT, "!");
 
 	TOKEN_STR2(TK_YIELD, "yield");
@@ -806,37 +752,10 @@ int InitDefaultTokenString()
 	OP_STR1(NOP_MOVI, 3);
 	OP_STR1(NOP_MOVF, 3);
 	OP_STR1(NOP_LOADK, 3);
-#if NEOSCRIPT_LEGACY_ARITHMETIC
-	OP_STR1(NOP_MOV_MINUS, 2);
-#endif
 	OP_STR1(NOP_LOG_NOT, 2);
-#if NEOSCRIPT_LEGACY_ARITHMETIC
-	OP_STR1(NOP_ADD2, 2);
-	OP_STR1(NOP_SUB2, 2);
-	OP_STR1(NOP_MUL2, 2);
-	OP_STR1(NOP_DIV2, 2);
-	OP_STR1(NOP_PERSENT2, 2);
-	OP_STR1(NOP_LSHIFT2, 2);
-	OP_STR1(NOP_RSHIFT2, 2);
-	OP_STR1(NOP_AND2, 2);
-	OP_STR1(NOP_OR2, 2);
-	OP_STR1(NOP_XOR2, 2);
-#endif
 
 	OP_STR1(NOP_VAR_CLEAR, 1);
-	OP_STR1(NOP_INC, 1);
-	OP_STR1(NOP_DEC, 1);
 
-#if NEOSCRIPT_LEGACY_ARITHMETIC
-	OP_STR1(NOP_ADD3, 3);
-	OP_STR1(NOP_SUB3, 3);
-	OP_STR1(NOP_MUL3, 3);
-	OP_STR1(NOP_DIV3, 3);
-	OP_STR1(NOP_PERSENT3, 3);
-	OP_STR1(NOP_LSHIFT3, 3);
-	OP_STR1(NOP_RSHIFT3, 3);
-	OP_STR1(NOP_XOR3, 3);
-#endif
 
 	OP_STR1(NOP_GREAT, 3);
 	OP_STR1(NOP_GREAT_EQ, 3);
@@ -844,12 +763,6 @@ int InitDefaultTokenString()
 	OP_STR1(NOP_LESS_EQ, 3);
 	OP_STR1(NOP_EQUAL2, 3);
 	OP_STR1(NOP_NEQUAL, 3);
-#if NEOSCRIPT_LEGACY_ARITHMETIC
-	OP_STR1(NOP_AND, 3);
-	OP_STR1(NOP_OR, 3);
-#endif
-	OP_STR1(NOP_LOG_AND, 3);
-	OP_STR1(NOP_LOG_OR, 3);
 
 	OP_STR1(NOP_JMP_GREAT, 3);
 	OP_STR1(NOP_JMP_GREAT_EQ, 3);
@@ -857,10 +770,6 @@ int InitDefaultTokenString()
 	OP_STR1(NOP_JMP_LESS_EQ, 3);
 	OP_STR1(NOP_JMP_EQUAL2, 3);
 	OP_STR1(NOP_JMP_NEQUAL, 3);
-	OP_STR1(NOP_JMP_AND, 3);
-	OP_STR1(NOP_JMP_OR, 3);
-	OP_STR1(NOP_JMP_NAND, 3);
-	OP_STR1(NOP_JMP_NOR, 3);
 	OP_STR1(NOP_JMP_FOR, 3);
 	OP_STR1(NOP_JMP_FOREACH, 3);
 	OP_STR1(NOP_SWITCH, 2); // n1 = table index, n2 = 조건식 위치 (n3 미사용)
@@ -871,7 +780,6 @@ int InitDefaultTokenString()
 	OP_STR1(NOP_TOINT, 2);
 	OP_STR1(NOP_TOFLOAT, 2);
 	OP_STR1(NOP_TOSIZE, 2);
-	OP_STR1(NOP_GETTYPE, 2);
 	OP_STR1(NOP_SLEEP, 2);
 
 	OP_STR1(NOP_FMOV1, 2);
@@ -901,13 +809,6 @@ int InitDefaultTokenString()
 	OP_STR1(NOP_JMP_RANGE_INSIDE_L, 3);
 	OP_STR1(NOP_JMP_RANGE_OUTSIDE_L, 3);
 	OP_STR1(NOP_CLT_WRITE_REF, 3);
-	OP_STR1(NOP_CLT_READ_RESULT, 3);
-#if NEOSCRIPT_LEGACY_ARITHMETIC
-	OP_STR1(NOP_READ_ADD, 3);
-	OP_STR1(NOP_READ_SUB, 3);
-	OP_STR1(NOP_READ_MUL, 3);
-	OP_STR1(NOP_READ_DIV, 3);
-#endif
 
 #define REGISTER_CORE_TYPED_OP(op, name, suffix, arity, slots, writes, comparison, jump, branchOp) OP_STR1(op, (arity) + 1);
 	NEOCORE_TYPED_OPS(REGISTER_CORE_TYPED_OP)
@@ -1434,14 +1335,10 @@ TK_TYPE GetToken(CArchiveRdWC& ar, std::string& tk)
 			return CalcToken(TK_COMMA, ar, tk);
 		case '.':
 			return CalcToken(TK_DOT, ar, tk);
-		case '#':
-			return CalcToken(TK_SHARP, ar, tk);
 		case '"':
 			return CalcToken(TK_QUOTE2, ar, tk);
 		case '\'':
 			return CalcToken(TK_QUOTE1, ar, tk);
-		case '?':
-			return CalcToken(TK_QUESTION, ar, tk);
 		case '!':
 			return CalcToken(TK_LOGIC_NOT, ar, tk);
 
@@ -1662,9 +1559,6 @@ void ClearTempVars(SFunctions& funs)
 	funs._cur->FreeLocalTempVar();
 	eNOperation opLast = funs._cur->GetLastOP();
 	if (opLast == NOP_MOV || opLast == NOP_I64_NEG || opLast == NOP_F64_NEG
-#if NEOSCRIPT_LEGACY_ARITHMETIC
-        || opLast == NOP_MOV_MINUS
-#endif
     )
 	{
 		int iVar = funs._cur->GetN(funs._cur->_iLastOPOffset, 0);
@@ -1697,8 +1591,6 @@ void AddBuildinFunction(CArchiveRdWC& ar, SFunctions& funs, const std::string& f
 }
 bool AddBuildinModule(CArchiveRdWC& ar, SFunctions& funs, SVars& vars, const std::list< SystemFun>* p)
 {
-	SFunctionLayer* pLayerBackup = funs._curModule;
-
 	for(auto it = (*p).begin(); it != (*p).end(); it++)
 	{
 		const SystemFun& f = (*it);
@@ -2290,9 +2182,9 @@ bool ParseFunCall(SOperand& iResultStack, TK_TYPE tkTypePre, SFunctionInfo* pFun
 				int iArrayIndex = funs.AddStaticString(pFun->_name);
 				iResultStack = funs._cur->AllocLocalTempVar();
 				funs._cur->Push_CallPtr2(ar, iArrayIndex, iParamCount, iResultStack._iVar, iCallLine);
-				//funs._cur->Push_OP2(ar, tkTypePre != TK_MINUS ? NOP_MOV : LEGACY_EMIT_OP(ar, NOP_MOV_MINUS), iResultStack._iVar, STACK_POS_RETURN, false);
+				//funs._cur->Push_OP2(ar, tkTypePre != TK_MINUS ? NOP_MOV : RejectLegacyArithmetic(ar), iResultStack._iVar, STACK_POS_RETURN, false);
 				if (tkTypePre == TK_MINUS)
-					funs._cur->Push_OP2(ar, LEGACY_EMIT_OP(ar, NOP_MOV_MINUS), iResultStack._iVar, iResultStack._iVar, false);
+					funs._cur->Push_OP2(ar, RejectLegacyArithmetic(ar), iResultStack._iVar, iResultStack._iVar, false);
 				return true;
 			}
 			else
@@ -2307,7 +2199,7 @@ bool ParseFunCall(SOperand& iResultStack, TK_TYPE tkTypePre, SFunctionInfo* pFun
 				funs._cur->Push_Call(ar, NOP_CALL, pFun->_funID, iParamCount, iResultStack._iVar, iCallLine);
 			}
 			if (tkTypePre == TK_MINUS)
-				funs._cur->Push_OP2(ar, LEGACY_EMIT_OP(ar, NOP_MOV_MINUS), iResultStack._iVar, iResultStack._iVar, false);
+				funs._cur->Push_OP2(ar, RejectLegacyArithmetic(ar), iResultStack._iVar, iResultStack._iVar, false);
 			return true;
 		}
 		else if(iResultStack._iVar != -1)
@@ -2316,13 +2208,13 @@ bool ParseFunCall(SOperand& iResultStack, TK_TYPE tkTypePre, SFunctionInfo* pFun
 			{
 				funs._cur->Push_CallPtr(ar, iResultStack._iVar, iResultStack._iArrayIndex, iParamCount, false, iCallLine);
 				iResultStack = funs._cur->AllocLocalTempVar();
-				funs._cur->Push_OP2(ar, tkTypePre != TK_MINUS ? NOP_MOV : LEGACY_EMIT_OP(ar, NOP_MOV_MINUS), iResultStack._iVar, STACK_POS_RETURN, false);
+				funs._cur->Push_OP2(ar, tkTypePre != TK_MINUS ? NOP_MOV : RejectLegacyArithmetic(ar), iResultStack._iVar, STACK_POS_RETURN, false);
 			}
 			else
 			{	// TODO
 				funs._cur->Push_CallPtr(ar, iResultStack._iVar, iResultStack._iArrayIndex, iParamCount, false, iCallLine);
 				iResultStack = funs._cur->AllocLocalTempVar();
-				funs._cur->Push_OP2(ar, tkTypePre != TK_MINUS ? NOP_MOV : LEGACY_EMIT_OP(ar, NOP_MOV_MINUS), iResultStack._iVar, STACK_POS_RETURN, false);
+				funs._cur->Push_OP2(ar, tkTypePre != TK_MINUS ? NOP_MOV : RejectLegacyArithmetic(ar), iResultStack._iVar, STACK_POS_RETURN, false);
 			}
 		}
 		else
@@ -2330,9 +2222,9 @@ bool ParseFunCall(SOperand& iResultStack, TK_TYPE tkTypePre, SFunctionInfo* pFun
 			int iArrayIndex = iResultStack._iArrayIndex;
 			iResultStack = funs._cur->AllocLocalTempVar();
 			funs._cur->Push_CallPtr2(ar, iArrayIndex, iParamCount, iResultStack._iVar, iCallLine);
-//			funs._cur->Push_OP2(ar, tkTypePre != TK_MINUS ? NOP_MOV : LEGACY_EMIT_OP(ar, NOP_MOV_MINUS), iResultStack._iVar, STACK_POS_RETURN, false);
+//			funs._cur->Push_OP2(ar, tkTypePre != TK_MINUS ? NOP_MOV : RejectLegacyArithmetic(ar), iResultStack._iVar, STACK_POS_RETURN, false);
 			if (tkTypePre == TK_MINUS)
-				funs._cur->Push_OP2(ar, LEGACY_EMIT_OP(ar, NOP_MOV_MINUS), iResultStack._iVar, iResultStack._iVar, false);
+				funs._cur->Push_OP2(ar, RejectLegacyArithmetic(ar), iResultStack._iVar, iResultStack._iVar, false);
 		}
 	}
 	else if (tkType1 == TK_SEMICOLON)
@@ -2354,7 +2246,6 @@ bool ParseFunCall(SOperand& iResultStack, TK_TYPE tkTypePre, SFunctionInfo* pFun
 bool ParseNum(SOperand& iResultStack, TK_TYPE tkTypePre, std::string& tk1, CArchiveRdWC& ar, SFunctions& funs, SVars& vars)
 {
 	std::string tk2;
-	TK_TYPE tkType2;
 
 	ParsedNumber num;
 
@@ -2377,7 +2268,7 @@ bool ParseNum(SOperand& iResultStack, TK_TYPE tkTypePre, std::string& tk1, CArch
 		{
 			ar.GetData(true);
 
-			tkType2 = GetToken(ar, tk2);
+			GetToken(ar, tk2);
 			double num2 = 0;
 			double f = num.floatValue;
 			if (true == StringToDoubleLow(num2, tk2.c_str()))
@@ -2445,7 +2336,6 @@ TK_TYPE ParseListDef(SOperand& iResultStack, CArchiveRdWC& ar, SFunctions& funs,
 {
 	std::string tk1;
 	TK_TYPE tkType1;
-	TK_TYPE r = TK_NONE;
 
 	// // List alloc
 	iResultStack = funs._cur->AllocLocalTempVar();
@@ -2534,7 +2424,6 @@ TK_TYPE ParseTableDef(SOperand& iResultStack, CArchiveRdWC& ar, SFunctions& funs
 {
 	std::string tk1, tk2;
 	TK_TYPE tkType1, tkType2;
-	TK_TYPE r = TK_NONE;
 
 	// Table alloc
 	iResultStack = funs._cur->AllocLocalTempVar();
@@ -3765,7 +3654,7 @@ bool ParseString(SOperand& operand, TK_TYPE tkTypePre, CArchiveRdWC& ar, SFuncti
 		// -L()[i], -S().len() 의 부호는 호출 결과가 아니라 최종 선택자 결과에 한 번만 적용한다.
 		MaterializeValue(value, ar, funs);
 		const int negated = IsTempVar(value._iVar) ? value._iVar : funs._cur->AllocLocalTempVar();
-		funs._cur->Push_OP2(ar, LEGACY_EMIT_OP(ar, NOP_MOV_MINUS), negated, value._iVar, false);
+		funs._cur->Push_OP2(ar, RejectLegacyArithmetic(ar), negated, value._iVar, false);
 		value = SOperand(negated);
 	}
 	operand = value;
@@ -3794,15 +3683,15 @@ static bool ParseUnaryOperand(SOperand& operand, TK_TYPE prefix, CArchiveRdWC& a
             return false;
         }
         if (operand.IsArray())
-            WriteElement(operand, LEGACY_EMIT_OP(ar, type == TK_PLUS2 ? NOP_ADD2 : NOP_SUB2), funs.AddStaticInt(1), false, ar, funs);
-        else funs._cur->Push_OP1(ar, type == TK_PLUS2 ? NOP_INC : NOP_DEC, operand._iVar);
+            WriteElement(operand, RejectLegacyArithmetic(ar), funs.AddStaticInt(1), false, ar, funs);
+        else funs._cur->Push_OP1(ar, RejectLegacyArithmetic(ar), operand._iVar);
     }
     else if (type == TK_L_SMALL)
     {
         if (ParseShortCircuitLogic(true, operand, ar, funs, vars) != TK_R_SMALL) return false;
         if (!ParsePostfixSelectors(operand, ar, funs, vars)) return false;
     }
-    else if (type == TK_TOSTRING || type == TK_TOINT || type == TK_TOFLOAT || type == TK_TOSIZE || type == TK_GETTYPE)
+    else if (type == TK_TOSTRING || type == TK_TOINT || type == TK_TOFLOAT || type == TK_TOSIZE)
     {
         if (!ParseToType(operand._iVar, type, ar, funs, vars)) return false;
         if (!ParsePostfixSelectors(operand, ar, funs, vars)) return false;
@@ -3844,9 +3733,9 @@ static bool ParseUnaryOperand(SOperand& operand, TK_TYPE prefix, CArchiveRdWC& a
         const int old = funs._cur->AllocLocalTempVar();
         ReadElement(operand, old, ar, funs);
         if (operand.IsArray())
-            WriteElement(operand, LEGACY_EMIT_OP(ar, next == TK_PLUS2 ? NOP_ADD2 : NOP_SUB2), funs.AddStaticInt(1), false, ar, funs);
+            WriteElement(operand, RejectLegacyArithmetic(ar), funs.AddStaticInt(1), false, ar, funs);
         else
-            funs._cur->Push_OP1(ar, next == TK_PLUS2 ? NOP_INC : NOP_DEC, operand._iVar);
+            funs._cur->Push_OP1(ar, RejectLegacyArithmetic(ar), operand._iVar);
         operand = SOperand(old);
     }
     else ar.PushToken(next, token);
@@ -3876,15 +3765,11 @@ static bool ParseUnaryOperand(SOperand& operand, TK_TYPE prefix, CArchiveRdWC& a
     const int result = funs._cur->AllocLocalTempVar();
     if (prefix == TK_NOT)
     {
-#if NEOSCRIPT_LEGACY_ARITHMETIC
-        funs._cur->Push_OP(ar, NOP_XOR3, result, operand._iVar, funs.AddStaticInt(-1), false, false);
-#else
         SetCompileError(ar, "bitwise expressions require typed IR");
         return false;
-#endif
     }
     else
-        funs._cur->Push_OP2(ar, prefix == TK_MINUS ? LEGACY_EMIT_OP(ar, NOP_MOV_MINUS) : NOP_LOG_NOT, result, operand._iVar, false);
+        funs._cur->Push_OP2(ar, prefix == TK_MINUS ? RejectLegacyArithmetic(ar) : NOP_LOG_NOT, result, operand._iVar, false);
     operand = SOperand(result);
     return true;
 }
@@ -4202,7 +4087,6 @@ TK_TYPE ParseJob(bool bReqReturn, SOperand& sResultStack, std::vector<SJumpValue
 
 	SOperand iCurrentStack = INVALID_ERROR_PARSEJOB;
 	SOperand iTempOffset;
-	int iArrayIndex = INVALID_ERROR_PARSEJOB;
 
 	std::vector<SOperand> operands;
 	std::vector<TK_TYPE> operators;
@@ -4247,13 +4131,11 @@ TK_TYPE ParseJob(bool bReqReturn, SOperand& sResultStack, std::vector<SJumpValue
 			continue;
 		}
 
-#if !NEOSCRIPT_LEGACY_ARITHMETIC
         if (op == NOP_NONE)
         {
             SetCompileError(ar, "numeric expressions require typed IR");
             return false;
         }
-#endif
         // 함수 값 대입에서도 목적지를 먼저 검사한다.
 		if (op < NOP_VAR_CLEAR && (a.IsFun() || a._readOnly ||
 			(!a.IsArray() && (IsTempVar(a._iVar) || IsCompileConstant(a._iVar)))))
@@ -4272,15 +4154,6 @@ TK_TYPE ParseJob(bool bReqReturn, SOperand& sResultStack, std::vector<SJumpValue
 			}
 			else if (op == NOP_MOV && !a.IsArray() && b.IsArray())
 				ReadElement(b, a._iVar, ar, funs); // retain READ-to-destination fusion
-#if NEOSCRIPT_LEGACY_ARITHMETIC
-			else if (g_neoFuseCollectionReads && !a.IsArray() && b.IsArray() && !b._assignedResult &&
-				ReadArithOpcode(op) != NOP_NONE)
-			{
-				// x op= clt[key]: 원소 읽기를 임시 슬롯에 실체화하지 않고 READ_* 한 명령으로 낸다.
-				ResolveContainer(b, ar, funs);
-				funs._cur->Push_TableRead(ar, b._iVar, b._iArrayIndex, a._iVar, b.IsHaveShort(), ReadArithOpcode(op));
-			}
-#endif
 			else
 			{
 				MaterializeValue(b, ar, funs); // complete the RHS before resolving the destination
@@ -4310,7 +4183,6 @@ TK_TYPE ParseJob(bool bReqReturn, SOperand& sResultStack, std::vector<SJumpValue
 	while (blEnd == false)
 	{
 		iTempOffset.Reset();
-		iArrayIndex = INVALID_ERROR_PARSEJOB;
 
 		tkType1 = GetToken(ar, tk1);
 		if (tkType1 == tkEnd1 || tkType1 == tkEnd2 || tkType1 == tkEnd3 || tkType1 == tkEnd4 ||
@@ -4372,11 +4244,6 @@ TK_TYPE ParseJob(bool bReqReturn, SOperand& sResultStack, std::vector<SJumpValue
 			}
 			funs._presetExprEffects = -1;
 			if (!ParsePostfixSelectors(iTempOffset, ar, funs, vars)) return TK_NONE;
-			operands.push_back(SOperand(iTempOffset));
-			blApperOperator = true;
-			break;
-		case TK_SOURCE_LINE:
-			iTempOffset = funs.AddStaticInt((int)ar.CurLine());
 			operands.push_back(SOperand(iTempOffset));
 			blApperOperator = true;
 			break;
@@ -4576,7 +4443,6 @@ TK_TYPE ParseJob(bool bReqReturn, SOperand& sResultStack, std::vector<SJumpValue
 		case TK_TOINT:
 		case TK_TOFLOAT:
 		case TK_TOSIZE:
-		case TK_GETTYPE:
 			// iTempOffset 에 -1 을 대입하면 SOperand(int) 생성자가 _operandType 을 Data_None 으로
 			// 잡아버린다. ParseToType 은 _iVar 만 채우므로 그 표시가 남아, 값은 멀쩡한데
 			// "값 없음" 으로 보이는 피연산자가 만들어진다(리스트 리터럴이 원소를 버리는 원인).
@@ -4605,7 +4471,7 @@ TK_TYPE ParseJob(bool bReqReturn, SOperand& sResultStack, std::vector<SJumpValue
 				if (a.IsArray())
 				{
 					const int one = funs.AddStaticInt(1);
-					WriteElement(a, LEGACY_EMIT_OP(ar, tkType1 == TK_PLUS2 ? NOP_ADD2 : NOP_SUB2), one, false, ar, funs);
+					WriteElement(a, RejectLegacyArithmetic(ar), one, false, ar, funs);
 					const int value = funs._cur->AllocLocalTempVar();
 					ReadElement(a, value, ar, funs);
 					a = SOperand(value);
@@ -4613,7 +4479,7 @@ TK_TYPE ParseJob(bool bReqReturn, SOperand& sResultStack, std::vector<SJumpValue
 				else
 				{
 					a._operandType = Increment_Prefix;
-					funs._cur->Push_OP1(ar, tkType1 == TK_PLUS2 ? NOP_INC : NOP_DEC, a._iVar);
+					funs._cur->Push_OP1(ar, RejectLegacyArithmetic(ar), a._iVar);
 				}
 
 				operands.push_back(a);
@@ -4642,7 +4508,7 @@ TK_TYPE ParseJob(bool bReqReturn, SOperand& sResultStack, std::vector<SJumpValue
 						ReadElement(a, iTempOffset2, ar, funs);
 					}
 					const int one = funs.AddStaticInt(1);
-					WriteElement(a, LEGACY_EMIT_OP(ar, tkType1 == TK_PLUS2 ? NOP_ADD2 : NOP_SUB2), one, false, ar, funs);
+					WriteElement(a, RejectLegacyArithmetic(ar), one, false, ar, funs);
 				}
 				else
 				{
@@ -4651,7 +4517,7 @@ TK_TYPE ParseJob(bool bReqReturn, SOperand& sResultStack, std::vector<SJumpValue
 						iTempOffset2 = funs._cur->AllocLocalTempVar();
 						funs._cur->Push_OP2(ar, NOP_MOV, iTempOffset2, a._iVar, false);
 					}
-					funs._cur->Push_OP1(ar, tkType1 == TK_PLUS2 ? NOP_INC : NOP_DEC, a._iVar);
+					funs._cur->Push_OP1(ar, RejectLegacyArithmetic(ar), a._iVar);
 				}
 
 				if (bReqReturn)
@@ -5093,10 +4959,6 @@ eNOperation ConvertCheckOPToOptimize(eNOperation n)
 		return NOP_JMP_EQUAL2;
 	case NOP_NEQUAL:	// !=
 		return NOP_JMP_NEQUAL;
-	case NOP_LOG_AND:	// &&
-		return NOP_JMP_AND;
-	case NOP_LOG_OR:	// ||
-		return NOP_JMP_OR;
 	default:
 		break;
 	}
@@ -5117,10 +4979,6 @@ eNOperation ConvertCheckOPToOptimizeInv(eNOperation n)
 		return NOP_JMP_NEQUAL;
 	case NOP_NEQUAL:	// !=
 		return NOP_JMP_EQUAL2;
-	case NOP_LOG_AND:	// &&
-		return NOP_JMP_NAND;
-	case NOP_LOG_OR:	// ||
-		return NOP_JMP_NOR;
 	default:
 		break;
 	}
@@ -6156,10 +6014,6 @@ static bool ParseConstPrimary(SConstValue& out, CArchiveRdWC& ar, SFunctions& fu
 	case TK_TRUE:  out.type = NEO_DEFINE_TOKEN_TRUE;  return true;
 	case TK_FALSE: out.type = NEO_DEFINE_TOKEN_FALSE; return true;
 	case TK_NULL:  out.type = NEO_DEFINE_TOKEN_NULL;  return true;
-	case TK_SOURCE_LINE:
-		out.type = NEO_DEFINE_TOKEN_INT;
-		out.i = (int)ar.CurLine();
-		return true;
 	case TK_PLUS:
 		if (false == ParseConstPrimary(out, ar, funs))
 			return false;
@@ -6523,8 +6377,6 @@ bool ParseSwitch(CArchiveRdWC& ar, SFunctions& funs, SVars& vars, bool* alwaysRe
 					SetParserCompileError(ar, PCE_SWITCH_FLOAT_CASE);
 					return false;
 				case NEO_DEFINE_TOKEN_STRING: kc._type = VAR_STRING; kc._str = cv.s; break;
-				case NEO_DEFINE_TOKEN_TRUE:   kc._type = VAR_BOOL; kc._bl = true; break;
-				case NEO_DEFINE_TOKEN_FALSE:  kc._type = VAR_BOOL; kc._bl = false; break;
 				default:
 					SetParserCompileError(ar, PCE_SWITCH_INVALID_CASE_VALUE);
 					return false;
@@ -6553,7 +6405,6 @@ bool ParseSwitch(CArchiveRdWC& ar, SFunctions& funs, SVars& vars, bool* alwaysRe
 					switch (e._type)
 					{
 					case VAR_INT:    same = (e._int == keys[i]._int); break;
-					case VAR_BOOL:   same = (e._bl == keys[i]._bl); break;
 					case VAR_STRING: same = (e._str == keys[i]._str); break;
 					default: break;
 					}
@@ -6631,8 +6482,6 @@ bool ParseMiddleArea(std::vector<SJumpValue>* pJumps, CArchiveRdWC& ar, SFunctio
 	SOperand iTempOffset;
 	FUNCTION_TYPE funType = FUNT_NORMAL;   // export: 호스트에 보임
 	bool blPublic = false;                 // public: 다른 모듈에 보임. 둘은 별개이며 각각 한 번만 쓴다.
-
-	SLayerVar* pCurLayer = vars.GetCurrentLayer();
 
 	bool bGlobalLocal;
 	bool blEnd = false;
@@ -6804,11 +6653,9 @@ bool ParseMiddleArea(std::vector<SJumpValue>* pJumps, CArchiveRdWC& ar, SFunctio
         case TK_TOINT:
         case TK_TOFLOAT:
         case TK_TOSIZE:
-        case TK_GETTYPE:
         case TK_TRUE:
         case TK_FALSE:
         case TK_NULL:
-        case TK_SOURCE_LINE:
 		case TK_PLUS2:
 		case TK_MINUS2:
         case TK_PLUS:
@@ -6932,8 +6779,6 @@ static bool IsRelativeJumpOp(eNOperation op)
 	case NOP_JMP_GREAT:		case NOP_JMP_GREAT_EQ:
 	case NOP_JMP_LESS:		case NOP_JMP_LESS_EQ:
 	case NOP_JMP_EQUAL2:	case NOP_JMP_NEQUAL:
-	case NOP_JMP_AND:		case NOP_JMP_OR:
-	case NOP_JMP_NAND:		case NOP_JMP_NOR:
 	case NOP_JMP_FOR:		case NOP_JMP_FOREACH:
 	case NOP_JMP_RANGE_INSIDE:	case NOP_JMP_RANGE_OUTSIDE:
 		return true;
@@ -6952,15 +6797,7 @@ static int HoistableOperandMask(eNOperation op)
 	switch (op)
 	{
 	case NOP_MOV:			// n1 = dest
-#if NEOSCRIPT_LEGACY_ARITHMETIC
-	case NOP_MOV_MINUS:		// n1 = dest
-	case NOP_ADD2:			// n1 = dest 겸 src
-#endif
 		return 0x2;
-#if NEOSCRIPT_LEGACY_ARITHMETIC
-	case NOP_ADD3:	case NOP_SUB3:	case NOP_MUL3:
-	case NOP_AND:
-#endif
 	case NOP_JMP_GREAT:		case NOP_JMP_GREAT_EQ:
 	case NOP_JMP_LESS:		case NOP_JMP_LESS_EQ:
 	case NOP_JMP_EQUAL2:	case NOP_JMP_NEQUAL:

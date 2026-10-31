@@ -39,17 +39,6 @@ enum NeoExecStatus
 	NEOEXEC_ERROR     = 2,   // 에러 → 컨텍스트 반납됨
 };
 
-// 등록된 빌트인 함수 1개의 정보 (자동완성/코드어시스트용 리플렉션).
-// 원천은 AddSystemFun / g_sNeoFunLib_* 등록 그 자체이므로 손 유지가 필요없다.
-struct NeoBuiltinInfo
-{
-	std::string module;    // "math","system","coroutine" (namespaced) 또는 "string","list","map" (타입 메서드)
-	std::string name;      // 함수/메서드 이름
-	int         argCount = -1;  // 인자 수. -1 = 가변("..." 포함)/미상(타입 메서드)
-	std::string ret;       // 리턴 타입("void","float","list" …). 비어있으면 미상(타입 메서드)
-	std::vector<std::string> params;  // "float x" 형태의 타입+이름 목록(등록 나열 그대로). 마지막이 "..." 이면 가변.
-};
-
 // 워커의 현재 실행 상태. 별도 플래그를 저장하지 않고 워커의 실제 컨텍스트/정지 상태에서 계산한다.
 enum class NeoExecutionState : u8
 {
@@ -520,10 +509,8 @@ public:
 	virtual void DebugStepOut() = 0;
 	virtual void DebugPause() = 0;
 	virtual bool DebugIsPaused() = 0;
-	virtual NeoDebugLocation DebugGetLocation() = 0;
 	virtual void DebugGetStackTrace(std::vector<NeoDebugStackFrame>& frames) = 0;
 	virtual void DebugGetFrameVariables(int frameId, std::vector<NeoDebugVariable>& vars) = 0;
-	virtual void DebugGetExecutableLines(std::vector<int>& lines) = 0;
 	virtual void DebugGetExecutableLocations(std::vector<NeoDebugLocation>& locations) = 0;
 
 	static void neo_pushcclosureNative(FunctionPtrNative* pOut, Neo_NativeFunction pFun)
@@ -697,7 +684,6 @@ public:
 	void Var_SetArray(VarInfo* d, ArrayInfo* p);
 	void Var_SetSet(VarInfo* d, SetInfo* p);
 	void Var_SetFun(VarInfo* d, int fun_index);
-	void Var_SetModule(VarInfo* d, INeoVMWorker* p);
 	void Var_SetAsync(VarInfo* d, AsyncInfo* p);
 
 	inline void	ReturnValue() { Var_Release(GetReturnVar()); }
@@ -877,10 +863,6 @@ struct NeoVMSystem
 
 	static bool		Initialize(INeoLoader* loader = nullptr);
 	static bool		Shutdown();
-
-	// 등록된 빌트인(math/system/coroutine 및 string/list/map 메서드) 전체를 열거한다.
-	// Initialize() 이후 유효. 코드어시스트가 이 목록을 당겨 자동완성 소스로 쓴다(하드코딩 불필요).
-	static void		GetBuiltins(std::vector<NeoBuiltinInfo>& out);
 
 	static CNeoVM*	CompileAndLoadVM(const NeoCompilerParam& param, const NeoLoadVMParam* vparam = nullptr);
 	static CNeoVM*  CompileAndLoadRunVM(const NeoCompilerParam& param, const NeoLoadVMParam* vparam = nullptr);

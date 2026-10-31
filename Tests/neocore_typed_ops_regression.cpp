@@ -11,7 +11,6 @@
 
 using namespace NeoScript;
 
-static_assert(!NEOSCRIPT_LEGACY_ARITHMETIC, "NeoCore tests require the static opcode profile");
 
 static int checks = 0;
 static int failures = 0;

@@ -74,8 +74,8 @@ static void CheckNames()
         "", "two words", "Game.Object", "0object", "bad-name", "var", "fun", "int", "float",
         "bool", "string", "void", "int32", "float32", "any", "null", "true", "false", "return",
         "import", "public", "export", "const", "struct", "if", "while", "print", "tostring",
-        "toint", "tofloat", "type", "list", "map", "array", "array32", "set", "math", "system",
-        "Vector2", "Vector3", "Vector4", "Quaternion", "__LINE__"
+        "toint", "tofloat", "list", "map", "array", "array32", "set", "math", "system",
+        "Vector2", "Vector3", "Vector4", "Quaternion"
     };
     HostSchema schema;
     const TypeId owner = schema.AddObject("Object1");

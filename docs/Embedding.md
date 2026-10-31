@@ -153,11 +153,13 @@ and the host schema. `LoadImage` validates and loads that data without recompili
 source. Reattach callbacks, resolvers, transports and current object IDs through
 options/bindings. The current image format requires the same host schema and
 registration order. Live pointers are never serialized. Images have corruption
-checks, not cryptographic authentication. The current backend version is `0150`;
+checks, not cryptographic authentication. The current backend version is `0151`;
 older images must be regenerated after incompatible opcode changes.
 
 [JSON.md](JSON.md) describes typed JSON conversion.
 [Unity.md](Unity.md) describes the C ABI and managed wrappers.
+[native-vector-api.md](native-vector-api.md) describes the sized vector read
+overloads shared by the C++ API, the C ABI and the Unity bindings.
 The [mini-game host](../Samples/neocore/minigame/README.md) is the complete
 shared-program, multiple-instance example.
 

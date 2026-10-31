@@ -152,14 +152,6 @@ enum class RunStatus : uint8_t
     Cancelled,   // Cancel 로 실행이 버려짐
 };
 
-enum class InstanceState : uint8_t
-{
-    Idle,
-    Running,
-    Suspended,
-    Failed,
-};
-
 enum class ValueType : uint8_t
 {
     None,
@@ -456,7 +448,6 @@ private:
 //
 // userData 는 "바인딩별"이다: 이 디스패처가 불릴 때 ctx.userData() 로 받는다.
 //  · RegisterObject 의 userData = 기본값(전역 공유 객체, 예: Services)
-//  · BindObject(instance, name, userData) = 인스턴스별 덮어쓰기(예: GameObject 의 eventID)
 //------------------------------------------------------------------------------
 using NativeMethod   = bool (*)(CallContext& ctx, StringView method);
 // get: 네이티브가 ctx.retX() 로 값 제공. set: ctx.argX(0) 로 들어온 값 읽음.
@@ -485,17 +476,6 @@ struct CompileDefine
     StringView text;   // "37" / "1.5" / "hi"(따옴표 없이) / "true" 등. Null 은 text 무시.
 };
 
-// 미리 빌드한 define 집합. 같은 defines 로 여러 번 컴파일할 때 매 Compile 의 맵 재구성
-// (문자열 생성 + 해시맵 할당)을 피한다. CreateDefineSet 으로 한 번 만들어 여러 CompileDesc 에 넘긴다.
-struct DefineSetHandle
-{
-    constexpr DefineSetHandle() noexcept = default;
-    explicit constexpr DefineSetHandle(uint32_t value, uint32_t version = 0) noexcept : id(value), generation(version) {}
-    uint32_t id = 0;
-    uint32_t generation = 0;
-    explicit operator bool() const noexcept { return id != 0; }
-};
-
 struct CompileDesc
 {
     StringView source;
@@ -507,9 +487,7 @@ struct CompileDesc
     StringView coreIntrinsicPrefix;
     // 컴파일 동안만 빌려 쓰는 타입 검증 IR. 일반 NeoScript 소스에서는 nullptr이다.
     const NeoCore::TypedIR* coreTypedIR = nullptr;
-    // define 은 둘 중 하나로. 재사용이면 defineSet(빌드 1회), 매번 다르면 defines(인라인).
-    Span<const CompileDefine> defines;   // 인라인(적은 수/매번 다를 때)
-    DefineSetHandle           defineSet; // 미리 만든 집합(우선). 있으면 defines 무시.
+    Span<const CompileDefine> defines;
     // 디버그 다중 소스 매핑(선택, includeDebugInfo=true 일 때): 메인 소스 경로 +
     // import 로 끌려온 소스 파일 경로 목록(out). 파일 인덱스는 이 목록 순서.
     StringView                debugSourcePath;
@@ -666,16 +644,6 @@ struct DebugLocation
     int32_t callDepth = 0;
 };
 
-// 프로그램에 저장된 디버그 명령 1개. code 는 원시 바이트코드, assembly 는 사람이 읽는 VM 명령이다.
-struct DebugInstruction
-{
-    int32_t opIndex = -1;
-    int32_t file = -1;
-    int32_t line = -1;
-    std::string code;
-    std::string assembly;
-};
-
 struct DebugBreakpoint
 {
     int32_t file = -1;
@@ -725,26 +693,11 @@ public:
     // 디버거의 협력형 실행 분할 전용이다. 0이면 분할하지 않는다.
     virtual void SetSliceBudget(InstanceHandle instance, uint64_t budget) = 0;
 
-    virtual DebugLocation GetLocation(InstanceHandle instance) = 0;
     virtual void GetStackTrace(InstanceHandle instance, std::vector<DebugStackFrame>& frames) = 0;
     virtual void GetFrameVariables(InstanceHandle instance, int frameId, std::vector<DebugVariable>& vars) = 0;
 
-    // 프로그램 정적 정보(브레이크포인트 검증용 실행가능 라인)
-    virtual void GetExecutableLines(ProgramHandle program, std::vector<int>& lines) = 0;
     // 파일별 실행가능 위치(file+line). DAP 처럼 다중 소스에서 라인을 파일로 구분할 때.
     virtual void GetExecutableLocations(ProgramHandle program, std::vector<DebugLocation>& out) = 0;
-};
-
-//------------------------------------------------------------------------------
-// 빌트인 리플렉션 (자동완성/코드어시스트)
-//------------------------------------------------------------------------------
-struct BuiltinInfo
-{
-    std::string module;                 // "math","system",... 또는 "string","list","map"
-    std::string name;
-    int32_t argCount = -1;
-    std::string ret;
-    std::vector<std::string> params;
 };
 
 //------------------------------------------------------------------------------
@@ -790,8 +743,6 @@ public:
     // 네이티브 객체를 전역 심볼로 선언 + 디스패처 등록(컴파일이 전역명을 알아야 하므로 Freeze/Compile 전).
     virtual bool RegisterObject(const NativeObjectDesc& desc) = 0;
     virtual void FreezeBindings() = 0;
-    // 등록된 객체 타입 핸들 조회(setObject/pushObject 용). 없으면 falsy. FreezeBindings 후에도 가능.
-    virtual ObjectType GetObjectType(StringView name) = 0;
 
     //--- Program (불변 공유 코드) ---
     // 컴파일 = 두 단계로 분리: (1) 소스→바이트코드(빌드 산출물), (2) 바이트코드→Program(실행 가능).
@@ -804,10 +755,6 @@ public:
     virtual Error CompileToBytecode(const CompileDesc& desc, std::vector<uint8_t>& outBytecode) = 0;
     virtual ProgramHandle LoadProgram(Span<const uint8_t> bytecode, Error* error = nullptr) = 0;
     virtual void DestroyProgram(ProgramHandle program) = 0;   // 인스턴스 생존 시 refcount 로 지연 해제
-    virtual void GetDebugInstructions(ProgramHandle program, std::vector<DebugInstruction>& out) const = 0;
-    // 재사용 define 집합: 한 번 빌드해 CompileDesc.defineSet 으로 여러 Compile 에 재사용(재구성 0).
-    virtual DefineSetHandle CreateDefineSet(Span<const CompileDefine> defines) = 0;
-    virtual void DestroyDefineSet(DefineSetHandle set) = 0;
 
     //--- Instance (프로그램별 실행 상태 + 전역변수) ---
     virtual InstanceHandle CreateInstance(ProgramHandle program, const InstanceDesc& desc = {}) = 0;
@@ -815,23 +762,12 @@ public:
     // Invocation 또는 실행 중인 코드가 인스턴스를 쓰는 동안 파괴와 초기화를 거부한다.
     virtual bool CanDestroyInstance(InstanceHandle instance) const = 0;
     virtual bool CanDestroy() const = 0;
-    virtual bool IsAlive(InstanceHandle instance) const = 0;   // 핸들이 아직 유효한 인스턴스인지(파괴 후 false)
     // 인스턴스를 **핸들을 유지한 채** 갓 생성된 상태로 되돌린다(전역변수 초기화 + 바인딩 재구성 +
     // CreateInstance 때의 runGlobalInit 재실행). FindFunction으로 얻은 일반 FunctionHandle은
     // 그대로 유효하다. argFunction으로 얻은 캡처 람다 핸들은 이전 실행 프레임을 가리키므로
     // Reset 뒤에는 자동으로 무효다.
-    // BindObject 로 준 인스턴스별 userData 는 보존된다. 살아있는 Invocation 이 있으면 실패(false).
-    // 실패 시 인스턴스는 파괴되고 핸들이 무효화된다(IsAlive 로 확인할 것).
+    // 살아있는 Invocation 이 있으면 실패(false). 실패 시 인스턴스는 파괴되고 핸들이 무효화된다.
     virtual bool ResetInstance(InstanceHandle instance) = 0;
-    virtual InstanceState GetState(InstanceHandle instance) const = 0;
-    // RegisterObject 로 선언한 객체의 userData 를 이 인스턴스에 한해 덮어씀(GameObject 의 eventID 등).
-    // 디스패처는 ctx.userData() 로 이 값을 받는다. 미지정이면 NativeObjectDesc.userData 사용.
-    virtual bool BindObject(InstanceHandle instance, StringView name, void* userData) = 0;
-    // 인스턴스의 전역 변수(globalName)를 네이티브 객체로 바인딩(onInstanceBind 훅에서 사용).
-    // type=GetObjectType 로 얻은 디스패처, userData=인스턴스별 self(예: eventID). 워커는 shim 내부에만.
-    virtual void BindGlobalObject(InstanceHandle instance, StringView globalName, ObjectType type, void* userData) = 0;
-    // 인스턴스의 전역 VAR_MAP(mapName)에 key 로 네이티브 객체를 삽입(서브서비스 바인딩).
-    virtual void BindGlobalMapObject(InstanceHandle instance, StringView mapName, StringView key, ObjectType type, void* userData) = 0;
     // CreateInstance(runGlobalInit=false) 로 만든 인스턴스의 최상위(전역 초기화) 코드를 실행.
     // 디버거로 전역 코드에 BP 를 걸려면: CreateInstance(false) → SetBreakpoints → RunGlobalInit.
     // 반환 Completed=완료, Suspended=디버거/sleep 로 정지(Continue/Resume 필요).
@@ -853,34 +789,14 @@ public:
     // false 를 반환한다(그 경우엔 ctx.fail() 로 실패시킬 것). 슬라이스 사이/정지 상태에서 호출할 것.
     virtual bool Cancel(InstanceHandle instance) = 0;
 
-    //--- 협조적/시간분할 실행.
-    // 장시간/무한 함수를 슬라이스로 나눠 실행: StartSliced 로 시작 → IsRunning 동안 UpdateSliced 반복.
-    // timeoutMs/budget = 슬라이스당 한도(-1/0 = 무제한). ---
-    virtual bool StartSliced(InstanceHandle instance, StringView functionName, int32_t timeoutMs = -1, uint32_t budget = 0) = 0;
-    virtual RunStatus UpdateSliced(InstanceHandle instance) = 0;   // 한 슬라이스. Completed=끝, Suspended=계속.
-    virtual bool IsRunning(InstanceHandle instance) const = 0;
-
-    //--- 전역변수 (타입드 in-place) ---
-    virtual bool GetGlobalInt(InstanceHandle instance, StringView name, int64_t& out) const = 0;
-    bool GetGlobalInt(InstanceHandle instance, StringView name, int32_t& out) const { int64_t v; if (!GetGlobalInt(instance, name, v) || v < INT32_MIN || v > INT32_MAX) return false; out = static_cast<int32_t>(v); return true; }
-    virtual bool GetGlobalFloat(InstanceHandle instance, StringView name, double& out) const = 0;
-    bool GetGlobalFloat(InstanceHandle instance, StringView name, float& out) const { double value; if (!GetGlobalFloat(instance, name, value)) return false; out = static_cast<float>(value); return true; }
-    virtual bool GetGlobalString(InstanceHandle instance, StringView name, StringView& out) const = 0;
-    virtual bool SetGlobalInt(InstanceHandle instance, StringView name, int64_t v) = 0;
-    virtual bool SetGlobalFloat(InstanceHandle instance, StringView name, double v) = 0;
-    virtual bool SetGlobalString(InstanceHandle instance, StringView name, StringView v) = 0;
-
     // [비동기 네이티브는 지원하지 않는다] 네이티브 호출은 항상 동기 완료다. 스크립트가 오래 걸리는
     // 작업을 기다려야 하면 (1) 스크립트 레벨 async 라이브러리(system.async + async.get/wait)를 쓰거나
     // (2) 호스트가 결과를 폴링해 스크립트 콜백을 Call 하는 형태로 설계할 것.
 
     //--- 마지막 런타임 에러 (init/call 중 발생). 있으면 true+텍스트, 소비(clear)한다. ---
     virtual bool TakeLastError(StringView& out) = 0;
-    // 비파괴 읽기(clear 안 함). 여러 곳에서 같은 에러를 봐야 할 때(예: DAP 이벤트+출력).
-    virtual bool PeekLastError(StringView& out) const = 0;
 
     //--- 리플렉션 / 디버거 ---
-    virtual void GetBuiltins(std::vector<BuiltinInfo>& out) const = 0;
     virtual IDebugger* GetDebugger() = 0;   // 디버그 빌드가 아니면 nullptr
 
     //--- 메모리 ---
@@ -901,12 +817,10 @@ public:
     virtual int CollectCycles(bool force = false) = 0;
     // 빈 페이지 보유 시간(초). 0 이면 스윕이 빈 걸 본 즉시 회수 대상이 된다.
     virtual void SetEmptyPageHoldSeconds(float sec) = 0;
-    virtual float GetEmptyPageHoldSeconds() const = 0;
     // TrimMemory(false) 한 번이 해제할 페이지 수 상한(기본 4). 회수 속도와 프레임당
     // 비용의 트레이드오프 손잡이다 — 크게 하면 빨리 돌려주고, 작게 하면 더 잘게 나눈다.
     // 0 이하면 상한 없음(예전처럼 한 번에 전부).
     virtual void SetTrimPagesPerCall(int pages) = 0;
-    virtual int GetTrimPagesPerCall() const = 0;
 };
 
 IRuntime* CreateRuntime(const RuntimeDesc& desc = {});

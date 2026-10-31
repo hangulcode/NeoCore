@@ -236,15 +236,6 @@ NEOS_FORCEINLINE void INeoVMWorker::Var_SetSet(VarInfo* d, SetInfo* p)
 	d->_set = p;
 	++p->_refCount;
 }
-inline void INeoVMWorker::Var_SetModule(VarInfo* d, INeoVMWorker* p)
-{
-	if (d->IsAllocType())
-		Var_Release(d);
-
-	d->SetType(VAR_MODULE);
-	d->_module = p;
-	++((CNeoVMWorker*)p)->_refCount;
-}
 inline void INeoVMWorker::Var_SetAsync(VarInfo* d, AsyncInfo* p)
 {
 	if (d->IsAllocType())

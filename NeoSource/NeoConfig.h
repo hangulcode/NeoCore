@@ -6,9 +6,6 @@
 #include <limits>
 
 // 이전 .ns 회귀 전용 빌드만 범용 3항 산술을 포함한다. NeoCore 기본 빌드에는 넣지 않는다.
-#ifndef NEOSCRIPT_LEGACY_ARITHMETIC
-#define NEOSCRIPT_LEGACY_ARITHMETIC 0
-#endif
 
 namespace NeoScript
 {
@@ -106,11 +103,8 @@ struct debug_info
 // 0148: 생성되지 않는 컨테이너 복합 대입 명령 5개를 제거한다. 이전 캐시는 다시 만든다.
 // 0149/L149: 정적/이전 동적 명령 집합을 구분하여 서로의 이미지를 로드하지 않는다.
 // 0150/L150: 압축 int32/float32 배열의 생성·읽기·쓰기·추가 전용 명령을 추가한다.
-#if NEOSCRIPT_LEGACY_ARITHMETIC
-#define NEO_VER (('L' << 24) | ('1' << 16) | ('5' << 8) | ('0'))
-#else
-#define NEO_VER (('0' << 24) | ('1' << 16) | ('5' << 8) | ('0'))
-#endif
+// 0151: 이전 동적 산술 명령 집합과 생성되지 않는 논리·증감·타입·대입결과 명령 10개를 제거한다. 이전 캐시는 다시 만든다.
+#define NEO_VER (('0' << 24) | ('1' << 16) | ('5' << 8) | ('1'))
 
 #if defined(_MSC_VER) && !defined(_DEBUG)
 #define NEOS_FORCEINLINE __forceinline

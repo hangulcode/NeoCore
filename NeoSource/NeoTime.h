@@ -7,7 +7,6 @@ namespace NeoScript
 {
 class CNeoVMWorker;
 struct VarInfo;
-struct NeoBuiltinInfo;
 
 namespace TimeLibrary
 {
@@ -21,6 +20,5 @@ bool UtcFormatMilliseconds(CNeoVMWorker* worker, VarInfo*, short args);
 bool UtcParseMilliseconds(CNeoVMWorker* worker, VarInfo*, short args);
 bool Stopwatch(CNeoVMWorker* worker, VarInfo*, short args);
 bool UtcCalendar(long long seconds, std::tm& calendar);
-void GetBuiltins(std::vector<NeoBuiltinInfo>& out);
 }
 }

@@ -35,7 +35,6 @@ enum TK_TYPE
 	TK_TOINT,
 	TK_TOFLOAT,
 	TK_TOSIZE,
-	TK_GETTYPE,
 	TK_SLEEP,
 
 	TK_RETURN,
@@ -49,7 +48,6 @@ enum TK_TYPE
 	TK_TRUE,
 	TK_FALSE,
 	TK_NULL,
-	TK_SOURCE_LINE, // __LINE__
 
 	TK_PLUS2, // ++
 	TK_MINUS2, // --
@@ -100,10 +98,8 @@ enum TK_TYPE
 	TK_COMMA, // ,
 	TK_DOT, // .
 	TK_DOT2, // ..
-	TK_SHARP, // #
 	TK_QUOTE2, // "
 	TK_QUOTE1, // '
-	TK_QUESTION, // ?
 	TK_LOGIC_NOT, // !
 
 	TK_YIELD,

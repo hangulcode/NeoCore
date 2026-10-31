@@ -50,7 +50,7 @@
       <DebugInformationFormat>ProgramDatabase</DebugInformationFormat>
       <AdditionalOptions>/utf-8 %(AdditionalOptions)</AdditionalOptions>
       <AdditionalIncludeDirectories>$(ProjectDir)..\..\..\NeoSource;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
-      <PreprocessorDefinitions>NEOSCRIPT_LEGACY_ARITHMETIC=0;NEOCORE_MINIGAME_SCRIPT=&quot;$(NeoCoreSampleScript)&quot;;NEOCORE_REPLAY_SCRIPT=&quot;$(NeoCoreReplayScript)&quot;;WIN_PRJ;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <PreprocessorDefinitions>NEOCORE_MINIGAME_SCRIPT=&quot;$(NeoCoreSampleScript)&quot;;NEOCORE_REPLAY_SCRIPT=&quot;$(NeoCoreReplayScript)&quot;;WIN_PRJ;%(PreprocessorDefinitions)</PreprocessorDefinitions>
     </ClCompile>
     <Link>
       <SubSystem>Console</SubSystem>

@@ -436,32 +436,5 @@ bool UtcCalendar(long long seconds, std::tm& calendar)
     return true;
 }
 
-void GetBuiltins(std::vector<NeoBuiltinInfo>& out)
-{
-    const auto add = [&out](const char* module, const char* name, const char* ret, const char* parameter)
-    {
-        NeoBuiltinInfo info;
-        info.module = module; info.name = name; info.ret = ret;
-        info.argCount = parameter ? 1 : 0;
-        if (parameter) info.params.push_back(parameter);
-        out.push_back(info);
-    };
-    add("time_span", "total_milliseconds", "int", nullptr);
-    add("time_span", "total_seconds", "float", nullptr);
-    add("time_span", "parts", "map", nullptr);
-    add("time_span", "format", "string", nullptr);
-    add("time_span", "add", "time_span", "time_span other");
-    add("time_span", "subtract", "time_span", "time_span other");
-    add("time_span", "compare", "int", "time_span other");
-    add("stopwatch", "elapsed", "time_span", nullptr);
-    add("stopwatch", "elapsed_ms", "int", nullptr);
-    add("stopwatch", "restart", "void", nullptr);
-    add("stopwatch", "elapsed_us", "int", nullptr);
-    add("stopwatch", "elapsed_seconds", "float", nullptr);
-    add("stopwatch", "start", "void", nullptr);
-    add("stopwatch", "stop", "void", nullptr);
-    add("stopwatch", "reset", "void", nullptr);
-    add("stopwatch", "is_running", "bool", nullptr);
-}
 }
 }

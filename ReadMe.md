@@ -155,10 +155,11 @@ cmake --build Build/neocore --config Release --parallel
 ctest --test-dir Build/neocore -C Release --output-on-failure
 ```
 
-C++ hosts link `NeoCore::Runtime`, which uses `neocore_backend` with
-`NEOSCRIPT_LEGACY_ARITHMETIC=0`. Generic binary/compound arithmetic, numeric
-negation, and fused read/arithmetic are absent from its opcode set and VM dispatch;
-typed numeric and vector operations remain available. Bool logical inversion reads
+C++ hosts link `NeoCore::Runtime`, which uses `neocore_backend`. Generic
+binary/compound arithmetic, numeric negation, fused read/arithmetic, generic logical
+operators, increments, runtime type queries and assignment-result reads have been
+removed from its opcode set and VM dispatch; typed numeric and vector operations
+remain available. Bool logical inversion reads
 its statically checked bool value directly.
 The frontend no longer exposes an untyped comparison mode. Constant folding uses
 compiler operations independently of VM opcode numbers.

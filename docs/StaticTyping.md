@@ -149,10 +149,11 @@ mode has been removed. Literal folding uses compiler semantic operations rather
 than generic VM opcode numbers. Comparisons still needed for bool, string, and
 nullable values, and other unmigrated operations, remain available.
 
-CMake links `NeoCore::Runtime` to `neocore_backend`, compiled with
-`NEOSCRIPT_LEGACY_ARITHMETIC=0`. Dynamic NeoScript library targets and their separate
-test distribution have been removed from this checkout. The shared VM code required
-by typed execution remains; generic arithmetic is not compiled into the NeoCore library.
+CMake links `NeoCore::Runtime` to `neocore_backend`. Dynamic NeoScript library
+targets and their separate test distribution have been removed from this checkout.
+The shared VM code required by typed execution remains; the generic arithmetic,
+logical, increment and runtime type-query opcodes of the dynamic language have been
+deleted from the source rather than compiled out.
 
 The current frontend covers scalar and vector declarations, nominal structs and their fields,
 typed arrays, homogeneous lists/maps/sets, nested collections, named functions,
@@ -812,8 +813,9 @@ members are visible across modules; imported `export` declarations do not expose
 new entry points to the outer host. Private module declarations are isolated by
 name rewriting. Self-imports, import cycles, inconsistent loader results, and
 untyped module contents are rejected. Diagnostics translate rewritten locations
-back to the source module. Runtime `system.load`/`pcall` is not exposed: module
-contents must pass the same static frontend as the root script.
+back to the source module. The runtime `system.load`/`pcall` functions have been
+removed from the backend: module contents must pass the same static frontend as
+the root script.
 
 ## NeoCore benchmark programs
 

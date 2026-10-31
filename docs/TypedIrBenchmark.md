@@ -68,8 +68,9 @@ Relative to the NeoScript baseline, the NeoCore medians are:
   [the first snapshot](FirstNcBenchmark.md).
 - The `switch` statement added in `fd0e229` is not used by the benchmark; this
   session measures the typed IR build as a whole, not that statement.
-- NeoCore uses the CMake Release configuration (`/O2 /Ob2 /DNDEBUG`, MSVC,
-  `NEOSCRIPT_LEGACY_ARITHMETIC=0`). NeoScript is the archived Visual Studio
+- NeoCore uses the CMake Release configuration (`/O2 /Ob2 /DNDEBUG`, MSVC; the
+  generic arithmetic opcodes were compiled out by `NEOSCRIPT_LEGACY_ARITHMETIC=0` at
+  that commit and have since been deleted from the source). NeoScript is the archived Visual Studio
   console build. Lua is the prebuilt 5.5 Win64 binary. C++ is `bench.cpp` built
   with `cl /O2 /std:c++17`. Build configuration and code layout differ between
   these executables and can affect the comparison.

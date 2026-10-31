@@ -8,9 +8,10 @@ signature table; collection and language intrinsics are checked by
 
 ## Language intrinsics
 
-`print`, `tostring`, `toint`, `tofloat`, `tosize`, `type`, `sleep` and `yield` are
-checked language operations. Numeric conversions do not permit arbitrary object
-or collection conversion. Use explicit typed declarations and `fn(...)->T`
+`print`, `tostring`, `toint`, `tofloat`, `sleep` and `yield` are checked language
+operations. Collection and string sizes use the `len()` method. There is no runtime
+type query; types are known at compile time. Numeric conversions do not permit
+arbitrary object or collection conversion. Use explicit typed declarations and `fn(...)->T`
 function values. Conditions require bools.
 
 ## Strings

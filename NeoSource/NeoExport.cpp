@@ -202,44 +202,8 @@ void WriteFun(CArchiveRdWC& arText, CNArchive& ar, SFunctions& funs, SFunctionIn
 
 		switch (v.op)
 		{
-#if NEOSCRIPT_LEGACY_ARITHMETIC
-		case NOP_ADD2:
-		case NOP_SUB2:
-		case NOP_MUL2:
-		case NOP_DIV2:
-		case NOP_PERSENT2:
-		case NOP_LSHIFT2:
-		case NOP_RSHIFT2:
-		case NOP_AND2:
-		case NOP_OR2:
-		case NOP_XOR2:
-			argFlag |= ChangeIndex(staticCount, localCount, curFunStatkSize, v, 1);
-			argFlag |= ChangeIndex(staticCount, localCount, curFunStatkSize, v, 2);
 
-			argFlag |= GetArgIndexToCode(argFlag, &v.n1, &v.n2, nullptr);
-			break;
-#endif
-
-#if NEOSCRIPT_LEGACY_ARITHMETIC
-		case NOP_ADD3:
-		case NOP_SUB3:
-		case NOP_MUL3:
-		case NOP_DIV3:
-		case NOP_PERSENT3:
-		case NOP_LSHIFT3:
-		case NOP_RSHIFT3:
-		case NOP_XOR3:
-			argFlag |= ChangeIndex(staticCount, localCount, curFunStatkSize, v, 1);
-			argFlag |= ChangeIndex(staticCount, localCount, curFunStatkSize, v, 2);
-			argFlag |= ChangeIndex(staticCount, localCount, curFunStatkSize, v, 3);
-			
-			argFlag |= GetArgIndexToCode(argFlag, &v.n1, &v.n2, &v.n3);
-			break;
-
-#endif
 		case NOP_VAR_CLEAR:
-		case NOP_INC:
-		case NOP_DEC:
 			argFlag |= ChangeIndex(staticCount, localCount, curFunStatkSize, v, 1);
 
 			argFlag |= GetArgIndexToCode(argFlag, &v.n1, nullptr, nullptr);
@@ -251,12 +215,6 @@ void WriteFun(CArchiveRdWC& arText, CNArchive& ar, SFunctions& funs, SFunctionIn
 		case NOP_LESS_EQ:	// <=
 		case NOP_EQUAL2:	// ==
 		case NOP_NEQUAL:	// !=
-#if NEOSCRIPT_LEGACY_ARITHMETIC
-		case NOP_AND:		// &
-		case NOP_OR:		// |
-#endif
-		case NOP_LOG_AND:		// &&
-		case NOP_LOG_OR:		// ||
 		case NOP_STR_ADD: // ..
 			argFlag |= ChangeIndex(staticCount, localCount, curFunStatkSize, v, 1);
 			argFlag |= ChangeIndex(staticCount, localCount, curFunStatkSize, v, 2);
@@ -281,10 +239,6 @@ void WriteFun(CArchiveRdWC& arText, CNArchive& ar, SFunctions& funs, SFunctionIn
 		case NOP_JMP_LESS_EQ:	// <=
 		case NOP_JMP_EQUAL2:	// ==
 		case NOP_JMP_NEQUAL:	// !=
-		case NOP_JMP_AND:	// &&
-		case NOP_JMP_OR:		// ||
-		case NOP_JMP_NAND:	// !(&&)
-		case NOP_JMP_NOR:	// !(||)
 			argFlag |= ChangeIndex(staticCount, localCount, curFunStatkSize, v, 2);
 			argFlag |= ChangeIndex(staticCount, localCount, curFunStatkSize, v, 3);
 
@@ -310,7 +264,6 @@ void WriteFun(CArchiveRdWC& arText, CNArchive& ar, SFunctions& funs, SFunctionIn
 		case NOP_TOINT:
 		case NOP_TOFLOAT:
 		case NOP_TOSIZE:
-		case NOP_GETTYPE:
 			argFlag |= ChangeIndex(staticCount, localCount, curFunStatkSize, v, 1);
 			argFlag |= ChangeIndex(staticCount, localCount, curFunStatkSize, v, 2);
 
@@ -322,9 +275,6 @@ void WriteFun(CArchiveRdWC& arText, CNArchive& ar, SFunctions& funs, SFunctionIn
 			break;
 
 		case NOP_MOV:
-#if NEOSCRIPT_LEGACY_ARITHMETIC
-		case NOP_MOV_MINUS:
-#endif
 		case NOP_LOG_NOT:
 			argFlag |= ChangeIndex(staticCount, localCount, curFunStatkSize, v, 1);
 			if ((argFlag & NEOS_ARG_N2_IMMEDIATE) == 0)
@@ -443,13 +393,6 @@ void WriteFun(CArchiveRdWC& arText, CNArchive& ar, SFunctions& funs, SFunctionIn
 			break;
 		}
 		case NOP_CLT_WRITE_REF:
-		case NOP_CLT_READ_RESULT:
-#if NEOSCRIPT_LEGACY_ARITHMETIC
-		case NOP_READ_ADD:
-		case NOP_READ_SUB:
-		case NOP_READ_MUL:
-		case NOP_READ_DIV:
-#endif
             argFlag |= ChangeIndex(staticCount, localCount, curFunStatkSize, v, 1);
             argFlag |= ChangeIndex(staticCount, localCount, curFunStatkSize, v, 2);
             argFlag |= ChangeIndex(staticCount, localCount, curFunStatkSize, v, 3);
@@ -611,11 +554,6 @@ std::string JumpMark(std::map<int, int>& sJumpMark, int opIndex)
 
 void WriteFunLog(CArchiveRdWC& arText, CNArchive& arw, SFunctions& funs, SFunctionInfo& fi, SVars& vars, STempDebug& td)
 {
-	int staticCount = (int)funs._staticVars.size();
-	int localCount = fi._localVarCount;
-
-	int curFunStatkSize = 1 + (int)fi._args.size() + localCount + fi._localTempMax;
-
 	OutAsm("\n");
 	OutAsm(ANSI_COLOR_YELLOW "Fun - %s [T:%d ID:%d] arg:%d var:%d varTemp:%d" ANSI_RESET_ALL "\n", fi.GetFullName().c_str(), fi._funType, fi._funID, (int)fi._args.size(), fi._localVarCount, fi._localTempMax);
 
@@ -644,10 +582,6 @@ void WriteFunLog(CArchiveRdWC& arText, CNArchive& arw, SFunctions& funs, SFuncti
 		case NOP_JMP_LESS_EQ:	// <=
 		case NOP_JMP_EQUAL2:	// ==
 		case NOP_JMP_NEQUAL:	// !=
-		case NOP_JMP_AND:	// &&
-		case NOP_JMP_OR:		// ||
-		case NOP_JMP_NAND:	// !(&&)
-		case NOP_JMP_NOR:	// !(||)
 		case NOP_JMP_FOR:	// for
 		case NOP_JMP_FOREACH:	// foreach
 		case NOP_JMP_RANGE_INSIDE:
@@ -690,7 +624,6 @@ void WriteFunLog(CArchiveRdWC& arText, CNArchive& arw, SFunctions& funs, SFuncti
 		arRead >> v;
 
 		const int skipByteChars = 12;
-		const int OpFlagByteChars = 2;
 
 		// opcode 표기는 공용 포맷터 한 곳에만 있다(NeoVMProgram.cpp: FormatDebugOperation).
 		// 여기서는 컴파일 타임 심볼 표를 resolver 로 공급하고 결과를 콘솔로 내보내기만 한다.
@@ -743,7 +676,6 @@ static void WriteSwitchTables(CNArchive& ar, SFunctions& funs)
 			switch (e._type)
 			{
 			case VAR_INT:    ar.Write((void*)&e._int, sizeof(e._int)); break;
-			case VAR_BOOL:   ar.Write((void*)&e._bl, sizeof(e._bl)); break;
 			case VAR_STRING: WriteString(ar, e._str); break;
 			default: break;
 			}

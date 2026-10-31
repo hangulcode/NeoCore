@@ -44,7 +44,6 @@ inline bool IsCompileConstant(int index)
 
 bool IsTempVar(int iVar);
 // 테스트·실험용 스위치. false 면 READ_* 융합 명령을 내지 않고 분리된 READ + 산술을 낸다.
-extern bool g_neoFuseCollectionReads;
 
 eNOperation	GetOpTypeFromOp(eNOperation op);
 int		GetOpLength(eNOperation op);
@@ -360,39 +359,19 @@ struct SFunctionInfo
 		case NOP_MOV:
 		case NOP_MOVF:
 		case NOP_LOADK:
-#if NEOSCRIPT_LEGACY_ARITHMETIC
-		case NOP_MOV_MINUS:
-#endif
 		case NOP_LOG_NOT:
 		case NOP_VAR_CLEAR:
-#if NEOSCRIPT_LEGACY_ARITHMETIC
-		case NOP_ADD3:
-		case NOP_SUB3:
-		case NOP_MUL3:
-		case NOP_DIV3:
-		case NOP_PERSENT3:
-		case NOP_LSHIFT3:
-		case NOP_RSHIFT3:
-		case NOP_XOR3:
-#endif
 		case NOP_GREAT:		// >
 		case NOP_GREAT_EQ:	// >=
 		case NOP_LESS:		// <
 		case NOP_LESS_EQ:	// <=
 		case NOP_EQUAL2:	// ==
 		case NOP_NEQUAL:	// !=
-#if NEOSCRIPT_LEGACY_ARITHMETIC
-		case NOP_AND:		// &
-		case NOP_OR:		// |
-#endif
-		case NOP_LOG_AND:	// &&
-		case NOP_LOG_OR:	// ||
 		case NOP_STR_ADD:
 		case NOP_TOSTRING:
 		case NOP_TOINT:
 		case NOP_TOFLOAT:
 		case NOP_TOSIZE:
-		case NOP_GETTYPE:
 		case NOP_TABLE_ALLOC:
 			return true;
 		default:
@@ -859,9 +838,8 @@ struct SFunctionLayer
 // 컴파일 타임 switch case 1개. Program 의 ProgramSwitchKey 와 같은 값 모델.
 struct SSwitchCaseCompile
 {
-	VAR_TYPE	_type = VAR_NONE;   // VAR_BOOL / VAR_INT / VAR_STRING (float 는 허용 안 함)
+	VAR_TYPE	_type = VAR_NONE;   // VAR_INT / VAR_STRING (bool/float 는 허용 안 함)
 	NS_INT		_int = 0;
-	bool		_bl = false;
 	std::string	_str;
 	int			_jumpOffset = 0;    // NOP_SWITCH 다음 op 기준 상대 op offset
 };

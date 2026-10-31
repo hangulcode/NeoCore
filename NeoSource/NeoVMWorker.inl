@@ -587,36 +587,6 @@ NEOS_FORCEINLINE bool CNeoVMWorker::CheckShiftCount(NS_INT count)
 	SetError(RTE_INTEGER_SHIFT_RANGE);
 	return false;
 }
-NEOS_FORCEINLINE void CNeoVMWorker::Inc(VarInfo* v1)
-{
-	switch (v1->GetType())
-	{
-	case VAR_INT:
-		v1->_int = NeoIntAdd(v1->_int, 1);
-		return;
-	case VAR_FLOAT:
-		++v1->_float;
-		return;
-	default:
-		break;
-	}
-	SetErrorOperator("++", v1);
-}
-NEOS_FORCEINLINE void CNeoVMWorker::Dec(VarInfo* v1)
-{
-	switch (v1->GetType())
-	{
-	case VAR_INT:
-		v1->_int = NeoIntSub(v1->_int, 1);
-		return;
-	case VAR_FLOAT:
-		--v1->_float;
-		return;
-	default:
-		break;
-	}
-	SetErrorOperator("--", v1);
-}
 
 NEOS_FORCEINLINE bool CNeoVMWorker::CompareEQ(VarInfo* v1, VarInfo* v2)
 {
@@ -779,7 +749,6 @@ NEOS_NOINLINE bool CNeoVMWorker::ForRare(VarInfo* pCur, NS_INT step)
 // 디스패치 루프만 키운다 — CltInsert/PTRCALL 과 같은 fast/rare 분리다.
 NEOS_NOINLINE bool CNeoVMWorker::ForEachRare(VarInfo* pClt, VarInfo* pKey, bool bTwoVar)
 {
-	VarInfo* pValue = pKey + 1;
 	VarInfo* pIterator = pKey + 2;
 	VarInfo* pMutationVersion = pKey + 3;
 

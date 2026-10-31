@@ -9,9 +9,6 @@
 #include "NeoVMInternal.h"
 #include "NeoVMWorker.h"
 #include "NeoArchive.h"
-#if NEOSCRIPT_LEGACY_ARITHMETIC
-#include "NeoLibDCall.h"
-#endif
 #include "UTFString.h"
 
 namespace NeoScript
@@ -79,9 +76,6 @@ void SVarWrapper::SetString(const char* str) { _vmw->Var_SetString(_var, str); }
 //void SVarWrapper::SetTableFun(FunctionPtrNative fun) { _vmw->Var_SetTableFun(_var, fun); }
 
 #include "NeoVMWorker.inl"
-#if NEOSCRIPT_LEGACY_ARITHMETIC
-#include "NeoVMWorker_LegacyArithmetic.inl"
-#endif
 
 // 벡터 세터 (native 호출 내부에서만 쓰이므로 non-inline. NeoLib.cpp 에서 링크됨)
 //
@@ -361,59 +355,6 @@ int CNeoVMWorker::ToSize(VarInfo* v1)
 	}
 	return 0;
 }
-VarInfo* CNeoVMWorker::GetType(VarInfo* v1)
-{
-	switch (v1->GetType())
-	{
-	case VAR_INT:
-		return &GetVM()->m_sDefaultValue[NDF_INT];
-	case VAR_FLOAT:
-		return &GetVM()->m_sDefaultValue[NDF_FLOAT];
-	case VAR_BOOL:
-		return &GetVM()->m_sDefaultValue[NDF_BOOL];
-	case VAR_NONE:
-		return &GetVM()->m_sDefaultValue[NDF_NULL];
-	case VAR_FUN:
-		return &GetVM()->m_sDefaultValue[NDF_FUNCTION];
-	case VAR_ITERATOR:
-		break;
-	case VAR_FUN_NATIVE:
-		return &GetVM()->m_sDefaultValue[NDF_FUNCTION];
-	case VAR_VEC:
-	{
-		const int n = v1->VectorComponentCount();
-		return &GetVM()->m_sDefaultValue[n <= 2 ? NDF_VEC2 : (n == 3 ? NDF_VEC3 : NDF_VEC4)];
-	}
-	case VAR_STRING:
-		return &GetVM()->m_sDefaultValue[NDF_STRING];
-	case VAR_VEC4:
-	{
-		const int n = v1->VectorComponentCount();
-		return &GetVM()->m_sDefaultValue[n <= 2 ? NDF_VEC2 : (n == 3 ? NDF_VEC3 : NDF_VEC4)];
-	}
-	case VAR_FP_NATIVE:
-		return &GetVM()->m_sDefaultValue[NDF_NULL];
-	case VAR_ARRAY:
-		return &GetVM()->m_sDefaultValue[NDF_ARRAY];
-	case VAR_MAP:
-		return &GetVM()->m_sDefaultValue[NDF_TABLE];
-	case VAR_LIST:
-		return &GetVM()->m_sDefaultValue[NDF_LIST];
-	case VAR_SET:
-		return &GetVM()->m_sDefaultValue[NDF_SET];
-	case VAR_COROUTINE:
-		return &GetVM()->m_sDefaultValue[NDF_COROUTINE];
-	case VAR_MODULE:
-		return &GetVM()->m_sDefaultValue[NDF_MODULE];
-	case VAR_ASYNC:
-		return &GetVM()->m_sDefaultValue[NDF_ASYNC];
-	case VAR_CLOSURE:
-		return &GetVM()->m_sDefaultValue[NDF_FUNCTION];
-	default:
-		break;
-	}
-	return &GetVM()->m_sDefaultValue[NDF_NULL];
-}
 void CNeoVMWorker::Call(FunctionPtr* fun, int n2, VarInfo* pReturnValue)
 {
 	if (!EnsureStackRange(_iSP_VarsMax, n2))
@@ -450,7 +391,6 @@ void CNeoVMWorker::Call(FunctionPtr* fun, int n2, VarInfo* pReturnValue)
 
 bool CNeoVMWorker::Init(const NeoLoadVMParam* vparam, CNeoVMProgram* pProgram, int iStackSize)
 {
-	m_jsonError.clear();
 	if (pProgram == nullptr)
 		return false;
 
@@ -1444,21 +1384,6 @@ void CNeoVMWorker::DebugSetBreakpoints(const std::vector<NeoDebugBreakpoint>& br
 		SetDebugBreakLineBit(m_sDebugBreakLocationBits[bp.file], bp.line);
 	}
 }
-void CNeoVMWorker::DebugGetExecutableLines(std::vector<int>& lines)
-{
-	lines.clear();
-	if (IsDebugInfo() == false)
-		return;
-
-	std::set<int> uniqueLines;
-	for (const debug_info& info : DebugData())
-	{
-		if (info._lineseq > 0)
-			uniqueLines.insert(info._lineseq);
-	}
-
-	lines.assign(uniqueLines.begin(), uniqueLines.end());
-}
 void CNeoVMWorker::DebugGetExecutableLocations(std::vector<NeoDebugLocation>& locations)
 {
 	locations.clear();
@@ -1514,10 +1439,6 @@ void CNeoVMWorker::DebugPause()
 bool CNeoVMWorker::DebugIsPaused()
 {
 	return GetExecutionState() == NeoExecutionState::SuspendedDebugger;
-}
-NeoDebugLocation CNeoVMWorker::DebugGetLocation()
-{
-	return m_sDebugLocation;
 }
 static const int NEO_DEBUG_MAX_COLLECTION_DEPTH = 4;
 static const int NEO_DEBUG_MAX_COLLECTION_ITEMS = 64;
@@ -2100,7 +2021,6 @@ bool	CNeoVMWorker::RunInternal(int iBreakingCallStack)
 	if (TIMEOUT && m_iTimeout >= 0)
 		_preClock = std::chrono::steady_clock::now();
 
-	VarInfo* pVarTemp = nullptr;
 	while (true)
 	{
 		if (TIMEOUT)
@@ -2145,53 +2065,14 @@ bool	CNeoVMWorker::RunInternal(int iBreakingCallStack)
 		case NOP_MOVF:          MoveF(GetVarPtrF1(OP), OP.n23); break;
 		case NOP_MOVF_L:        MoveF(GetVarPtr_L(OP.n1), OP.n23); break;
 		case NOP_LOADK:         handle_LOADK_cold(OP); break;
-#if NEOSCRIPT_LEGACY_ARITHMETIC
-		case NOP_MOV_MINUS:     MoveMinus(GetVarPtrF1(OP), GetVarPtr2(OP)); break;
-		case NOP_MOV_MINUS_L:   MoveMinus(GetVarPtr_L(OP.n1), GetVarPtr_L(OP.n2)); break;
-#endif
 		case NOP_LOG_NOT:       handle_LOG_NOT_cold(OP); break;
-#if NEOSCRIPT_LEGACY_ARITHMETIC
-		case NOP_ADD2:          Add2(GetVarPtrF1(OP), GetVarPtr2(OP)); break;
-		case NOP_ADD2_L:        Add2(GetVarPtr_L(OP.n1), GetVarPtr_L(OP.n2)); break;
-		case NOP_SUB2:          Sub2(GetVarPtrF1(OP), GetVarPtr2(OP)); break;
-		case NOP_MUL2:          Mul2(GetVarPtrF1(OP), GetVarPtr2(OP)); break;
-		case NOP_DIV2:          Div2(GetVarPtrF1(OP), GetVarPtr2(OP)); break;
-		case NOP_PERSENT2:      handle_PERSENT2_cold(OP); break;
-		case NOP_LSHIFT2:       LSh2(GetVarPtrF1(OP), GetVarPtr2(OP)); break;
-		case NOP_RSHIFT2:       RSh2(GetVarPtrF1(OP), GetVarPtr2(OP)); break;
-		case NOP_AND2:          And2(GetVarPtrF1(OP), GetVarPtr2(OP)); break;
-		case NOP_OR2:           Or2(GetVarPtrF1(OP), GetVarPtr2(OP)); break;
-		case NOP_XOR2:          Xor2(GetVarPtrF1(OP), GetVarPtr2(OP)); break;
-#endif
 		case NOP_VAR_CLEAR:     Var_Release(GetVarPtrF1(OP)); break;
-		case NOP_INC:           Inc(GetVarPtrF1(OP)); break;
-		case NOP_DEC:           Dec(GetVarPtrF1(OP)); break;
-#if NEOSCRIPT_LEGACY_ARITHMETIC
-		case NOP_ADD3:          Add3(GetVarPtrF1(OP), GetVarPtr2(OP), GetVarPtr3(OP)); break;
-		case NOP_ADD3_L:        Add3(GetVarPtr_L(OP.n1), GetVarPtr_L(OP.n2), GetVarPtr_L(OP.n3)); break;
-		case NOP_SUB3:          Sub3(GetVarPtrF1(OP), GetVarPtr2(OP), GetVarPtr3(OP)); break;
-		case NOP_SUB3_L:        Sub3(GetVarPtr_L(OP.n1), GetVarPtr_L(OP.n2), GetVarPtr_L(OP.n3)); break;
-		case NOP_MUL3:          Mul3(GetVarPtrF1(OP), GetVarPtr2(OP), GetVarPtr3(OP)); break;
-		case NOP_MUL3_L:        Mul3(GetVarPtr_L(OP.n1), GetVarPtr_L(OP.n2), GetVarPtr_L(OP.n3)); break;
-		case NOP_DIV3:          Div3(GetVarPtrF1(OP), GetVarPtr2(OP), GetVarPtr3(OP)); break;
-		case NOP_PERSENT3:      Per3(GetVarPtrF1(OP), GetVarPtr2(OP), GetVarPtr3(OP)); break;
-		case NOP_LSHIFT3:       LSh3(GetVarPtrF1(OP), GetVarPtr2(OP), GetVarPtr3(OP)); break;
-		case NOP_RSHIFT3:       RSh3(GetVarPtrF1(OP), GetVarPtr2(OP), GetVarPtr3(OP)); break;
-		case NOP_XOR3:          Xor3(GetVarPtrF1(OP), GetVarPtr2(OP), GetVarPtr3(OP)); break;
-#endif
 		case NOP_GREAT:         handle_GREAT_cold(OP); break;
 		case NOP_GREAT_EQ:      handle_GREAT_EQ_cold(OP); break;
 		case NOP_LESS:          handle_LESS_cold(OP); break;
 		case NOP_LESS_EQ:       handle_LESS_EQ_cold(OP); break;
 		case NOP_EQUAL2:        handle_EQUAL2_cold(OP); break;
 		case NOP_NEQUAL:        handle_NEQUAL_cold(OP); break;
-#if NEOSCRIPT_LEGACY_ARITHMETIC
-		case NOP_AND:           handle_AND_cold(OP); break;
-		case NOP_AND_L:         And(GetVarPtr_L(OP.n1), GetVarPtr_L(OP.n2), GetVarPtr_L(OP.n3)); break;
-		case NOP_OR:            handle_OR_cold(OP); break;
-#endif
-		case NOP_LOG_AND:       handle_LOG_AND_cold(OP); break;
-		case NOP_LOG_OR:        handle_LOG_OR_cold(OP); break;
 		case NOP_JMP:           SetCodeIncPtr(OP.n1); break;
 		case NOP_JMP_FALSE:     if (false == GetVarPtr2(OP)->IsTrue()) SetCodeIncPtr(OP.n1); break;
 		case NOP_JMP_TRUE:      if (true == GetVarPtr2(OP)->IsTrue()) SetCodeIncPtr(OP.n1); break;
@@ -2207,10 +2088,6 @@ bool	CNeoVMWorker::RunInternal(int iBreakingCallStack)
 		case NOP_JMP_EQUAL2_L:  if (true == CompareEQ(GetVarPtr_L(OP.n2), GetVarPtr_L(OP.n3))) SetCodeIncPtr(OP.n1); break;
 		case NOP_JMP_NEQUAL:    if (false == CompareEQ(GetVarPtr2(OP), GetVarPtr3(OP))) SetCodeIncPtr(OP.n1); break;
 		case NOP_JMP_NEQUAL_L:  if (false == CompareEQ(GetVarPtr_L(OP.n2), GetVarPtr_L(OP.n3))) SetCodeIncPtr(OP.n1); break;
-		case NOP_JMP_AND:       handle_JMP_AND_cold(OP); break;
-		case NOP_JMP_OR:        handle_JMP_OR_cold(OP); break;
-		case NOP_JMP_NAND:      handle_JMP_NAND_cold(OP); break;
-		case NOP_JMP_NOR:       handle_JMP_NOR_cold(OP); break;
 		case NOP_JMP_FOR:       if (For(GetVarPtr_L(OP.n2))) SetCodeIncPtr(OP.n1); break;
 		case NOP_JMP_FOREACH:   if (ForEach(GetVarPtr2(OP), GetVarPtr3(OP), (OP.argFlag & NEOS_OP_FOREACH_TWOVAR) != 0)) SetCodeIncPtr(OP.n1); break;
 		case NOP_SWITCH:        handle_SWITCH(OP); break;
@@ -2222,7 +2099,6 @@ bool	CNeoVMWorker::RunInternal(int iBreakingCallStack)
 		case NOP_TOINT_L:       handle_TOINT_L(OP); break;
 		case NOP_TOFLOAT:       handle_TOFLOAT(OP); break;
 		case NOP_TOSIZE:        handle_TOSIZE(OP); break;
-		case NOP_GETTYPE:       handle_GETTYPE(OP); break;
 		case NOP_SLEEP:
 			if (handle_SLEEP(OP)) return true;
 			break;
@@ -2263,13 +2139,6 @@ bool	CNeoVMWorker::RunInternal(int iBreakingCallStack)
 		case NOP_JMP_RANGE_OUTSIDE_L: if (IsRangeInside(OP, true) == false) SetComparisonJump(OP.n1); break;
 
 		case NOP_CLT_WRITE_REF: handle_CLT_WRITE_REF(OP); break;
-		case NOP_CLT_READ_RESULT: handle_CLT_READ_RESULT(OP); break;
-#if NEOSCRIPT_LEGACY_ARITHMETIC
-		case NOP_READ_ADD:      handle_READ_ADD(OP); break;
-		case NOP_READ_SUB:      handle_READ_SUB(OP); break;
-		case NOP_READ_MUL:      handle_READ_MUL(OP); break;
-		case NOP_READ_DIV:      handle_READ_DIV(OP); break;
-#endif
 		case NOP_I64_ADD:       StoreNumberInt(GetVarPtrF1(OP), NeoIntAdd(GetVarPtr2(OP)->_int, GetVarPtr3(OP)->_int)); break;
 		case NOP_I64_SUB:       StoreNumberInt(GetVarPtrF1(OP), NeoIntSub(GetVarPtr2(OP)->_int, GetVarPtr3(OP)->_int)); break;
 		case NOP_I64_MUL:       StoreNumberInt(GetVarPtrF1(OP), NeoIntMul(GetVarPtr2(OP)->_int, GetVarPtr3(OP)->_int)); break;

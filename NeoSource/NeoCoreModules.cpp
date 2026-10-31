@@ -54,8 +54,8 @@ static bool ReservedImportName(const std::string& name)
         "var", "fun", "int", "float", "bool", "string", "void", "int32", "float32", "any",
         "null", "true", "false", "if", "else", "while", "for", "foreach", "in", "return",
         "break", "continue", "import", "public", "export", "const", "struct", "class", "switch",
-        "case", "default", "print", "tostring", "toint", "tofloat", "tosize", "type", "sleep",
-        "yield", "__LINE__", "list", "map", "array", "array32", "set", "fn"
+        "case", "default", "print", "tostring", "toint", "tofloat", "tosize", "sleep",
+        "yield", "list", "map", "array", "array32", "set", "fn"
     };
     for (const char* word : reserved) if (name == word) return true;
     return false;
@@ -416,8 +416,8 @@ public:
             "var", "fun", "int", "float", "bool", "string", "void", "int32", "float32", "any",
             "null", "true", "false", "if", "else", "while", "for", "foreach", "in", "return",
             "break", "continue", "import", "public", "export", "const", "struct", "class",
-            "switch", "case", "default", "print", "tostring", "toint", "tofloat", "tosize", "type",
-            "sleep", "yield", "__LINE__", "list", "map", "array", "array32", "set", "fn", "Vector2", "Vector3",
+            "switch", "case", "default", "print", "tostring", "toint", "tofloat", "tosize",
+            "sleep", "yield", "list", "map", "array", "array32", "set", "fn", "Vector2", "Vector3",
             "Vector4", "Quaternion", "TimeSpan", "Stopwatch", "AsyncRequest", "Coroutine", "math", "system", "coroutine"
         };
         preserved_.insert(words, words + sizeof(words) / sizeof(words[0]));

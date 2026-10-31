@@ -95,11 +95,6 @@ struct ProgramRec
     std::vector<std::string> sourceNames;
 };
 
-struct DefineSetRec
-{
-    NeoCompileDefines defines; // 한 번 빌드해두고 여러 Compile 에서 재사용
-};
-
 // NeoVMSystem::Initialize 는 프로세스-1회 불변 테이블(토큰 문자열/빌트인 lib) 구축이다.
 // Runtime 수명에 refcount 하지 않고 call_once 로 최초 1회만 실행 → 스레드 안전.
 // per-Runtime auto-Shutdown 은 폐지(마지막 dtor 가 전역을 wipe → 타 스레드 compile 과
@@ -232,8 +227,6 @@ struct InstanceRec
     size_t invocationCount = 0;
     uint64_t debugSliceBudget = 0;
     bool  runGlobalInit = true;        // CreateInstance 때의 설정(ResetInstance 가 그대로 재현)
-    // 객체명 -> 이 인스턴스에서의 userData (BindObject). 미지정이면 RegisteredObject.userData.
-    std::unordered_map<std::string, void*> objectUserData;
     // CallReadMap/List 결과 리더 보관(다음 이 인스턴스 호출 전까지 유효). 중첩 리더도 여기 쌓임.
     LazyDeque<MapReaderImpl>  readMapPool;
     LazyDeque<ListReaderImpl> readListPool;
@@ -414,7 +407,7 @@ static void SetVarString(INeoVMWorker* w, VarInfo* out, StringView s)
     w->Var_SetStringA(out, std::string(s.data(), s.size()));
 }
 
-// CompileDefine[] → 내부 NeoCompileDefines. CreateDefineSet(1회) 와 인라인 경로가 공유.
+// CompileDefine[] → 내부 NeoCompileDefines.
 static void BuildNeoDefines(Span<const CompileDefine> defs, NeoCompileDefines& out)
 {
     for (std::size_t i = 0; i < defs.size(); ++i)
@@ -590,7 +583,6 @@ public:
     //--- 초기 설정 ---
     bool RegisterObject(const NativeObjectDesc& desc) override;
     void FreezeBindings() override;
-    ObjectType GetObjectType(StringView name) override;
     // setObject/pushObject 내부용: 중첩 바인딩을 (type,userData) 로 dedup 재사용(주소 안정).
     std::shared_ptr<ObjectBinding> AcquireNestedBinding(InstanceHandle handle, const RegisteredObject* ro, void* userData);
 
@@ -599,21 +591,13 @@ public:
     Error CompileToBytecode(const CompileDesc& desc, std::vector<uint8_t>& out) override;
     ProgramHandle LoadProgram(Span<const uint8_t> bytecode, Error* error) override;
     void DestroyProgram(ProgramHandle program) override;
-    void GetDebugInstructions(ProgramHandle program, std::vector<DebugInstruction>& out) const override;
-    DefineSetHandle CreateDefineSet(Span<const CompileDefine> defines) override;
-    void DestroyDefineSet(DefineSetHandle set) override;
 
     //--- Instance ---
     InstanceHandle CreateInstance(ProgramHandle program, const InstanceDesc& desc) override;
     void DestroyInstance(InstanceHandle instance) override;
     bool CanDestroyInstance(InstanceHandle instance) const override;
     bool CanDestroy() const override;
-    bool IsAlive(InstanceHandle instance) const override;
     bool ResetInstance(InstanceHandle instance) override;
-    InstanceState GetState(InstanceHandle instance) const override;
-    bool BindObject(InstanceHandle instance, StringView name, void* userData) override;
-    void BindGlobalObject(InstanceHandle instance, StringView globalName, ObjectType type, void* userData) override;
-    void BindGlobalMapObject(InstanceHandle instance, StringView mapName, StringView key, ObjectType type, void* userData) override;
     RunStatus RunGlobalInit(InstanceHandle instance) override;
 
     //--- 호출 ---
@@ -624,32 +608,18 @@ public:
     //--- 재개/전역/async ---
     RunStatus Resume(InstanceHandle instance, const ResumeDesc& desc) override;
     bool Cancel(InstanceHandle instance) override;
-    bool StartSliced(InstanceHandle instance, StringView functionName, int32_t timeoutMs, uint32_t budget) override;
-    RunStatus UpdateSliced(InstanceHandle instance) override;
-    bool IsRunning(InstanceHandle instance) const override;
-    bool GetGlobalInt(InstanceHandle instance, StringView name, int64_t& out) const override;
-    bool GetGlobalFloat(InstanceHandle instance, StringView name, double& out) const override;
-    bool GetGlobalString(InstanceHandle instance, StringView name, StringView& out) const override;
-    bool SetGlobalInt(InstanceHandle instance, StringView name, int64_t v) override;
-    bool SetGlobalFloat(InstanceHandle instance, StringView name, double v) override;
-    bool SetGlobalString(InstanceHandle instance, StringView name, StringView v) override;
 
     bool TakeLastError(StringView& out) override;
-    bool PeekLastError(StringView& out) const override;
 
     //--- 리플렉션/디버거 ---
-    void GetBuiltins(std::vector<BuiltinInfo>& out) const override;
     IDebugger* GetDebugger() override;
     int64_t TrimMemory(bool force) override;
     int CollectCycles(bool force) override;
     void SetEmptyPageHoldSeconds(float sec) override;
-    float GetEmptyPageHoldSeconds() const override;
     void SetTrimPagesPerCall(int pages) override;
-    int GetTrimPagesPerCall() const override;
 
     // 내부: 글로벌 인터페이스 훅에서 등록 객체를 워커 맵에 바인딩
     void BindRegisteredObjects(INeoVMWorker* worker, InstanceRec* inst);
-    const std::deque<RegisteredObject>& registeredObjects() const { return m_objects; }
     // Invocation 이 쓰는 내부 훅
     uint64_t identity() const { return m_identity; }
     InstanceRec* resolveInstance(InstanceHandle h) const { return m_instances.get(h.id, h.generation); }
@@ -691,7 +661,6 @@ private:
     std::vector<NeoGlobalSymbol> m_globalSymbols;         // 컴파일에 넘길 전역 심볼
     mutable HandleTable<ProgramRec> m_programs;
     mutable HandleTable<InstanceRec> m_instances;
-    mutable HandleTable<DefineSetRec> m_defineSets;
 };
 
 //------------------------------------------------------------------------------
@@ -774,15 +743,6 @@ void RuntimeImpl::FreezeBindings()
             m_globalSymbols.push_back(NeoGlobalSymbol{ o.name.c_str(), /*exported=*/true });
 }
 
-ObjectType RuntimeImpl::GetObjectType(StringView name)
-{
-    // FreezeBindings 후엔 m_objects 가 더 안 커지므로 요소 주소 안정 → 포인터 반환 OK.
-    for (const RegisteredObject& o : m_objects)
-        if (o.name.size() == name.size() &&
-            std::memcmp(o.name.data(), name.data(), name.size()) == 0)
-            return NeoScriptInternal::objType(const_cast<RegisteredObject*>(&o));
-    return ObjectType{}; // 미발견 = falsy
-}
 
 std::shared_ptr<ObjectBinding> RuntimeImpl::AcquireNestedBinding(InstanceHandle handle, const RegisteredObject* ro, void* userData)
 {
@@ -831,13 +791,7 @@ void RuntimeImpl::SetupCompilerParam(const CompileDesc& desc, NeoCompilerParam& 
     }
     gtab = NeoGlobalSymbolTable{ globals->data(), static_cast<int>(globals->size()) };
     param.globalSymbols = globals->empty() ? nullptr : &gtab;
-    if (desc.defineSet)
-    {
-        // 재사용 집합: 미리 빌드된 맵을 그대로 가리킨다 → 매 Compile 재구성 0.
-        if (DefineSetRec* ds = m_defineSets.get(desc.defineSet.id, desc.defineSet.generation))
-            param.defines = &ds->defines;
-    }
-    else if (!desc.defines.empty())
+    if (!desc.defines.empty())
     {
         BuildNeoDefines(desc.defines, inlineDefines);
         param.defines = &inlineDefines;
@@ -941,20 +895,6 @@ ProgramHandle RuntimeImpl::LoadProgram(Span<const uint8_t> bytecode, Error* erro
     return ProgramHandle{ id, m_programs.generationOf(id) };
 }
 
-DefineSetHandle RuntimeImpl::CreateDefineSet(Span<const CompileDefine> defines)
-{
-    DefineSetRec* rec = new DefineSetRec();
-    BuildNeoDefines(defines, rec->defines); // 여기서 1회만 빌드
-    uint32_t id = m_defineSets.add(rec);
-    return DefineSetHandle{ id, m_defineSets.generationOf(id) };
-}
-void RuntimeImpl::DestroyDefineSet(DefineSetHandle h)
-{
-    DefineSetRec* rec = m_defineSets.get(h.id, h.generation);
-    if (!rec) return;
-    delete rec;
-    m_defineSets.remove(h.id, h.generation);
-}
 
 void RuntimeImpl::DestroyProgram(ProgramHandle h)
 {
@@ -965,27 +905,6 @@ void RuntimeImpl::DestroyProgram(ProgramHandle h)
     m_programs.remove(h.id, h.generation);
 }
 
-void RuntimeImpl::GetDebugInstructions(ProgramHandle h, std::vector<DebugInstruction>& out) const
-{
-    out.clear();
-    ProgramRec* rec = resolveProgram(h);
-    if (rec == nullptr || rec->program == nullptr)
-        return;
-    const CNeoVMProgram& program = *rec->program;
-    out.reserve(program.code.size());
-    for (int i = 0; i < (int)program.code.size(); ++i)
-    {
-        DebugInstruction instruction;
-        instruction.opIndex = i;
-        if (i < (int)program.debugData.size())
-        {
-            instruction.file = program.debugData[i]._fileseq;
-            instruction.line = program.debugData[i]._lineseq;
-        }
-        FormatDebugInstruction(program, i, instruction.code, instruction.assembly);
-        out.push_back(std::move(instruction));
-    }
-}
 
 //------------------------------------------------------------------------------
 // Instance
@@ -1045,8 +964,6 @@ void RuntimeImpl::BindRegisteredObjects(INeoVMWorker* worker, InstanceRec* inst)
         if (!worker->ResetVarType(pVar, VAR_FP_NATIVE)) continue;
 
         void* userData = o.defaultUserData;
-        auto it = inst->objectUserData.find(o.name);
-        if (it != inst->objectUserData.end()) userData = it->second;
 
         auto binding = std::make_shared<ObjectBinding>();
         binding->runtime = this;
@@ -1059,7 +976,7 @@ void RuntimeImpl::BindRegisteredObjects(INeoVMWorker* worker, InstanceRec* inst)
             (o.method != nullptr) ? &MethodTrampoline : nullptr,
             (o.property != nullptr) ? &PropertyTrampoline : nullptr, &o, userData, binding);
     }
-    // 소비자의 전역 바인딩 훅 트리거. 훅은 인스턴스 핸들로 BindGlobalObject/BindGlobalMapObject 호출.
+    // 소비자의 전역 바인딩 훅 트리거.
     if (m_desc.onInstanceBind)
         m_desc.onInstanceBind(this, inst->handle, inst->instanceUserData);
 }
@@ -1098,10 +1015,6 @@ void RuntimeImpl::DestroyInstance(InstanceHandle h)
     m_instances.remove(h.id, h.generation);
 }
 
-bool RuntimeImpl::IsAlive(InstanceHandle h) const
-{
-    return resolveInstance(h) != nullptr;
-}
 
 INeoVMWorker* RuntimeImpl::instanceWorker(InstanceHandle h) const   // 내부 전용
 {
@@ -1109,25 +1022,7 @@ INeoVMWorker* RuntimeImpl::instanceWorker(InstanceHandle h) const   // 내부 �
     return inst ? inst->worker : nullptr;
 }
 
-void RuntimeImpl::BindGlobalObject(InstanceHandle h, StringView globalName, ObjectType type, void* userData)
-{
-    // 인스턴스 전역 변수에 v2 네이티브 객체 바인딩(워커는 shim 안에서만). onInstanceBind 훅용.
-    InstanceRec* inst = resolveInstance(h);
-    if (!inst || !inst->worker) return;
-    VarInfo* pVar = inst->worker->GetVar(std::string(globalName.data(), globalName.size()));
-    if (!pVar) return;
-    BindObjectToVar(inst->worker, pVar, type, userData);
-}
 
-void RuntimeImpl::BindGlobalMapObject(InstanceHandle h, StringView mapName, StringView key, ObjectType type, void* userData)
-{
-    // 인스턴스 전역 VAR_MAP 에 key 로 v2 네이티브 객체 삽입(서브서비스).
-    InstanceRec* inst = resolveInstance(h);
-    if (!inst || !inst->worker) return;
-    VarInfo* pMap = inst->worker->GetVar(std::string(mapName.data(), mapName.size()));
-    if (!pMap) return;
-    BindObjectInto(inst->worker, pMap, key, type, userData);
-}
 
 void RuntimeImpl::BindObjectInto(void* worker, void* mapVar, StringView key, ObjectType type, void* userData)
 {
@@ -1206,7 +1101,6 @@ bool RuntimeImpl::ResetInstance(InstanceHandle h)
 	inst->suspendedNested = false;
     inst->callError = Error();
     inst->failCode = 0;
-    // objectUserData(BindObject 로 준 인스턴스별 값)는 보존 — 리셋 후에도 같은 호스트 객체에 붙어야 한다.
 
     // 2) 같은 Program 으로 워커 재생성. 전역 슬롯은 Init 이 static 상수부터 새로 실체화하고,
     //    NeoGlobalInterface 훅이 네이티브 바인딩 + onInstanceBind 를 다시 돌린다.
@@ -1244,34 +1138,7 @@ RunStatus RuntimeImpl::RunGlobalInit(InstanceHandle h)
     return status;
 }
 
-InstanceState RuntimeImpl::GetState(InstanceHandle h) const
-{
-    InstanceRec* inst = resolveInstance(h);
-    if (!inst) return InstanceState::Failed;
-    if (inst->worker->IsOutOfMemoryPoisoned()) return InstanceState::Failed;
-    switch (inst->worker->GetExecutionState())
-    {
-    case NeoExecutionState::Idle:              return InstanceState::Idle;
-    case NeoExecutionState::Running:           return InstanceState::Running;
-    case NeoExecutionState::SuspendedSleep:    return InstanceState::Suspended;
-    case NeoExecutionState::SuspendedDebugger: return InstanceState::Suspended;
-    case NeoExecutionState::SuspendedSlice:    return InstanceState::Suspended;
-    default:                                   return InstanceState::Idle;
-    }
-}
 
-bool RuntimeImpl::BindObject(InstanceHandle h, StringView name, void* userData)
-{
-    InstanceRec* inst = resolveInstance(h);
-    if (!inst) return false;
-    std::string n = name.str();
-    inst->objectUserData[n] = userData;
-    // 기존 별칭/맵 키의 객체 식별자가 바뀌지 않도록 전역 슬롯만 새 객체로 교체한다.
-    // 호출 컨텍스트도 (타입, 핸들)별 바인딩을 쓰므로 예전 참조의 메서드는 예전 객체를 본다.
-    const ObjectType type = GetObjectType(name);
-    if (type) BindGlobalObject(h, name, type, userData);
-    return true;
-}
 
 //------------------------------------------------------------------------------
 // 호출
@@ -1405,104 +1272,7 @@ bool RuntimeImpl::Cancel(InstanceHandle h)
     return true;
 }
 
-bool RuntimeImpl::StartSliced(InstanceHandle h, StringView functionName, int32_t timeoutMs, uint32_t budget)
-{
-    InstanceRec* inst = resolveInstance(h);
-    if (!inst || inst->lifecycleBusy || inst->armedSeq || inst->worker->IsInterpreterRunning()) return false;
-    FlushPendingCall(inst);
-    if (inst->worker->GetExecutionState() != NeoExecutionState::Idle)
-        return false;
-    BeginCallError(inst);
-    const int iFID = inst->worker->FindFunction(functionName.str());
-    if (iFID < 0)
-        return false;
 
-    // 첫 슬라이스도 ExecuteTop으로 바로 실행한다. 시간 제한으로 멈추면 컨텍스트는
-    // SuspendedSlice 상태로 retain되고, 다음 UpdateSliced가 ResumeTop으로 잇는다.
-    inst->worker->SetTimeout(timeoutMs, NEO_DEFAULT_CHECKOP);
-    inst->worker->SetInstructionBudget(budget);
-    std::vector<VarInfo> args;
-    const RunStatus status = mapExecStatus(inst->worker->ExecuteTop(iFID, args));
-    if (status == RunStatus::Failed)
-    {
-        CaptureCallError(inst, status);
-        return false;
-    }
-    return true;
-}
-RunStatus RuntimeImpl::UpdateSliced(InstanceHandle h)
-{
-    InstanceRec* inst = resolveInstance(h);
-    if (!inst || inst->lifecycleBusy || inst->armedSeq || inst->worker->IsInterpreterRunning() || inst->hostCallPending) return RunStatus::Failed;
-    if (inst->worker->IsOutOfMemoryPoisoned())
-    {
-        CaptureCallError(inst, RunStatus::Failed);
-        return RunStatus::Failed;
-    }
-    if (inst->worker->GetExecutionState() == NeoExecutionState::Idle)
-        return RunStatus::Completed;
-
-    const RunStatus status = ResumeInstanceExecution(inst);
-    if (status == RunStatus::Failed)
-    {
-        CaptureCallError(inst, status);
-    }
-    return status;
-}
-bool RuntimeImpl::IsRunning(InstanceHandle h) const
-{
-    InstanceRec* inst = resolveInstance(h);
-    return inst && inst->worker->GetExecutionState() != NeoExecutionState::Idle;
-}
-
-bool RuntimeImpl::GetGlobalInt(InstanceHandle h, StringView name, int64_t& out) const
-{
-    InstanceRec* inst = resolveInstance(h);
-    if (!inst) return false;
-    VarInfo* v = inst->worker->GetVar(name.str());
-    if (!v || v->GetType() == VAR_NONE) return false;
-    out = inst->worker->PopInt(v); return true;
-}
-bool RuntimeImpl::GetGlobalFloat(InstanceHandle h, StringView name, double& out) const
-{
-    InstanceRec* inst = resolveInstance(h);
-    if (!inst) return false;
-    VarInfo* v = inst->worker->GetVar(name.str());
-    if (!v || v->GetType() == VAR_NONE) return false;
-    out = inst->worker->PopFloat(v); return true;
-}
-bool RuntimeImpl::GetGlobalString(InstanceHandle h, StringView name, StringView& out) const
-{
-    InstanceRec* inst = resolveInstance(h);
-    if (!inst) return false;
-    VarInfo* v = inst->worker->GetVar(name.str());
-    if (!v || v->GetType() != VAR_STRING) return false;
-    out = StringView(v->_str->_str); return true;
-}
-bool RuntimeImpl::SetGlobalInt(InstanceHandle h, StringView name, int64_t vv)
-{
-    InstanceRec* inst = resolveInstance(h);
-    if (!inst) return false;
-    VarInfo* v = inst->worker->GetVar(name.str());
-    if (!v) return false;
-    inst->worker->Var_SetInt(v, vv); return true;
-}
-bool RuntimeImpl::SetGlobalFloat(InstanceHandle h, StringView name, double vv)
-{
-    InstanceRec* inst = resolveInstance(h);
-    if (!inst) return false;
-    VarInfo* v = inst->worker->GetVar(name.str());
-    if (!v) return false;
-    inst->worker->Var_SetFloat(v, vv); return true;
-}
-bool RuntimeImpl::SetGlobalString(InstanceHandle h, StringView name, StringView vv)
-{
-    InstanceRec* inst = resolveInstance(h);
-    if (!inst) return false;
-    VarInfo* v = inst->worker->GetVar(name.str());
-    if (!v) return false;
-    SetVarString(inst->worker, v, vv); return true;
-}
 
 //------------------------------------------------------------------------------
 // 호출 에러 스냅샷 / 네이티브 실패 보고
@@ -1571,26 +1341,7 @@ bool RuntimeImpl::TakeLastError(StringView& out)
     out = StringView(m_lastError);
     return true;
 }
-bool RuntimeImpl::PeekLastError(StringView& out) const
-{
-    if (!m_vm || !m_vm->IsLastErrorMsg()) return false;
-    const char* s = m_vm->GetLastErrorMsg();
-    out = StringView(s ? s : "");   // VM 소유 문자열 뷰(Clear 전까지 유효)
-    return true;
-}
 
-void RuntimeImpl::GetBuiltins(std::vector<BuiltinInfo>& out) const
-{
-    std::vector<NeoBuiltinInfo> src;
-    NeoVMSystem::GetBuiltins(src);
-    out.clear(); out.reserve(src.size());
-    for (const NeoBuiltinInfo& b : src)
-    {
-        BuiltinInfo o;
-        o.module = b.module; o.name = b.name; o.argCount = b.argCount; o.ret = b.ret; o.params = b.params;
-        out.push_back(std::move(o));
-    }
-}
 
 //==============================================================================
 // 팩토리
@@ -2202,7 +1953,7 @@ bool Invocation::retList(ListReader& out) const
 }
 bool Invocation::retArray(ArrayView& out) const
 {
-    if(!m_impl) return false; InstanceRec* i=Inv(m_impl); VarInfo* rv=InvReturn(m_impl,m_seq);
+    if(!m_impl) return false; VarInfo* rv=InvReturn(m_impl,m_seq);
     if(!rv||rv->GetType()!=VAR_ARRAY||!rv->_array) return false;
     out = NeoScriptInternal::arrayV(rv->_array); return true;
 }
@@ -2425,7 +2176,6 @@ public:
         if (InstanceRec* inst = m_rt->resolveInstance(i))
             if (!inst->worker->IsInterpreterRunning()) inst->debugSliceBudget = budget;
     }
-    DebugLocation GetLocation(InstanceHandle i) override { INeoVMWorker* w = worker(i); return w ? ToPublicLoc(w->DebugGetLocation()) : DebugLocation(); }
     void GetStackTrace(InstanceHandle i, std::vector<DebugStackFrame>& out) override
     {
         out.clear(); INeoVMWorker* w = worker(i); if (!w) return;
@@ -2442,11 +2192,6 @@ public:
         out.clear(); INeoVMWorker* w = worker(i); if (!w) return;
         std::vector<NeoDebugVariable> src; w->DebugGetFrameVariables(frameId, src);
         ToPublicVars(src, out);
-    }
-    void GetExecutableLines(ProgramHandle p, std::vector<int>& out) override
-    {
-        out.clear(); INeoVMWorker* w = anyWorkerOfProgram(p); if (!w) return;
-        w->DebugGetExecutableLines(out);
     }
     void GetExecutableLocations(ProgramHandle p, std::vector<DebugLocation>& out) override
     {
@@ -2511,19 +2256,9 @@ void RuntimeImpl::SetEmptyPageHoldSeconds(float sec)
 {
     if (m_vm != nullptr) ((CNeoVM*)m_vm)->SetEmptyPageHoldSeconds(sec);
 }
-float RuntimeImpl::GetEmptyPageHoldSeconds() const
-{
-    if (m_vm == nullptr) return 0.0f;
-    return ((CNeoVM*)m_vm)->GetEmptyPageHoldSeconds();
-}
 void RuntimeImpl::SetTrimPagesPerCall(int pages)
 {
     if (m_vm != nullptr) ((CNeoVM*)m_vm)->SetTrimPagesPerCall(pages);
-}
-int RuntimeImpl::GetTrimPagesPerCall() const
-{
-    if (m_vm == nullptr) return 0;
-    return ((CNeoVM*)m_vm)->GetTrimPagesPerCall();
 }
 
 static void DestroyDebugger(DebuggerImpl* d) { delete d; }

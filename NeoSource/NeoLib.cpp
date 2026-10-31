@@ -296,147 +296,6 @@ struct neo_libs
 		pListR->InsertLast(str.substr(previous, current - previous)); // Last
 		return true;
 	}
-	static bool FormatText(CNeoVMWorker* pN, const std::string& pattern, int firstArg, int lastArg)
-	{
-		// Bound format-induced expansion before allocating. These are per-call
-		// text formatting limits, independent of compiler/image capacity.
-		constexpr int maxWidth = 4096;
-		constexpr int maxFloatPrecision = 1024;
-		constexpr size_t maxOutputBytes = 1024 * 1024;
-		auto fail = [pN](const char* message) { pN->SetError(message); return false; };
-		// Parse the format ourselves. Never pass script-controlled specifiers or
-		// mismatched VM values through a C variadic printf call.
-		try
-		{
-			std::string output;
-			int arg = firstArg;
-			for (size_t pos = 0; pos < pattern.size();)
-			{
-				if (pattern[pos] != '%')
-				{
-					if (output.size() == maxOutputBytes) return fail("formatted string exceeds 1048576 bytes");
-					output += pattern[pos++];
-					continue;
-				}
-				++pos;
-				if (pos < pattern.size() && pattern[pos] == '%')
-				{
-					if (output.size() == maxOutputBytes) return fail("formatted string exceeds 1048576 bytes");
-					output += '%'; ++pos;
-					continue;
-				}
-				bool left = false, zero = false;
-				while (pos < pattern.size() && (pattern[pos] == '-' || pattern[pos] == '0'))
-				{
-					bool& flag = pattern[pos++] == '-' ? left : zero;
-					if (flag) return fail("invalid format: duplicate flag");
-					flag = true;
-				}
-				auto number = [&](int& value)
-				{
-					value = 0;
-					while (pos < pattern.size() && pattern[pos] >= '0' && pattern[pos] <= '9')
-					{
-						const int digit = pattern[pos++] - '0';
-						if (value > (INT32_MAX - digit) / 10) return false;
-						value = value * 10 + digit;
-					}
-					return true;
-				};
-				int width = 0, precision = -1;
-				if (!number(width)) return fail("format width exceeds int range");
-				if (width > maxWidth) return fail("format width exceeds 4096 characters");
-				if (pos < pattern.size() && pattern[pos] == '.')
-				{
-					++pos;
-					if (pos == pattern.size() || pattern[pos] < '0' || pattern[pos] > '9')
-						return fail("invalid format precision");
-					if (!number(precision)) return fail("format precision exceeds int range");
-				}
-				if (pos == pattern.size()) return fail("incomplete format specifier");
-				const char spec = pattern[pos++];
-				if (spec != 'd' && spec != 'f' && spec != 's') return fail("unsupported format specifier");
-				if (arg > lastArg) return fail("format argument count mismatch");
-				VarInfo* value = pN->GetStack(arg++);
-				std::string field;
-				size_t characters = 0;
-				switch (spec)
-				{
-				case 'd':
-					if (value->GetType() != VAR_INT) return fail("format %d requires int");
-					if (precision >= 0) return fail("format precision is supported only for %f and %s");
-					field = std::to_string(value->_int);
-					characters = field.size();
-					break;
-				case 'f':
-				{
-					if (!value->IsNumber()) return fail("format %f requires int or float");
-					// Check before the stream creates its conversion buffer.
-					if (precision > maxFloatPrecision) return fail("format float precision exceeds 1024 digits");
-					std::ostringstream stream;
-					stream.imbue(std::locale::classic());
-					const double numeric = value->GetType() == VAR_INT
-						? static_cast<double>(value->_int) : static_cast<double>(value->_float);
-					stream << std::fixed << std::setprecision(precision < 0 ? 6 : precision) << numeric;
-					if (!stream) return fail("formatted string allocation failed");
-					field = stream.str();
-					characters = field.size();
-					break;
-				}
-				case 's':
-				{
-					if (value->GetType() != VAR_STRING) return fail("format %s requires string");
-					if (zero) return fail("format zero padding requires a numeric value");
-					characters = static_cast<size_t>(value->_str->_StringLen);
-					if (precision >= 0) characters = std::min(characters, static_cast<size_t>(precision));
-					// Every UTF-8 character occupies at least one byte. Bound the
-					// prefix scan and check its byte size before copying the field.
-					const size_t remaining = maxOutputBytes - output.size();
-					if (characters > remaining) return fail("formatted string exceeds 1048576 bytes");
-					const size_t bytes = utf_string::UTF8_OFFSET(value->_str->_str, 0, static_cast<int>(characters));
-					const size_t padding = static_cast<size_t>(width) > characters ? static_cast<size_t>(width) - characters : 0;
-					if (bytes > remaining || padding > remaining - bytes)
-						return fail("formatted string exceeds 1048576 bytes");
-					field.assign(value->_str->_str, 0, bytes);
-					break;
-				}
-				default:
-					return fail("unsupported format specifier");
-				}
-				const size_t padding = static_cast<size_t>(width) > characters ? static_cast<size_t>(width) - characters : 0;
-				const size_t remaining = maxOutputBytes - output.size();
-				if (field.size() > remaining || padding > remaining - field.size())
-					return fail("formatted string exceeds 1048576 bytes");
-				if (!left && zero && padding != 0 && !field.empty() && field[0] == '-')
-				{
-					output += '-';
-					output.append(padding, '0');
-					output.append(field, 1, std::string::npos);
-				}
-				else
-				{
-					if (!left) output.append(padding, zero ? '0' : ' ');
-					output += field;
-					if (left) output.append(padding, ' ');
-				}
-			}
-			if (arg <= lastArg) return fail("format argument count mismatch");
-			pN->ReturnValue(output.c_str());
-			return true;
-		}
-		catch (const std::bad_alloc&) { return fail("formatted string allocation failed"); }
-		catch (const std::length_error&) { return fail("formatted string is too large"); }
-	}
-	static bool Str_format(CNeoVMWorker* pN, VarInfo* pVar, short args)
-	{
-		if (pVar->GetType() != VAR_STRING) return false;
-		return FormatText(pN, pVar->_str->_str, 1, args);
-	}
-	static bool io_format(CNeoVMWorker* pN, VarInfo*, short args)
-	{
-		if (args < 1 || pN->GetStack(1)->GetType() != VAR_STRING) return false;
-		return FormatText(pN, pN->GetStack(1)->_str->_str, 2, args);
-	}
 
 
 	static bool Collection_clear(CNeoVMWorker* pN, VarInfo* pVar, short args)
@@ -1991,7 +1850,6 @@ struct neo_libs
 	{
 		if (args != 0) return false;
 		if (pVar->GetType() != VAR_ASYNC) return false;
-		AsyncInfo* pAsync = pVar->_async;
 		pN->ReturnValue();
 		return true;
 	}
@@ -2101,34 +1959,6 @@ struct neo_libs
 		}
 		return true;
 	}
-	static bool sys_date(CNeoVMWorker* pN, VarInfo* pVar, short args)
-	{
-		if (args != 2) return false;
-		VarInfo* pArg1 = pN->GetStack(1);
-		VarInfo* pArg2 = pN->GetStack(2);
-		if (pArg1->GetType() != VAR_STRING || pArg2->GetType() != VAR_INT) return false;
-
-		// 기존 음수 int32 타임스탬프의 unsigned 해석을 유지하고 양수 범위는 확장한다.
-		NS_INT timestamp = pArg2->_int;
-		if (timestamp < 0 && timestamp >= INT32_MIN) timestamp = static_cast<uint32_t>(timestamp);
-		if (timestamp < 0 || timestamp > 253402300799LL) return false;
-		if (sizeof(std::time_t) < 8 && timestamp > INT32_MAX) return false;
-		const std::time_t currentTime = static_cast<std::time_t>(timestamp);
-		std::tm timeinfo;
-#ifdef _WIN32
-		if (localtime_s(&timeinfo, &currentTime) != 0) return false;
-#else
-		if (localtime_r(&currentTime, &timeinfo) == nullptr) return false;
-#endif
-		std::string result;
-		if (!DateFormat(pArg1->_str->_str, timeinfo, result))
-		{
-			pN->SetError("invalid system.date format or output exceeds 79 bytes");
-			return false;
-		}
-		pN->ReturnValue(result.c_str());
-		return true;
-	}
 	static bool sys_utc_date(CNeoVMWorker* worker, VarInfo*, short args)
 	{
 		if (args != 2 || worker->GetStack(1)->GetType() != VAR_STRING ||
@@ -2218,7 +2048,6 @@ struct neo_libs
         if (args < 1 || args > 2 || (args == 2 && worker->GetStack(2)->GetType() != VAR_BOOL))
             result.Fail("$", "jsonEncode expects value and optional bool sortKeys");
         else JsonInternal::Encode(*worker->GetStack(1), text, result, args == 2 && worker->GetStack(2)->_bl);
-        worker->m_jsonError = result.error;
         if (result.error.empty()) worker->Var_SetStringA(worker->GetStack(0), text);
         else worker->ReturnValue();
         return true;
@@ -2232,80 +2061,9 @@ struct neo_libs
             const auto& text = worker->GetStack(1)->_str->_str;
             JsonInternal::Decode(*worker, text.data(), text.size(), *worker->GetStack(0), result);
         }
-        worker->m_jsonError = result.error;
         if (!result.error.empty()) worker->ReturnValue();
         return true;
     }
-    static bool sys_jsonError(CNeoVMWorker* worker, VarInfo*, short args)
-    {
-        if (args != 0) return false;
-        worker->ReturnValue(worker->m_jsonError.c_str()); return true;
-    }
-	// system.load(source, name) — arg1 = 컴파일할 소스 텍스트, arg2 = 청크 이름(현재 미사용).
-	static bool sys_load(CNeoVMWorker* pN, VarInfo* pVar, short args)
-	{
-		if (args != 2) return false;
-
-		VarInfo* pArg1 = pN->GetStack(1);
-		VarInfo* pArg2 = pN->GetStack(2);
-
-		if (pArg1->GetType() != VAR_STRING) return false;
-		if (pArg2->GetType() != VAR_STRING) return false;
-
-		CNArchive arCode;
-		std::string err;
-
-		NeoCompilerParam param(pArg1->_str->_str.c_str(), (int)pArg1->_str->_str.length());
-		param.err = &err;
-		param.putASM = false;
-		param.debug = false;
-
-		if (false == NeoVMSystem::Compile(arCode, param))
-		{
-			return false;
-		}
-
-		INeoVMWorker* pModule = pN->_pVM->LoadVM(nullptr, arCode.GetData(), arCode.GetBufferOffset());
-		if (pModule == NULL)
-		{
-			pN->ReturnValue();
-			return false; // ?
-		}
-
-		VarInfo* pRet = pN->GetStack(0);
-		pN->Var_SetModule(pRet, pModule);
-		return true;
-	}
-	static bool sys_pcall(CNeoVMWorker* pN, VarInfo* pVar, short args)
-	{
-		if (args != 1) return false;
-
-		VarInfo* pArg1 = pN->GetStack(1);
-		if (pArg1->GetType() != VAR_MODULE) return false;
-
-		// This native frame cannot survive suspension of a loaded module.
-		// Apply the same synchronous boundary used by native sort callbacks.
-		struct SynchronousCall
-		{
-			INeoVMWorker* worker;
-			explicit SynchronousCall(INeoVMWorker* value) : worker(value) { worker->BeginNestedScriptCall(); }
-			~SynchronousCall() { worker->EndNestedScriptCall(); }
-		} synchronousCall(pArg1->_module);
-		std::vector<VarInfo> moduleArgs;
-		const int status = pArg1->_module->ExecuteTop(0, moduleArgs);
-		if (status != NEOEXEC_COMPLETED)
-		{
-			if (status == NEOEXEC_SUSPENDED)
-			{
-				pArg1->_module->CancelExecution();
-				pN->SetError("system.pcall cannot suspend");
-			}
-			return false;
-		}
-
-		pN->ReturnValue();
-		return true;
-	}
 	static bool coroutine_create(CNeoVMWorker* pN, VarInfo* pVar, short args)
 	{
 		if (args != 1) return false;
@@ -2749,17 +2507,11 @@ static void AddGlobalLibFun()
 
 	g_sCurrentSystem = "system";
 	AddSystemFun("time", &neo_libs::sys_time, "int");
-	AddSystemFun("date", &neo_libs::sys_date, "string", "string format", "int time");
 	AddSystemFun("clock", &neo_libs::sys_clock, "float");
 	AddSystemFun("jsonEncode", &neo_libs::sys_jsonEncode, "var", "var value", "...");
 	AddSystemFun("jsonDecode", &neo_libs::sys_jsonDecode, "var", "string text");
-	AddSystemFun("jsonError", &neo_libs::sys_jsonError, "string");
 	AddSystemFun("array", &neo_libs::sys_array, "array", "var initial", "int size");
 	AddSystemFun("array32", &neo_libs::sys_array32, "array", "var initial", "int size");
-	// 인자 순서는 sys_load 구현 기준: arg1=컴파일할 소스, arg2=청크 이름.
-	// name 은 현재 타입 검사만 하고 사용하지 않는다(진단 메시지/모듈 식별용 예약).
-	AddSystemFun("load", &neo_libs::sys_load, "module", "string source", "string name");
-	AddSystemFun("pcall", &neo_libs::sys_pcall, "void", "module m");
 	AddSystemFun("aysnc_create", &neo_libs::sys_aysnc_create, "async");
 	AddSystemFun("set", &neo_libs::sys_set, "set", "list l");
 
@@ -2771,7 +2523,6 @@ static void AddGlobalLibFun()
 	AddSystemFun("close", &neo_libs::coroutine_close, "coroutine", "...");
 
 	g_sCurrentSystem.clear();
-	AddDefaultNativeFun("format", &neo_libs::io_format);
 	// 기존 네이티브 함수의 인덱스 순서를 유지하도록 새 함수는 등록부 끝에 추가한다.
 	g_sCurrentSystem = "system";
 	AddSystemFun("time_ms", &TimeLibrary::TimeMilliseconds, "int");
@@ -2791,7 +2542,7 @@ bool CNeoVM::IsGlobalLibFun(std::string& FunName)
 {
 	//InitLib();
 	//return g_sNeoFunLib_Default.IsKey(FunName);
-	return FunName == "print" || FunName == "format";
+	return FunName == "print";
 }
 const std::list< SystemFun>* CNeoVM::GetSystemModule(const std::string& module)
 {
@@ -2834,7 +2585,6 @@ void CNeoVM::RegObjLibrary()
 	g_sNeoFunLib_String.Add("regex_search", &neo_libs::Str_regex_search);
 	g_sNeoFunLib_String.Add("regex_replace", &neo_libs::Str_regex_replace);
 	g_sNeoFunLib_String.Add("split", &neo_libs::Str_split);
-	g_sNeoFunLib_String.Add("format", &neo_libs::Str_format);
 
 	// List Lib
 	_funLib_List = NeoVMSystem::RegisterNative(Fun_List);
@@ -2903,52 +2653,5 @@ void CNeoVM::InitLib()
 	RegObjLibrary();
 }
 
-// 등록된 빌트인 전체 열거 — 완성 데이터의 단일 진실원천은 위 등록 코드 그 자체.
-// AddSystemFun / g_sNeoFunLib_*.Add 한 줄만 추가하면 여기 열거에 자동 반영된다.
-void NeoVMSystem::GetBuiltins(std::vector<NeoBuiltinInfo>& out)
-{
-	out.clear();
-	NeoBuiltinInfo format;
-	format.name = "format";
-	format.argCount = -1;
-	format.ret = "string";
-	format.params = {"string pattern", "..."};
-	out.push_back(format);
-
-	// 1) namespaced module 함수 (math / system / coroutine …) — argCount/타입+이름 파라미터 포함
-	for (auto& mod : g_sSystemFuns)
-	{
-		for (auto& f : mod.second)
-		{
-			NeoBuiltinInfo info;
-			info.module = mod.first;
-			info.name = f.fname;
-			info.argCount = f.argCount;
-			info.ret = f.ret;         // 리턴 타입
-			info.params = f.params;   // "float x" 목록 그대로
-			out.push_back(info);
-		}
-	}
-
-	// 2) 타입 메서드 테이블 — 이름만(argCount 미상)
-	auto emitTable = [&out](const char* module, VMHash<TYPE_NeoLib>& tbl)
-	{
-		tbl.Enumerate([&out, module](const std::string& key, TYPE_NeoLib)
-		{
-			NeoBuiltinInfo info;
-			info.module = module;
-			info.name = key;
-			info.argCount = -1;
-			out.push_back(info);
-		});
-	};
-	emitTable("string", g_sNeoFunLib_String);
-	emitTable("list", g_sNeoFunLib_List);
-	emitTable("array", g_sNeoFunLib_Array);
-	emitTable("map", g_sNeoFunLib_Map);
-	emitTable("set", g_sNeoFunLib_Set);
-	emitTable("async", g_sNeoFunLib_Async);
-	TimeLibrary::GetBuiltins(out);
-}
 
 };

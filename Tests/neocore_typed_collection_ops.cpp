@@ -189,7 +189,7 @@ bool IsRuntimeCall(eNOperation op)
 bool IsGenericAggregate(eNOperation op)
 {
     return op == NOP_CLT_READ || op == NOP_CLT_READ_L || op == NOP_CLT_READ_STATIC_STRING ||
-        op == NOP_CLT_MOV || op == NOP_CLT_MOV_L || op == NOP_CLT_WRITE_REF || op == NOP_CLT_READ_RESULT ||
+        op == NOP_CLT_MOV || op == NOP_CLT_MOV_L || op == NOP_CLT_WRITE_REF ||
         op == NOP_VEC_MAKE;
 }
 

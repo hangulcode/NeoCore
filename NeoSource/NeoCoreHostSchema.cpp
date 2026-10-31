@@ -42,7 +42,7 @@ bool HostSchema::IsNameAllowed(const std::string& name) const
         "null", "true", "false", "if", "else", "while", "for", "foreach", "in", "return",
         "break", "continue", "import", "public", "export", "const", "struct", "class",
         "switch", "case", "default", "print", "tostring", "toint", "tofloat", "tosize",
-        "type", "sleep", "yield", "__LINE__", "list", "map", "array", "array32", "set",
+        "sleep", "yield", "list", "map", "array", "array32", "set",
         "math", "system"
     };
     for (const char* value : reserved)

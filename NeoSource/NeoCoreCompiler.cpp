@@ -266,8 +266,8 @@ static std::string DefineLiteral(const CompileDefine& define)
     static const char* const reserved[] = {
         "var", "fun", "int", "float", "bool", "string", "void", "int32", "float32", "any", "null", "true", "false",
         "if", "else", "while", "for", "foreach", "in", "return", "break", "continue", "import", "public", "export", "const",
-        "struct", "class", "switch", "case", "default", "print", "tostring", "toint", "tofloat", "tosize", "type", "sleep",
-        "yield", "__LINE__", "list", "map", "array", "array32", "set", "fn", "coroutine", "math", "system",
+        "struct", "class", "switch", "case", "default", "print", "tostring", "toint", "tofloat", "tosize", "sleep",
+        "yield", "list", "map", "array", "array32", "set", "fn", "coroutine", "math", "system",
         "Vector2", "Vector3", "Vector4", "Quaternion", "TimeSpan", "Stopwatch", "AsyncRequest"
     };
     if (names.size() != 2 || names[0].kind != TokenKind::Identifier || names[0].text != define.name)
@@ -521,7 +521,7 @@ private:
 
     static bool IsReserved(const std::string& name)
     {
-        static const char* const names[] = { "var", "fun", "int", "float", "bool", "string", "void", "int32", "float32", "any", "null", "true", "false", "if", "else", "while", "for", "foreach", "in", "return", "break", "continue", "import", "public", "export", "const", "struct", "class", "switch", "case", "default", "print", "tostring", "toint", "tofloat", "tosize", "type", "sleep", "yield", "__LINE__", "list", "map", "array", "array32" };
+        static const char* const names[] = { "var", "fun", "int", "float", "bool", "string", "void", "int32", "float32", "any", "null", "true", "false", "if", "else", "while", "for", "foreach", "in", "return", "break", "continue", "import", "public", "export", "const", "struct", "class", "switch", "case", "default", "print", "tostring", "toint", "tofloat", "tosize", "sleep", "yield", "list", "map", "array", "array32" };
         for (const char* value : names) if (name == value) return true;
         return false;
     }

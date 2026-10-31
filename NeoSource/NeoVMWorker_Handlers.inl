@@ -70,10 +70,6 @@ NEOS_NOINLINE bool handle_TOSIZE(const SVMOperation& OP) {
     return false;
 }
 
-NEOS_NOINLINE bool handle_GETTYPE(const SVMOperation& OP) {
-    Move(GetVarPtrF1(OP), GetType(GetVarPtr2(OP)));
-    return false;
-}
 
 NEOS_NOINLINE bool handle_SLEEP(const SVMOperation& OP) {
 	if (m_iNativeScriptCallDepth > 0) {
@@ -485,33 +481,7 @@ NEOS_NOINLINE void handle_CLT_WRITE_REF(const SVMOperation& OP) {
         CltRead(owner, key, temp);
 }
 
-#if NEOSCRIPT_LEGACY_ARITHMETIC
-// READ_ADD/SUB/MUL/DIV: n3 op= n1[n2]. n1 = 컨테이너, n2 = 키, n3 = 대입 대상.
-// 본문은 ReadArith 템플릿이 정의된 NeoVMWorker_LegacyArithmetic.inl 에 둔다(다른 번역 단위가 미정의 템플릿을 보지 않게).
-NEOS_FORCEINLINE bool handle_READ_ADD(const SVMOperation& OP);
-NEOS_FORCEINLINE bool handle_READ_SUB(const SVMOperation& OP);
-NEOS_FORCEINLINE bool handle_READ_MUL(const SVMOperation& OP);
-NEOS_FORCEINLINE bool handle_READ_DIV(const SVMOperation& OP);
-#endif
 
-// 완료된 원소 대입의 결과를 읽거나, 저장된 벡터 값을 다시 확인한다.
-NEOS_NOINLINE void handle_CLT_READ_RESULT(const SVMOperation& OP) {
-    VarInfo* value = GetVarPtrF1(OP);
-    if (OP.argFlag & NEOS_OP_REF_LOADED) {
-        VarInfo* key = GetVarPtr2(OP);
-        VarInfo* current = nullptr;
-        if (value->GetType() == VAR_LIST || value->GetType() == VAR_MAP)
-            current = GetTableItem(value, key);
-        else if (value->GetType() == VAR_ARRAY && value->_array->VectorDimension() &&
-            key->GetType() == VAR_INT && value->_array->IsValidIndex(key->_int))
-            current = &value->_array->VectorValues()[key->_int];
-        // 값 벡터만 다시 읽는다. 참조 컨테이너와 호스트 대입 결과는 이미 평가한 값을 유지한다.
-        if (current && current->IsVector()) Move(GetVarPtr3(OP), current);
-        return;
-    }
-    if (value->GetType() == VAR_FLOAT) Move(GetVarPtr3(OP), value);
-    else CltRead(value, GetVarPtr2(OP), GetVarPtr3(OP));
-}
 
 NEOS_NOINLINE bool handle_LIST_ALLOC(const SVMOperation& OP) {
     Var_SetList(GetVarPtrF1(OP), GetVM()->ListAlloc(OP.n23));
@@ -702,25 +672,10 @@ NEOS_NOINLINE bool handle_ERROR(const SVMOperation& OP) {
 // 비트·시프트 연산과 2-피연산자 산술은 계측에서는 드물었지만 xorshift 류 난수·해시 코드가 op 마다 호출을
 // 치러 느려졌으므로(실측) 루프 안으로 되돌렸다. 여기 남은 것은 비교→bool, 논리 점프, LOADK 류다.
 NEOS_NOINLINE void handle_LOADK_cold(const SVMOperation& OP) { Move(GetVarPtrF1(OP), m_pVarGlobal_Pointer + OP.n23); }
-#if NEOSCRIPT_LEGACY_ARITHMETIC
-NEOS_NOINLINE void handle_LOG_NOT_cold(const SVMOperation& OP) { Var_SetBool(GetVarPtrF1(OP), !GetVarPtr2(OP)->IsTrue()); }
-NEOS_NOINLINE void handle_PERSENT2_cold(const SVMOperation& OP) { Per2(GetVarPtrF1(OP), GetVarPtr2(OP)); }
-#else
 NEOS_NOINLINE void handle_LOG_NOT_cold(const SVMOperation& OP) { StoreNumberBool(GetVarPtrF1(OP), !GetVarPtr2(OP)->_bl); }
-#endif
 NEOS_NOINLINE void handle_GREAT_cold(const SVMOperation& OP) { Var_SetBool(GetVarPtrF1(OP), CompareGR(GetVarPtr2(OP), GetVarPtr3(OP))); }
 NEOS_NOINLINE void handle_GREAT_EQ_cold(const SVMOperation& OP) { Var_SetBool(GetVarPtrF1(OP), CompareGE(GetVarPtr2(OP), GetVarPtr3(OP))); }
 NEOS_NOINLINE void handle_LESS_cold(const SVMOperation& OP) { Var_SetBool(GetVarPtrF1(OP), CompareGR(GetVarPtr3(OP), GetVarPtr2(OP), true)); }
 NEOS_NOINLINE void handle_LESS_EQ_cold(const SVMOperation& OP) { Var_SetBool(GetVarPtrF1(OP), CompareGE(GetVarPtr3(OP), GetVarPtr2(OP), true)); }
 NEOS_NOINLINE void handle_EQUAL2_cold(const SVMOperation& OP) { Var_SetBool(GetVarPtrF1(OP), CompareEQ(GetVarPtr2(OP), GetVarPtr3(OP))); }
 NEOS_NOINLINE void handle_NEQUAL_cold(const SVMOperation& OP) { Var_SetBool(GetVarPtrF1(OP), !CompareEQ(GetVarPtr2(OP), GetVarPtr3(OP))); }
-#if NEOSCRIPT_LEGACY_ARITHMETIC
-NEOS_NOINLINE void handle_AND_cold(const SVMOperation& OP) { And(GetVarPtrF1(OP), GetVarPtr2(OP), GetVarPtr3(OP)); }
-NEOS_NOINLINE void handle_OR_cold(const SVMOperation& OP) { Or(GetVarPtrF1(OP), GetVarPtr2(OP), GetVarPtr3(OP)); }
-#endif
-NEOS_NOINLINE void handle_LOG_AND_cold(const SVMOperation& OP) { Var_SetBool(GetVarPtrF1(OP), GetVarPtr3(OP)->IsTrue() && GetVarPtr2(OP)->IsTrue()); }
-NEOS_NOINLINE void handle_LOG_OR_cold(const SVMOperation& OP) { Var_SetBool(GetVarPtrF1(OP), GetVarPtr2(OP)->IsTrue() || GetVarPtr3(OP)->IsTrue()); }
-NEOS_NOINLINE void handle_JMP_AND_cold(const SVMOperation& OP) { if (GetVarPtr2(OP)->IsTrue() && GetVarPtr3(OP)->IsTrue()) SetCodeIncPtr(OP.n1); }
-NEOS_NOINLINE void handle_JMP_OR_cold(const SVMOperation& OP) { if (GetVarPtr2(OP)->IsTrue() || GetVarPtr3(OP)->IsTrue()) SetCodeIncPtr(OP.n1); }
-NEOS_NOINLINE void handle_JMP_NAND_cold(const SVMOperation& OP) { if (false == (GetVarPtr2(OP)->IsTrue() && GetVarPtr3(OP)->IsTrue())) SetCodeIncPtr(OP.n1); }
-NEOS_NOINLINE void handle_JMP_NOR_cold(const SVMOperation& OP) { if (false == (GetVarPtr2(OP)->IsTrue() || GetVarPtr3(OP)->IsTrue())) SetCodeIncPtr(OP.n1); }

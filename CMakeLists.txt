@@ -52,7 +52,6 @@ set(NEOCORE_BACKEND_SOURCES
 
 # NeoCore는 정적 산술 백엔드 하나만 빌드한다.
 add_library(neocore_backend STATIC ${NEOCORE_BACKEND_SOURCES})
-target_compile_definitions(neocore_backend PUBLIC NEOSCRIPT_LEGACY_ARITHMETIC=0)
 target_include_directories(neocore_backend PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/NeoSource)
 target_compile_features(neocore_backend PUBLIC cxx_std_11 PRIVATE c_std_99)
 if(WIN32)
@@ -68,7 +67,6 @@ add_library(neocore_frontend STATIC NeoSource/NeoCoreCompiler.cpp)
 target_link_libraries(neocore_frontend PUBLIC neocore_type_model)
 add_library(neocore_runtime STATIC NeoSource/NeoCore.cpp NeoSource/NeoCoreHost.cpp NeoSource/NeoCoreModules.cpp NeoSource/NeoCoreImage.cpp)
 target_link_libraries(neocore_runtime PUBLIC neocore_frontend PRIVATE neocore_backend Threads::Threads)
-target_compile_definitions(neocore_runtime PUBLIC NEOSCRIPT_LEGACY_ARITHMETIC=0)
 add_library(NeoCore::Runtime ALIAS neocore_runtime)
 add_executable(neocore Samples/neocore/main.cpp Samples/neocore/SampleHost.cpp Samples/neocore/ConsoleTooling.cpp)
 target_compile_definitions(neocore PRIVATE NEOCORE_SAMPLE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/Samples/neocore/scripts")
