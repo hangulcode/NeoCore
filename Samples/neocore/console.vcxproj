@@ -9,8 +9,8 @@
   <PropertyGroup Label="Globals">
     <VCProjectVersion>17.0</VCProjectVersion>
     <ProjectGuid>{6AB38D2F-5B09-4B59-A5F0-DA8FE1986ED3}</ProjectGuid>
-    <ProjectName>NeoCoreConsole</ProjectName>
-    <RootNamespace>NeoCoreConsole</RootNamespace>
+    <ProjectName>Console</ProjectName>
+    <RootNamespace>Console</RootNamespace>
     <Keyword>Win32Proj</Keyword>
     <WindowsTargetPlatformVersion>10.0</WindowsTargetPlatformVersion>
   </PropertyGroup>
@@ -29,10 +29,10 @@
   </ImportGroup>
   <PropertyGroup>
     <OutDir>$(ProjectDir)..\..\Build\Windows\bin\$(Platform)\$(Configuration)\</OutDir>
-    <IntDir>$(ProjectDir)..\..\Build\Windows\obj\NeoCoreConsole\$(Platform)\$(Configuration)\</IntDir>
+    <IntDir>$(ProjectDir)..\..\Build\Windows\obj\Console\$(Platform)\$(Configuration)\</IntDir>
     <TargetName>neocore</TargetName>
     <LinkIncremental>false</LinkIncremental>
-    <LocalDebuggerCommandArguments>--debug --file "$(ProjectDir)scripts\fibonacci.nc"</LocalDebuggerCommandArguments>
+    <LocalDebuggerCommandArguments>--debug</LocalDebuggerCommandArguments>
     <LocalDebuggerWorkingDirectory>$(ProjectDir)..\..\</LocalDebuggerWorkingDirectory>
     <DebuggerFlavor>WindowsLocalDebugger</DebuggerFlavor>
   </PropertyGroup>
@@ -76,11 +76,11 @@
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
-    <None Include="scripts\regression.nc" />
-    <None Include="scripts\literal_totype.nc" />
-    <None Include="scripts\cycle.nc" />
     <ClCompile Include="main.cpp" />
     <ClInclude Include="SampleHost.h" />
+    <ClInclude Include="CompilerErrors.h" />
+    <ClInclude Include="Benchmarks.h" />
+    <ClInclude Include="ConsoleDiagnostics.h" />
     <None Include="scripts\9_times.nc" />
     <None Include="scripts\callback.nc" />
     <None Include="scripts\contailer.nc" />

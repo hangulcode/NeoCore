@@ -43,33 +43,45 @@ std::shared_ptr<NeoCore::IHttpTransport> CreateSampleHttpTransport()
     return std::shared_ptr<NeoCore::IHttpTransport>(new SampleHttpTransport());
 }
 
-SampleHost::SampleHost() : position_(1, 2, 3)
+SampleHost::SampleHost(const std::string& sample) : position_(1, 2, 3)
 {
+    const bool callback = sample == "callback";
+    if (!callback && sample != "map_callback") return;
+
+    // 선택한 샘플의 바인딩만 등록하고, 나머지 샘플은 호스트 스키마 없이 컴파일한다.
     NeoCore::HostSchema schema;
-    const NeoCore::TypeId host = schema.AddObject("SampleServices");
-    const NeoCore::TypeId data = schema.AddObject("SampleData");
-    const NeoCore::TypeId integer = schema.Types().Int();
-    schema.AddGlobal("Host", host);
-    schema.AddGlobal("g_sData", data);
-    const NeoCore::HostBindingId mul = schema.AddMethod(host, "mul", integer, {integer, integer});
-    schema.AddProperty(data, "Transform", schema.Types().Vector3());
+    const NeoCore::TypeId object = schema.AddObject(callback ? "SampleServices" : "SampleData");
+    const char* global = callback ? "Host" : "g_sData";
+    schema.AddGlobal(global, object);
+    NeoCore::HostBindingId mul = NeoCore::InvalidHostBinding;
+    if (callback)
+    {
+        const NeoCore::TypeId integer = schema.Types().Int();
+        mul = schema.AddMethod(object, "mul", integer, {integer, integer});
+    }
+    else schema.AddProperty(object, "Transform", schema.Types().Vector3());
     bindings_.reset(new NeoCore::HostBindings(schema,
         [](void* owner, NeoCore::TypeId, NeoCore::ObjectHandle object) -> void* {
             return object.value == 1 ? owner : nullptr;
         }, this));
-    bindings_->BindGlobal("Host", NeoCore::ObjectHandle(1));
-    bindings_->BindGlobal("g_sData", NeoCore::ObjectHandle(1));
-    bindings_->Bind(mul, [](NeoCore::HostCall& call) {
-        call.ReturnInt(call.Int(0) * call.Int(1));
-        return true;
-    });
-    const NeoCore::HostProperty* property = schema.FindProperty(data, "Transform");
-    bindings_->Bind(property->getter, [this](NeoCore::HostCall& call) {
-        call.ReturnVector3(position_); return true;
-    });
-    bindings_->Bind(property->setter, [this](NeoCore::HostCall& call) {
-        position_ = call.Vector3(0); return true;
-    });
+    bindings_->BindGlobal(global, NeoCore::ObjectHandle(1));
+    if (callback)
+    {
+        bindings_->Bind(mul, [](NeoCore::HostCall& call) {
+            call.ReturnInt(call.Int(0) * call.Int(1));
+            return true;
+        });
+    }
+    else
+    {
+        const NeoCore::HostProperty* property = schema.FindProperty(object, "Transform");
+        bindings_->Bind(property->getter, [this](NeoCore::HostCall& call) {
+            call.ReturnVector3(position_); return true;
+        });
+        bindings_->Bind(property->setter, [this](NeoCore::HostCall& call) {
+            position_ = call.Vector3(0); return true;
+        });
+    }
 }
 
 bool SampleHost::Verify(const std::string& sample, NeoCore::Program& program, NeoCore::Error& error)
@@ -103,15 +115,22 @@ bool SampleHost::Verify(const std::string& sample, NeoCore::Program& program, Ne
         result = program.Call("Verify");
         matched = result.ok() && result.value.kind() == NeoCore::Scalar::Kind::Bool && result.value.asBool();
     }
-    else if (sample == "module")
+    else if (sample == "module" || sample == "particles")
     {
-        // 동적 문자열도 별도 정적 컴파일과 명시된 export 서명으로 실행한다.
-        auto chunk = NeoCore::Program::Compile("export string Chunk() { return \"ok\"; }", error, "chunk.nc");
-        if (!chunk) return false;
-        for (int i = 0; i < 2; ++i)
+        result = program.Call("CheckPassed");
+        matched = result.ok() && !result.suspended() &&
+            result.value.kind() == NeoCore::Scalar::Kind::Bool && result.value.asBool();
+        if (matched && sample == "module")
         {
-            result = chunk->Call("Chunk");
-            matched = matched && result.ok() && result.value.kind() == NeoCore::Scalar::Kind::String && result.value.asString() == "ok";
+            // 동적 문자열도 별도 정적 컴파일과 명시된 export 서명으로 실행한다.
+            auto chunk = NeoCore::Program::Compile("export string Chunk() { return \"ok\"; }", error, "chunk.nc");
+            if (!chunk) return false;
+            for (int i = 0; matched && i < 2; ++i)
+            {
+                result = chunk->Call("Chunk");
+                matched = result.ok() && !result.suspended() &&
+                    result.value.kind() == NeoCore::Scalar::Kind::String && result.value.asString() == "ok";
+            }
         }
     }
     error = result.error;

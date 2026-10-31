@@ -213,6 +213,69 @@ void RejectIR(IRuntime& runtime, const NeoCore::StaticCompileResult& checked,
     Check(!error.ok() && bytes.empty(), label + " image compiler rejects malformed IR");
 }
 
+void InternalNameBoundary(IRuntime& runtime, bool debug)
+{
+    const char* sources[] = {"var $neocore_user=1;", "fun $neocore_test(){}"};
+    for (const char* source : sources)
+        for (bool prefixOnly : {false, true})
+        {
+            CompileDesc desc;
+            desc.source = source;
+            desc.sourceName = "internal_names.ns";
+            desc.includeDebugInfo = debug;
+            if (prefixOnly) desc.coreIntrinsicPrefix = "$neocore_op_";
+            const std::string label = std::string(source) + (prefixOnly ? " with intrinsic prefix only" : " without IR");
+            const CompileResult direct = runtime.Compile(desc);
+            Check(!direct.program && !direct.error.ok(), label + " rejects private identifiers");
+            if (direct.program) runtime.DestroyProgram(direct.program);
+            std::vector<uint8_t> bytes;
+            const Error error = runtime.CompileToBytecode(desc, bytes);
+            Check(!error.ok() && bytes.empty(), label + " cannot produce an image");
+        }
+
+    class PrivateModuleLoader : public ILoader
+    {
+    public:
+        std::string source;
+        unsigned loads = 0;
+        bool Load(StringView path, std::vector<uint8_t>& output) override
+        {
+            if (path.str() != "modules/private_names.ns") return false;
+            ++loads;
+            output.assign(source.begin(), source.end());
+            return true;
+        }
+        StringView LibPath() const override { return "modules/"; }
+    };
+    NeoCore::StaticCompileResult checked;
+    Check(NeoCore::CompileStaticSource("export int Probe(){int value=1;return value;}", checked),
+        "private identifier import fixture frontend");
+    if (!checked.success) return;
+    const std::string root = "import private_names;\n" + checked.loweredSource;
+    const char* modules[] = {"public var value=1;", "var $neocore_user=1;", "fun $neocore_test(){}"};
+    for (unsigned index = 0; index < sizeof(modules) / sizeof(modules[0]); ++index)
+    {
+        PrivateModuleLoader loader;
+        loader.source = modules[index];
+        RuntimeDesc settings;
+        settings.loader = &loader;
+        IRuntime* imported = CreateRuntime(settings);
+        Check(imported != nullptr, "private identifier import runtime");
+        if (!imported) continue;
+        imported->FreezeBindings();
+        CompileDesc desc = Description(checked, debug);
+        desc.source = root;
+        const CompileResult result = imported->Compile(desc);
+        Check(loader.loads > 0, "private identifier fixture actually loads its imported source");
+        if (index == 0)
+            Check(result.program && result.error.ok(), "checked root may import ordinary backend identifiers: " + result.error.message);
+        else
+            Check(!result.program && !result.error.ok(), "imported source does not inherit private identifier privileges");
+        if (result.program) imported->DestroyProgram(result.program);
+        DestroyRuntime(imported);
+    }
+}
+
 void InvalidMetadata(IRuntime& runtime, bool debug)
 {
     NeoCore::StaticCompileResult valid;
@@ -239,6 +302,20 @@ void InvalidMetadata(IRuntime& runtime, bool debug)
         else node.op = static_cast<NeoCore::IROp>(255);
         RejectIR(runtime, altered, debug, "bad metadata variant " + std::to_string(change));
     }
+    const std::size_t symbol = FindOp(valid.typedIR, NeoCore::IROp::Symbol);
+    Check(symbol < valid.typedIR.nodes.size() && !valid.typedIR.functions.empty(), "internal identifier metadata fixture");
+    if (symbol == valid.typedIR.nodes.size() || valid.typedIR.functions.empty()) return;
+    const char* invalidNames[] = {"$other", "$neocore_bad/name", "$neocore_"};
+    for (const char* name : invalidNames)
+        for (int field = 0; field < 4; ++field)
+        {
+            NeoCore::StaticCompileResult altered = valid;
+            if (field == 0) altered.typedIR.prefix = name;
+            else if (field == 1) altered.typedIR.returnPrefix = name;
+            else if (field == 2) altered.typedIR.nodes[symbol].backendName = name;
+            else altered.typedIR.functions[0].backendName = name;
+            RejectIR(runtime, altered, debug, std::string("invalid private metadata name ") + name + " field " + std::to_string(field));
+        }
 }
 
 void StorageStructure()
@@ -299,6 +376,12 @@ void InvalidStorageMetadata(IRuntime& runtime, bool debug)
             input.typeId = altered.types.Bool();
         }
         RejectIR(runtime, altered, debug, "bad storage metadata variant " + std::to_string(change));
+    }
+    for (const char* name : {"$other", "$neocore_bad/name"})
+    {
+        NeoCore::StaticCompileResult altered = valid;
+        altered.typedIR.nodes[write].storage.backendName = name;
+        RejectIR(runtime, altered, debug, std::string("invalid private storage name ") + name);
     }
 }
 
@@ -804,6 +887,7 @@ int main()
     RejectReferences();
     for (bool debug : {false, true})
     {
+        InternalNameBoundary(*runtime, debug);
         MutationAndLifetime(*runtime, debug);
         InvalidMetadata(*runtime, debug);
         InvalidStorageMetadata(*runtime, debug);

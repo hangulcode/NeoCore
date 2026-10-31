@@ -6,8 +6,8 @@
 class SampleHost
 {
 public:
-    SampleHost();
-    NeoCore::HostBindings& Bindings() { return *bindings_; }
+    explicit SampleHost(const std::string& sample);
+    const NeoCore::HostBindings* Bindings() const { return bindings_.get(); }
     bool Verify(const std::string& sample, NeoCore::Program& program, NeoCore::Error& error);
 private:
     std::unique_ptr<NeoCore::HostBindings> bindings_;

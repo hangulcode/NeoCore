@@ -38,6 +38,27 @@ const std::string& Scalar::asString() const
     return string_;
 }
 
+AllocationStats GetAllocationStats()
+{
+    NeoScript::AllocStats backend;
+    NeoScript::GetAllocStats(backend);
+    AllocationStats result;
+    result.strings = backend.strings;
+    result.maps = backend.maps;
+    result.lists = backend.lists;
+    result.sets = backend.sets;
+    result.coroutines = backend.coroutines;
+    result.modules = backend.modules;
+    result.asyncs = backend.asyncs;
+    result.vectors = backend.vectors;
+    result.arrays = backend.arrays;
+    result.closures = backend.closures;
+    result.bufferBytes = backend.bufferBytes;
+    result.poolBytes = backend.poolBytes;
+    result.stringIdleBytes = backend.stringIdleBytes;
+    return result;
+}
+
 static Error TranslateError(const NeoScript::Error& backend, const std::string& name);
 
 struct Program::Impl
@@ -205,6 +226,7 @@ std::unique_ptr<Program> Program::CompileImpl(const std::string& source, Error& 
     desc.coreTypedIR = &impl->checked.typedIR;
     desc.sourceName = sourceName;
     desc.includeDebugInfo = debug;
+    desc.emitAsm = options.emitAsm;
     NeoScript::CompileResult compiled = impl->runtime->Compile(desc);
     impl->program = compiled.program;
     if (!impl->program || !compiled.error.ok())
@@ -251,6 +273,9 @@ Result Program::Call(const std::string& name, const std::vector<Scalar>& argumen
 }
 Result Program::Resume(double deltaTime, std::uint32_t budget) { return defaultInstance_->Resume(deltaTime, budget); }
 bool Program::IsSuspended() const { return defaultInstance_->IsSuspended(); }
+std::int64_t Program::TrimMemory(bool force) { return impl_->runtime->TrimMemory(force); }
+void Program::SetEmptyPageHoldSeconds(float seconds) { impl_->runtime->SetEmptyPageHoldSeconds(seconds); }
+void Program::SetTrimPagesPerCall(int pages) { impl_->runtime->SetTrimPagesPerCall(pages); }
 bool Program::SetHostObject(const std::string& name, ObjectHandle object, Error& error)
 {
     return defaultInstance_->SetHostObject(name, object, error);

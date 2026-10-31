@@ -1,11 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <Project ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
   <ItemGroup><Filter Include="Scripts" /><Filter Include="Benchmarks" /></ItemGroup>
-  <ItemGroup><ClCompile Include="main.cpp" /><ClCompile Include="SampleHost.cpp" /><ClCompile Include="..\console\HttpTransport.cpp" /><ClInclude Include="SampleHost.h" /></ItemGroup>
+  <ItemGroup><ClCompile Include="main.cpp" /><ClCompile Include="SampleHost.cpp" /><ClCompile Include="..\console\HttpTransport.cpp" /><ClInclude Include="SampleHost.h" /><ClInclude Include="CompilerErrors.h" /><ClInclude Include="Benchmarks.h" /><ClInclude Include="ConsoleDiagnostics.h" /></ItemGroup>
   <ItemGroup>
-    <None Include="scripts\regression.nc"><Filter>Scripts</Filter></None>
-    <None Include="scripts\literal_totype.nc"><Filter>Scripts</Filter></None>
-    <None Include="scripts\cycle.nc"><Filter>Scripts</Filter></None>
     <None Include="scripts\9_times.nc"><Filter>Scripts</Filter></None>
     <None Include="scripts\callback.nc"><Filter>Scripts</Filter></None>
     <None Include="scripts\contailer.nc"><Filter>Scripts</Filter></None>

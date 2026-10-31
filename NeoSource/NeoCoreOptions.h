@@ -23,6 +23,7 @@ struct CompileOptions
 {
     ModuleLoader moduleLoader;
     std::shared_ptr<IHttpTransport> httpTransport;
+    bool emitAsm = false;
 };
 
 struct ExecutionLimits

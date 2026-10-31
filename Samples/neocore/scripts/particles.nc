@@ -86,5 +86,11 @@
     return true;
 }
 
-if (CheckParticles())
+bool passed = CheckParticles();
+if (passed)
     print("particles vectors ok");
+
+export bool CheckPassed()
+{
+    return passed;
+}

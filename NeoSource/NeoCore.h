@@ -45,6 +45,25 @@ private:
     std::string string_;
 };
 
+// 모든 런타임을 합산한 프로세스 전역 진단 값이다. 프로그램 하나의 사용량이 아니다.
+struct AllocationStats
+{
+    std::int32_t strings = 0;
+    std::int32_t maps = 0;
+    std::int32_t lists = 0;
+    std::int32_t sets = 0;
+    std::int32_t coroutines = 0;
+    std::int32_t modules = 0;
+    std::int32_t asyncs = 0;
+    std::int32_t vectors = 0;
+    std::int32_t arrays = 0;
+    std::int32_t closures = 0;
+    std::int64_t bufferBytes = 0;
+    std::int64_t poolBytes = 0;
+    std::int64_t stringIdleBytes = 0;
+};
+AllocationStats GetAllocationStats();
+
 enum class ExecutionStatus { Completed, Suspended, Failed };
 
 struct Result
@@ -83,6 +102,11 @@ public:
     bool IsSuspended() const;
     // 전역 객체의 ID만 바꾼다. 다음 멤버 호출에서 호스트가 실제 생존 여부를 검사한다.
     bool SetHostObject(const std::string& name, ObjectHandle object, Error& error);
+    // 이 프로그램과 생성된 인스턴스가 공유하는 런타임의 빈 풀 페이지만 반환한다.
+    // force는 보유 시간과 호출당 페이지 예산을 무시하며 살아 있는 값을 해제하지 않는다.
+    std::int64_t TrimMemory(bool force = false);
+    void SetEmptyPageHoldSeconds(float seconds);
+    void SetTrimPagesPerCall(int pages);
 private:
     friend class Instance;
     struct Impl;

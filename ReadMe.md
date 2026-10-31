@@ -169,9 +169,15 @@ Build/neocore/bin/Release/neocore.exe --file Samples/neocore/scripts/fibonacci.n
 ```
 
 For the checked-in Visual Studio projects, open **[NeoCore.sln](NeoCore.sln)** at
-the repository root. Select `NeoCoreConsole` as the startup project. The existing
+the repository root. Select `Console` as the startup project. Its project file is
+[`Samples/neocore/console.vcxproj`](Samples/neocore/console.vcxproj). The existing
 `Samples/console/console.sln` path opens the same NeoCore library and `.nc` console
 projects. For the library alone, open **[Windows/NeoCore.sln](Windows/NeoCore.sln)**.
+F5 opens the interactive sample menu. Select a sample by number or name, enter
+`smoke` to run all offline functional samples, or `q` to quit. The same menu opens
+when `neocore` has no command-line arguments. See the
+[console feature matrix](docs/SampleMigration.md) for smoke tests, diagnostics,
+manual benchmarks, and the remaining NeoCore tooling limitations.
 From a Visual Studio developer prompt, run these commands at the root:
 
 ```bat

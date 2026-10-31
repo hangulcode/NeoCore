@@ -9,6 +9,9 @@
 namespace NeoCore
 {
 
+// 사용자 식별자에 없는 '$'로 백엔드 내부 이름을 분리한다.
+inline const char* InternalSymbolPrefix() { return "$neocore_"; }
+
 enum class IRValueType { Invalid, Int, Float, Bool, String, Void, Value };
 enum class IROp
 {

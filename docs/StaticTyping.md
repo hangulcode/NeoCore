@@ -18,6 +18,11 @@ transitional backend statement skeleton. The checked program then runs on the
 existing bytecode VM. This is not a dynamic compatibility mode for NeoCore source.
 Unsupported syntax and unknown types are compilation errors; they do not fall back
 to untyped compilation. Generated backend source is an implementation artifact.
+Backend helper, temporary, host-binding and IR marker names begin with `$neocore_`.
+The `$` character is not valid in NeoCore source identifiers or host schema names;
+only the checked backend compilation accepts these internal identifiers. User names
+beginning with `__` remain valid. Literal strings and comments do not affect the
+internal prefix.
 
 The typed execution path preserves the VM's instruction dispatch, call frames,
 and value storage. Checked integer and floating-point `+`, `-`, `*`, and `/` expressions

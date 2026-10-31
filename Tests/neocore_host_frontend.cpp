@@ -92,6 +92,41 @@ static void CheckPropertySourceLines(const HostSchema& schema)
         "compile result reset clears old helper source mappings");
 }
 
+static void CheckInternalNames(const HostSchema& schema)
+{
+    StaticCompileResult result;
+    const char* source = "int __neocore_host_b1=3;\n"
+        "// $neocore_host_ 및 $neocore_ir_ 는 주석 내용이다.\n"
+        "string text=\"$neocore_host_b1 $neocore_ir_0 $neocore_return_0\";\n"
+        "Object.Count=__neocore_host_b1; Object.Name=text;";
+    Check(CompileStaticSource(source, result, &schema),
+        "user underscore names and internal-looking string text compile: " + result.errorMessage);
+    Check(result.hostPrefix == "$neocore_host_" && result.backendIntrinsicPrefix == "$neocore_op_" &&
+        result.typedIR.prefix == "$neocore_ir_" && result.typedIR.returnPrefix == "$neocore_return_",
+        "internal names use a fixed prefix outside user identifier syntax");
+    Check(result.loweredSource.find("\"$neocore_host_b1 $neocore_ir_0 $neocore_return_0\"") != std::string::npos,
+        "lowering preserves internal-looking string content");
+
+    const char* rejected[] = {
+        "int $neocore_host_b1=3;",
+        "int $neocore_return_0(){return 1;}",
+        "struct $neocore_clone_1{int x;};",
+        "struct S{int $neocore_1;};",
+        "int value=$neocore_host_g0.call();",
+        "int value=$neocore_ir_0();"
+    };
+    for (const char* text : rejected)
+    {
+        Check(!CompileStaticSource(text, result, &schema) &&
+            result.errorMessage.find("unexpected character") != std::string::npos,
+            std::string("source cannot spell an internal identifier: ") + text);
+    }
+    HostSchema copy = schema;
+    const TypeId object = copy.Globals()[0].type;
+    Check(!copy.AddGlobal("$neocore_host_g0", object), "host globals cannot spell internal identifiers");
+    Check(copy.AddGlobal("__neocore_host_g0", object), "host globals retain legal double underscore names");
+}
+
 int main()
 {
     HostSchema schema;
@@ -116,6 +151,7 @@ int main()
     Check(schema.AddMethod(service, "Accept", types.Void(), { types.NullableOf(object) }) != 0, "nullable parameter");
     CheckGlobalInitialization(schema);
     CheckPropertySourceLines(schema);
+    CheckInternalNames(schema);
 
     const char* accepted[] = {
         "Object o=Object; float x=o.Value; o.Value=2;",

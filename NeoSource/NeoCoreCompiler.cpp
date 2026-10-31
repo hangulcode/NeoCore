@@ -765,7 +765,6 @@ public:
     Checker(const std::string& source, StaticCompileResult& result, const HostSchema* hostSchema) : source_(source), result_(result), types_(result.types), hostSchema_(hostSchema)
     {
         scopes_.push_back(std::map<std::string, Symbol*>());
-        while (source.find(internalPrefix_) != std::string::npos) internalPrefix_ += "_";
         result_.backendIntrinsicPrefix = internalPrefix_ + "op_";
         result_.typedIR.prefix = internalPrefix_ + "ir_";
         result_.typedIR.returnPrefix = internalPrefix_ + "return_";
@@ -877,7 +876,7 @@ private:
     TypeId returnType_ = InvalidType;
     int loopDepth_ = 0;
     bool checkingConstant_ = false;
-    std::string internalPrefix_ = "__neocore_";
+    const std::string internalPrefix_ = InternalSymbolPrefix();
     bool resizeHelper_ = false, getHelper_ = false;
     bool concatHelper_ = false, unionHelper_ = false, intersectionHelper_ = false, differenceHelper_ = false;
     std::set<TypeId> structListClones_, structMapClones_, structMapValues_, structListResizes_, structListConcats_;

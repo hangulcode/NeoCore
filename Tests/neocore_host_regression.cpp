@@ -253,6 +253,54 @@ void CheckScalarBindings(bool debug)
         "host string snapshots preserve embedded NUL bytes");
 }
 
+void CheckInternalNames(bool debug)
+{
+    NeoCore::HostSchema schema;
+    const NeoCore::TypeId object = schema.AddObject("PrefixObject");
+    Check(schema.AddGlobal("__neocore_host_g0", object), "register legal underscore host global");
+    Check(schema.AddProperty(object, "Value", schema.Types().Int()), "register internal name test property");
+    const NeoCore::HostBindingId add = schema.AddMethod(object, "Add", schema.Types().Int(), {schema.Types().Int()});
+    Check(add != NeoCore::InvalidHostBinding, "register internal name test method");
+    std::int64_t value = 7;
+    NeoCore::HostBindings bindings(schema,
+        [](void* data, NeoCore::TypeId, NeoCore::ObjectHandle id) -> void* { return id.value == 1 ? data : nullptr; }, &value);
+    Check(bindings.BindGlobal("__neocore_host_g0", NeoCore::ObjectHandle(1)), "bind legal underscore host global");
+    const NeoCore::HostProperty* property = schema.FindProperty(object, "Value");
+    Check(property != nullptr, "find internal name test property");
+    if (!property) return;
+    Check(bindings.Bind(property->getter, [](NeoCore::HostCall& call) {
+        call.ReturnInt(*static_cast<std::int64_t*>(call.Receiver())); return true;
+    }), "bind internal name test getter");
+    Check(bindings.Bind(property->setter, [](NeoCore::HostCall& call) {
+        *static_cast<std::int64_t*>(call.Receiver()) = call.Int(0); return true;
+    }), "bind internal name test setter");
+    Check(bindings.Bind(add, [](NeoCore::HostCall& call) {
+        call.ReturnInt(*static_cast<std::int64_t*>(call.Receiver()) + call.Int(0)); return true;
+    }), "bind internal name test method");
+    const char* source = "int __neocore_host_b1=3;\n"
+        "int __neocore_hostwrite_0(int __neocore_1){return __neocore_1+2;}\n"
+        "// $neocore_host_b1 는 참조가 아니라 주석 내용이다.\n"
+        "export int Probe(){\n"
+        "__neocore_host_g0.Value=__neocore_hostwrite_0(__neocore_host_b1);\n"
+        "__neocore_host_g0.Value+=__neocore_host_g0.Add(4);\n"
+        "return __neocore_host_g0.Value;}";
+    NeoCore::Error error;
+    auto program = NeoCore::Program::Compile(source, bindings, error, "internal_names.nc", debug);
+    Check(program != nullptr, "underscore names coexist with generated host/property helpers: " + error.message);
+    if (program)
+    {
+        ExpectInt(program->Call("Probe"), 14, "generated host methods and write helpers retain distinct identities");
+        Check(value == 14, "internal names preserve host property writeback");
+    }
+    Fixture fixture;
+    const NeoCore::Result text = Invoke(fixture,
+        "export string Probe(){return Object.EchoText(\"$neocore_host_b1 $neocore_ir_0 $neocore_return_0\");}",
+        "literal internal names", debug);
+    Check(text.ok() && text.value.kind() == NeoCore::Scalar::Kind::String &&
+        text.value.asString() == "$neocore_host_b1 $neocore_ir_0 $neocore_return_0",
+        "internal-looking text passes through host calls unchanged");
+}
+
 void CheckPropertyOrder(bool debug)
 {
     Fixture fixture;
@@ -636,6 +684,7 @@ int main()
     {
         const bool debug = mode != 0;
         CheckScalarBindings(debug);
+        CheckInternalNames(debug);
         CheckPropertyOrder(debug);
         CheckIntegerPropertyOperators(debug);
         CheckRebinding(debug);

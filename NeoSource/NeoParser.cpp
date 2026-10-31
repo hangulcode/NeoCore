@@ -1291,6 +1291,16 @@ bool AbleName(const std::string& str)
 	return true;
 }
 
+static bool AbleBackendName(const CArchiveRdWC& ar, const std::string& name)
+{
+	if (AbleName(name)) return true;
+	// 검사된 NeoCore 골격에서만 내부 식별자를 허용한다. import에는 이 권한을 넘기지 않는다.
+	if (!ar.m_coreTypedIR) return false;
+	const char* prefix = NeoCore::InternalSymbolPrefix();
+	const std::size_t length = std::strlen(prefix);
+	return name.size() > length && name.compare(0, length, prefix) == 0 && AbleName(name.substr(1));
+}
+
 // 숫자 리터럴을 통째로 한 토큰으로 읽는다(예전엔 '.'/지수부호에서 쪼개져 1.2e3, 5.6E-4 가 깨짐).
 // 정수부·소수부·지수부(e/E[+/-]digits)와 헥사(0x…, 0x1.8p4)를 지원. '.' 은 뒤가 숫자일 때만
 // 소비해 멤버 접근(5.foo)과 구분한다. 실제 값 파싱/검증은 StringToNumber 가 담당.
@@ -1488,7 +1498,7 @@ struct ParserDepthGuard
 
 bool UseableName(CArchiveRdWC& ar, SFunctions& funs, SVars& vars, const std::string& name, bool checkName)
 {
-	if (checkName && false == AbleName(name))
+	if (checkName && false == AbleBackendName(ar, name))
 	{
 		SetParserCompileError(ar, PCE_INVALID_LOCAL_NAME, funs.GetCurFunName().c_str(), name.c_str());
 		return false;
@@ -1943,7 +1953,7 @@ static bool CollectFunctionDeclarations(CArchiveRdWC& ar, SFunctions& funs)
 			if (type != TK_FUN) continue;
 			type = GetToken(scan, token);
 			if (type == TK_L_SMALL) continue; // anonymous fun (...)
-			if (type != TK_STRING || !AbleName(token))
+			if (type != TK_STRING || !AbleBackendName(scan, token))
 			{
 				SetParserCompileError(scan, PCE_INVALID_FUNCTION_NAME, token.c_str());
 				break;
@@ -3142,7 +3152,7 @@ class CoreIRValidator
         {
             const NeoCore::IRStorageTarget& target = node.storage;
             if ((target.kind != NeoCore::IRStorageKind::Variable && target.kind != NeoCore::IRStorageKind::Cell) ||
-                !AbleName(target.backendName) || target.symbolId == 0)
+                !AbleBackendName(ar_, target.backendName) || target.symbolId == 0)
                 return Fail(index, "invalid storage target");
             if ((target.kind == NeoCore::IRStorageKind::Cell && !target.fields.empty()) || target.fields.size() > 128)
                 return Fail(index, "invalid storage field path");
@@ -3173,7 +3183,7 @@ class CoreIRValidator
         case IROp::FloatLiteral: valid = node.type == IRValueType::Float; break;
         case IROp::BoolLiteral: valid = node.type == IRValueType::Bool; break;
         case IROp::Symbol:
-            valid = AbleName(node.backendName) && node.type != IRValueType::Void; break;
+            valid = AbleBackendName(ar_, node.backendName) && node.type != IRValueType::Void; break;
         case IROp::LegacyExpression:
             valid = !node.legacySource.empty() && node.type != IRValueType::Void; break;
         case IROp::Add: case IROp::Subtract: case IROp::Multiply: case IROp::Divide:
@@ -3212,7 +3222,7 @@ class CoreIRValidator
                 (inputType == ir_.types.Null() || inputType == ir_.types.Get(node.typeId).element); break;
         case IROp::CopyStruct:
             valid = ir_.types.Get(node.typeId).kind == NeoCore::TypeKind::Struct &&
-                node.typeId == inputType && AbleName(node.backendName); break;
+                node.typeId == inputType && AbleBackendName(ar_, node.backendName); break;
         default: break;
         }
         if (!valid) return Fail(index, "operation type contract does not match");
@@ -3227,14 +3237,14 @@ public:
     { effects_.assign(ir.nodes.size(), 0); }
     bool Validate()
     {
-        if (!ir_.nodes.empty() && (ir_.prefix.empty() || !AbleName(ir_.prefix)))
+        if (!ir_.nodes.empty() && (ir_.prefix.empty() || !AbleBackendName(ar_, ir_.prefix)))
         { SetCompileError(ar_, "invalid typed IR marker prefix"); return false; }
-        if (!ir_.returns.empty() && (ir_.returnPrefix.empty() || !AbleName(ir_.returnPrefix) || ir_.returnPrefix == ir_.prefix))
+        if (!ir_.returns.empty() && (ir_.returnPrefix.empty() || !AbleBackendName(ar_, ir_.returnPrefix) || ir_.returnPrefix == ir_.prefix))
         { SetCompileError(ar_, "invalid typed IR return marker prefix"); return false; }
         std::set<std::string> names;
         for (const NeoCore::IRFunction& function : ir_.functions)
         {
-            bool valid = AbleName(function.backendName) && names.insert(function.backendName).second &&
+            bool valid = AbleBackendName(ar_, function.backendName) && names.insert(function.backendName).second &&
                 (function.returnType == ir_.types.Void() || ir_.types.IsStorable(function.returnType)) &&
                 function.parameterTypes.size() <= COMPILE_MAX_ARGUMENTS;
             for (NeoCore::TypeId parameter : function.parameterTypes)
@@ -4098,7 +4108,8 @@ struct EffectScanner
                 }
                 prev = EP_NONE; continue;
             }
-            if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '_' || c >= 0x80)
+            if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '_' || c >= 0x80 ||
+                (c == '$' && ar.m_coreTypedIR))
             {
                 if (ar.m_coreTypedIR && !ar.m_coreTypedIR->prefix.empty())
                 {
@@ -4108,6 +4119,7 @@ struct EffectScanner
                         if (Peek(static_cast<int>(i)) != static_cast<unsigned char>(prefix[i])) { matches = false; break; }
                     if (matches) Add(EXPR_EFFECT_ALL);
                 }
+                if (c == '$') ++k;
                 while (!AtEnd())
                 {
                     const u16 d = Peek();
@@ -6322,7 +6334,7 @@ bool ParseConstDef(CArchiveRdWC& ar, SFunctions& funs, SVars& vars, bool exporte
 
 	tkType = GetRawToken(ar, name); // Keep the declaration name for duplicate checks.
 
-	if (tkType != TK_STRING || false == AbleName(name))
+	if (tkType != TK_STRING || false == AbleBackendName(ar, name))
 	{
 		SetParserCompileError(ar, PCE_EXPECTED_TOKEN, "const name", name.c_str());
 		return false;
@@ -6761,7 +6773,7 @@ bool ParseMiddleArea(std::vector<SJumpValue>* pJumps, CArchiveRdWC& ar, SFunctio
 			break;
 		case TK_FUN:
 			tkType2 = GetToken(ar, tk2);
-			if (false == AbleName(tk2))
+			if (false == AbleBackendName(ar, tk2))
 			{
 				SetParserCompileError(ar, PCE_INVALID_FUNCTION_NAME, tk2.c_str());
 				return false;
