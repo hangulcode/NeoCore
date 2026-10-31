@@ -4,8 +4,8 @@
   "displayName": "NeoCore",
   "version": "0.1.0",
   "unity": "2022.3",
-  "description": "Typed NeoCore .nc compilation and scalar calls through the isolated NeoCoreUnity native plugin.",
+  "description": "Typed NeoCore .nc scripting with checked host schemas, owned values, callbacks, execution controls, and native Windows/Android/iOS plugins.",
   "keywords": [ "scripting", "vm", "neocore" ],
-  "author": { "name": "NeoCore" },
+  "author": { "name": "JRoot", "email": "hangulcode@gmail.com" },
   "samples": [ { "displayName": "Basic", "description": "Drive a Transform with typed NeoCore code.", "path": "Samples~/Basic" } ]
 }

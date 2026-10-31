@@ -50,11 +50,11 @@ def main():
     try:
         with tempfile.TemporaryDirectory(prefix="neo-http-") as folder:
             for i, (request, expected) in enumerate(cases):
-                script = pathlib.Path(folder) / f"case{i}.ns"
-                script.write_text('import system; var passed=false; var done=false; '
-                    f'fun Done(var ok,var text){{passed={expected}; done=true;}} '
-                    f'var a=system.aysnc_create(); {request} print(passed);', encoding="utf-8")
-                result = subprocess.run([str(console), "--file", str(script)], cwd=root / "Samples/console",
+                script = pathlib.Path(folder) / f"case{i}.nc"
+                script.write_text('import system; bool passed=false; bool done=false; '
+                    f'void Done(bool ok,string text){{passed={expected}; done=true;}} '
+                    f'AsyncRequest a=system.async_create(); {request} print(passed);', encoding="utf-8")
+                result = subprocess.run([str(console), "--file", str(script)], cwd=root / "Samples/neocore",
                                         capture_output=True, text=True, timeout=10)
                 if result.returncode or result.stdout.strip() != "true":
                     raise RuntimeError(f"case {i}: {result.returncode}\n{result.stdout}\n{result.stderr}")

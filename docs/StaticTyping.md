@@ -2,13 +2,13 @@
 
 NeoCore is an independent, statically typed language derived from NeoScript.
 This document separates the agreed language design from the initial implementation.
-The inherited [script guide](ScriptAuthoring.md), [API reference](API.md), and
-[embedding guide](Embedding.md) describe the NeoScript backend until explicitly migrated.
-They are not evidence that a feature is accepted by the NeoCore frontend.
+The shared execution backend is implementation infrastructure. Its dynamic source
+syntax and APIs are not evidence that a feature is accepted by the NeoCore frontend.
 
-**`.nc` is the canonical NeoCore source extension.** Existing `.ns` files remain
-legacy NeoScript backend fixtures. Typed editor support is a separate milestone;
-the inherited `.ns` parser/LSP is not a NeoCore type checker.
+**`.nc` is the canonical NeoCore source extension.** Dynamic `.ns` samples and their
+tools belong to the [NeoScript repository](https://github.com/hangulcode/NeoScript).
+The typed VS Code extension provides completion, hover, signature help, diagnostics
+and DAP debugging; see [the extension guide](../Tools/vscode-neocore/README.md).
 
 ## Implementation boundary
 
@@ -73,7 +73,7 @@ Logical short-circuiting remains in the existing statement/expression compiler.
 Unary negation, bitwise negation, and logical inversion also have semantic IR nodes.
 Numeric negation selects `NOP_I64_NEG` or `NOP_F64_NEG`; bitwise negation uses typed
 integer XOR. `NOP_LOG_NOT` reads a checked bool payload in NeoCore, without dynamic
-truthiness conversion. The inherited backend retains its original truthiness rules.
+truthiness conversion.
 
 Named `int`, `float`, `bool`, and `string` assignments have explicit storage targets
 in IR. Numeric compound assignments and prefix/postfix increment/decrement use the
@@ -104,10 +104,10 @@ intrinsic emits instructions without a runtime helper call frame. Declarations,
 function layout, control flow, and these remaining paths have not yet moved to a
 whole-program IR emitter.
 
-Arrays and vectors add 51 dedicated instructions, described in the same central
+Arrays and vectors add 59 dedicated instructions, described in the same central
 metadata header as the numeric instructions. Vector2/3/4 construction, arithmetic,
 component reads and functional component replacement use known component layouts.
-Array construction, reads, writes and append select bool, int64, binary64 or a
+Array construction, reads, writes and append select bool, int64, binary64, int32, float32 or a
 specific vector storage layout at compile time. Length, resize and reserve have
 shared array instructions; internal reference-cell allocation/reads/writes preserve owned values.
 The handlers retain bounds, capacity, allocation and destination-reference cleanup,
@@ -129,11 +129,10 @@ revalidate the saved receiver ID. Bool/string conversions remain checked generic
 conversions. Numeric expressions now emit from structured IR; the remaining
 compile-only intrinsics and compatibility leaves are explicit migration boundaries,
 not a complete typed-AST-to-bytecode backend replacement.
-NeoCore bytecode images use version `0149` and must be regenerated. The five generic `NOP_TABLE_*` arithmetic-write instructions, their handlers and
+NeoCore bytecode images use version `0150` and must be regenerated. The five generic `NOP_TABLE_*` arithmetic-write instructions, their handlers and
 unused table-update helpers have been removed. Compound collection writes now
 emit a read, arithmetic operation and ordinary write; WREF pairs only with
-`CLT_MOV`. In inherited dynamic code, vector compound RHS values no longer
-round to float32 before arithmetic: they round on storage, as NeoCore already did.
+`CLT_MOV`. Vector compound RHS values round to float32 on storage, not before arithmetic.
 Out-of-range compound writes fail at the initial read and report a read-index
 error; the destination remains unchanged.
 The unused `NOP_AND3`, `NOP_OR3`, and `NOP_VERIFY_TYPE` instructions were also removed; active bitwise operators and range-loop conversions
@@ -151,11 +150,9 @@ than generic VM opcode numbers. Comparisons still needed for bool, string, and
 nullable values, and other unmigrated operations, remain available.
 
 CMake links `NeoCore::Runtime` to `neocore_backend`, compiled with
-`NEOSCRIPT_LEGACY_ARITHMETIC=0`. Inherited `.ns` regressions and legacy hosts use a
-separate `neoscript` backend with `NEOSCRIPT_LEGACY_ARITHMETIC=1`; their image marker
-is `L149`. Neither backend accepts the other's images. The legacy arithmetic
-implementation is not compiled into the default NeoCore library. Do not link the
-two backend profiles into one executable.
+`NEOSCRIPT_LEGACY_ARITHMETIC=0`. Dynamic NeoScript library targets and their separate
+test distribution have been removed from this checkout. The shared VM code required
+by typed execution remains; generic arithmetic is not compiled into the NeoCore library.
 
 The current frontend covers scalar and vector declarations, nominal structs and their fields,
 typed arrays, homogeneous lists/maps/sets, nested collections, named functions,
@@ -165,19 +162,27 @@ TimeSpan, Stopwatch, HTTP requests, and script coroutines have explicit signatur
 Script modules are resolved and combined before static checking; they do not enter
 the inherited dynamic compiler directly.
 Explicit host schemas additionally expose nominal native objects, host globals,
-methods, and read/write properties with scalar/vector/native signatures. Members and
+methods, and read/write properties with scalar, vector, native, struct, collection
+and function signatures. Members and
 argument types are resolved before backend compilation; see [HostBindings.md](HostBindings.md).
 Nullable scalar, string, collection, and object locals can be refined by a local
 null guard. The non-null branch may use the underlying type. Reassignment invalidates
 the proof; globals, fields, and arbitrary expressions do not acquire such a proof.
 Unchecked nullable access remains a compilation error.
 
-Compact arrays, richer host signatures, JSON decoding, and richer coroutine scheduling
-remain later milestones. Function values in script do not add retained callbacks
-to the public C++ host schema or scalar host-call API.
-The [typed C ABI and Unity package](../Unity/NeoCore/README.md) provide separate
-NeoCore scalar entry points. The inherited Unity package, LSP/DAP adapters, and
-legacy console remain separate backend integrations.
+`array32<int>` and `array32<float>` retain compact int32/float32 element storage
+while reads produce the ordinary int64/binary64 scalar types. Their constructors,
+reads, writes and append operations select dedicated instructions. Integer stores
+reject out-of-range values before mutation; float stores use the common float32
+rounding rule. Assignment/prefix results are the stored value and postfix results
+are the old value. `int32` and `float32` remain unavailable as scalar declarations.
+
+The owning host value API supports typed aggregates and retained function values.
+Closures retain their creating instance identity; reset or cross-instance invocation
+is rejected. JSON decoding requires an explicit registered target type. The
+[typed C ABI and Unity package](../Unity/NeoCore/README.md) expose these contracts
+without dynamic fallback. The CLI's `--lsp` and `--dap` modes use the NeoCore
+frontend and source maps. Dynamic NeoScript integrations remain in the original repository.
 
 Frontend diagnostics identify the original source line and column in every mode.
 The CLI omits debug metadata by default; use `neocore --debug --file source.nc` for
@@ -442,11 +447,11 @@ The clone helper recursively copies nested structs. There is no in-place assignm
 helper to preserve field aliases. Recursive by-value layouts, nullable structs and
 struct `==`/`!=` are rejected. Nullable scalar fields remain supported.
 
-The scalar host-call API does not marshal structs. A call requiring a struct result
-is rejected before top-level initialization; struct values remain
-available inside checked script code. Transitional generated helpers are appended
-after the original source to preserve its line numbering; backend call stacks may
-include those internal helper frames.
+The owning host-call API marshals structs against their exact registered fields.
+Host schemas can declare nominal structs and use them in properties, method
+arguments and results. Structs crossing a value boundary copy nested struct fields;
+collection fields retain their container identity. Transitional generated helpers
+preserve source locations and may appear in backend call stacks.
 
 ## Vectors and quaternions
 
@@ -548,10 +553,15 @@ component writes read and update the selected vector after those evaluations.
 Compound operations and pre/post-increments preserve their stored/previous results.
 Array variables and elements cannot bind language references.
 
-String/struct/native-object elements, nested arrays, array literals,
-compact 32-bit arrays, and typed host array
-marshaling are separate milestones. Unsupported element types and mismatched
-writes fail during type checking, including a float written to an integer array.
+`array32<int>` and `array32<float>` use the same constructor/index/method forms
+with compact four-byte storage. Their scalar expressions use ordinary int64 and
+binary64 values. Stores reject int32 overflow and round float32 values according
+to the common narrowing rule; compound/prefix results return stored values.
+Ordinary and compact array types are distinct and do not implicitly convert.
+Typed host marshaling and bulk copying preserve the declared storage width.
+String/struct/native-object elements, nested arrays and array literals remain
+unsupported. Mismatched writes fail during type checking, including a float
+written to an integer array.
 The typed path emits dedicated storage instructions and compile-time write
 sequences rather than runtime array helpers. Bounds and allocation checks remain.
 The transitional source bridge and other generic VM paths still exist; this does
@@ -708,7 +718,8 @@ The other methods are `add_header(string,string)`, `wait()->bool`, and `close()-
 The host supplies a transport through `CompileOptions.httpTransport`; the library
 does not make an untyped host member available. Callbacks execute on the owning
 script worker when completions are processed. Backend reentry, suspension, and
-error-unwinding rules still apply. General JSON decoding remains deferred.
+error-unwinding rules still apply. Host-side JSON decoding now requires an explicit
+target type and checks every field/element; see [JSON.md](JSON.md).
 
 After `import coroutine;`, `coroutine<fn(int)->void>` describes a coroutine whose
 entry takes an int and returns void. `coroutine.create(function)` fixes that
@@ -744,52 +755,25 @@ These adaptations preserve the intended work and results, not identical bytecode
 instructions. The backend combines dedicated numeric instructions with generic VM
 operations and generated helpers; resizing, struct copies, and method adapters have costs.
 Run the correctness program before timed comparisons and use non-debug mode for
-timing. Ask the user before starting timed benchmarks. The inherited README numbers
-remain NeoScript measurements until separately measured for NeoCore.
+timing. Ask the user before starting timed benchmarks. Historical comparison reports
+describe their measured snapshots, not the current NeoCore build.
 
-## Accepted design for later milestones
+## Remaining language design boundaries
 
-These rules are agreed targets, not a claim that the initial frontend implements them.
+`int32` and `float32` are not public scalar types. Compact storage belongs to
+`array32<int>`, `array32<float>` and vector components. Mutable collection types
+are invariant. Missing map values are nullable; removal is explicit. Heterogeneous
+collections and implicit dynamic fallback remain excluded. Host JSON decoding uses
+an explicit registered target rather than exposing an untyped script object.
 
-### Collections and storage widths
-
-Ordinary arrays, lists, maps, and sets have fixed element/key/value types.
-An `array<int>` stores 64-bit integers and an `array<float>` stores binary64 values.
-Mutable collections are invariant: an integer collection is not automatically a
-float collection merely because individual integers can convert to floats.
-
-**`int32` and `float32` are not user-declarable scalar types.** Neither variables nor
-parameters nor return types can use those names. Compact 32-bit storage is a property
-of the supported array form and vector components only. Compact integer arrays reject
-out-of-range values. Compact float arrays use the defined float32 rounding and overflow
-behavior. Reading an element as a scalar produces an ordinary `int` or `float`.
-Ordinary arrays and compact arrays remain distinct types; there is no automatic
-container conversion. Compact-array declaration syntax is to be finalized with that
-milestone; its storage must not introduce public 32-bit scalar types indirectly.
-
-Maps use explicit removal. A lookup that may miss returns a nullable value; assigning
-null is not a substitute for removing a key. Heterogeneous collections and implicit
-dynamic fallback are excluded from the initial language. JSON will use a separate
-`JsonValue` interface with explicit kind checks/conversions or typed decoding.
-
-### Further user types
-
-The current struct implementation has declared fields, nominal identity, and value
-assignment. Collections and future host objects retain reference semantics. Class
-inheritance, user-defined generics, and function overloading are deferred. Built-in
-collection type parameters do not imply support for arbitrary user generics.
-Function values use the complete `fn(...)->T` signatures described above. Public
-host retention and marshaling of arbitrary function signatures remains deferred.
-
-### Host integration
-
-The scalar/vector/native C++ binding slice above implements registered signatures and
-property permissions. Its remaining extensions include typed host value structs,
-collections, overload/default-argument metadata, and complete retained
-callback signatures. A portable schema/link ABI for offline compiled images is
-also deferred; current type and binding IDs belong to a schema snapshot.
-The C ABI and Unity scalar bridge still need these richer contracts. Object lifetime,
-callback reentrancy, coroutine suspension, and error unwinding continue to apply.
+Structs have nominal identity and value assignment. Classes, inheritance,
+user-defined generics and function overloading remain deferred. Built-in collection
+parameters do not imply arbitrary user generics. Registered host schemas support
+structs, collections and complete function signatures; retained function values use
+the same instance/lifetime rules as script calls. Overload/default-argument metadata
+and schema-independent image linking are not implemented. Current images require
+matching schema registration order. Native object validation, callback reentry,
+suspension and error unwinding remain runtime responsibilities.
 
 ## Remaining implementation stages
 
@@ -801,12 +785,12 @@ callback reentrancy, coroutine suspension, and error unwinding continue to apply
    analysis proves that the slot cannot own a reference.
 3. Validate loaded bytecode against type/signature metadata and compare each conversion
    stage with a preserved baseline build and matching results.
-4. Expand compact arrays and richer host signatures, including retained host
-   callbacks and typed aggregate marshaling.
-5. Add JSON and richer coroutine APIs, expand the typed C ABI/Unity scalar bridge
-   to aggregates and retained callbacks, and migrate backend documentation and
-   editor tooling. Public samples now have typed counterparts; the inherited
-   dynamic regression corpus intentionally remains separate.
+4. Extend the editor's semantic symbol model where it currently offers declaration
+   scanning and checked built-in signatures. Keep typed compilation as the diagnostic
+   authority; do not advertise unsupported LSP operations.
+5. Continue validating host aggregates, retained callbacks, JSON, images and coroutine
+   lifetime behavior across platforms. Public samples and regressions target NeoCore;
+   the original dynamic corpus remains in the NeoScript repository.
 
 The current backend still stores dynamic tags and performs generic work outside the
 implemented typed operations. An early numeric-VM snapshot measured on 2026-10-31

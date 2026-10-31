@@ -2,6 +2,7 @@
 
 #include "NeoCore.h"
 #include <functional>
+#include <map>
 #include <string>
 #include <vector>
 
@@ -26,6 +27,7 @@ struct ModuleBundle
 {
     std::string source;
     std::vector<ModuleSourceLine> lines;
+    std::map<std::string, std::string> symbolNames;
     // 이름 치환으로 길이가 달라진 토큰도 원래 파일·줄·열로 되돌린다.
     void Translate(Error& error) const;
 };
@@ -34,6 +36,7 @@ struct ModuleBundle
 // externalNames에는 모듈에서 사용할 호스트 타입·전역 이름을 명시한다.
 bool BundleModules(const std::string& source, const std::string& sourceName,
     const ModuleLoader& loader, ModuleBundle& result, Error& error,
-    const std::vector<std::string>& externalNames = std::vector<std::string>());
+    const std::vector<std::string>& externalNames = std::vector<std::string>(),
+    const std::vector<CompileDefine>* defines = nullptr);
 
 }

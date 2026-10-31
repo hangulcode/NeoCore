@@ -1190,6 +1190,7 @@ ClosureInfo* CNeoVM::ClosureAlloc(int functionIndex, int captureCount)
 	ClosureInfo* closure = m_sPool_Closure.Receive();
 	closure->_pVM = this;
 	closure->_funIndex = functionIndex;
+	closure->_ownerWorkerId = 0;
 	closure->_refCount = 0;
 	closure->_cycleState.Init(closure);
 	closure->_captures.clear();

@@ -1,0 +1,3 @@
+<linker>
+  <assembly fullname="NeoCore.Runtime" preserve="all" />
+</linker>

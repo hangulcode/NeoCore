@@ -238,11 +238,20 @@ void HostBoundary(bool debug)
     Check(program != nullptr, "array return source compiles: " + error.message);
     if (!program) return;
     const NeoCore::Result result = program->Call("Probe");
-    Check(!result.ok() && result.error.message.find("return type array<int>") != std::string::npos,
-        "scalar host array return rejected before global initialization: " + result.error.message);
+    Check(!result.ok() && result.error.message.find("division by zero") != std::string::npos,
+        "supported host array call reports global initialization failure: " + result.error.message);
     const NeoCore::Result initialized = program->Run();
     Check(!initialized.ok() && initialized.error.message.find("division by zero") != std::string::npos,
-        "array return preflight does not execute global initialization");
+        "failed global initialization is retained");
+    program = NeoCore::Program::Compile("export array<int> Probe(){return array<int>(2,7);}", error,
+        "host_array_return.nc", debug);
+    Check(program != nullptr, "host array return compiles");
+    if (program)
+    {
+        const NeoCore::Result array = program->Call("Probe");
+        Check(array.ok() && array.value.kind() == NeoCore::Scalar::Kind::Array && array.value.Count() == 2 &&
+            array.value.At(1).asInt() == 7, "host receives typed array values");
+    }
 }
 }
 

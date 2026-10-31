@@ -43,11 +43,16 @@ $ndk = Find-Ndk -Explicit $NdkRoot
 $toolchain = Join-Path $ndk 'build\cmake\android.toolchain.cmake'
 if (-not (Test-Path $toolchain)) { throw "NDK toolchain file missing: $toolchain" }
 
-$buildDir = Join-Path $repoRoot "build\unity-android-$Abi"
-$pluginDir = Join-Path $PSScriptRoot "com.neoscript.unity\Runtime\Plugins\Android\$Abi"
+$buildDir = Join-Path $repoRoot "Build\neocore-unity-android-$Abi"
+$pluginDir = Join-Path $PSScriptRoot "com.neocore.unity\Runtime\Plugins\Android\$Abi"
 
-if ($Clean -and (Test-Path $buildDir)) {
-    Remove-Item -Recurse -Force $buildDir
+if ($Clean -and (Test-Path -LiteralPath $buildDir)) {
+    $resolvedBuild = (Resolve-Path -LiteralPath $buildDir).Path
+    $buildRoot = [System.IO.Path]::GetFullPath((Join-Path $repoRoot 'Build'))
+    if (-not $resolvedBuild.StartsWith($buildRoot + [System.IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)) {
+        throw 'Refusing to clean a directory outside the repository build output'
+    }
+    Remove-Item -LiteralPath $resolvedBuild -Recurse -Force
 }
 
 # 생성기 고르기: ninja 가 있으면 ninja, 없으면 NDK 의 make.
@@ -72,30 +77,31 @@ Write-Host "==> generator $generator ($makeProgram)" -ForegroundColor Cyan
     "-DANDROID_ABI=$Abi" `
     "-DANDROID_PLATFORM=android-$ApiLevel" `
     '-DCMAKE_BUILD_TYPE=Release' `
-    '-DNEOSCRIPT_BUILD_SHARED=ON' `
-    '-DNEOSCRIPT_BUILD_SMOKE=OFF'
+    '-DNEOCORE_BUILD_UNITY_BRIDGE=ON' `
+    '-DNEOCORE_BUILD_EXAMPLES=OFF' `
+    '-DNEOCORE_BUILD_TESTS=OFF'
 if ($LASTEXITCODE -ne 0) { throw "cmake configure failed ($LASTEXITCODE)" }
 
-& cmake --build $buildDir --target NeoScriptShared --parallel
+& cmake --build $buildDir --target NeoCoreUnity --parallel
 if ($LASTEXITCODE -ne 0) { throw "cmake build failed ($LASTEXITCODE)" }
 
-$so = Join-Path $buildDir 'libNeoScript.so'
-if (-not (Test-Path $so)) { throw "libNeoScript.so not found under $buildDir" }
+$so = Join-Path $buildDir 'Unity/NeoCore/libNeoCoreUnity.so'
+if (-not (Test-Path $so)) { throw "libNeoCoreUnity.so not found under $buildDir" }
 
-# Verify the ELF boundary before deploying: dependencies must remain private.
+# 배포 전에 C ABI 외부의 C++ 심볼이 노출되지 않았는지 확인한다.
 $nm = Join-Path $ndk 'toolchains/llvm/prebuilt/windows-x86_64/bin/llvm-nm.exe'
 $symbols = & $nm --dynamic --defined-only $so
 if ($LASTEXITCODE -ne 0) { throw "could not inspect plugin exports" }
-$unexpected = @($symbols | Where-Object { $_.Trim() -and $_ -notmatch '\sNs[A-Za-z0-9_]+$' })
+$unexpected = @($symbols | Where-Object { $_.Trim() -and $_ -notmatch '\sNc[A-Za-z0-9_]+$' })
 if ($unexpected.Count -ne 0) {
-    throw ("Plugin exports symbols outside the Ns C ABI: " + ($unexpected -join ', '))
+    throw ("Plugin exports symbols outside the Nc C ABI: " + ($unexpected -join ', '))
 }
-if (-not ($symbols -match '\sNsGetAbiVersion$')) { throw "Plugin C ABI exports are missing" }
+if (-not ($symbols -match '\sNcCompile$')) { throw "Plugin C ABI exports are missing" }
 
 New-Item -ItemType Directory -Force -Path $pluginDir | Out-Null
-Copy-Item (Join-Path $repoRoot "THIRD_PARTY_NOTICES.txt") (Join-Path $repoRoot "Unity/com.neoscript.unity/THIRD_PARTY_NOTICES.txt") -Force
-Copy-Item (Join-Path $repoRoot "LICENSE") (Join-Path $repoRoot "Unity/com.neoscript.unity/LICENSE") -Force
-Copy-Item $so (Join-Path $pluginDir 'libNeoScript.so') -Force
+Copy-Item (Join-Path $repoRoot "THIRD_PARTY_NOTICES.txt") (Join-Path $repoRoot "Unity/com.neocore.unity/THIRD_PARTY_NOTICES.txt") -Force
+Copy-Item (Join-Path $repoRoot "LICENSE") (Join-Path $repoRoot "Unity/com.neocore.unity/LICENSE") -Force
+Copy-Item $so (Join-Path $pluginDir 'libNeoCoreUnity.so') -Force
 
-$info = Get-Item (Join-Path $pluginDir 'libNeoScript.so')
+$info = Get-Item (Join-Path $pluginDir 'libNeoCoreUnity.so')
 Write-Host "==> deployed $($info.FullName) ($([math]::Round($info.Length/1KB)) KB)" -ForegroundColor Green

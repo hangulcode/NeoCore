@@ -340,7 +340,7 @@ bool UtcFormatMilliseconds(CNeoVMWorker* worker, VarInfo*, short args)
 {
     std::tm calendar; int ms;
     if (!ReadUtc(worker, args, calendar, ms)) return false;
-    char text[32];
+    char text[80];
     std::snprintf(text, sizeof(text), "%04d-%02d-%02dT%02d:%02d:%02d.%03dZ", calendar.tm_year + 1900,
         calendar.tm_mon + 1, calendar.tm_mday, calendar.tm_hour, calendar.tm_min, calendar.tm_sec, ms);
     worker->ReturnValue(text);
@@ -438,7 +438,7 @@ bool UtcCalendar(long long seconds, std::tm& calendar)
 
 void GetBuiltins(std::vector<NeoBuiltinInfo>& out)
 {
-    const auto add = [&out](const char* module, const char* name, const char* ret, const char* parameter = nullptr)
+    const auto add = [&out](const char* module, const char* name, const char* ret, const char* parameter)
     {
         NeoBuiltinInfo info;
         info.module = module; info.name = name; info.ret = ret;
@@ -446,22 +446,22 @@ void GetBuiltins(std::vector<NeoBuiltinInfo>& out)
         if (parameter) info.params.push_back(parameter);
         out.push_back(info);
     };
-    add("time_span", "total_milliseconds", "int");
-    add("time_span", "total_seconds", "float");
-    add("time_span", "parts", "map");
-    add("time_span", "format", "string");
+    add("time_span", "total_milliseconds", "int", nullptr);
+    add("time_span", "total_seconds", "float", nullptr);
+    add("time_span", "parts", "map", nullptr);
+    add("time_span", "format", "string", nullptr);
     add("time_span", "add", "time_span", "time_span other");
     add("time_span", "subtract", "time_span", "time_span other");
     add("time_span", "compare", "int", "time_span other");
-    add("stopwatch", "elapsed", "time_span");
-    add("stopwatch", "elapsed_ms", "int");
-    add("stopwatch", "restart", "void");
-    add("stopwatch", "elapsed_us", "int");
-    add("stopwatch", "elapsed_seconds", "float");
-    add("stopwatch", "start", "void");
-    add("stopwatch", "stop", "void");
-    add("stopwatch", "reset", "void");
-    add("stopwatch", "is_running", "bool");
+    add("stopwatch", "elapsed", "time_span", nullptr);
+    add("stopwatch", "elapsed_ms", "int", nullptr);
+    add("stopwatch", "restart", "void", nullptr);
+    add("stopwatch", "elapsed_us", "int", nullptr);
+    add("stopwatch", "elapsed_seconds", "float", nullptr);
+    add("stopwatch", "start", "void", nullptr);
+    add("stopwatch", "stop", "void", nullptr);
+    add("stopwatch", "reset", "void", nullptr);
+    add("stopwatch", "is_running", "bool", nullptr);
 }
 }
 }

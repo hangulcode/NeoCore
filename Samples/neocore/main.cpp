@@ -5,12 +5,13 @@
 #include "CompilerErrors.h"
 #include "Benchmarks.h"
 #include "ConsoleDiagnostics.h"
+#include "ConsoleTooling.h"
 #include <chrono>
 #include <thread>
 #include <cstdlib>
 #include <iostream>
 #ifdef NEOCORE_CONSOLE_HTTP
-#include "../console/HttpTransport.h"
+#include "HttpTransport.h"
 #endif
 #include <cstdio>
 #include <string>
@@ -372,7 +373,7 @@ static int RunDebugSmoke(ConsoleSettings settings, const std::string& sampleDire
     if (result.ok() || result.error.line != 2 || result.error.sourceName != "debug-smoke.nc")
     { std::fprintf(stderr, "Debug source-location check FAILED\n"); PrintError(result.error); return 1; }
     std::puts("Debug source-location check passed.");
-    std::puts("Debugger breakpoint/stepping API checks are not yet supported by NeoCore.");
+    std::puts("DAP breakpoint and stepping checks run in the protocol regression suite.");
     return samples;
 }
 
@@ -389,7 +390,8 @@ static int Usage(int status = 2)
     std::puts("       neocore --pooltrim-check                Untimed memory-pool checks");
     std::puts("       neocore --file|--check|--emit-backend <file.nc>");
     std::puts("Options: --debug, --asm, --stats (before or after the command)");
-    std::puts("Not yet ported: --v2smoke, --dap, --lsp, untyped --globals.");
+    std::puts("       neocore --dap | --lsp                    Typed editor protocols (stdio)");
+    std::puts("Not yet ported: --v2smoke, untyped --globals.");
     return status;
 }
 
@@ -453,7 +455,9 @@ static int ConsoleMain(const std::vector<std::string>& arguments)
         if (mode == "--bench-check") return RunBenchmarkChecks(settings.debug);
         if (mode == "--pooltrim") return RunPoolTrim(settings.debug);
         if (mode == "--pooltrim-check") return RunPoolTrimChecks(settings.debug);
-        if (mode == "--v2smoke" || mode == "--dap" || mode == "--lsp")
+        if (mode == "--dap") return RunNeoCoreDebugAdapter();
+        if (mode == "--lsp") return RunNeoCoreLanguageServer();
+        if (mode == "--v2smoke")
         {
             std::fprintf(stderr, "%s is not yet ported to NeoCore; the legacy NeoScript VM/debugger/language-service checks do not validate .nc.\n", mode.c_str());
             return 2;

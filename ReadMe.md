@@ -5,9 +5,9 @@ NeoCore is an independent scripting-language project derived from
 initial execution backend while adding explicit variable types, C-style function
 declarations, and compile-time checking. The static language is under active development.
 
-**NeoCore source files use `.nc`.** Existing `.ns` files are NeoScript backend samples
-and regression fixtures. The inherited `.ns` editor tooling has not been repurposed
-as a typed NeoCore language service.
+**NeoCore source files use `.nc`.** Dynamic `.ns` samples and regression fixtures
+remain in the separate NeoScript repository. NeoCore's editor protocols compile
+through its static frontend; they do not accept dynamic NeoScript source.
 
 **[Language design and implementation status](docs/StaticTyping.md)** ·
 **[Typed host bindings](docs/HostBindings.md)** ·
@@ -73,9 +73,9 @@ Built-in imports expose the checked math, string/regex, collection, time and HTT
 signatures used by the converted samples. Script modules, typed foreach and
 signature-bound coroutines are supported; see the [migration guide](docs/SampleMigration.md).
 
-Typed host schemas now declare nominal object types, globals, methods, and
+Typed host schemas declare nominal object types, structs, globals, methods, and
 read/write properties before compilation. The frontend resolves members and
-checks scalar/vector/native arguments; execution calls a fixed binding without a
+checks declared arguments and return types; execution calls a fixed binding without a
 per-member name lookup. Hosts retain ownership and resolve object IDs when a
 member call begins. See the [binding contract and current limits](docs/HostBindings.md).
 
@@ -93,8 +93,9 @@ print(result);
 
 `int` is a signed 64-bit integer and `float` is a 64-bit floating-point value.
 **`int32` and `float32` are not scalar types that scripts can declare.** The agreed
-32-bit support is limited to compact-array storage and vector components; compact
-arrays remain a later frontend milestone.
+32-bit support is limited to `array32<int>` / `array32<float>` storage and vector
+components. Compact-array reads produce ordinary int64 / float64 values; writes
+check int32 range or round to float32.
 
 Checked numeric expressions now use a typed intermediate representation (IR),
 retaining literal values, resolved symbols, operand types, and original source
@@ -102,7 +103,7 @@ locations. The bytecode emitter reads that IR directly instead of reparsing
 numeric operation strings. Arithmetic, integer bit operations, int/float conversions,
 comparisons, comparison branches, and numeric negation use 30 dedicated I64/F64
 bytecode operations.
-Another 51 instructions cover vector arithmetic/construction/components,
+Another 59 instructions cover vector arithmetic/construction/components,
 typed array storage/methods, and internal reference cells. Array/vector compound
 writes and numeric list compound updates expand into typed arithmetic and storage
 instructions at compile time, without runtime helper calls.
@@ -124,16 +125,19 @@ An early numeric-VM snapshot measured on 2026-10-31 showed a 7.5% increase in th
 sum of eight case medians versus its paired generic-op control. That historical
 [measurement report](docs/TypedVmBenchmark.md) predates the current IR and aggregate
 instructions; it is not a measurement of this build.
-Compact arrays, richer host signatures and tooling remain future work. See the [status and roadmap](docs/StaticTyping.md).
+The typed host boundary also supports collections, structs and retained function
+values. VS Code uses the same frontend for diagnostics and debugging. The
+remaining compiler/VM migration is described in the
+[status and roadmap](docs/StaticTyping.md).
 
-This NeoCore build uses bytecode image version `0149`; regenerate cached images.
+This NeoCore build uses bytecode image version `0150`; regenerate cached images.
 Generic three-operand arithmetic, compound arithmetic, numeric negation, and fused
 read/arithmetic instructions and their handlers are excluded from the NeoCore library. Five generic indexed compound-arithmetic instructions
-were also removed. Legacy `.ns` fixtures use a separate backend with image version
-`L149`; the two profiles reject each other's images and earlier image versions.
+were also removed. The original NeoScript repository retains its dynamic backend
+profile; NeoCore rejects that profile's images and earlier image versions.
 Rebuild C++ hosts against the matching headers and library, because the internal
-backend compile descriptor now carries typed-lowering metadata. This does not
-change the legacy C ABI structures or make that API a typed NeoCore host surface.
+backend compile descriptor carries typed-lowering metadata. The NeoCore C ABI is
+a separate API; existing NeoScript C#/C hosts must migrate to its checked contracts.
 
 ## Build and run
 
@@ -142,7 +146,7 @@ the inherited PCRE2 source. MSVC's default C++14 mode does not raise the source
 requirement; non-Windows checks use strict C++11.
 
 ```sh
-cmake -S . -B Build/neocore -DNEOSCRIPT_BUILD_EXAMPLES=OFF
+cmake -S . -B Build/neocore -DNEOCORE_BUILD_TESTS=ON -DNEOCORE_BUILD_EXAMPLES=ON
 cmake --build Build/neocore --config Release --parallel
 ctest --test-dir Build/neocore -C Release --output-on-failure
 ```
@@ -155,11 +159,11 @@ its statically checked bool value directly.
 The frontend no longer exposes an untyped comparison mode. Constant folding uses
 compiler operations independently of VM opcode numbers.
 
-The `NEOSCRIPT_*` CMake options configure inherited tests and hosts. Their separate
-`neoscript`, `NeoScriptShared`, and `NeoScriptStatic` targets enable
-`NEOSCRIPT_LEGACY_ARITHMETIC=1` for `.ns` fixtures. Do not link both backend profiles
-into one executable. These fixtures preserve old dynamic behavior without adding
-its arithmetic handlers to the NeoCore library.
+`NEOCORE_BUILD_TESTS` controls typed regressions, and `NEOCORE_BUILD_EXAMPLES`
+controls the typed game-host example. Enable `NEOCORE_BUILD_UNITY_BRIDGE` for the
+C ABI plugin and its checks. `NEOCORE_CONSOLE_HTTP` adds libcurl HTTPS transport
+to the console. Dynamic NeoScript test and console targets are no longer built
+from this checkout.
 
 For a multi-configuration CMake build such as Visual Studio:
 
@@ -201,9 +205,8 @@ Console output is `Build/Windows/bin/<platform>/<configuration>/neocore.exe`, us
 `Win32` for the x86 project platform. Match the host's platform, CRT, and toolset.
 The native Windows `.nc` console links libcurl for HTTPS. CMake enables that
 optional console transport with `-DNEOCORE_CONSOLE_HTTP=ON`; the core remains
-transport-independent. The inherited
-`.ns` runner and debugger remain in the `Samples/console/console.vcxproj` project; their
-`console.exe` output and command-line options are separate.
+transport-independent. The dynamic `.ns` runner remains in the original NeoScript
+repository; this checkout contains only the `.nc` console.
 
 The [NeoCore mini game host](Samples/neocore/minigame/README.md) compiles one `.nc`
 program for three independent instances. It checks frame/event dispatch, `sleep`
@@ -236,28 +239,33 @@ early typed/generic comparison in the same executable, alongside NeoScript, Lua,
 and C++. Both reports identify their measured snapshots; neither reports current
 build performance.
 
-For embedding, `NeoSource/NeoCore.h` is the new static entry point in namespace
-`NeoCore`. `Program::Compile` creates a checked program; `Run` executes its top-level
-code once, and `Call` validates an exported function's scalar signature before
-invoking the VM. This C++-to-script scalar entry point currently rejects
-native-object arguments/results and null arguments; nullable scalar
-return values are supported. To expose C++ objects to scripts, include
-`NeoSource/NeoCoreHost.h` and use the `Program::Compile` overload accepting
-`HostBindings`. That separate script-to-host boundary supports declared scalar
-and native-object signatures, including nullable values.
+For embedding, `NeoSource/NeoCore.h` is the static entry point in namespace
+`NeoCore`. `Program::Compile` creates a checked program, and `CreateInstance`
+creates independent execution state while sharing the compiled program. `Run`
+executes top-level code once; `Call` checks an exported function's declared
+signature before invoking the VM. Host values include scalars, nullable values,
+vectors, typed native IDs, collections, structs, and function values. Structs and
+vectors copy by value; collections retain shared identity. Retained closures are
+bound to their creating instance and become invalid after its reset or destruction.
+Include `NeoSource/NeoCoreHost.h` and supply `HostBindings` to expose methods and
+properties with statically checked signatures. Object resolvers still validate
+IDs at runtime. Saved program images include static contracts and debug metadata;
+loading rebinds the host schema without recompiling source. Images must come from
+a trusted matching compiler.
 The underlying NeoScript API remains implementation infrastructure.
 It is not a substitute for the NeoCore type-checking boundary.
 
-## Documentation during migration
+## Documentation and tools
 
 | Document or tool | Status |
 | --- | --- |
 | [Static language](docs/StaticTyping.md) | NeoCore rules, current scope, and remaining work |
 | [Typed host bindings](docs/HostBindings.md) | C++ schema, object IDs, property calls, and lifetime/reentry contract |
 | `NeoSource/NeoCore.h`, `neocore` | Static frontend entry points |
-| [Script authoring](docs/ScriptAuthoring.md), [API](docs/API.md) | Inherited NeoScript backend references; dynamic examples are not NeoCore syntax |
-| [Embedding](docs/Embedding.md), [Unity](docs/Unity.md) | Inherited host integration; legacy integrations; see [typed Unity](Unity/NeoCore/README.md) for the new .nc package |
-| [Legacy console guide](docs/ScriptAuthoring.md#13-run-scripts-in-the-console-and-locate-errors), [VS Code extension](Tools/vscode-neo-script/README.md), existing `.ns` samples | Legacy backend tools and regression fixtures |
+| [Script authoring](docs/ScriptAuthoring.md), [API](docs/API.md) | `.nc` syntax, checked library surface, and examples |
+| [Embedding](docs/Embedding.md), [Unity](docs/Unity.md) | C++ hosting, typed C ABI, and Unity integration |
+| [Unity package](Unity/NeoCore/README.md) | Managed values, schemas/callbacks, images, module and HTTP adapters |
+| [VS Code extension](Tools/vscode-neocore/README.md) | `.nc` highlighting, completion, diagnostics, and DAP debugging |
 
 The inherited [NeoScript engine demo](https://www.youtube.com/watch?v=Wi3EgWx38Vs)
 shows the original engine integration, not a completed NeoCore port.
@@ -280,15 +288,15 @@ that use the bundled JSON implementation. See [JSON API and build notes](docs/JS
 
 Redistributed copies must retain the applicable copyright and license notices.
 
-The core has no HTTP/TLS library dependency. Hosts provide `IHttpTransport` through
-`RuntimeDesc::httpTransport` in the inherited backend. Only the legacy `.ns` console
-connects [libcurl](https://curl.se/libcurl/) for HTTP/HTTPS; the NeoCore `.nc` console
-does not build curl or register an HTTP transport. The Windows legacy-console build
+The core has no HTTP/TLS library dependency. C++ hosts provide `IHttpTransport`
+through `CompileOptions::httpTransport`; Unity hosts supply the managed transport
+adapter. The NeoCore `.nc` console connects [libcurl](https://curl.se/libcurl/)
+for HTTP/HTTPS. Its native Windows build
 downloads pinned libcurl 8.23.0 (SHA-256 verified) using a CMake release supporting
 Visual Studio 2026, links it statically, and uses Schannel with the Windows
 certificate store. Core-only builds do not fetch curl. See
 [transport integration](docs/Embedding.md#http-and-https-transport). Include
-`THIRD_PARTY_NOTICES.txt` when distributing the legacy console.
+`THIRD_PARTY_NOTICES.txt` when distributing the console.
 The inherited backend uses bundled [PCRE2](ThirdParty/pcre2) for regular expressions;
-retain its license notices when distributing it. HTTP and regex APIs are not yet
-exposed by the static frontend. See the [legacy API](docs/API.md#6-string-methods).
+retain its license notices when distributing it. Checked HTTP and regex APIs are
+available to `.nc` scripts; see the [API guide](docs/API.md).

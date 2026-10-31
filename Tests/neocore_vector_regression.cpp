@@ -304,11 +304,20 @@ static void CheckHostBoundary(bool debug)
     if (program)
     {
         const NeoCore::Result result = program->Call("Probe");
-        Check(!result.ok() && result.error.message.find("return type Vector3") != std::string::npos,
-            "scalar host vector return rejected before initialization");
+        Check(!result.ok() && result.error.message.find("division by zero") != std::string::npos,
+            "supported vector return preserves initialization errors");
         const NeoCore::Result initialized = program->Run();
         Check(!initialized.ok() && initialized.error.message.find("division by zero") != std::string::npos,
-            "vector return preflight does not execute global initialization");
+            "failed vector global initialization is retained");
+    }
+    program = NeoCore::Program::Compile("export Vector3 Probe(){return Vector3(1,2,3);}", error,
+        "host vector return", debug);
+    Check(program != nullptr, "host vector return compiles");
+    if (program)
+    {
+        const NeoCore::Result vector = program->Call("Probe");
+        Check(vector.ok() && vector.value.kind() == NeoCore::Scalar::Kind::Vector3 &&
+            vector.value.asVector()[0] == 1 && vector.value.asVector()[2] == 3, "host receives exact vector dimensions");
     }
 }
 

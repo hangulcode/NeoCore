@@ -47,6 +47,8 @@ public:
     const TypeRegistry& Types() const { return types_; }
 
     TypeId AddObject(const std::string& name);
+    TypeId AddStruct(const std::string& name);
+    bool DefineStruct(TypeId type, const std::vector<StructField>& fields);
     HostBindingId AddMethod(TypeId owner, const std::string& name, TypeId result,
         const std::vector<TypeId>& parameters);
     bool AddProperty(TypeId owner, const std::string& name, TypeId type,

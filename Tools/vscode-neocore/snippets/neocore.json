@@ -1,0 +1,81 @@
+{
+  "Typed function": {
+    "prefix": "function",
+    "body": [
+      "${1:void} ${2:Name}(${3:int value})",
+      "{",
+      "\t$0",
+      "}"
+    ],
+    "description": "Declare explicit return and parameter types."
+  },
+  "Local": {
+    "prefix": "local",
+    "body": "${1:int} ${2:value} = ${3:0};"
+  },
+  "Struct": {
+    "prefix": "struct",
+    "body": [
+      "struct ${1:Position}",
+      "{",
+      "\tfloat x;",
+      "\tfloat y;",
+      "};"
+    ]
+  },
+  "Function value": {
+    "prefix": "fn",
+    "body": "fn(${1:int})->${2:int} ${3:transform} = fn(${1:int} ${4:value})->${2:int} { return ${4:value}; };"
+  },
+  "For range": {
+    "prefix": "for",
+    "body": [
+      "for (int ${1:i} in ${2:0}, ${3:count})",
+      "{",
+      "\t$0",
+      "}"
+    ]
+  },
+  "Foreach": {
+    "prefix": "foreach",
+    "body": [
+      "foreach (${1:int} ${2:value} in ${3:values})",
+      "{",
+      "\t$0",
+      "}"
+    ]
+  },
+  "If": {
+    "prefix": "if",
+    "body": [
+      "if (${1:condition})",
+      "{",
+      "\t$0",
+      "}"
+    ]
+  },
+  "Import": {
+    "prefix": "import",
+    "body": "import ${1:system};"
+  },
+  "Print": {
+    "prefix": "print",
+    "body": "print(${1:value});"
+  },
+  "Typed array": {
+    "prefix": "array",
+    "body": "array<${1:float}> ${2:values} = array<${1:float}>(${3:count});"
+  },
+  "Typed list": {
+    "prefix": "list",
+    "body": "list<${1:int}> ${2:values} = [];"
+  },
+  "Typed map": {
+    "prefix": "map",
+    "body": "map<${1:string}, ${2:int}> ${3:values} = {};"
+  },
+  "Compact typed array": {
+    "prefix": "array32",
+    "body": "array32<${1:float}> ${2:values} = array32<${1:float}>(${3:count});"
+  }
+}

@@ -638,6 +638,41 @@ void CheckErrorLocations(bool debug)
     }
 }
 
+void CheckSchemaStructures(bool debug)
+{
+    NeoCore::HostSchema schema;
+    NeoCore::TypeRegistry& types = schema.Types();
+    const NeoCore::TypeId owner = schema.AddObject("HostShape");
+    const NeoCore::TypeId point = types.DeclareStruct("HostPoint");
+    const NeoCore::TypeId node = types.DeclareStruct("HostNode");
+    Check(types.DefineStructFields(point, {{"x", types.Int()}, {"y", types.Int()}}), "define host point fields");
+    Check(types.DefineStructFields(node, {{"value", types.Int()}, {"children", types.ListOf(node)}}),
+        "define host recursive collection fields");
+    const NeoCore::HostBindingId echo = schema.AddMethod(owner, "Echo", node, {node});
+    Check(echo != NeoCore::InvalidHostBinding, "accept recursive host type graph without recursion");
+    Check(schema.AddProperty(owner, "Point", point), "declare host struct property");
+    Check(schema.AddGlobal("Host", owner), "declare host shape global");
+    int object = 0;
+    NeoCore::Scalar saved;
+    NeoCore::HostBindings bindings(schema,
+        [](void* data, NeoCore::TypeId, NeoCore::ObjectHandle id) -> void* { return id.value == 1 ? data : nullptr; }, &object);
+    Check(bindings.Bind(echo, [](NeoCore::HostCall& call) { call.ReturnValue(call.Argument(0)); return true; }),
+        "bind host struct method");
+    const NeoCore::HostProperty* property = schema.FindProperty(owner, "Point");
+    Check(property && bindings.Bind(property->getter, [&saved](NeoCore::HostCall& call) { call.ReturnValue(saved); return true; }) &&
+        bindings.Bind(property->setter, [&saved](NeoCore::HostCall& call) { saved = call.Argument(0); return true; }),
+        "bind host struct property");
+    Check(bindings.BindGlobal("Host", NeoCore::ObjectHandle(1)), "bind host shape global");
+    NeoCore::Error error;
+    auto program = NeoCore::Program::Compile(
+        "export int Probe(){HostPoint a=HostPoint(4,5);Host.Point=a;HostPoint b=Host.Point;b.x=9;"
+        "HostPoint c=Host.Point;list<HostNode> children=[];HostNode n=HostNode(3,children);"
+        "HostNode copy=Host.Echo(n);copy.value=10;return c.x*100+n.value*10+copy.value;}",
+        bindings, error, "host_structures.nc", debug);
+    Check(program != nullptr, "compile host-declared struct helpers: " + error.message);
+    if (program) ExpectInt(program->Call("Probe"), 440, "host structs preserve method/property value copies");
+}
+
 void CheckRejectedSource(bool debug)
 {
     struct Rejected { const char* source; const char* name; };
@@ -692,6 +727,7 @@ int main()
         CheckReentry(debug);
         CheckReturnContracts(debug);
         CheckErrorLocations(debug);
+        CheckSchemaStructures(debug);
         CheckRejectedSource(debug);
     }
     std::printf("NeoCore host regression: %d/%d checks passed\n", checks - failures, checks);

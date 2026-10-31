@@ -77,6 +77,8 @@
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClCompile Include="main.cpp" />
+    <ClCompile Include="ConsoleTooling.cpp" />
+    <ClInclude Include="ConsoleTooling.h" />
     <ClInclude Include="SampleHost.h" />
     <ClInclude Include="CompilerErrors.h" />
     <ClInclude Include="Benchmarks.h" />
@@ -117,7 +119,7 @@
     <None Include="..\bench\mapbench_check.nc" />
 
     <ClCompile Include="SampleHost.cpp" />
-    <ClCompile Include="..\console\HttpTransport.cpp" />
+    <ClCompile Include="HttpTransport.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\..\Windows\NeoCore.vcxproj">

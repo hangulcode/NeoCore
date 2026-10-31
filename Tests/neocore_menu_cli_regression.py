@@ -131,7 +131,7 @@ def main():
     assert "[pooltrim-check] passed" in result.stdout, result.stdout
     checks += 1
 
-    for arguments in (("--dap",), ("--lsp",), ("--v2smoke",), ("--globals", "GameObject")):
+    for arguments in (("--v2smoke",), ("--globals", "GameObject")):
         result = run(arguments, expected_success=False)
         assert "unsupported" in result.stderr or "not yet ported" in result.stderr, result.stderr
         assert not passed(result), result.stdout

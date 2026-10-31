@@ -1,3 +1,0 @@
-// Self-import regression fixture.
-import selfimp as s;
-export fun F() { return 1; }

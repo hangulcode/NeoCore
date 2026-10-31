@@ -9,12 +9,12 @@ instances, frame/event dispatch, suspension, and object-ID validation.
 From the repository root:
 
 ```sh
-cmake -S . -B Build/neocore -DNEOSCRIPT_BUILD_EXAMPLES=OFF
+cmake -S . -B Build/neocore -DNEOCORE_BUILD_EXAMPLES=OFF
 cmake --build Build/neocore --config Release --target neocore_minigame
 ctest --test-dir Build/neocore -C Release -R '^neocore_minigame$' --output-on-failure
 ```
 
-The sample is included when `NEOSCRIPT_BUILD_SMOKE` or `NEOSCRIPT_BUILD_EXAMPLES`
+The sample is included when `NEOCORE_BUILD_TESTS` or `NEOCORE_BUILD_EXAMPLES`
 is enabled. With the Visual Studio CMake generator, run:
 
 ```powershell

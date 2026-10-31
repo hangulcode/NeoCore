@@ -96,6 +96,7 @@ NEOS_NOINLINE bool handle_SLEEP(const SVMOperation& OP) {
 NEOS_NOINLINE void set_script_closure_value(VarInfo* dst, int functionIndex) {
     const SFunctionTable& fun = Functions()[functionIndex];
     ClosureInfo* closure = GetVM()->ClosureAlloc(functionIndex, (int)fun._captures.size());
+    closure->_ownerWorkerId = GetWorkerID();
     bool mayContainContainerChild = false;
     for (size_t i = 0; i < fun._captures.size(); ++i)
     {

@@ -524,6 +524,7 @@ struct NeoScriptInternal
     static ArrayView   arrayV(const void* i) { ArrayView a;  a.m_impl = i; return a; }
     static Invocation  inv(void* i, uint64_t seq) { Invocation v; v.m_impl = i; v.m_seq = seq; ++static_cast<InstanceRec*>(i)->invocationCount; return v; }
     static void*       invImpl(const Invocation& v) { return v.m_impl; }
+    static uint64_t    invSequence(const Invocation& v) { return v.m_seq; }
     static void*       funImpl(const FunctionHandle& f) { return f.m_impl; }
     static FunctionHandle fun(uint32_t index, uint32_t programId, uint32_t programGeneration, uint64_t runtimeId)
     {
@@ -576,8 +577,11 @@ struct LoaderAdapter : INeoLoader
 class RuntimeImpl final : public IRuntime
 {
     friend class DebuggerImpl;
+    friend struct NeoCoreBackend::ValueAccess;
     friend bool NeoCoreBackend::RemapSourceLines(NeoScript::IRuntime& runtime, NeoScript::ProgramHandle program,
         const std::vector<std::pair<int, int>>& mappings);
+    friend bool NeoCoreBackend::ValidateImageFunctions(NeoScript::IRuntime& runtime, NeoScript::ProgramHandle program,
+        const std::vector<std::pair<std::string, std::size_t>>& signatures, std::string& error);
 public:
     explicit RuntimeImpl(const RuntimeDesc& desc);
     ~RuntimeImpl() override;
@@ -2508,6 +2512,8 @@ static void DestroyDebugger(DebuggerImpl* d) { delete d; }
 
 } // namespace NeoScript
 
+#include "NeoCoreValues.inl"
+
 namespace NeoCoreBackend
 {
 namespace
@@ -2586,6 +2592,26 @@ bool RemapSourceLines(NeoScript::IRuntime& runtime, NeoScript::ProgramHandle pro
         if (info._fileseq != 0) continue;
         const auto found = lines.find(info._lineseq);
         if (found != lines.end()) info._lineseq = static_cast<NeoScript::u16>(found->second);
+    }
+    return true;
+}
+
+bool ValidateImageFunctions(NeoScript::IRuntime& runtime, NeoScript::ProgramHandle program,
+    const std::vector<std::pair<std::string, std::size_t>>& signatures, std::string& error)
+{
+    NeoScript::RuntimeImpl& impl = static_cast<NeoScript::RuntimeImpl&>(runtime);
+    NeoScript::ProgramRec* record = impl.resolveProgram(program);
+    if (!record || !record->program) { error = "invalid NeoCore image program"; return false; }
+    for (const auto& signature : signatures)
+    {
+        const int index = record->program->FindFunction(signature.first);
+        if (index < 0 || static_cast<std::size_t>(index) >= record->program->functions.size() ||
+            record->program->functions[index]._argsCount < 0 ||
+            static_cast<std::size_t>(record->program->functions[index]._argsCount) != signature.second)
+        {
+            error = "NeoCore image function contract does not match bytecode: " + signature.first;
+            return false;
+        }
     }
     return true;
 }

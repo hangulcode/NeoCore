@@ -1,3 +1,0 @@
-// Cyclic-import regression fixture: module B calls module A.
-import cyca as a;
-export fun FromB() { return 2; }

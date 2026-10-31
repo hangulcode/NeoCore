@@ -10,11 +10,11 @@ permissions:
 
 jobs:
   windows-msvc:
-    name: Windows / MSVC / smoke
+    name: Windows / MSVC / NeoCore
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v6
-      - name: Build the NeoCore solution and backend console project
+      - name: Build the NeoCore solution
         shell: pwsh
         run: |
           $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
@@ -22,50 +22,53 @@ jobs:
           if (-not $installPath) { throw "Visual Studio MSBuild was not found." }
           & "$installPath\MSBuild\Current\Bin\amd64\MSBuild.exe" NeoCore.sln /m /p:Configuration=Release /p:Platform=x64
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          & "$installPath\MSBuild\Current\Bin\amd64\MSBuild.exe" Samples\console\console.vcxproj /m /p:Configuration=Release /p:Platform=x64
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-      - name: Run NeoCore checks
+      - name: Run console samples and diagnostics
         shell: pwsh
         run: |
-          & .\Build\Windows\bin\x64\Release\neocore.exe --check Samples\bench\bench.nc
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          & .\Build\Windows\bin\x64\Release\neocore.exe --file Samples\bench\check.nc
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-      - name: Run smoke tests
-        working-directory: Samples/console
-        shell: pwsh
-        run: .\x64\Release\console.exe --smoke
-
+          foreach ($mode in @('--smoke', '--debug-smoke', '--compiler-error-regression', '--bench-check')) {
+            & .\Build\Windows\bin\x64\Release\neocore.exe $mode
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
       - name: Build and test with CMake
         shell: pwsh
         run: |
-          cmake -S . -B build -A x64
+          cmake -S . -B build -A x64 -DNEOCORE_BUILD_UNITY_BRIDGE=ON
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           cmake --build build --config Release --parallel
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           ctest --test-dir build -C Release --output-on-failure
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-
-      - name: Build the standalone game-host example
+      - name: Check the console HTTPS transport and VS Code extension
         shell: pwsh
         run: |
-          cmake -S Samples/minigame -B build/minigame -A x64
+          python Tests/http_console_regression.py .\Build\Windows\bin\x64\Release\neocore.exe
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          cmake --build build/minigame --config Release --parallel
+          node --check Tools/vscode-neocore/src/extension.js
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          ctest --test-dir build/minigame -C Release --output-on-failure
+      - name: Verify managed bindings against the typed plugin
+        shell: pwsh
+        run: |
+          $pluginDirectory = 'Unity/com.neocore.unity/Runtime/Plugins/x86_64'
+          New-Item -ItemType Directory -Force -Path $pluginDirectory | Out-Null
+          Copy-Item -LiteralPath 'build/Unity/NeoCore/Release/NeoCoreUnity.dll' -Destination "$pluginDirectory/NeoCoreUnity.dll"
+          & ./Unity/NeoCore/check_managed.ps1
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          cpack --config build/minigame/CPackConfig.cmake -C Release -B build/packages
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-      - name: Upload the Windows game-host ZIP
+      - name: Upload Windows hosts and typed samples
         uses: actions/upload-artifact@v4
         with:
-          name: neoscript-minigame-windows-x64
-          path: build/packages/*.zip
+          name: neocore-windows-x64
+          path: |
+            Build/Windows/bin/x64/Release/
+            Samples/neocore/scripts/
+            Samples/neocore/minigame/scripts/
+            Samples/neocore/minigame/viewer.html
+            Lib/*.nc
+            LICENSE
+            THIRD_PARTY_NOTICES.txt
           if-no-files-found: error
 
   linux:
-    name: Linux / ${{ matrix.compiler }} / smoke
+    name: Linux / ${{ matrix.compiler }} / NeoCore
     runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
@@ -80,15 +83,15 @@ jobs:
     steps:
       - uses: actions/checkout@v6
       - name: Install build tools
-        run: sudo apt-get update && sudo apt-get install --yes cmake ninja-build g++ clang
+        run: sudo apt-get update && sudo apt-get install --yes cmake ninja-build g++ clang libcurl4-openssl-dev
       - name: Configure
         env:
           CC: ${{ matrix.cc }}
           CXX: ${{ matrix.cxx }}
-        run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_STANDARD=11 -DCMAKE_CXX_STANDARD_REQUIRED=ON -DCMAKE_CXX_EXTENSIONS=OFF "-DCMAKE_CXX_FLAGS=-Werror=c++14-extensions -Werror=c++17-extensions"
+        run: cmake -S . -B build -G Ninja -DNEOCORE_BUILD_UNITY_BRIDGE=ON -DNEOCORE_CONSOLE_HTTP=ON -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_STANDARD=11 -DCMAKE_CXX_STANDARD_REQUIRED=ON -DCMAKE_CXX_EXTENSIONS=OFF "-DCMAKE_CXX_FLAGS=-Werror=c++14-extensions -Werror=c++17-extensions"
       - name: Build
         run: cmake --build build --parallel
-      - name: Run smoke test
+      - name: Run compiler, runtime, C ABI and sample regressions
         run: ctest --test-dir build --output-on-failure
 
   android-ndk:
@@ -100,67 +103,47 @@ jobs:
         uses: android-actions/setup-android@v4
       - name: Install Android NDK
         run: sdkmanager --install "ndk;27.2.12479018"
-      - name: Configure and build
+      - name: Configure and build the typed bridge
         run: |
           ANDROID_NDK_ROOT="$ANDROID_HOME/ndk/27.2.12479018"
           cmake -S . -B build-android -G Ninja \
-            -DNEOSCRIPT_BUILD_SMOKE=OFF \
-            -DNEOSCRIPT_BUILD_SHARED=ON \
+            -DNEOCORE_BUILD_TESTS=OFF \
+            -DNEOCORE_BUILD_EXAMPLES=OFF \
+            -DNEOCORE_BUILD_UNITY_BRIDGE=ON \
             -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_TOOLCHAIN_FILE="$ANDROID_NDK_ROOT/build/cmake/android.toolchain.cmake" \
             -DANDROID_ABI=arm64-v8a \
             -DANDROID_PLATFORM=android-24
-          cmake --build build-android --parallel
-
-      # The plugin is what Unity actually ships, and its link options are what
-      # keep it from colliding with Unity's own C++ runtime. Checking the built
-      # library here costs nothing and catches a regression at the commit that
-      # causes it rather than in somebody's APK.
-      - name: Check the plugin exports only its C ABI
+          cmake --build build-android --target NeoCoreUnity --parallel
+      - name: Check the typed plugin exports and alignment
         run: |
-          SO=build-android/libNeoScript.so
+          SO=build-android/Unity/NeoCore/libNeoCoreUnity.so
           READELF="$ANDROID_HOME/ndk/27.2.12479018/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-readelf"
-          ns=$("$READELF" --dyn-syms "$SO" | grep -c ' Ns' || true)
+          nc=$("$READELF" --dyn-syms "$SO" | grep -c ' Nc' || true)
           cxx=$("$READELF" --dyn-syms "$SO" | grep -c ' _ZN' || true)
-          echo "Ns* entry points: $ns, leaked C++ symbols: $cxx"
-          test "$ns" -gt 100 || { echo "the C ABI is missing from the plugin"; exit 1; }
+          echo "Nc* entry points: $nc, leaked C++ symbols: $cxx"
+          test "$nc" -ge 25 || { echo "the typed C ABI is missing from the plugin"; exit 1; }
           test "$cxx" -eq 0 || { echo "the C++ runtime is being re-exported"; exit 1; }
           "$READELF" -l "$SO" | grep -q 0x4000 || { echo "not 16 KB page aligned"; exit 1; }
 
   ios-static:
-    name: iOS / Xcode / arm64 static
+    name: iOS / Xcode / arm64 typed plugin
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v6
-      - name: Configure and build the static C ABI
+      - name: Build and package the typed static plugin
         run: |
-          cmake -S . -B build-ios -G Xcode \
-            -DCMAKE_SYSTEM_NAME=iOS \
-            -DCMAKE_OSX_ARCHITECTURES=arm64 \
-            -DCMAKE_OSX_SYSROOT=iphoneos \
-            -DCMAKE_XCODE_ATTRIBUTE_ONLY_ACTIVE_ARCH=NO \
-            -DCMAKE_XCODE_ATTRIBUTE_IPHONEOS_DEPLOYMENT_TARGET=13.0 \
-            -DNEOSCRIPT_BUILD_STATIC_C_ABI=ON \
-            -DNEOSCRIPT_BUILD_SMOKE=OFF
-          cmake --build build-ios --config Release --target NeoScriptStatic
-
-      # iOS resolves DllImport("__Internal") against symbols linked into the
-      # player, so the archive has to actually carry them. Mach-O prefixes C
-      # symbols with an underscore.
-      - name: Check the C ABI is in the archive
-        run: |
-          LIB=$(find build-ios -name 'libNeoScriptUnity.a' -print -quit)
-          test -n "$LIB" || { echo "libNeoScriptUnity.a was not produced"; exit 1; }
-          ns=$(nm -g "$LIB" | grep -c ' T _Ns' || true)
-          echo "$LIB carries $ns Ns* entry points"
-          test "$ns" -gt 100 || { echo "the C ABI is missing from the archive"; exit 1; }
-          mkdir -p artifact && cp "$LIB" artifact/
-
-      # The archive is the one plugin binary nobody can build on Windows, so
-      # hand it back: drop it into Runtime/Plugins/iOS/ and Unity links it.
-      - name: Upload libNeoScriptUnity.a
+          bash Unity/build_ios.sh device
+          ARCHIVE=Unity/com.neocore.unity/Runtime/Plugins/iOS/libNeoCoreUnity.a
+          xcrun lipo -info "$ARCHIVE"
+          xcrun nm -gU "$ARCHIVE" | grep ' _NcCompile$'
+      - name: Upload the typed plugin and C header
         uses: actions/upload-artifact@v4
         with:
-          name: libNeoScriptUnity-ios-arm64
-          path: artifact/libNeoScriptUnity.a
+          name: neocore-unity-ios-arm64
+          path: |
+            Unity/com.neocore.unity/Runtime/Plugins/iOS/libNeoCoreUnity.a
+            Unity/NeoCore/NeoCoreC.h
+            LICENSE
+            THIRD_PARTY_NOTICES.txt
           if-no-files-found: error

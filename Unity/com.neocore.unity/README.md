@@ -1,34 +1,66 @@
 # NeoCore for Unity
 
-The Basic sample uses real `.nc` declarations and the typed NeoCore runtime.
-It retains the original wobbling Transform, per-frame delta adjustment, and
-first-frame log. Unity passes time/deltaTime as `float` script parameters
-(binary64), reads the script vector through three scalar exports, and updates
-the Transform in C#. This package does not expose the legacy `Unity.*` dynamic
-object dispatch.
+This package runs statically checked `.nc` through NeoCoreUnity. It preserves
+managed script memory, shared programs, independent globals, sleep/time slicing,
+and checked native engine IDs.
 
-1. Close Unity, then run `pwsh Unity/NeoCore/build_windows.ps1` from the repository.
-2. In Unity 2022.3 or newer on Windows x64, add this folder's `package.json` using
-   **Package Manager > Add package from disk**.
-3. Import the **Basic** sample from Package Manager.
-4. Add `NeoCoreDemo` to a GameObject. Assign the imported `demo.nc` asset to its
-   **Script** field and enter Play Mode.
+1. Build with `pwsh Unity/build_windows.ps1` from the repository.
+2. Add this package.json with **Package Manager > Add package from disk**.
+3. Import Basic, attach NeoCoreDemo, and assign demo.nc to Script.
 
-The package's `.nc` importer creates a TextAsset without changing the source
-extension. It is an asset importer, not a language server. Compile errors and
-runtime errors include the source location when available.
+The .nc importer produces a TextAsset. Basic drives a Transform and reboots after
+domain reload. Build scripts also package Android plugins and an iOS static
+archive. Close Unity before replacing a loaded plugin.
 
-`NeoCore.Unity.Program.Compile` creates checked code. `CreateInstance` creates
-independent global state; `Instance.Call` invokes exported functions with
-`Scalar` arguments. Dispose instances/programs when finished. The editor guard
-also disposes remaining resources before reload, editor exit, and after Play
-Mode. The sample boots again after a domain reload or resource cleanup.
+## Host binding example
 
-The C# adapter currently allocates argument/result objects and resolves exports
-by name. It has no execution timeout or instruction budget. Use this sample with
-trusted, bounded scripts. Suspension is exposed by the API, but Basic expects
-each frame update to complete immediately. See `Unity/NeoCore/README.md` for the
-native ownership contract and current limitations.
+```csharp
+using (var options = new NeoCore.Unity.CompileOptions())
+{
+    var actor = options.Object("Actor");
+    options.SetResolver((type, id) => actors.ContainsKey(id));
+    options.Global("GameObject", actor, actorId);
+    options.Property(actor, "Position", ScriptTypes.Vector3,
+        call => call.Return(Scalar.From(actors[call.ReceiverId].transform.position)),
+        call => {
+            using (var value = call.Argument(0))
+                actors[call.ReceiverId].transform.position = value.AsVector3();
+        });
+    program = NeoCore.Unity.Program.Compile(script.text, script.name + ".nc", true, options);
+}
+instance = program.CreateInstance();
+instance.Run().RequireCompleted();
+```
 
-The inherited `com.neoscript.unity` package, Basic `.ns` demo, and its tests remain
-available for legacy backend regression. They do not validate this typed package.
+The host supplies the actor dictionary and ID. Signatures are fixed before
+compilation; object liveness remains a runtime resolver check. Per-instance IDs
+can be changed with SetHostObject. Callbacks remain rooted after compile options
+are disposed until their final native owner is released.
+
+Calls support scalars, vectors, native handles, typed collections, structs, and fn
+callbacks. Declare schema structs with Struct/DefineFields; construct values with
+program.CreateValue(typeName, fields). CallLimited/Resume expose budgets and
+timeouts. SaveImage/LoadImage preserve checked code. SetModuleLoader supplies .nc
+imports; SetHttpTransport supplies HTTP/HTTPS.
+
+## Values and cleanup
+
+Use using/Dispose for programs, instances, options, and owned collection/struct/fn
+Scalar values. Structs and vectors copy; collections share identity. Copying a
+managed Scalar shares its handle, so dispose it once or Clone for another owner.
+Collections can outlive the program wrapper; captured closures are invalidated
+when their original instance resets or is destroyed.
+
+Discarded values queue native release; Resources.Drain performs release on the
+owning thread and runs automatically before normal instance/value operations.
+The editor guard disposes resources before reload and after PlayMode. Player
+code must dispose long-lived resources or call Resources.DisposeAll on teardown.
+Diagnostics.SetLogSink is process-wide; reload/subsystem hooks detach it.
+
+Scalar.CopyTo/CopyFrom transfer bounded numeric array slices with exact storage
+width. program.ParseJson(typeName,text)/ToJson(value) use declared field and element
+types. Error results carry source coordinates when debug information is enabled.
+
+See Unity/NeoCore/README.md in the repository for the migration matrix, complete
+ownership contract, JSON restrictions, platform commands and test instructions.
+This package does not compile legacy dynamic .ns sources.

@@ -1,4 +1,4 @@
-NeoScript third-party notices
+NeoCore third-party notices
 
 yyjson 0.13.0
 Source: https://github.com/ibireme/yyjson/releases/tag/0.13.0

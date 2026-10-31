@@ -217,11 +217,20 @@ static void CheckHostBoundary(bool debug)
     if (program)
     {
         const NeoCore::Result result = program->Call("Probe");
-        Check(!result.ok() && result.error.message.find("return type S") != std::string::npos,
-            "unsupported host struct return rejected before initialization");
+        Check(!result.ok() && result.error.message.find("division by zero") != std::string::npos,
+            "supported host struct return preserves initialization errors");
         const NeoCore::Result initialized = program->Run();
         Check(!initialized.ok() && initialized.error.message.find("division by zero") != std::string::npos,
-            "return preflight leaves global initialization unexecuted");
+            "failed struct global initialization is retained");
+    }
+    program = NeoCore::Program::Compile("struct S{int x;};export S Probe(){return S(7);}", error,
+        "host struct return", debug);
+    Check(program != nullptr, "host struct value compiles");
+    if (program)
+    {
+        const NeoCore::Result structure = program->Call("Probe");
+        Check(structure.ok() && structure.value.kind() == NeoCore::Scalar::Kind::Struct &&
+            structure.value.Count() == 1 && structure.value.At(0).asInt() == 7, "host receives typed struct fields");
     }
     program = NeoCore::Program::Compile(
         "struct S{int x;};int zero=0;int invalid=1/zero;export void Whole(S s){}",

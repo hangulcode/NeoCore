@@ -663,6 +663,8 @@ struct ClosureInfo : AllocBase
 {
 	CNeoVM*	_pVM = nullptr;
 	int			_funIndex = -1;
+	// 호스트가 보관한 캡처가 다른 인스턴스나 초기화된 워커로 넘어가지 않게 생성자를 기록한다.
+	u32         _ownerWorkerId = 0;
 	std::vector<VarInfo> _captures;
 	CycleState<ClosureInfo> _cycleState;
 	ClosureInfo*	_livePrev = nullptr;

@@ -1,5 +1,6 @@
 ﻿#include "NeoCoreHostRuntime.h"
 #include "NeoCoreHostBridge.h"
+#include "NeoCoreValueBoundary.h"
 #include "NeoScript.h"
 #include <cassert>
 #include <cstring>
@@ -85,6 +86,7 @@ struct HostArgument
     TypeId objectType = InvalidType;
     void* pointer = nullptr;
     bool resolved = false;
+    Scalar owned;
 };
 
 typedef void (*ArgumentReader)(const NeoScript::CallContext&, std::size_t, HostArgument&);
@@ -93,6 +95,8 @@ struct ArgumentPlan
     ArgumentReader read = nullptr;
     TypeId objectType = InvalidType;
     bool nullable = false;
+    bool owned = false;
+    TypeId type = InvalidType;
 };
 
 static std::int64_t HandleBits(ObjectHandle object)
@@ -115,7 +119,7 @@ static void ReadText(const NeoScript::CallContext& ctx, std::size_t i, HostArgum
 static void ReadVector(const NeoScript::CallContext& ctx, std::size_t i, HostArgument& a) { NeoCoreBackend::ReadVector(ctx, i, a.vector); }
 static void ReadObject(const NeoScript::CallContext& ctx, std::size_t i, HostArgument& a) { a.object = ReadHandle(NeoCoreBackend::ReadInt(ctx, i)); }
 
-enum class HostResultKind { Void, Int, Float, Bool, String, Vector2, Vector3, Vector4, Quaternion, Object, Null };
+enum class HostResultKind { Void, Int, Float, Bool, String, Vector2, Vector3, Vector4, Quaternion, Object, Null, Owned };
 struct HostResult
 {
     HostResultKind kind = HostResultKind::Void;
@@ -151,7 +155,7 @@ struct HostRuntimeAccess
     };
     static bool Dispatch(NeoScript::CallContext& ctx, NeoScript::StringView);
     static bool Link(State& state, NeoScript::IRuntime& runtime, const std::string& prefix, std::string& error);
-    static bool WriteResult(NeoScript::CallContext& ctx, const Entry& entry, const HostResult& result, std::string& error);
+    static bool WriteResult(NeoScript::CallContext& ctx, Instance& instance, const Entry& entry, const HostResult& result, std::string& error);
     static void* Resolve(State& state, TypeId type, ObjectHandle object)
     {
         return object ? state.bindings.resolver_(state.bindings.userData_, type, object) : nullptr;
@@ -204,6 +208,27 @@ void* HostCall::Receiver() { return impl_->receiverResolved ? impl_->receiverPoi
 void* HostCall::ResolveReceiver() { return impl_->ResolveReceiver(); }
 std::size_t HostCall::ArgumentCount() const { return impl_->arguments.size(); }
 bool HostCall::IsNull(std::size_t i) const { return impl_->arguments.at(i).null; }
+Scalar HostCall::Argument(std::size_t i) const
+{
+    const HostArgument& argument = impl_->arguments.at(i);
+    if (argument.null) return Scalar::Null();
+    const TypeRegistry& types = impl_->entry->state->bindings.Schema().Types();
+    TypeId type = impl_->entry->binding->parameters.at(i);
+    if (types.IsNullable(type)) type = types.Get(type).element;
+    switch (types.Get(type).kind)
+    {
+    case TypeKind::Int: return Scalar::Int(argument.integer);
+    case TypeKind::Float: return Scalar::Float(argument.number);
+    case TypeKind::Bool: return Scalar::Bool(argument.boolean);
+    case TypeKind::String: return Scalar::String(argument.string);
+    case TypeKind::Vector2: return Scalar::Vector(Scalar::Kind::Vector2,argument.vector);
+    case TypeKind::Vector3: return Scalar::Vector(Scalar::Kind::Vector3,argument.vector);
+    case TypeKind::Vector4: return Scalar::Vector(Scalar::Kind::Vector4,argument.vector);
+    case TypeKind::Quaternion: return Scalar::Vector(Scalar::Kind::Quaternion,argument.vector);
+    case TypeKind::Native: return Scalar::Object(types.Get(type).name,argument.object.value);
+    default: return argument.owned;
+    }
+}
 std::int64_t HostCall::Int(std::size_t i) const { return impl_->arguments.at(i).integer; }
 double HostCall::Float(std::size_t i) const { return impl_->arguments.at(i).number; }
 bool HostCall::Bool(std::size_t i) const { return impl_->arguments.at(i).boolean; }
@@ -261,6 +286,7 @@ void HostCall::ReturnQuaternion(QuaternionValue value)
 }
 void HostCall::ReturnObject(ObjectHandle value) { impl_->result.kind = value ? HostResultKind::Object : HostResultKind::Null; impl_->result.value.object = value; }
 void HostCall::ReturnNull() { impl_->result.kind = HostResultKind::Null; }
+void HostCall::ReturnValue(const Scalar& value) { impl_->result.kind = HostResultKind::Owned; impl_->result.value.owned = value; }
 void HostCall::Fail(const std::string& message) { impl_->Fail(message); }
 Result HostCall::CallScript(const std::string& name, const std::vector<Scalar>& arguments)
 {
@@ -271,9 +297,19 @@ Result HostCall::CallScript(const std::string& name, const std::vector<Scalar>& 
     if (!result.ok()) impl_->Fail(result.error.message);
     return result;
 }
-
-bool HostRuntimeAccess::WriteResult(NeoScript::CallContext& ctx, const Entry& entry, const HostResult& result, std::string& error)
+Result HostCall::CallScript(const Scalar& function, const std::vector<Scalar>& arguments)
 {
+    impl_->InvalidatePointers();
+    Result result = impl_->instance->Call(function, arguments);
+    impl_->InvalidatePointers();
+    if (!result.ok()) impl_->Fail(result.error.message);
+    return result;
+}
+
+bool HostRuntimeAccess::WriteResult(NeoScript::CallContext& ctx, Instance& instance, const Entry& entry, const HostResult& result, std::string& error)
+{
+    if (result.kind == HostResultKind::Owned)
+        return BoundaryAccess::Return(instance,ctx,entry.binding->returnType,result.value.owned,error);
     if (result.kind == HostResultKind::Null && entry.nullableReturn) { ctx.retNull(); return true; }
     switch (entry.returnKind)
     {
@@ -351,7 +387,11 @@ bool HostRuntimeAccess::Dispatch(NeoScript::CallContext& ctx, NeoScript::StringV
             HostArgument& argument = impl->arguments[i];
             argument.objectType = plan.objectType;
             argument.null = plan.nullable && NeoCoreBackend::IsNull(ctx, i + 1);
-            if (!argument.null) plan.read(ctx, i + 1, argument);
+            if (!argument.null)
+            {
+                if (plan.owned) argument.owned = BoundaryAccess::Capture(*instance->owner,ctx,i+1,plan.type);
+                else plan.read(ctx, i + 1, argument);
+            }
         }
         // 인자 전체를 먼저 스냅샷한다. 이후 ID 조회와 콜백 사이에는 VM 슬롯을 빌려 읽지 않는다.
         impl->ResolveReceiver();
@@ -361,7 +401,7 @@ bool HostRuntimeAccess::Dispatch(NeoScript::CallContext& ctx, NeoScript::StringV
         bool success = call.impl_->error.empty();
         if (success) success = entry.state->bindings.functions_[entry.binding->id - 1](call);
         if (!success && call.impl_->error.empty()) call.impl_->Fail("host call failed: " + entry.binding->name);
-        if (call.impl_->error.empty()) WriteResult(ctx, entry, call.impl_->result, call.impl_->error);
+        if (call.impl_->error.empty()) WriteResult(ctx, *instance->owner, entry, call.impl_->result, call.impl_->error);
         if (!call.impl_->error.empty()) { ctx.fail(0, call.impl_->error); return false; }
         return true;
     }
@@ -393,6 +433,7 @@ bool HostRuntimeAccess::Link(State& state, NeoScript::IRuntime& runtime, const s
             for (TypeId parameter : entry.binding->parameters)
             {
                 ArgumentPlan plan;
+                plan.type = parameter;
                 plan.nullable = types.IsNullable(parameter);
                 if (plan.nullable) parameter = types.Get(parameter).element;
                 switch (types.Get(parameter).kind)
@@ -405,6 +446,13 @@ bool HostRuntimeAccess::Link(State& state, NeoScript::IRuntime& runtime, const s
                 case TypeKind::Vector3:
                 case TypeKind::Vector4:
                 case TypeKind::Quaternion: plan.read = &ReadVector; break;
+                case TypeKind::Array:
+                case TypeKind::Array32:
+                case TypeKind::List:
+                case TypeKind::Map:
+                case TypeKind::Set:
+                case TypeKind::Function:
+                case TypeKind::Struct: plan.owned = true; break;
                 case TypeKind::Native: plan.read = &ReadObject; plan.objectType = parameter; break;
                 default: error = "unsupported host parameter type"; return false;
                 }

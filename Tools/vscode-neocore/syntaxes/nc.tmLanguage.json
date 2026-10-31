@@ -1,0 +1,88 @@
+{
+  "name": "NeoCore",
+  "scopeName": "source.neocore",
+  "fileTypes": [
+    "nc"
+  ],
+  "patterns": [
+    {
+      "include": "#comments"
+    },
+    {
+      "include": "#strings"
+    },
+    {
+      "name": "invalid.illegal.legacy.neocore",
+      "match": "\\b(var|fun|int32|float32|any)\\b"
+    },
+    {
+      "name": "storage.modifier.neocore",
+      "match": "\\b(public|export|const)\\b"
+    },
+    {
+      "name": "storage.type.neocore",
+      "match": "\\b(void|int|float|bool|string|list|map|set|array|array32|fn|coroutine|Vector2|Vector3|Vector4|Quaternion|TimeSpan|Stopwatch|AsyncRequest)\\b"
+    },
+    {
+      "name": "keyword.control.neocore",
+      "match": "\\b(struct|if|else|while|for|foreach|in|break|continue|return|import|as|yield)\\b"
+    },
+    {
+      "name": "constant.language.neocore",
+      "match": "\\b(true|false|null)\\b"
+    },
+    {
+      "name": "constant.numeric.neocore",
+      "match": "\\b(?:0[xX][0-9A-Fa-f]+|[0-9]+(?:\\.[0-9]+)?(?:[eE][+-]?[0-9]+)?)\\b"
+    },
+    {
+      "name": "entity.name.function.neocore",
+      "match": "\\b[A-Za-z_][A-Za-z0-9_]*(?=\\s*\\()"
+    },
+    {
+      "name": "keyword.operator.neocore",
+      "match": "->|\\.{2}|\\+\\+|--|[+*/%<>=!&|^~?-]|\\."
+    }
+  ],
+  "repository": {
+    "comments": {
+      "patterns": [
+        {
+          "name": "comment.block.neocore",
+          "begin": "/\\*",
+          "end": "\\*/"
+        },
+        {
+          "name": "comment.line.double-slash.neocore",
+          "match": "//.*$"
+        }
+      ]
+    },
+    "strings": {
+      "patterns": [
+        {
+          "name": "string.quoted.double.neocore",
+          "begin": "\"",
+          "end": "\"",
+          "patterns": [
+            {
+              "name": "constant.character.escape.neocore",
+              "match": "\\\\."
+            }
+          ]
+        },
+        {
+          "name": "string.quoted.single.neocore",
+          "begin": "'",
+          "end": "'",
+          "patterns": [
+            {
+              "name": "constant.character.escape.neocore",
+              "match": "\\\\."
+            }
+          ]
+        }
+      ]
+    }
+  }
+}

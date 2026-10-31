@@ -6,6 +6,7 @@
 #include "NeoVMHash.h"
 #include <memory>
 namespace NeoCore { struct TypedIR; }
+namespace NeoCoreBackend { struct ValueAccess; }
 
 namespace NeoScript
 {
@@ -342,6 +343,7 @@ private:
 	}
 
 	friend struct INeoVMWorker;
+	friend struct NeoCoreBackend::ValueAccess;
 	friend class CNeoVM;
 	friend class CNeoVMWorker;
 	friend struct MapInfo;

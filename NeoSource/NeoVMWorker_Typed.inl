@@ -113,6 +113,10 @@ NEOS_FORCEINLINE void ReadTypedArrayValue(ArrayInfo* array, int index, VarInfo* 
         StoreNumberInt(result, array->IntData()[index]);
     else if (Element == NeoArrayElementType::Float)
         StoreNumberFloat(result, array->FloatData()[index]);
+    else if (Element == NeoArrayElementType::Int32)
+        StoreNumberInt(result, array->Int32Data()[index]);
+    else if (Element == NeoArrayElementType::Float32)
+        StoreNumberFloat(result, array->Float32Data()[index]);
     else
     {
         // 결과 해제로 배열이 사라지더라도 Vec4 저장소는 결과가 계속 보유한다.
@@ -129,6 +133,8 @@ NEOS_FORCEINLINE void WriteTypedArrayValue(ArrayInfo* array, int index, const Va
     if (Element == NeoArrayElementType::Bool) array->SetBool(index, value->_bl);
     else if (Element == NeoArrayElementType::Int) array->IntData()[index] = value->_int;
     else if (Element == NeoArrayElementType::Float) array->FloatData()[index] = value->_float;
+    else if (Element == NeoArrayElementType::Int32) array->Int32Data()[index] = static_cast<std::int32_t>(value->_int);
+    else if (Element == NeoArrayElementType::Float32) array->Float32Data()[index] = NeoNarrowFloat32(value->_float);
     else if (Element == NeoArrayElementType::Vector4)
     {
         VarInfo copy = *value;
@@ -141,6 +147,18 @@ NEOS_FORCEINLINE void WriteTypedArrayValue(ArrayInfo* array, int index, const Va
 }
 
 template<NeoArrayElementType Element>
+NEOS_FORCEINLINE bool CheckTypedArrayValue(const VarInfo* value)
+{
+    // 정적 타입이 int64여도 32비트 저장 범위는 실제 값으로 검사한다. 변경 전에 호출한다.
+    if (Element == NeoArrayElementType::Int32 && (value->_int < INT32_MIN || value->_int > INT32_MAX))
+    {
+        SetError("int32 array value out of range");
+        return false;
+    }
+    return true;
+}
+
+template<NeoArrayElementType Element>
 NEOS_NOINLINE void TypedArrayNew(const SVMOperation& op)
 {
     const NS_INT size = GetVarPtr2(op)->_int;
@@ -149,7 +167,9 @@ NEOS_NOINLINE void TypedArrayNew(const SVMOperation& op)
         SetError(RTE_CALL_INVALID);
         return;
     }
-    ArrayInfo* array = GetVM()->ArrayAlloc(Element, static_cast<int>(size), *GetVarPtr3(op));
+    const VarInfo* initial = GetVarPtr3(op);
+    if (!CheckTypedArrayValue<Element>(initial)) return;
+    ArrayInfo* array = GetVM()->ArrayAlloc(Element, static_cast<int>(size), *initial);
     if (!array)
     {
         SetError(RTE_CALL_INVALID);
@@ -182,6 +202,7 @@ NEOS_NOINLINE void TypedArraySet(const SVMOperation& op)
         SetError(RTE_ARRAY_INDEX_WRITE);
         return;
     }
+    if (!CheckTypedArrayValue<Element>(&arguments[0])) return;
     WriteTypedArrayValue<Element>(array, static_cast<int>(index), &arguments[0]);
     ReadTypedArrayValue<Element>(array, static_cast<int>(index), GetVarPtrF1(op));
 }
@@ -196,7 +217,12 @@ NEOS_NOINLINE void TypedArrayAppend(const SVMOperation& op)
         SetError(RTE_CALL_INVALID);
         return;
     }
-    GetVM()->ArrayResize(array, index + 1);
+    if (!CheckTypedArrayValue<Element>(GetVarPtr3(op))) return;
+    if (!GetVM()->ArrayResize(array, index + 1))
+    {
+        SetError(RTE_CALL_INVALID);
+        return;
+    }
     WriteTypedArrayValue<Element>(array, index, GetVarPtr3(op));
     Var_SetNone(GetVarPtrF1(op));
 }

@@ -3,9 +3,13 @@ using System.Runtime.InteropServices;
 
 namespace NeoCore.Unity
 {
-    internal static class Native
+    internal static partial class Native
     {
+#if UNITY_IOS && !UNITY_EDITOR
+        private const string Library = "__Internal";
+#else
         private const string Library = "NeoCoreUnity";
+#endif
         private const CallingConvention Convention = CallingConvention.Cdecl;
 
         [DllImport(Library, CallingConvention = Convention)] internal static extern IntPtr NcCompile(byte[] source, uint sourceLength, byte[] sourceName, uint nameLength, int debug, out IntPtr result);

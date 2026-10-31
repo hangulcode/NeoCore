@@ -51,32 +51,65 @@ bool HostSchema::IsNameAllowed(const std::string& name) const
 
 bool HostSchema::IsSupportedType(TypeId type, bool allowVoid) const
 {
-    const TypeDesc& descriptor = types_.Get(type);
-    switch (descriptor.kind)
+    // list<Node> 같은 간접 순환은 허용하되 타입마다 한 번만 검사한다.
+    // 반복 탐색으로 깊은 호스트 타입 그래프도 C++ 호출 스택을 소모하지 않는다.
+    std::vector<std::pair<TypeId, bool>> pending(1, std::make_pair(type, allowVoid));
+    std::set<std::pair<TypeId, bool>> visited;
+    while (!pending.empty())
     {
-    case TypeKind::Void:
-        return allowVoid;
-    case TypeKind::Int:
-    case TypeKind::Float:
-    case TypeKind::Bool:
-    case TypeKind::String:
-    case TypeKind::Vector2:
-    case TypeKind::Vector3:
-    case TypeKind::Vector4:
-    case TypeKind::Quaternion:
-        return true;
-    case TypeKind::Nullable:
-        // 중첩 nullable과 참조 타입은 허용하지 않는다. nullable void도 반환 타입이 아니다.
-        return types_.Get(descriptor.element).kind != TypeKind::Nullable &&
-            IsSupportedType(descriptor.element, false);
-    case TypeKind::Native:
-    {
-        const Object* object = FindObject(type);
-        return object != nullptr && object->name == descriptor.name;
+        const std::pair<TypeId, bool> current = pending.back();
+        pending.pop_back();
+        if (!visited.insert(current).second) continue;
+        const TypeDesc& descriptor = types_.Get(current.first);
+        switch (descriptor.kind)
+        {
+        case TypeKind::Void:
+            if (!current.second) return false;
+            break;
+        case TypeKind::Int:
+        case TypeKind::Float:
+        case TypeKind::Bool:
+        case TypeKind::String:
+        case TypeKind::Vector2:
+        case TypeKind::Vector3:
+        case TypeKind::Vector4:
+        case TypeKind::Quaternion:
+            break;
+        case TypeKind::Nullable:
+            if (types_.Get(descriptor.element).kind == TypeKind::Nullable) return false;
+            pending.push_back(std::make_pair(descriptor.element, false));
+            break;
+        case TypeKind::Array:
+        case TypeKind::Array32:
+        case TypeKind::List:
+            pending.push_back(std::make_pair(descriptor.element, false));
+            break;
+        case TypeKind::Map:
+            pending.push_back(std::make_pair(descriptor.key, false));
+            pending.push_back(std::make_pair(descriptor.value, false));
+            break;
+        case TypeKind::Set:
+            pending.push_back(std::make_pair(descriptor.element, false));
+            break;
+        case TypeKind::Function:
+            pending.push_back(std::make_pair(descriptor.returnType, true));
+            for (TypeId parameter : descriptor.parameters) pending.push_back(std::make_pair(parameter, false));
+            break;
+        case TypeKind::Struct:
+            if (!descriptor.fieldsDefined) return false;
+            for (const StructField& field : descriptor.fields) pending.push_back(std::make_pair(field.type, false));
+            break;
+        case TypeKind::Native:
+        {
+            const Object* object = FindObject(current.first);
+            if (object == nullptr || object->name != descriptor.name) return false;
+            break;
+        }
+        default:
+            return false;
+        }
     }
-    default:
-        return false;
-    }
+    return true;
 }
 
 TypeId HostSchema::AddObject(const std::string& name)
@@ -102,6 +135,21 @@ TypeId HostSchema::AddObject(const std::string& name)
     }
     objects_.push_back(object);
     return object.type;
+}
+
+TypeId HostSchema::AddStruct(const std::string& name)
+{
+    lastError_.clear();
+    if(!IsNameAllowed(name) || types_.LookupNamed(name)!=InvalidType)
+    { Fail("host struct name must be an unused non-reserved identifier"); return InvalidType; }
+    return types_.DeclareStruct(name);
+}
+bool HostSchema::DefineStruct(TypeId type, const std::vector<StructField>& fields)
+{
+    lastError_.clear();
+    for(const auto& field:fields)
+        if(!IsNameAllowed(field.name)) return Fail("host struct field must be a non-reserved identifier");
+    return types_.DefineStructFields(type,fields,&lastError_);
 }
 
 bool HostSchema::CheckMember(TypeId owner, const std::string& name)

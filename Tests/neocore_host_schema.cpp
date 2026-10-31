@@ -31,16 +31,16 @@ static void CheckInvalidTypes()
     rejected.push_back(InvalidType);
     rejected.push_back(std::numeric_limits<TypeId>::max());
     rejected.push_back(types.Null());
-    rejected.push_back(types.ArrayOf(types.Int()));
-    rejected.push_back(types.Array32Of(types.Float()));
-    rejected.push_back(types.ListOf(types.String()));
-    rejected.push_back(types.MapOf(types.String(), types.Int()));
-    rejected.push_back(types.SetOf(types.Int()));
-    rejected.push_back(types.FunctionOf(types.Void(), std::vector<TypeId>()));
     rejected.push_back(structure);
     rejected.push_back(types.NullableOf(structure));
     rejected.push_back(foreign);
     rejected.push_back(types.NullableOf(foreign));
+    rejected.push_back(types.ListOf(foreign));
+    rejected.push_back(types.MapOf(types.String(), foreign));
+    rejected.push_back(types.FunctionOf(foreign, std::vector<TypeId>()));
+    rejected.push_back(types.FunctionOf(types.Void(), std::vector<TypeId>(1, foreign)));
+    rejected.push_back(types.ListOf(structure));
+    rejected.push_back(types.DeclareBuiltinObject("OpaqueHostObject"));
     for (TypeId type : rejected)
     {
         Check(schema.AddMethod(object, "Result", type, std::vector<TypeId>()) == InvalidHostBinding,
@@ -144,6 +144,21 @@ int main()
     supported.push_back(types.NullableOf(types.Vector4()));
     supported.push_back(types.NullableOf(types.Quaternion()));
     supported.push_back(nullableEntity);
+    supported.push_back(types.ArrayOf(types.Int()));
+    supported.push_back(types.Array32Of(types.Float()));
+    supported.push_back(types.ListOf(types.String()));
+    supported.push_back(types.MapOf(types.String(), types.Int()));
+    supported.push_back(types.SetOf(types.Int()));
+    supported.push_back(types.FunctionOf(types.Void(), std::vector<TypeId>()));
+    const TypeId record = types.DeclareStruct("Record");
+    std::vector<StructField> fields;
+    fields.push_back(StructField("number", types.Int()));
+    fields.push_back(StructField("owner", nullableEntity));
+    Check(types.DefineStructFields(record, fields, &error), "complete host struct fields");
+    supported.push_back(record);
+    supported.push_back(types.NullableOf(record));
+    supported.push_back(types.ListOf(record));
+    supported.push_back(types.FunctionOf(record, std::vector<TypeId>(1, types.ListOf(record))));
     const HostBindingId first = schema.AddMethod(service, "Invoke", types.Void(), supported);
     Check(first == 1, "first method receives binding one");
     const HostBinding* method = schema.FindMethod(service, "Invoke");

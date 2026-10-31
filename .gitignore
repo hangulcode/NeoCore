@@ -18,8 +18,6 @@
 /Samples/bench/cpp_out.txt
 /Samples/bench/diag.*
 /Samples/bench/pabl*.*
-/Samples/bench/shape.ns
-/Samples/bench/vecbench.ns
 
 # MemoryCaptures can get excessive in size.
 # They also could contain extremely sensitive data
@@ -84,17 +82,17 @@ crashlytics-build.properties
 /[Aa]ssets/[Ss]treamingAssets/aa/*
 
 
-/Samples/NeoDebugAdapter/
 
-# PGO profile artifacts (regenerate with Tools/pgo_build.bat)
+# Local PGO profile artifacts
 *.pgd
 *.pgc
 
-# Unity native plugin binaries are build output (Unity/build_*.ps1|sh produces them).
+# Unity native plugin binaries are build output (Unity/NeoCore/build_windows.ps1).
 # The whole Plugins tree goes with them, metas included: Unity deletes a .meta whose
 # asset is missing, so committing them would just dirty the tree on a fresh clone.
-# Importer settings live in NeoPluginImportSettings.cs instead.
-/Unity/com.neoscript.unity/Runtime/Plugins/
-/Unity/com.neoscript.unity/Runtime/Plugins.meta
+# Importer settings live in NeoCorePluginImporter.cs instead.
 /Unity/com.neocore.unity/Runtime/Plugins/
 /Unity/com.neocore.unity/Runtime/Plugins.meta
+# Ignore generated plugins left over from the removed dynamic package.
+/Unity/com.neoscript.unity/Runtime/Plugins/
+/Unity/com.neoscript.unity/Runtime/Plugins.meta

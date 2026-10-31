@@ -1,5 +1,6 @@
 ﻿#include "NeoCoreModules.h"
 
+#include "NeoCoreCompiler.h"
 #include <algorithm>
 #include <cctype>
 #include <map>
@@ -19,6 +20,7 @@ struct Token
     std::size_t begin = 0, end = 0;
     int line = 1, column = 1;
     bool identifier = false;
+    bool expanded = false;
 };
 
 struct Diagnostic
@@ -53,7 +55,7 @@ static bool ReservedImportName(const std::string& name)
         "null", "true", "false", "if", "else", "while", "for", "foreach", "in", "return",
         "break", "continue", "import", "public", "export", "const", "struct", "class", "switch",
         "case", "default", "print", "tostring", "toint", "tofloat", "tosize", "type", "sleep",
-        "yield", "__LINE__", "list", "map", "array", "set", "fn"
+        "yield", "__LINE__", "list", "map", "array", "array32", "set", "fn"
     };
     for (const char* word : reserved) if (name == word) return true;
     return false;
@@ -209,9 +211,33 @@ static bool SkipType(const std::vector<Token>& tokens, std::size_t& index, unsig
     return true;
 }
 
-static void Analyze(Unit& unit)
+static void Analyze(Unit& unit, const std::vector<CompileDefine>* defines)
 {
     unit.tokens = Tokenize(unit.input.source, unit.input.sourceName);
+    if (defines)
+    {
+        std::vector<StaticDefineReplacement> replacements;
+        std::string error;
+        Token at;
+        if (!ExpandStaticDefines(unit.input.source, *defines, replacements, error, at.line, at.column))
+            Fail(unit.input.sourceName, at, error);
+        std::vector<Token> expanded;
+        std::size_t replacement = 0;
+        for (const Token& original : unit.tokens)
+        {
+            if (replacement == replacements.size() || replacements[replacement].begin != original.begin)
+            { expanded.push_back(original); continue; }
+            std::vector<Token> values = Tokenize(replacements[replacement++].text, unit.input.sourceName);
+            for (std::size_t i = 0; i < values.size(); ++i)
+            {
+                values[i].begin = original.begin;
+                values[i].end = i + 1 == values.size() ? original.end : original.begin;
+                values[i].line = original.line; values[i].column = original.column; values[i].expanded = true;
+                expanded.push_back(values[i]);
+            }
+        }
+        unit.tokens.swap(expanded);
+    }
     unit.lineStarts.push_back(unit.input.source.compare(0, 3, "\xef\xbb\xbf") == 0 ? 3 : 0);
     for (std::size_t i = 0; i < unit.input.source.size(); ++i)
         if (unit.input.source[i] == '\n') unit.lineStarts.push_back(i + 1);
@@ -383,15 +409,15 @@ private:
 class Bundler
 {
 public:
-    Bundler(const ModuleLoader& loader, const std::vector<std::string>& externalNames)
-        : loader_(loader)
+    Bundler(const ModuleLoader& loader, const std::vector<std::string>& externalNames, const std::vector<CompileDefine>* defines)
+        : loader_(loader), defines_(defines)
     {
         static const char* const words[] = {
             "var", "fun", "int", "float", "bool", "string", "void", "int32", "float32", "any",
             "null", "true", "false", "if", "else", "while", "for", "foreach", "in", "return",
             "break", "continue", "import", "public", "export", "const", "struct", "class",
             "switch", "case", "default", "print", "tostring", "toint", "tofloat", "tosize", "type",
-            "sleep", "yield", "__LINE__", "list", "map", "array", "set", "fn", "Vector2", "Vector3",
+            "sleep", "yield", "__LINE__", "list", "map", "array", "array32", "set", "fn", "Vector2", "Vector3",
             "Vector4", "Quaternion", "TimeSpan", "Stopwatch", "AsyncRequest", "Coroutine", "math", "system", "coroutine"
         };
         preserved_.insert(words, words + sizeof(words) / sizeof(words[0]));
@@ -403,7 +429,7 @@ public:
         std::unique_ptr<Unit> root(new Unit);
         root->input.source = source;
         root->input.sourceName = sourceName;
-        Analyze(*root);
+        Analyze(*root, defines_);
         identities_[sourceName] = 0;
         units_.push_back(std::move(root));
         Visit(0, 0);
@@ -418,6 +444,10 @@ public:
             prefix += "x";
         }
         for (std::size_t i = 1; i < units_.size(); ++i) units_[i]->prefix = prefix + std::to_string(i) + "_";
+        for (std::size_t i = 1; i < units_.size(); ++i)
+            for (const Token& token : units_[i]->tokens)
+                if (token.identifier && !preserved_.count(token.text))
+                    output.symbolNames[units_[i]->prefix + token.text] = token.text;
         for (std::size_t i = 0; i < units_.size(); ++i) Rewrite(i);
         Writer writer(output);
         Emit(0, writer);
@@ -426,6 +456,7 @@ public:
 
 private:
     const ModuleLoader& loader_;
+    const std::vector<CompileDefine>* defines_;
     std::vector<std::unique_ptr<Unit>> units_;
     std::map<std::string, std::size_t> identities_;
     std::set<std::string> preserved_;
@@ -461,7 +492,7 @@ private:
             if (units_.size() >= 1024) Fail(unit.input.sourceName, token, "module count exceeds compiler limit");
             std::unique_ptr<Unit> loaded(new Unit);
             loaded->input = std::move(input);
-            Analyze(*loaded);
+            Analyze(*loaded, defines_);
             if (!loaded->tokens.empty() && loaded->tokens.back().text != ";" && loaded->tokens.back().text != "}")
                 Fail(loaded->input.sourceName, loaded->tokens.back(), "incomplete statement at end of module source");
             import.target = units_.size();
@@ -542,7 +573,7 @@ private:
                 writer.Append("{}\n", unit, token.begin, true);
             }
             const std::map<std::size_t, std::string>::const_iterator replacement = unit.replacements.find(i);
-            if (replacement == unit.replacements.end()) writer.Append(token.text, unit, token.begin);
+            if (replacement == unit.replacements.end()) writer.Append(token.text, unit, token.begin, token.expanded);
             else writer.Append(replacement->second, unit, token.begin, true);
             offset = token.end;
         }
@@ -569,13 +600,13 @@ void ModuleBundle::Translate(Error& error) const
 
 bool BundleModules(const std::string& source, const std::string& sourceName,
     const ModuleLoader& loader, ModuleBundle& result, Error& error,
-    const std::vector<std::string>& externalNames)
+    const std::vector<std::string>& externalNames, const std::vector<CompileDefine>* defines)
 {
     result = ModuleBundle();
     error = Error();
     try
     {
-        Bundler bundler(loader, externalNames);
+        Bundler bundler(loader, externalNames, defines);
         bundler.Build(source, sourceName, result);
         return true;
     }

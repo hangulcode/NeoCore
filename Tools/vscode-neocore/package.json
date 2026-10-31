@@ -1,0 +1,166 @@
+{
+  "name": "neocore-vscode",
+  "displayName": "NeoCore",
+  "description": "Typed .nc language diagnostics, IntelliSense, and debugging for NeoCore.",
+  "version": "0.2.0",
+  "publisher": "neocore",
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Programming Languages",
+    "Debuggers"
+  ],
+  "activationEvents": [
+    "onLanguage:neocore",
+    "onDebugResolve:neocore"
+  ],
+  "main": "./src/extension.js",
+  "contributes": {
+    "languages": [
+      {
+        "id": "neocore",
+        "aliases": [
+          "NeoCore",
+          "neocore"
+        ],
+        "extensions": [
+          ".nc"
+        ],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "neocore",
+        "scopeName": "source.neocore",
+        "path": "./syntaxes/nc.tmLanguage.json"
+      }
+    ],
+    "snippets": [
+      {
+        "language": "neocore",
+        "path": "./snippets/neocore.json"
+      }
+    ],
+    "breakpoints": [
+      {
+        "language": "neocore"
+      }
+    ],
+    "commands": [
+      {
+        "command": "neoCore.createLaunchConfig",
+        "title": "NeoCore: Create Launch Config"
+      },
+      {
+        "command": "neoCore.openSettings",
+        "title": "NeoCore: Open Settings"
+      }
+    ],
+    "menus": {
+      "editor/title/run": [
+        {
+          "command": "neoCore.createLaunchConfig",
+          "when": "resourceLangId == neocore",
+          "group": "navigation"
+        }
+      ],
+      "commandPalette": [
+        {
+          "command": "neoCore.createLaunchConfig"
+        },
+        {
+          "command": "neoCore.openSettings"
+        }
+      ]
+    },
+    "debuggers": [
+      {
+        "type": "neocore",
+        "label": "NeoCore",
+        "languages": [
+          "neocore"
+        ],
+        "configurationSnippets": [
+          {
+            "label": "NeoCore: Launch current file",
+            "description": "Debug the currently open NeoCore file.",
+            "body": {
+              "type": "neocore",
+              "request": "launch",
+              "name": "Debug NeoCore",
+              "program": "${file}",
+              "cwd": "${workspaceFolder}"
+            }
+          }
+        ],
+        "configurationAttributes": {
+          "launch": {
+            "required": [
+              "program"
+            ],
+            "properties": {
+              "program": {
+                "type": "string",
+                "description": "Absolute path to the NeoCore file to debug.",
+                "default": "${file}"
+              },
+              "adapterPath": {
+                "type": "string",
+                "description": "Optional typed neocore executable path; must support --dap.",
+                "default": ""
+              },
+              "cwd": {
+                "type": "string",
+                "description": "Working directory for the debug adapter.",
+                "default": "${workspaceFolder}"
+              },
+              "libPath": {
+                "type": "string",
+                "description": "Optional directory containing imported .nc modules. Built-in modules come from the typed compiler.",
+                "default": "${workspaceFolder}/Lib"
+              }
+            }
+          }
+        },
+        "initialConfigurations": [
+          {
+            "type": "neocore",
+            "request": "launch",
+            "name": "Debug NeoCore",
+            "program": "${file}",
+            "cwd": "${workspaceFolder}",
+            "libPath": "${workspaceFolder}/Lib"
+          }
+        ]
+      }
+    ],
+    "configuration": {
+      "title": "NeoCore",
+      "properties": {
+        "neoCore.debugAdapterPath": {
+          "type": "string",
+          "default": "",
+          "description": "Path to the typed neocore executable supporting --dap. Empty discovers a native or CMake NeoCore build."
+        },
+        "neoCore.languageServerPath": {
+          "type": "string",
+          "default": "",
+          "description": "Path to typed neocore supporting --lsp; defaults to the debugger executable."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "check": "node --check src/extension.js"
+  },
+  "devDependencies": {},
+  "capabilities": {
+    "untrustedWorkspaces": {
+      "supported": false,
+      "description": "NeoCore starts the configured local compiler/debugger."
+    }
+  }
+}

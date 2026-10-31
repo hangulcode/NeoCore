@@ -2,6 +2,7 @@
 
 #include "NeoCoreHostSchema.h"
 #include "NeoCoreBuiltins.h"
+#include "NeoCoreOptions.h"
 #include "NeoNumberLiteral.h"
 
 #include <algorithm>
@@ -192,6 +193,133 @@ private:
     }
 };
 
+static std::string DefineLiteral(const CompileDefine& define)
+{
+    Token at;
+    const std::vector<Token> names = Lexer(define.name).Read();
+    static const char* const reserved[] = {
+        "var", "fun", "int", "float", "bool", "string", "void", "int32", "float32", "any", "null", "true", "false",
+        "if", "else", "while", "for", "foreach", "in", "return", "break", "continue", "import", "public", "export", "const",
+        "struct", "class", "switch", "case", "default", "print", "tostring", "toint", "tofloat", "tosize", "type", "sleep",
+        "yield", "__LINE__", "list", "map", "array", "array32", "set", "fn", "coroutine", "math", "system",
+        "Vector2", "Vector3", "Vector4", "Quaternion", "TimeSpan", "Stopwatch", "AsyncRequest"
+    };
+    if (names.size() != 2 || names[0].kind != TokenKind::Identifier || names[0].text != define.name)
+        Fail(at, "compile define name must be one identifier");
+    for (const char* name : reserved)
+        if (define.name == name) Fail(at, "compile define cannot replace a reserved name: " + define.name);
+    std::vector<Token> tokens = Lexer(define.text).Read();
+    tokens.pop_back();
+    const bool signedNumber = tokens.size() == 2 && (tokens[0].text == "+" || tokens[0].text == "-");
+    const std::size_t number = signedNumber ? 1 : 0;
+    bool valid = false;
+    switch (define.kind)
+    {
+    case CompileDefineKind::Identifier:
+        valid = tokens.size() == 1 && tokens[0].kind == TokenKind::Identifier &&
+            tokens[0].text != "true" && tokens[0].text != "false" && tokens[0].text != "null";
+        break;
+    case CompileDefineKind::Int:
+        valid = (tokens.size() == 1 || signedNumber) && tokens[number].kind == TokenKind::Integer;
+        if (valid)
+        {
+            const std::string& text = tokens[number].text;
+            const bool hex = text.size() > 2 && text[0] == '0' && (text[1] == 'x' || text[1] == 'X');
+            const unsigned base = hex ? 16u : 10u;
+            const std::uint64_t maximum = hex ? (std::numeric_limits<std::uint64_t>::max)()
+                : static_cast<std::uint64_t>((std::numeric_limits<std::int64_t>::max)()) + (signedNumber && tokens[0].text == "-" ? 1u : 0u);
+            std::uint64_t magnitude = 0;
+            for (std::size_t i = hex ? 2 : 0; i < text.size(); ++i)
+            {
+                const char c = text[i];
+                const unsigned digit = c >= '0' && c <= '9' ? c - '0' : c >= 'a' && c <= 'f' ? c - 'a' + 10 : c - 'A' + 10;
+                if (magnitude > (maximum - digit) / base) Fail(at, "compile define integer is outside the 64-bit range: " + define.name);
+                magnitude = magnitude * base + digit;
+            }
+        }
+        break;
+    case CompileDefineKind::Float:
+        valid = (tokens.size() == 1 || signedNumber) &&
+            (tokens[number].kind == TokenKind::Integer || tokens[number].kind == TokenKind::Float);
+        if (valid)
+        {
+            double value = 0;
+            valid = NeoScript::ParseDecimalLiteral(value, tokens[number].text.c_str());
+            if (valid && tokens[number].text.find_first_of(".eE") == std::string::npos) tokens[number].text += ".0";
+        }
+        break;
+    case CompileDefineKind::String:
+        valid = tokens.size() == 1 && tokens[0].kind == TokenKind::String && define.text.find('\0') == std::string::npos;
+        if (valid)
+        {
+            const std::string& text = tokens[0].text;
+            for (std::size_t i = 1; i + 1 < text.size(); ++i)
+            {
+                if (text[i] != '\\') continue;
+                if (++i + 1 >= text.size()) { valid = false; break; }
+                if (text[i] == '0') { valid = false; break; }
+                if (text[i] != 'u') continue;
+                unsigned first = 0;
+                const auto hex4 = [&](std::size_t start, unsigned& value) -> bool
+                {
+                    if (start + 4 >= text.size()) return false;
+                    value = 0;
+                    for (std::size_t j = start; j < start + 4; ++j)
+                    {
+                        const unsigned char c = static_cast<unsigned char>(text[j]);
+                        if (!std::isxdigit(c)) return false;
+                        value = value * 16 + (c <= '9' ? c - '0' : (c | 32) - 'a' + 10);
+                    }
+                    return true;
+                };
+                if (!hex4(i + 1, first) || first == 0 || (first >= 0xdc00 && first <= 0xdfff)) { valid = false; break; }
+                i += 4;
+                if (first >= 0xd800 && first <= 0xdbff)
+                {
+                    unsigned second = 0;
+                    if (text.compare(i + 1, 2, "\\u") != 0 || !hex4(i + 3, second) || second < 0xdc00 || second > 0xdfff)
+                    { valid = false; break; }
+                    i += 6;
+                }
+            }
+        }
+        break;
+    case CompileDefineKind::Bool:
+        valid = tokens.size() == 1 && (tokens[0].text == "true" || tokens[0].text == "false");
+        break;
+    case CompileDefineKind::Null:
+        valid = tokens.size() == 1 && tokens[0].text == "null";
+        break;
+    default: break;
+    }
+    if (!valid) Fail(at, "invalid literal for compile define: " + define.name);
+    std::string result;
+    for (const Token& token : tokens) result += token.text;
+    return signedNumber ? "(" + result + ")" : result;
+}
+
+static void ApplyDefineTokens(std::vector<Token>& tokens, const std::vector<StaticDefineReplacement>& replacements)
+{
+    if (replacements.empty()) return;
+    std::vector<Token> expanded;
+    std::size_t replacement = 0;
+    for (const Token& original : tokens)
+    {
+        if (replacement == replacements.size() || replacements[replacement].begin != original.begin)
+        { expanded.push_back(original); continue; }
+        std::vector<Token> values = Lexer(replacements[replacement++].text).Read();
+        values.pop_back();
+        for (std::size_t i = 0; i < values.size(); ++i)
+        {
+            values[i].begin = original.begin;
+            values[i].end = i + 1 == values.size() ? original.end : original.begin;
+            values[i].line = original.line; values[i].column = original.column;
+            expanded.push_back(values[i]);
+        }
+    }
+    tokens.swap(expanded);
+}
+
 struct Symbol;
 struct Statement;
 enum class ExprKind { Literal, Name, Unary, Binary, Assignment, Call, Member, Index, List, Map, Lambda };
@@ -324,7 +452,7 @@ private:
 
     static bool IsReserved(const std::string& name)
     {
-        static const char* const names[] = { "var", "fun", "int", "float", "bool", "string", "void", "int32", "float32", "any", "null", "true", "false", "if", "else", "while", "for", "foreach", "in", "return", "break", "continue", "import", "public", "export", "const", "struct", "class", "switch", "case", "default", "print", "tostring", "toint", "tofloat", "tosize", "type", "sleep", "yield", "__LINE__", "list", "map", "array" };
+        static const char* const names[] = { "var", "fun", "int", "float", "bool", "string", "void", "int32", "float32", "any", "null", "true", "false", "if", "else", "while", "for", "foreach", "in", "return", "break", "continue", "import", "public", "export", "const", "struct", "class", "switch", "case", "default", "print", "tostring", "toint", "tofloat", "tosize", "type", "sleep", "yield", "__LINE__", "list", "map", "array", "array32" };
         for (const char* value : names) if (name == value) return true;
         return false;
     }
@@ -358,7 +486,7 @@ private:
             result.type = types_.FunctionOf(returnType.type, parameters);
             result.end = returnType.end;
         }
-        if (result.first.text == "list" || result.first.text == "map" || result.first.text == "array" || result.first.text == "set" || result.first.text == "coroutine")
+        if (result.first.text == "list" || result.first.text == "map" || result.first.text == "array" || result.first.text == "array32" || result.first.text == "set" || result.first.text == "coroutine")
         {
             Expect("<");
             const TypeSyntax first = ParseType();
@@ -366,6 +494,12 @@ private:
             {
                 result.type = types_.CoroutineOf(first.type);
                 if (result.type == InvalidType) Fail(first.first, "a coroutine requires a complete function signature returning void");
+            }
+            else if (result.first.text == "array32")
+            {
+                if (first.type != types_.Int() && first.type != types_.Float())
+                    Fail(first.first, "array32 elements must be non-null int or float types");
+                result.type = types_.Array32Of(first.type);
             }
             else if (result.first.text == "array")
             {
@@ -526,8 +660,8 @@ private:
             s->end = Expect(";").end;
             return s;
         }
-        const bool arrayConstructor = (At("array") || At("set")) && Peek(1).text == "<" && Peek(3).text == ">" && Peek(4).text == "(";
-        if (At("public") || At("export") || At("const") || At("fn") || At("list") || At("map") || (At("coroutine") && Peek(1).text == "<") || ((At("array") || At("set")) && !arrayConstructor) || (FindType(Peek().text) != InvalidType && (Peek(1).kind == TokenKind::Identifier || Peek(1).text == "?" || Peek(1).text == "&")))
+        const bool arrayConstructor = (At("array") || At("array32") || At("set")) && Peek(1).text == "<" && Peek(3).text == ">" && Peek(4).text == "(";
+        if (At("public") || At("export") || At("const") || At("fn") || At("list") || At("map") || (At("coroutine") && Peek(1).text == "<") || ((At("array") || At("array32") || At("set")) && !arrayConstructor) || (FindType(Peek().text) != InvalidType && (Peek(1).kind == TokenKind::Identifier || Peek(1).text == "?" || Peek(1).text == "&")))
         {
             std::unique_ptr<Statement> s(new Statement(StatementKind::Declaration, at));
             while (At("public") || At("export") || At("const"))
@@ -671,7 +805,7 @@ private:
         {
             Take(); result.reset(new Expr(ExprKind::Literal, token));
         }
-        else if (At("array") || At("set"))
+        else if (At("array") || At("array32") || At("set"))
         {
             const TypeSyntax type = ParseType();
             if (!At("(")) Fail(token, "a collection constructor requires arguments in parentheses");
@@ -771,10 +905,13 @@ public:
         if (hostSchema_) result_.hostPrefix = internalPrefix_ + "host_";
     }
 
-    void Check(std::vector<std::unique_ptr<Statement>>& program)
+    void Check(std::vector<std::unique_ptr<Statement>>& program, const std::vector<StaticDefineReplacement>& replacements)
     {
         if (hostSchema_)
         {
+            // 호스트가 선언한 구조체도 같은 생성·복사·기본값 헬퍼를 사용한다.
+            for (const auto& named : hostSchema_->Types().NamedTypes())
+                if (types_.Get(named.second).kind == TypeKind::Struct) structures_.push_back(named.second);
             for (std::size_t i = 0; i < hostSchema_->Globals().size(); ++i)
             {
                 const HostGlobal& global = hostSchema_->Globals()[i];
@@ -822,6 +959,8 @@ public:
         for (const auto& node : program) CheckStatement(*node);
         CheckGlobalInitializationCalls();
         FinishStorage();
+        for (const StaticDefineReplacement& replacement : replacements)
+            edits_.push_back(Edit(replacement.begin, replacement.end, replacement.text));
         for (Expr* expression : roots_)
         {
             std::string text = RenderExpr(*expression);
@@ -949,6 +1088,9 @@ private:
     }
     std::string ArrayStorage(TypeId type) const
     {
+        const TypeDesc& storage = types_.Get(type);
+        if (storage.kind == TypeKind::Array32) return storage.element == types_.Int() ? "i32" : "f32";
+        if (storage.kind == TypeKind::Array) type = storage.element;
         if (type == types_.Int()) return "i64";
         if (type == types_.Float()) return "f64";
         if (type == types_.Bool()) return "b";
@@ -956,7 +1098,7 @@ private:
     }
     bool IsNative(TypeId type) const { return types_.Get(type).kind == TypeKind::Native; }
     bool IsNativeValue(TypeId type) const { return IsNative(type) || (types_.IsNullable(type) && IsNative(types_.Get(type).element)); }
-    bool IsArray(TypeId type) const { return types_.Get(type).kind == TypeKind::Array; }
+    bool IsArray(TypeId type) const { return types_.Get(type).kind == TypeKind::Array || types_.Get(type).kind == TypeKind::Array32; }
     bool IsCollection(TypeId type) const { return types_.Get(type).kind == TypeKind::List || types_.Get(type).kind == TypeKind::Map || types_.Get(type).kind == TypeKind::Set || IsArray(type); }
     std::string Helper(const char* operation, TypeId type) const { return internalPrefix_ + operation + "_" + std::to_string(type); }
     std::string HostCall(HostBindingId binding) const { return result_.hostPrefix + "b" + std::to_string(binding) + ".call"; }
@@ -1007,7 +1149,7 @@ private:
             }
             else
             {
-                name = std::string(listElement ? "c" : "a") + ArrayStorage(target.type)
+                name = std::string(listElement ? "c" : "a") + ArrayStorage(arrayElement ? target.children[0]->type : target.type)
                     + (mode == 0 ? "set" : "write_M" + std::to_string(mode));
                 expression.typedWriteFloat = target.type == types_.Float();
             }
@@ -1164,6 +1306,20 @@ private:
     {
         for (Symbol& symbol : symbols_)
         {
+            StaticDebugSymbol debug;
+            debug.backendName = symbol.backendName;
+            debug.name = symbol.name.text;
+            debug.type = symbol.type;
+            debug.boxed = symbol.boxed;
+            result_.debugSymbols.push_back(debug);
+            if (symbol.fileGlobal && symbol.declaration && !symbol.constant)
+            {
+                StaticGlobalSignature global;
+                global.name = symbol.backendName;
+                global.type = symbol.type;
+                global.exported = symbol.declaration->isExported;
+                result_.globals.push_back(global);
+            }
             if (symbol.backendName != symbol.name.text) edits_.push_back(Edit(symbol.name.begin, symbol.name.end, symbol.backendName));
             if (symbol.parameter)
             {
@@ -1384,12 +1540,12 @@ private:
             resizeHelper_ = true;
             return;
         }
-        if (type.kind == TypeKind::Array && (member.op == "resize" || member.op == "reserve" || member.op == "append"))
+        if (IsArray(receiver.type) && (member.op == "resize" || member.op == "reserve" || member.op == "append"))
         {
             if (count != 1) Fail(member.token, "array " + member.op + " requires one argument");
             if (member.op == "append") Convert(*expression.children[1], type.element);
             else Require(*expression.children[1], types_.Int(), "array size");
-            expression.callName = Intrinsic(member.op == "append" ? "a" + ArrayStorage(type.element) + "append" : "a" + member.op, member.token.line);
+            expression.callName = Intrinsic(member.op == "append" ? "a" + ArrayStorage(receiver.type) + "append" : "a" + member.op, member.token.line);
             expression.type = types_.Void();
             return;
         }
@@ -1414,7 +1570,7 @@ private:
         const bool list = type.kind == TypeKind::List;
         const bool map = type.kind == TypeKind::Map;
         const bool set = type.kind == TypeKind::Set;
-        const bool array = type.kind == TypeKind::Array;
+        const bool array = IsArray(receiver.type);
         if ((list || map) && member.op == "clone" && IsStruct(list ? type.element : type.value))
         {
             if (count) Fail(member.token, "clone requires no arguments");
@@ -1604,7 +1760,7 @@ private:
             if (count) Require(*expression.children[1], types_.Int(), "array size");
             if (count == 2) Convert(*expression.children[2], element);
             else expression.extraArgument = (count ? "" : "0,") + DefaultValue(element);
-            expression.callName = Intrinsic("a" + ArrayStorage(element) + "new", callee.token.line);
+            expression.callName = Intrinsic("a" + ArrayStorage(callee.constructorType) + "new", callee.token.line);
             expression.type = callee.constructorType;
             return;
         }
@@ -1940,9 +2096,9 @@ private:
             InvalidateNativeWrites(key);
             CheckExpr(owner); CheckExpr(key);
             const TypeDesc& type = types_.Get(owner.type);
-            if (type.kind == TypeKind::List || type.kind == TypeKind::Array)
+            if (type.kind == TypeKind::List || type.kind == TypeKind::Array || type.kind == TypeKind::Array32)
             {
-                Require(key, types_.Int(), type.kind == TypeKind::Array ? "array index" : "list index");
+                Require(key, types_.Int(), IsArray(owner.type) ? "array index" : "list index");
                 expression.type = type.element;
             }
             else if (type.kind == TypeKind::Map)
@@ -2145,7 +2301,7 @@ private:
             {
                 if (statement.parameters.size() != 1) Fail(statement.token, "this foreach requires one iteration variable");
                 if (source == types_.String()) expected.push_back(types_.String());
-                else if (collection.kind == TypeKind::List || collection.kind == TypeKind::Array || collection.kind == TypeKind::Set) expected.push_back(collection.element);
+                else if (collection.kind == TypeKind::List || collection.kind == TypeKind::Array || collection.kind == TypeKind::Array32 || collection.kind == TypeKind::Set) expected.push_back(collection.element);
                 else Fail(statement.token, "foreach requires a non-null string or collection");
             }
             scopes_.push_back(std::map<std::string, Symbol*>());
@@ -2632,7 +2788,7 @@ private:
             const Expr& owner = *expression.children[0];
             const Expr& key = *expression.children[1];
             if (IsArray(owner.type))
-                text = Intrinsic("a" + ArrayStorage(expression.type) + "get", expression.token.line) + "("
+                text = Intrinsic("a" + ArrayStorage(owner.type) + "get", expression.token.line) + "("
                     + Lines(expression.begin, owner.begin) + RenderExpr(owner) + Lines(owner.end, expression.token.begin) + ","
                     + Lines(expression.token.end, key.begin) + RenderExpr(key) + Lines(key.end, expression.end) + ")";
             else text = Lines(expression.begin, owner.begin) + RenderExpr(owner) + Lines(owner.end, expression.token.begin) + "["
@@ -2875,7 +3031,42 @@ private:
 
 }
 
-bool CompileStaticSource(const std::string& source, StaticCompileResult& result, const HostSchema* hostSchema)
+bool ExpandStaticDefines(const std::string& source, const std::vector<CompileDefine>& defines,
+    std::vector<StaticDefineReplacement>& replacements, std::string& error, int& line, int& column)
+{
+    replacements.clear(); error.clear(); line = column = 1;
+    try
+    {
+        std::map<std::string, std::string> literals;
+        for (const CompileDefine& define : defines)
+        {
+            const std::string literal = DefineLiteral(define);
+            if (!literals.insert(std::make_pair(define.name, literal)).second)
+                Fail(Token(), "duplicate compile define: " + define.name);
+        }
+        if (literals.empty()) return true;
+        const std::vector<Token> tokens = Lexer(source).Read();
+        for (const Token& token : tokens)
+        {
+            if (token.kind != TokenKind::Identifier) continue;
+            const std::map<std::string, std::string>::const_iterator found = literals.find(token.text);
+            if (found == literals.end()) continue;
+            StaticDefineReplacement replacement;
+            replacement.begin = token.begin; replacement.end = token.end; replacement.text = found->second;
+            replacements.push_back(replacement);
+        }
+        return true;
+    }
+    catch (const Diagnostic& diagnostic)
+    {
+        replacements.clear(); error = diagnostic.message;
+        line = diagnostic.token.line; column = diagnostic.token.column;
+        return false;
+    }
+}
+
+bool CompileStaticSource(const std::string& source, StaticCompileResult& result, const HostSchema* hostSchema,
+    const std::vector<CompileDefine>* defines)
 {
     result = StaticCompileResult();
     try
@@ -2885,9 +3076,13 @@ bool CompileStaticSource(const std::string& source, StaticCompileResult& result,
             if (!hostSchema->Validate(result.errorMessage)) return false;
             result.types = hostSchema->Types();
         }
-        const std::vector<Token> tokens = Lexer(source).Read();
+        std::vector<StaticDefineReplacement> replacements;
+        if (defines && !ExpandStaticDefines(source, *defines, replacements, result.errorMessage, result.errorLine, result.errorColumn))
+            return false;
+        std::vector<Token> tokens = Lexer(source).Read();
+        ApplyDefineTokens(tokens, replacements);
         std::vector<std::unique_ptr<Statement>> program = Parser(tokens, result.types).Read();
-        Checker(source, result, hostSchema).Check(program);
+        Checker(source, result, hostSchema).Check(program, replacements);
         result.success = true;
         return true;
     }
@@ -2898,6 +3093,73 @@ bool CompileStaticSource(const std::string& source, StaticCompileResult& result,
         result.errorColumn = diagnostic.token.column;
         result.loweredSource.clear();
         return false;
+    }
+}
+
+// 편집 중인 문서는 문장이 미완성이어도 정적 타입 선언의 이름과 서명을 제공한다.
+// 타입 오류 판정은 CompileStaticSource가 담당하며 이 목록은 진단을 대체하지 않는다.
+void CollectStaticDeclarations(const std::string& source, std::vector<StaticDeclaration>& declarations)
+{
+    declarations.clear();
+    std::vector<Token> tokens;
+    try { tokens = Lexer(source).Read(); }
+    catch (const Diagnostic&) { return; }
+    std::set<std::string> types = {"void", "int", "float", "bool", "string", "Vector2", "Vector3", "Vector4",
+        "Quaternion", "TimeSpan", "Stopwatch", "AsyncRequest", "list", "map", "set", "array", "array32", "fn", "coroutine"};
+    for (std::size_t i = 0; i + 1 < tokens.size(); ++i)
+        if (tokens[i].text == "struct" && tokens[i + 1].kind == TokenKind::Identifier) types.insert(tokens[i + 1].text);
+    const auto readType = [&](std::size_t first, std::size_t& last) -> std::string
+    {
+        if (first >= tokens.size() || !types.count(tokens[first].text)) return "";
+        last = first + 1;
+        int angles = 0, parentheses = 0;
+        if (last < tokens.size() && (tokens[last].text == "<" || (tokens[first].text == "fn" && tokens[last].text == "(")))
+        {
+            do
+            {
+                const std::string& word = tokens[last++].text;
+                if (word == "<") ++angles;
+                else if (word == ">") --angles;
+                else if (word == ">>") angles -= 2;
+                else if (word == "(") ++parentheses;
+                else if (word == ")") --parentheses;
+            } while (last < tokens.size() && (angles > 0 || parentheses > 0));
+            if (angles != 0 || parentheses != 0) return "";
+            if (tokens[first].text == "fn")
+            {
+                if (last + 1 >= tokens.size() || tokens[last].text != "->" || !types.count(tokens[last + 1].text)) return "";
+                last += 2;
+            }
+        }
+        if (last < tokens.size() && tokens[last].text == "?") ++last;
+        return source.substr(tokens[first].begin, tokens[last - 1].end - tokens[first].begin);
+    };
+    for (std::size_t i = 0; i + 1 < tokens.size(); ++i)
+    {
+        std::size_t name = i;
+        const std::string type = readType(i, name);
+        if (type.empty() || name + 1 >= tokens.size() || tokens[name].kind != TokenKind::Identifier) continue;
+        StaticDeclaration declaration;
+        declaration.name = tokens[name].text; declaration.type = type; declaration.offset = tokens[name].begin;
+        declaration.function = tokens[name + 1].text == "(";
+        if (declaration.function)
+        {
+            std::size_t parameter = name + 2;
+            bool complete = false;
+            while (parameter < tokens.size())
+            {
+                if (tokens[parameter].text == ")") { complete = true; break; }
+                std::size_t parameterName = parameter;
+                const std::string parameterType = readType(parameter, parameterName);
+                if (parameterType.empty() || parameterName >= tokens.size() || tokens[parameterName].kind != TokenKind::Identifier) break;
+                declaration.parameters.push_back(parameterType + " " + tokens[parameterName].text);
+                parameter = parameterName + 1;
+                if (parameter < tokens.size() && tokens[parameter].text == ",") ++parameter;
+                else if (parameter >= tokens.size() || tokens[parameter].text != ")") break;
+            }
+            if (!complete || parameter + 1 >= tokens.size() || tokens[parameter + 1].text != "{") continue;
+        }
+        declarations.push_back(std::move(declaration));
     }
 }
 

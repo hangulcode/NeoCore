@@ -83,6 +83,7 @@ public:
     void* ResolveReceiver();
     std::size_t ArgumentCount() const;
     bool IsNull(std::size_t index) const;
+    Scalar Argument(std::size_t index) const;
     std::int64_t Int(std::size_t index) const;
     double Float(std::size_t index) const;
     bool Bool(std::size_t index) const;
@@ -105,9 +106,11 @@ public:
     void ReturnQuaternion(QuaternionValue value);
     void ReturnObject(ObjectHandle value);
     void ReturnNull();
+    void ReturnValue(const Scalar& value);
     void Fail(const std::string& message);
     // 중첩 호출의 실패는 바깥 호스트 호출에도 전달한다. 이후 객체 포인터는 다시 조회한다.
     Result CallScript(const std::string& name, const std::vector<Scalar>& arguments = {});
+    Result CallScript(const Scalar& function, const std::vector<Scalar>& arguments = {});
 
 private:
     friend struct HostRuntimeAccess;

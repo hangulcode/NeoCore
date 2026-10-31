@@ -24,7 +24,7 @@ add_custom_command(TARGET neocore_minigame POST_BUILD
         "$<TARGET_FILE_DIR:neocore_minigame>/viewer.html"
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
         "${CMAKE_CURRENT_SOURCE_DIR}/../../../THIRD_PARTY_NOTICES.txt"
-        "$<TARGET_FILE_DIR:neocore_minigame>/NEOSCRIPT_THIRD_PARTY_NOTICES.txt"
+        "$<TARGET_FILE_DIR:neocore_minigame>/NEOCORE_THIRD_PARTY_NOTICES.txt"
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
         "${CMAKE_CURRENT_SOURCE_DIR}/../../../LICENSE"
-        "$<TARGET_FILE_DIR:neocore_minigame>/NEOSCRIPT_LICENSE.txt")
+        "$<TARGET_FILE_DIR:neocore_minigame>/NEOCORE_LICENSE.txt")

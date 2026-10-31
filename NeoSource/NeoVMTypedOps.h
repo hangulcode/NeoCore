@@ -63,6 +63,8 @@
     NEOCORE_ARRAY_OPS(X, V2, "v2", 2) \
     NEOCORE_ARRAY_OPS(X, V3, "v3", 3) \
     NEOCORE_ARRAY_OPS(X, V4, "v4", 4) \
+    NEOCORE_ARRAY_OPS(X, I32, "i32", 0) \
+    NEOCORE_ARRAY_OPS(X, F32, "f32", 0) \
     X(NOP_ARRAY_LEN, "ARRAY_LEN", "alen", 1, Unary, 0, 0) \
     X(NOP_ARRAY_RESIZE, "ARRAY_RESIZE", "aresize", 2, Binary, 0, 0) \
     X(NOP_ARRAY_RESERVE, "ARRAY_RESERVE", "areserve", 2, Binary, 0, 0)

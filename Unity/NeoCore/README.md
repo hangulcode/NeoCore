@@ -1,71 +1,127 @@
-# NeoCore scalar bridge
+# NeoCore host bridge
 
-This bridge compiles `.nc` through `NeoCore::Program` and links only
-`NeoCore::Runtime` and its `NEOSCRIPT_LEGACY_ARITHMETIC=0` backend.
-`Unity/Native` and `com.neoscript.unity` remain the separate legacy integration.
+`NeoCoreC.h` exposes checked `.nc` compilation and the shared-program,
+independent-instance runtime to C and C#. It uses opaque owned handles and an
+ABI version handshake. The backend remains C++11; the consumer header is C99.
 
-Build and run the C ABI check on Windows:
+## Builds and verification
 
-```powershell
-pwsh Unity/NeoCore/build_windows.ps1
-```
+| Platform | Command | Package output |
+| :--- | :--- | :--- |
+| Windows x64 | `pwsh Unity/build_windows.ps1` | `Runtime/Plugins/x86_64/NeoCoreUnity.dll` |
+| Android | `pwsh Unity/build_android.ps1 -Abi arm64-v8a` | `Runtime/Plugins/Android/arm64-v8a/libNeoCoreUnity.so` |
+| iOS device | `bash Unity/build_ios.sh` | `Runtime/Plugins/iOS/libNeoCoreUnity.a` |
+| iOS simulator | `bash Unity/build_ios.sh simulator` | Same package path, replacing the device archive |
 
-The script builds `NeoCoreUnity.dll`, runs the smoke executable compiled as C,
-and copies the plugin and licenses into `com.neocore.unity`. Close Unity before
-rebuilding its loaded plugin. Native binaries are local build output.
+Android also accepts armeabi-v7a and x86_64, exports only C entry points, and uses
+16 KiB alignment. iOS merges the typed bridge/compiler/runtime/backend archives;
+managed players use `__Internal`. Build iOS on macOS/Xcode and keep device and
+simulator archives separate. Deployment scripts copy licenses and target
+`com.neocore.unity`. Close Unity before replacing loaded plugin binaries.
 
-For other CMake hosts, configure `-DNEOCORE_BUILD_UNITY_BRIDGE=ON`, build
-`NeoCoreUnity` and `neocore_unity_c_smoke`, then run
-`ctest --test-dir <build> -C Release -R neocore_unity_c_smoke --output-on-failure`.
-Only the Windows x64 Unity deployment script and importer are provided here;
-the bridge itself is portable C++11 and its consumer header is C99.
+Desktop CMake needs `NEOCORE_BUILD_UNITY_BRIDGE=ON` and
+`NEOCORE_BUILD_TESTS=ON`. Build, then run
+`ctest --test-dir Build/neocore -C Release --output-on-failure`.
+C smoke, boundary, and integration checks cover owned results, signatures,
+callbacks, collections, images, modules, and HTTP cancellation.
 
-To exercise the actual Unity package, importer, PlayMode sample, and a script
-domain reload in a fresh project under `Build`, run:
+`pwsh Unity/NeoCore/check_managed.ps1` runs managed P/Invoke tests. Installed
+Unity assemblies provide real vector/AOT types. Without an Editor, the standalone
+harness uses test-only substitutes and explicitly skips Editor compilation.
+`-UnityManaged <Editor/Data/Managed>` chooses an installation. This does not run
+Unity PlayMode or an IL2CPP player.
 
-```powershell
-pwsh Unity/NeoCore/check_unity.ps1 -Unity 'C:\Program Files\Unity\Hub\Editor\2022.3.62f3\Editor\Unity.exe'
-```
+`pwsh Unity/NeoCore/check_unity.ps1 -Unity <Unity.exe>` tests the importer,
+Basic sample, PlayMode and domain reload in a temporary Build project. The package
+also has Editor and PlayMode test assemblies. Native cross-compilation is distinct
+from testing a deployed Android/iOS player.
+Add `"testables": ["com.neocore.unity"]` to the host manifest and use Unity Test
+Runner's EditMode/PlayMode tabs to run package tests.
 
-The check copies the package into the temporary project's embedded packages;
-Unity-generated metadata and test scenes stay in that project. Its log is
-`Build/neocore-unity-smoke/smoke.log`.
+## Ownership and static contracts
 
-An installed .NET SDK can also run the real managed P/Invoke bridge independently
-of an Editor license. Supplying the installed Editor's managed-assembly folder
-additionally compiles the importer, reload guard, sample, and Unity smoke driver
-against its actual Unity APIs:
+Every successful creation, compile/load, value capture, and result operation
+returns an owned handle with a matching destroy function. Destroy accepts null.
+A null result indicates allocation failure. UTF-8 result/error/source pointers
+remain valid until their result is destroyed; input text is copied. Strings and
+map keys preserve embedded NUL bytes.
 
-```powershell
-pwsh Unity/NeoCore/check_managed.ps1 -UnityManaged 'C:\Program Files\Unity\Hub\Editor\2022.3.62f3\Editor\Data\Managed'
-```
+Instances retain programs. Owned collections retain the runtime and survive
+instance reset and public program/instance destruction. Collections preserve
+shared identity; structs and vectors copy by value. Hosts declare exact static
+signatures before compilation. Boundary argument checks run before script side
+effects. Int-to-float widening is allowed; vector dimensions and Vector4 versus
+Quaternion must match exactly.
 
-This fallback does not claim to run PlayMode or the Unity asset importer.
+Native objects carry nominal types and 64-bit IDs. A resolver validates each
+access; borrowed engine pointers must not survive reentry. Retained named
+functions belong to their program. Captured closures belong to their original
+instance; reset/destruction invalidates them, including nested closures in
+collections. Cross-program value transfer is rejected.
 
-`NeoCoreC.h` uses opaque owned program, instance, argument, and result handles.
-Each successful creation has a matching destroy call; destroy accepts null.
-`NcCompile` and `NcInstanceCreate` always return an owned result through their
-output parameter, except when result allocation itself fails. Execution returns
-an owned result with Completed, Suspended, or Failed status. A null result means
-allocation failure. Copy UTF-8 result/error/source bytes before destroying the
-result; their pointer and length are valid only for that result's lifetime.
-Input strings are copied and may be released when the call returns.
+Use all instances/values of one program sequentially on one owning thread.
+Dispose managed Program, Instance, CompileOptions and owned Scalar results.
+Managed Scalar copies share a handle; disposing one invalidates the copies.
+Clone obtains another handle, copies structs and preserves collection identity.
 
-Instances retain their compiled program and remain usable after its public
-program handle is destroyed. Instances of one program must run sequentially on
-one thread. Do not destroy a handle while it is executing or reuse it afterward.
-The managed wrapper keeps live resources until explicitly disposed or cleared
-by its editor reload guard; it does not invoke the single-threaded runtime from
-GC finalizers. Use `using` or `Dispose` in player code.
+Dropped managed values queue native release from their finalizer.
+Resources.Drain releases only on the creating thread, automatically before normal
+instance/value operations. No VM operation runs on the GC finalizer thread.
+Resources.DisposeAll handles remaining resources during editor reload or player
+teardown. Do not abandon an owning worker thread with queued releases.
 
-Supported calls have scalar arguments and scalar/void results: int64, binary64,
-bool, UTF-8 string, and nullable scalar results. The underlying public API rejects
-null arguments explicitly, even for nullable parameters. Argument count/type
-checks happen before execution. `Run` and `Resume` preserve suspension status;
-`RequireCompleted` throws for both failure and unfinished execution.
+## Migration coverage
 
-This is a narrow typed adapter, not the full inherited Unity API. Host schemas,
-native objects, vector/collection marshaling, timeouts, instruction budgets,
-cancel/reset, and mobile packaging are not exposed here. The Basic sample keeps
-its vector inside typed script code and reads its components through float
-exports. There is no dynamic compilation fallback or offline image conversion.
+| Earlier capability | Typed NeoCore equivalent |
+| :--- | :--- |
+| Shared programs, independent instance globals | Program.Compile, CreateInstance, Run, Call |
+| Methods, properties, per-instance native objects | CompileOptions schema, callbacks/resolver, SetHostObject |
+| Instance binding hook and opaque user data | SetHostObject before Run; host state keyed by receiver ID |
+| Scalars and vectors | Scalar, int64/binary64, Vector2/3/4, Quaternion |
+| Heterogeneous object-shaped maps | Struct/DefineFields and CreateValue(type, fields) |
+| Lists/maps/sets/dense and compact arrays | Owned typed values, checked mutations, identity, reserve/resize |
+| Raw numeric array views | Bounded CopyTo/CopyFrom with int64/double/int32/float32 storage |
+| Script callbacks and reentry | Owned fn values, HostCall.Call, Instance.Call(function) |
+| Exported globals | ReadGlobal/WriteGlobal, including boxed vector storage |
+| Imports | Copied .nc sources through SetModuleLoader |
+| Compile-time definitions | DefineInt/Float/Bool/String/Null/Identifier, checked token replacements |
+| Bytecode images | SaveImage/LoadImage with descriptors and schema validation |
+| Sleep, time slicing, timeout | CallLimited, Resume, IsSuspended, Cancel, Reset |
+| HTTP/HTTPS | Explicit host transport; HttpClientTransport helper |
+| JSON | Declared-type ParseJson and ToJson with named struct fields |
+| GC, pools, diagnostics | CollectCycles, TrimMemory, pool settings, AllocationStat |
+| Logging | Process-wide Diagnostics.SetLogSink/ClearLogSink |
+| Importer/AOT/reload | .nc TextAsset importer, link.xml, AOT callbacks, reload/subsystem guards |
+
+Static equivalents replace dynamic compatibility: objects with differently typed
+fields use structs; loading source means compiling another checked program or
+loading its typed image. Failed calls return Result rather than a dynamic pCall.
+Register callbacks before compilation. Image loading requires the matching
+schema and fresh bindings; images never store native pointers or live engine IDs.
+
+List indexed removal is supported. Arrays expose replacement, append, resize,
+clear, reserve and bulk copies; they do not provide list removal. Bulk operations
+require exact storage width and validate the complete slice before mutation.
+No borrowed Span can outlive a resize/reentry. Collection sizes are checked
+against representable backend limits; no additional memory cap is imposed.
+Bool and vector arrays use checked per-element At/Set; numeric arrays additionally
+support bulk copies. Per-instance objects must be bound before the first Run or
+Call, because Call initializes the script automatically.
+
+JSON objects require map<string, T> or exact struct fields. Unknown/missing fields
+fail. Numeric conversion widens int to float and never truncates float to int.
+Vector/compact-float narrowing rejects nonfinite or overflowing results. Vector
+JSON is an array; Quaternion order is w,x,y,z. Native objects, functions, cyclic
+graphs and nesting beyond 128 levels are rejected.
+The inherited JSON codec rejects embedded NUL and invalid UTF-8 in strings and
+keys. Compile-time string definitions also reject NUL because source literals
+cannot represent it. Length-aware host arguments/results retain NUL unchanged.
+
+Cancel/Reset cannot interrupt an executing callback. Reset discards that instance's
+outstanding callback state; HTTP may finish in the background. Runtime destruction
+signals transport cancellation and waits for it to return. Custom transports must
+observe cancellation. HTTP callbacks run on workers and must not access Unity
+objects or the VM. The VM cannot forcibly terminate arbitrary host code.
+
+The original NeoScript repository retains its dynamic bridge and Unity package.
+This checkout contains the typed NeoCore integration only.

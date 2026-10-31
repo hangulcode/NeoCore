@@ -15,32 +15,23 @@ if(NOT DEFINED CMAKE_C_STANDARD)
 endif()
 set(CMAKE_C_STANDARD_REQUIRED ON)
 
-# Single-config generators (for example Ninja and Unix Makefiles) otherwise
-# leave CMAKE_BUILD_TYPE empty, which means no optimization flags by default.
-# Multi-config generators select their configuration at build time, so leave
-# those untouched.
+# Ninja 같은 단일 구성 생성기는 빌드 종류가 비어 있으면 최적화를 켜지 않는다.
+# 여러 구성 생성기는 빌드할 때 종류를 선택하므로 기본값을 덮어쓰지 않는다.
 if(NOT CMAKE_CONFIGURATION_TYPES AND NOT CMAKE_BUILD_TYPE)
     set(CMAKE_BUILD_TYPE Release CACHE STRING "Choose the type of build." FORCE)
     set_property(CACHE CMAKE_BUILD_TYPE PROPERTY STRINGS
         Debug Release RelWithDebInfo MinSizeRel)
 endif()
 
-option(NEOSCRIPT_BUILD_SMOKE "Build the cross-platform API smoke test" ON)
-set(NEOSCRIPT_EXAMPLES_DEFAULT ON)
+set(NEOCORE_DESKTOP_DEFAULT ON)
 if(ANDROID OR CMAKE_SYSTEM_NAME STREQUAL "iOS")
-    set(NEOSCRIPT_EXAMPLES_DEFAULT OFF)
+    set(NEOCORE_DESKTOP_DEFAULT OFF)
 endif()
-option(NEOSCRIPT_BUILD_EXAMPLES "Build the standalone game-host example" ${NEOSCRIPT_EXAMPLES_DEFAULT})
-option(NEOSCRIPT_BUILD_SHARED "Build the flat-C shared library (Unity / P/Invoke hosts)" OFF)
-option(NEOSCRIPT_BUILD_STATIC_C_ABI "Build the flat-C static library (iOS, where dynamic loading is not allowed)" OFF)
-option(NEOCORE_BUILD_UNITY_BRIDGE "Build the typed NeoCore scalar C ABI and Unity plugin" OFF)
+option(NEOCORE_BUILD_TESTS "Build NeoCore compiler, runtime and sample regressions" ${NEOCORE_DESKTOP_DEFAULT})
+option(NEOCORE_BUILD_EXAMPLES "Build the typed game-host example" ${NEOCORE_DESKTOP_DEFAULT})
+option(NEOCORE_BUILD_UNITY_BRIDGE "Build the typed NeoCore C ABI and Unity plugin" OFF)
 
-# C ABI는 C++ 호스트가 쓰는 코어와 분리한다. NeoSource/*.cpp를 직접 컴파일하는
-# 호스트도 있으므로 P/Invoke 전용 코드를 이 디렉터리에 넣지 않는다.
-set(NEOSCRIPT_C_ABI_DIR ${CMAKE_CURRENT_SOURCE_DIR}/Unity/Native)
-set(NEOSCRIPT_C_ABI_SOURCES ${NEOSCRIPT_C_ABI_DIR}/NeoScriptC.cpp)
-
-set(NEOSCRIPT_SOURCES
+set(NEOCORE_BACKEND_SOURCES
     NeoSource/NeoExport.cpp
     NeoSource/NeoJson.cpp
     NeoSource/NeoJsonVendor.cpp
@@ -59,18 +50,14 @@ set(NEOSCRIPT_SOURCES
     NeoSource/NeoVMWorker.cpp
 )
 
-# NeoCore 실행 파일에는 정적 산술 백엔드만 링크한다. 동적 산술은 기존 .ns 시험/호스트 전용이다.
-add_library(neocore_backend STATIC ${NEOSCRIPT_SOURCES})
-add_library(neoscript STATIC EXCLUDE_FROM_ALL ${NEOSCRIPT_SOURCES})
+# NeoCore는 정적 산술 백엔드 하나만 빌드한다.
+add_library(neocore_backend STATIC ${NEOCORE_BACKEND_SOURCES})
 target_compile_definitions(neocore_backend PUBLIC NEOSCRIPT_LEGACY_ARITHMETIC=0)
-target_compile_definitions(neoscript PUBLIC NEOSCRIPT_LEGACY_ARITHMETIC=1)
-foreach(backend_target neocore_backend neoscript)
-    target_include_directories(${backend_target} PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/NeoSource)
-    target_compile_features(${backend_target} PUBLIC cxx_std_11 PRIVATE c_std_99)
-    if(WIN32)
-        target_compile_definitions(${backend_target} PRIVATE WIN_PRJ)
-    endif()
-endforeach()
+target_include_directories(neocore_backend PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/NeoSource)
+target_compile_features(neocore_backend PUBLIC cxx_std_11 PRIVATE c_std_99)
+if(WIN32)
+    target_compile_definitions(neocore_backend PRIVATE WIN_PRJ)
+endif()
 
 # 정적 프런트엔드와 호스트 진입점을 기존 VM 백엔드에서 분리한다.
 find_package(Threads REQUIRED)
@@ -79,16 +66,16 @@ target_include_directories(neocore_type_model PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}
 target_compile_features(neocore_type_model PUBLIC cxx_std_11)
 add_library(neocore_frontend STATIC NeoSource/NeoCoreCompiler.cpp)
 target_link_libraries(neocore_frontend PUBLIC neocore_type_model)
-add_library(neocore_runtime STATIC NeoSource/NeoCore.cpp NeoSource/NeoCoreHost.cpp NeoSource/NeoCoreModules.cpp)
+add_library(neocore_runtime STATIC NeoSource/NeoCore.cpp NeoSource/NeoCoreHost.cpp NeoSource/NeoCoreModules.cpp NeoSource/NeoCoreImage.cpp)
 target_link_libraries(neocore_runtime PUBLIC neocore_frontend PRIVATE neocore_backend Threads::Threads)
 target_compile_definitions(neocore_runtime PUBLIC NEOSCRIPT_LEGACY_ARITHMETIC=0)
 add_library(NeoCore::Runtime ALIAS neocore_runtime)
-add_executable(neocore Samples/neocore/main.cpp Samples/neocore/SampleHost.cpp)
+add_executable(neocore Samples/neocore/main.cpp Samples/neocore/SampleHost.cpp Samples/neocore/ConsoleTooling.cpp)
 target_compile_definitions(neocore PRIVATE NEOCORE_SAMPLE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/Samples/neocore/scripts")
 option(NEOCORE_CONSOLE_HTTP "Link the .nc console with libcurl HTTPS transport" OFF)
 if(NEOCORE_CONSOLE_HTTP)
     find_package(CURL REQUIRED)
-    target_sources(neocore PRIVATE Samples/console/HttpTransport.cpp)
+    target_sources(neocore PRIVATE Samples/neocore/HttpTransport.cpp)
     target_compile_definitions(neocore PRIVATE NEOCORE_CONSOLE_HTTP)
     target_link_libraries(neocore PRIVATE CURL::libcurl)
 endif()
@@ -100,90 +87,21 @@ if(MSVC)
     endforeach()
 endif()
 
-# Flat-C shared library.  Unity resolves DllImport("NeoScript") to NeoScript.dll
-# on Windows and libNeoScript.so on Android, so the output name is fixed here.
-# iOS links the static `neoscript` target instead and uses DllImport("__Internal").
-if(NEOSCRIPT_BUILD_SHARED)
-    add_library(NeoScriptShared SHARED ${NEOSCRIPT_SOURCES} ${NEOSCRIPT_C_ABI_SOURCES})
-    target_include_directories(NeoScriptShared PUBLIC
-        ${CMAKE_CURRENT_SOURCE_DIR}/NeoSource
-        ${NEOSCRIPT_C_ABI_DIR})
-    target_compile_features(NeoScriptShared PUBLIC cxx_std_11 PRIVATE c_std_99)
-    target_compile_definitions(NeoScriptShared PUBLIC NEOSCRIPT_LEGACY_ARITHMETIC=1 PRIVATE NEOSCRIPT_C_BUILD_SHARED)
-    # The DLL name is load-bearing: Unity resolves DllImport("NeoScript") by it.
-    # Its Windows import library would then be NeoScript.lib, which is the same
-    # file as the static neoscript.lib on a case-insensitive filesystem and
-    # silently overwrites it -- leaving a 30KB stub that fails to link with a
-    # wall of unresolved externals.  Rename the import library out of the way.
-    set_target_properties(NeoScriptShared PROPERTIES
-        OUTPUT_NAME NeoScript
-        ARCHIVE_OUTPUT_NAME NeoScript_import)
-
-    if(WIN32)
-        target_compile_definitions(NeoScriptShared PRIVATE WIN_PRJ)
-    else()
-        # Export only what NS_API marks.  Unity loads many shared objects into one
-        # process; leaking the whole C++ surface invites symbol collisions.
-        set_target_properties(NeoScriptShared PROPERTIES
-            CXX_VISIBILITY_PRESET hidden
-            VISIBILITY_INLINES_HIDDEN ON)
-
-        # Strip the release binary.  Unity does not strip plugin .so files, and an
-        # unstripped one is ~19MB of debug symbols riding along in every APK.
-        target_link_options(NeoScriptShared PRIVATE $<$<CONFIG:Release>:-s>)
-
-        # Hidden visibility covers our own code, but the statically linked C++
-        # runtime re-exports itself regardless -- measured at 1348 std:: symbols
-        # on Android.  Unity loads libunity.so and libil2cpp.so with their own C++
-        # runtime into the same process, so those exports let the dynamic linker
-        # bind their calls to our copy and leave two libc++ instances sharing one
-        # heap.  Keep everything that came out of a static archive to ourselves.
-        target_link_options(NeoScriptShared PRIVATE -Wl,--exclude-libs,ALL)
-
-        # yyjson explicitly requests default visibility; compiler flags alone
-        # cannot hide it or libc++ template instantiations emitted in our TUs.
-        # Keep the plugin's ELF export surface limited to the public C ABI.
-        if(ANDROID OR CMAKE_SYSTEM_NAME STREQUAL "Linux")
-            set(NEOSCRIPT_EXPORT_MAP ${NEOSCRIPT_C_ABI_DIR}/neoscript.exports)
-            target_link_options(NeoScriptShared PRIVATE "-Wl,--version-script=${NEOSCRIPT_EXPORT_MAP}")
-            set_property(TARGET NeoScriptShared APPEND PROPERTY LINK_DEPENDS ${NEOSCRIPT_EXPORT_MAP})
-        endif()
-
-        if(ANDROID)
-            # Google Play requires 16 KB page alignment for apps targeting Android 15
-            # and later.  NDK r25 still links at 4 KB, and an unaligned .so fails the
-            # upload check rather than the build -- far too late to find out.
-            target_link_options(NeoScriptShared PRIVATE -Wl,-z,max-page-size=16384)
-        endif()
-
-        find_package(Threads REQUIRED)
-        target_link_libraries(NeoScriptShared PUBLIC Threads::Threads)
-    endif()
-endif()
-
-# Static flavour of the same shim, for iOS.  The platform forbids loading a
-# dynamic library, so Unity links this .a into the player and the C# side
-# resolves DllImport("__Internal") against the linked symbols.
-if(NEOSCRIPT_BUILD_STATIC_C_ABI)
-    add_library(NeoScriptStatic STATIC ${NEOSCRIPT_SOURCES} ${NEOSCRIPT_C_ABI_SOURCES})
-    target_include_directories(NeoScriptStatic PUBLIC
-        ${CMAKE_CURRENT_SOURCE_DIR}/NeoSource
-        ${NEOSCRIPT_C_ABI_DIR})
-    target_compile_features(NeoScriptStatic PUBLIC cxx_std_11 PRIVATE c_std_99)
-    target_compile_definitions(NeoScriptStatic PUBLIC NEOSCRIPT_LEGACY_ARITHMETIC=1)
-    # NEOSCRIPT_C_BUILD_SHARED is deliberately absent: NS_API must stay empty so
-    # the symbols are ordinary static-library symbols the linker can resolve.
-    set_target_properties(NeoScriptStatic PROPERTIES OUTPUT_NAME NeoScriptUnity)
-endif()
-
-if(NEOSCRIPT_BUILD_SMOKE OR NEOSCRIPT_BUILD_EXAMPLES)
+if(NEOCORE_BUILD_TESTS OR NEOCORE_BUILD_EXAMPLES)
     enable_testing()
 endif()
 
-if(NEOSCRIPT_BUILD_SMOKE)
+if(NEOCORE_BUILD_TESTS)
     find_package(Threads REQUIRED)
 
     add_executable(neocore_types Tests/neocore_types.cpp)
+    add_executable(neocore_defines_regression Tests/neocore_defines.cpp)
+    target_link_libraries(neocore_defines_regression PRIVATE NeoCore::Runtime)
+    add_test(NAME neocore_defines_regression COMMAND neocore_defines_regression)
+    set_tests_properties(neocore_defines_regression PROPERTIES TIMEOUT 60)
+    add_executable(neocore_owned_value_regression Tests/neocore_owned_value_regression.cpp)
+    target_link_libraries(neocore_owned_value_regression PRIVATE neocore_runtime)
+    add_test(NAME neocore_owned_value_regression COMMAND neocore_owned_value_regression)
     target_link_libraries(neocore_types PRIVATE neocore_type_model)
     add_test(NAME neocore_types COMMAND neocore_types)
     add_executable(neocore_host_schema Tests/neocore_host_schema.cpp)
@@ -205,6 +123,10 @@ if(NEOSCRIPT_BUILD_SMOKE)
     add_test(NAME neocore_vector_regression COMMAND neocore_vector_regression)
     set_tests_properties(neocore_vector_regression PROPERTIES TIMEOUT 60)
     add_executable(neocore_array_regression Tests/neocore_array_regression.cpp)
+    add_executable(neocore_array32_regression Tests/neocore_array32_regression.cpp)
+    target_link_libraries(neocore_array32_regression PRIVATE NeoCore::Runtime)
+    add_test(NAME neocore_array32_regression COMMAND neocore_array32_regression)
+    set_tests_properties(neocore_array32_regression PROPERTIES TIMEOUT 60)
     target_link_libraries(neocore_array_regression PRIVATE neocore_runtime)
     add_test(NAME neocore_array_regression COMMAND neocore_array_regression)
     set_tests_properties(neocore_array_regression PROPERTIES TIMEOUT 60)
@@ -216,6 +138,10 @@ if(NEOSCRIPT_BUILD_SMOKE)
     target_link_libraries(neocore_instance_regression PRIVATE neocore_runtime)
     add_test(NAME neocore_instance_regression COMMAND neocore_instance_regression)
     set_tests_properties(neocore_instance_regression PROPERTIES TIMEOUT 60)
+    add_executable(neocore_image_regression Tests/neocore_image_regression.cpp)
+    target_link_libraries(neocore_image_regression PRIVATE NeoCore::Runtime)
+    add_test(NAME neocore_image_regression COMMAND neocore_image_regression)
+    set_tests_properties(neocore_image_regression PROPERTIES TIMEOUT 60)
     add_executable(neocore_ir_regression Tests/neocore_ir_regression.cpp)
     target_link_libraries(neocore_ir_regression PRIVATE neocore_runtime)
     add_test(NAME neocore_ir_regression COMMAND neocore_ir_regression)
@@ -230,12 +156,29 @@ if(NEOSCRIPT_BUILD_SMOKE)
     set_tests_properties(neocore_language_extensions PROPERTIES TIMEOUT 60)
     find_package(Python3 COMPONENTS Interpreter QUIET)
     if(Python3_Interpreter_FOUND)
+        add_test(NAME neocore_debug_adapter_regression COMMAND ${Python3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/Tests/debug_adapter_regression.py $<TARGET_FILE:neocore>)
+        set_tests_properties(neocore_debug_adapter_regression PROPERTIES TIMEOUT 120)
+        if(NEOCORE_CONSOLE_HTTP)
+            add_test(NAME neocore_http_console_regression COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_CURRENT_SOURCE_DIR}/Tests/http_console_regression.py $<TARGET_FILE:neocore>)
+            set_tests_properties(neocore_http_console_regression PROPERTIES TIMEOUT 60)
+        endif()
         add_test(NAME neocore_module_cli_regression COMMAND ${Python3_EXECUTABLE}
             ${CMAKE_CURRENT_SOURCE_DIR}/Tests/neocore_module_cli_regression.py --console $<TARGET_FILE:neocore>)
         set_tests_properties(neocore_module_cli_regression PROPERTIES TIMEOUT 60)
         add_test(NAME neocore_menu_cli_regression COMMAND ${Python3_EXECUTABLE}
             ${CMAKE_CURRENT_SOURCE_DIR}/Tests/neocore_menu_cli_regression.py --console $<TARGET_FILE:neocore>)
         set_tests_properties(neocore_menu_cli_regression PROPERTIES TIMEOUT 240)
+    endif()
+    find_program(NEOCORE_NODE_EXECUTABLE NAMES node)
+    if(NEOCORE_NODE_EXECUTABLE)
+        add_test(NAME neocore_vscode_extension_syntax COMMAND ${NEOCORE_NODE_EXECUTABLE}
+            --check ${CMAKE_CURRENT_SOURCE_DIR}/Tools/vscode-neocore/src/extension.js)
+        set_tests_properties(neocore_vscode_extension_syntax PROPERTIES TIMEOUT 30)
+        add_test(NAME neocore_vscode_extension_regression COMMAND ${NEOCORE_NODE_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/Tools/vscode-neocore/tests/extension_regression.js $<TARGET_FILE:neocore>)
+        set_tests_properties(neocore_vscode_extension_regression PROPERTIES TIMEOUT 90)
     endif()
     add_executable(neocore_module_regression Tests/neocore_module_regression.cpp)
     target_link_libraries(neocore_module_regression PRIVATE NeoCore::Runtime)
@@ -327,234 +270,44 @@ if(NEOSCRIPT_BUILD_SMOKE)
     set_tests_properties(neocore_benchmark_checksums PROPERTIES
         PASS_REGULAR_EXPRESSION "particles[|]83205" FAIL_REGULAR_EXPRESSION "FAIL[|]" TIMEOUT 30)
 
-    add_executable(neoscript_ci_smoke
-        Tests/ci_smoke.cpp
-    )
-    target_link_libraries(neoscript_ci_smoke PRIVATE neoscript Threads::Threads)
-
-    # Deliberately compiled as C: if the ABI header ever grows something only a
-    # C++ compiler accepts, a P/Invoke host would find out much later than this.
-    add_executable(neoscript_c_abi_smoke
-        Tests/c_abi_smoke.c
-        ${NEOSCRIPT_C_ABI_SOURCES}
-    )
-    set_target_properties(neoscript_c_abi_smoke PROPERTIES LINKER_LANGUAGE CXX)
-    target_include_directories(neoscript_c_abi_smoke PRIVATE ${NEOSCRIPT_C_ABI_DIR})
-    target_link_libraries(neoscript_c_abi_smoke PRIVATE neoscript Threads::Threads)
-
-    enable_testing()
-    add_executable(neoscript_array32_regression Tests/array32_regression.cpp)
-    target_link_libraries(neoscript_array32_regression PRIVATE neoscript Threads::Threads)
-    add_test(NAME neoscript_array32_regression COMMAND neoscript_array32_regression)
-    add_executable(neoscript_double_regression Tests/double_regression.cpp)
-    target_link_libraries(neoscript_double_regression PRIVATE neoscript Threads::Threads)
-    add_test(NAME neoscript_double_regression COMMAND neoscript_double_regression)
-    add_executable(neoscript_time_regression Tests/time_regression.cpp)
-    target_link_libraries(neoscript_time_regression PRIVATE neoscript Threads::Threads)
-    add_test(NAME neoscript_time_regression COMMAND neoscript_time_regression)
-    set_tests_properties(neoscript_time_regression PROPERTIES TIMEOUT 30)
-    add_executable(neoscript_http_regex_regression Tests/http_regex_regression.cpp)
-    target_link_libraries(neoscript_http_regex_regression PRIVATE neoscript Threads::Threads)
-    add_test(NAME neoscript_http_regex_regression COMMAND neoscript_http_regex_regression)
-    set_tests_properties(neoscript_http_regex_regression PROPERTIES TIMEOUT 30)
-
-    add_executable(neoscript_json_regression Tests/json_regression.cpp)
-    target_link_libraries(neoscript_json_regression PRIVATE neoscript Threads::Threads)
-    if(MSVC)
-        target_compile_options(neoscript_json_regression PRIVATE /utf-8 /GR-)
-    endif()
-    add_test(NAME neoscript_json_regression COMMAND neoscript_json_regression)
-    add_executable(neoscript_integer_division_regression Tests/integer_division_regression.cpp)
-    target_link_libraries(neoscript_integer_division_regression PRIVATE neoscript Threads::Threads)
-    add_test(NAME neoscript_integer_division_regression COMMAND neoscript_integer_division_regression)
-    set_tests_properties(neoscript_integer_division_regression PROPERTIES TIMEOUT 30)
-
-    add_executable(neoscript_integer_shift_regression Tests/integer_shift_regression.cpp)
-    target_link_libraries(neoscript_integer_shift_regression PRIVATE neoscript Threads::Threads)
-    add_test(NAME neoscript_integer_shift_regression COMMAND neoscript_integer_shift_regression)
-    set_tests_properties(neoscript_integer_shift_regression PROPERTIES TIMEOUT 30)
-
-    add_executable(neoscript_collection_api_regression Tests/collection_api_regression.cpp)
-    target_link_libraries(neoscript_collection_api_regression PRIVATE neoscript Threads::Threads)
-    add_test(NAME neoscript_collection_api_regression COMMAND neoscript_collection_api_regression)
-    set_tests_properties(neoscript_collection_api_regression PROPERTIES TIMEOUT 30)
-
-    add_executable(neoscript_runtime_edge_regression Tests/runtime_edge_regression.cpp)
-    target_link_libraries(neoscript_runtime_edge_regression PRIVATE neoscript Threads::Threads)
-    add_test(NAME neoscript_runtime_edge_regression COMMAND neoscript_runtime_edge_regression)
-    set_tests_properties(neoscript_runtime_edge_regression PROPERTIES TIMEOUT 60)
-
-    add_executable(neoscript_math_boundary_regression Tests/math_boundary_regression.cpp)
-    target_link_libraries(neoscript_math_boundary_regression PRIVATE neoscript Threads::Threads)
-    add_test(NAME neoscript_math_boundary_regression COMMAND neoscript_math_boundary_regression)
-    set_tests_properties(neoscript_math_boundary_regression PROPERTIES TIMEOUT 60)
-
-    add_executable(neoscript_hunt_runtime_regression Tests/hunt_runtime_regression.cpp)
-    target_link_libraries(neoscript_hunt_runtime_regression PRIVATE neoscript Threads::Threads)
-    add_test(NAME neoscript_hunt_runtime_regression COMMAND neoscript_hunt_runtime_regression)
-    set_tests_properties(neoscript_hunt_runtime_regression PROPERTIES TIMEOUT 60)
-
-    add_executable(neoscript_hunt_library_regression Tests/hunt_library_regression.cpp)
-    target_link_libraries(neoscript_hunt_library_regression PRIVATE neoscript Threads::Threads)
-    add_test(NAME neoscript_hunt_library_regression COMMAND neoscript_hunt_library_regression)
-    set_tests_properties(neoscript_hunt_library_regression PROPERTIES TIMEOUT 60)
-
-    add_executable(neoscript_hunt_parser_regression Tests/hunt_parser_regression.cpp)
-    target_link_libraries(neoscript_hunt_parser_regression PRIVATE neoscript Threads::Threads)
-    add_test(NAME neoscript_hunt_parser_regression COMMAND neoscript_hunt_parser_regression)
-    set_tests_properties(neoscript_hunt_parser_regression PROPERTIES TIMEOUT 60)
-
-    add_executable(neoscript_hunt_storage_regression Tests/hunt_storage_regression.cpp)
-    target_link_libraries(neoscript_hunt_storage_regression PRIVATE neoscript Threads::Threads)
-    add_test(NAME neoscript_hunt_storage_regression COMMAND neoscript_hunt_storage_regression)
-    set_tests_properties(neoscript_hunt_storage_regression PROPERTIES TIMEOUT 60)
-
-    add_executable(neoscript_hunt_evaluation_regression Tests/hunt_evaluation_regression.cpp)
-    target_link_libraries(neoscript_hunt_evaluation_regression PRIVATE neoscript Threads::Threads)
-    add_test(NAME neoscript_hunt_evaluation_regression COMMAND neoscript_hunt_evaluation_regression)
-    set_tests_properties(neoscript_hunt_evaluation_regression PROPERTIES TIMEOUT 60)
-
-    add_executable(neoscript_read_arith_regression Tests/read_arith_regression.cpp)
-    target_link_libraries(neoscript_read_arith_regression PRIVATE neoscript Threads::Threads)
-    add_test(NAME neoscript_read_arith_regression COMMAND neoscript_read_arith_regression)
-    set_tests_properties(neoscript_read_arith_regression PROPERTIES TIMEOUT 120)
-
-    add_executable(neoscript_host_api_regression Tests/host_api_regression.cpp)
-    target_link_libraries(neoscript_host_api_regression PRIVATE neoscript Threads::Threads)
-    if(MSVC)
-        target_compile_options(neoscript_host_api_regression PRIVATE /utf-8)
-    endif()
-    add_test(NAME neoscript_host_api_regression COMMAND neoscript_host_api_regression)
-    set_tests_properties(neoscript_host_api_regression PROPERTIES TIMEOUT 60)
-
-    add_executable(neoscript_host_runtime_regression Tests/host_runtime_regression.cpp)
-    target_link_libraries(neoscript_host_runtime_regression PRIVATE neoscript Threads::Threads)
-    if(MSVC)
-        target_compile_options(neoscript_host_runtime_regression PRIVATE /utf-8)
-    endif()
-    add_test(NAME neoscript_host_runtime_regression COMMAND neoscript_host_runtime_regression)
-    set_tests_properties(neoscript_host_runtime_regression PROPERTIES TIMEOUT 60)
-
-    add_executable(neoscript_host_argument_buffer_regression Tests/host_argument_buffer_regression.cpp)
-    target_link_libraries(neoscript_host_argument_buffer_regression PRIVATE neoscript Threads::Threads)
-    add_test(NAME neoscript_host_argument_buffer_regression COMMAND neoscript_host_argument_buffer_regression)
-    set_tests_properties(neoscript_host_argument_buffer_regression PROPERTIES TIMEOUT 30)
-
-    add_executable(neoscript_host_c_abi_regression Tests/host_c_abi_regression.cpp ${NEOSCRIPT_C_ABI_SOURCES})
-    target_include_directories(neoscript_host_c_abi_regression PRIVATE ${NEOSCRIPT_C_ABI_DIR})
-    target_link_libraries(neoscript_host_c_abi_regression PRIVATE neoscript Threads::Threads)
-    if(MSVC)
-        target_compile_options(neoscript_host_c_abi_regression PRIVATE /utf-8)
-    endif()
-    add_test(NAME neoscript_host_c_abi_regression COMMAND neoscript_host_c_abi_regression)
-    set_tests_properties(neoscript_host_c_abi_regression PROPERTIES TIMEOUT 60)
-
-    add_executable(neoscript_signed_zero_regression Tests/signed_zero_regression.cpp)
-    target_link_libraries(neoscript_signed_zero_regression PRIVATE neoscript Threads::Threads)
-    add_test(NAME neoscript_signed_zero_regression COMMAND neoscript_signed_zero_regression)
-    set_tests_properties(neoscript_signed_zero_regression PROPERTIES TIMEOUT 30)
-
-    add_executable(neoscript_local_initialization_regression Tests/local_initialization_regression.cpp)
-    target_link_libraries(neoscript_local_initialization_regression PRIVATE neoscript Threads::Threads)
-    add_test(NAME neoscript_local_initialization_regression COMMAND neoscript_local_initialization_regression)
-    set_tests_properties(neoscript_local_initialization_regression PROPERTIES TIMEOUT 30)
-
-    add_executable(neoscript_callback_reentry_regression Tests/callback_reentry_regression.cpp)
-    target_link_libraries(neoscript_callback_reentry_regression PRIVATE neoscript Threads::Threads)
-    add_test(NAME neoscript_callback_reentry_regression COMMAND neoscript_callback_reentry_regression)
-    set_tests_properties(neoscript_callback_reentry_regression PROPERTIES TIMEOUT 30)
-
-    add_executable(neoscript_property_stack_regression Tests/property_stack_regression.cpp)
-    target_link_libraries(neoscript_property_stack_regression PRIVATE neoscript Threads::Threads)
-    add_test(NAME neoscript_property_stack_regression COMMAND neoscript_property_stack_regression)
-    set_tests_properties(neoscript_property_stack_regression PROPERTIES TIMEOUT 60)
-
-    add_executable(neoscript_call_error_regression Tests/call_error_regression.cpp)
-    target_link_libraries(neoscript_call_error_regression PRIVATE neoscript Threads::Threads)
-    add_test(NAME neoscript_call_error_regression COMMAND neoscript_call_error_regression)
-    set_tests_properties(neoscript_call_error_regression PROPERTIES TIMEOUT 30)
-    add_executable(neoscript_foreach_source_regression Tests/foreach_source_regression.cpp)
-    target_link_libraries(neoscript_foreach_source_regression PRIVATE neoscript Threads::Threads)
-    add_test(NAME neoscript_foreach_source_regression COMMAND neoscript_foreach_source_regression)
-    set_tests_properties(neoscript_foreach_source_regression PROPERTIES TIMEOUT 30)
-    add_executable(neoscript_reference_equality_regression Tests/reference_equality_regression.cpp)
-    target_link_libraries(neoscript_reference_equality_regression PRIVATE neoscript Threads::Threads)
-    add_test(NAME neoscript_reference_equality_regression COMMAND neoscript_reference_equality_regression)
-    set_tests_properties(neoscript_reference_equality_regression PROPERTIES TIMEOUT 30)
-    add_executable(neoscript_collection_reader_regression Tests/collection_reader_regression.cpp)
-    target_link_libraries(neoscript_collection_reader_regression PRIVATE neoscript Threads::Threads)
-    add_test(NAME neoscript_collection_reader_regression COMMAND neoscript_collection_reader_regression)
-    add_test(NAME neoscript_ci_smoke COMMAND neoscript_ci_smoke)
-    add_test(NAME neoscript_c_abi_smoke COMMAND neoscript_c_abi_smoke)
-
-    add_executable(neoscript_int64_regression Tests/int64_regression.cpp)
-    target_link_libraries(neoscript_int64_regression PRIVATE neoscript Threads::Threads)
-    add_test(NAME neoscript_int64_regression COMMAND neoscript_int64_regression)
-
-    add_executable(neoscript_control_flow_regression Tests/control_flow_regression.cpp)
-    target_link_libraries(neoscript_control_flow_regression PRIVATE neoscript Threads::Threads)
-    add_test(NAME neoscript_control_flow_regression COMMAND neoscript_control_flow_regression)
-
-    add_executable(neoscript_postfix_regression Tests/postfix_regression.cpp)
-    target_link_libraries(neoscript_postfix_regression PRIVATE neoscript Threads::Threads)
-    add_test(NAME neoscript_postfix_regression COMMAND neoscript_postfix_regression)
-
-    add_executable(neoscript_compiler_limits_regression Tests/compiler_limits_regression.cpp)
-    target_link_libraries(neoscript_compiler_limits_regression PRIVATE neoscript Threads::Threads)
-    add_test(NAME neoscript_compiler_limits_regression COMMAND neoscript_compiler_limits_regression)
-    set_tests_properties(neoscript_compiler_limits_regression PROPERTIES TIMEOUT 180)
-
-    add_executable(neoscript_language_regression Tests/language_regression.cpp)
-    target_link_libraries(neoscript_language_regression PRIVATE neoscript Threads::Threads)
-    add_test(NAME neoscript_language_regression COMMAND neoscript_language_regression)
-    set_tests_properties(neoscript_language_regression PROPERTIES TIMEOUT 60)
-    add_executable(neoscript_vector_component_regression Tests/vector_component_regression.cpp)
-    target_link_libraries(neoscript_vector_component_regression PRIVATE neoscript Threads::Threads)
-    add_test(NAME neoscript_vector_component_regression COMMAND neoscript_vector_component_regression)
-    set_tests_properties(neoscript_vector_component_regression PROPERTIES TIMEOUT 60)
-    add_executable(neoscript_vector_array_regression Tests/vector_array_regression.cpp)
-    target_link_libraries(neoscript_vector_array_regression PRIVATE neoscript Threads::Threads)
-    add_test(NAME neoscript_vector_array_regression COMMAND neoscript_vector_array_regression)
-    set_tests_properties(neoscript_vector_array_regression PROPERTIES TIMEOUT 60)
-    add_executable(neoscript_vector_api_regression Tests/vector_api_regression.cpp ${NEOSCRIPT_C_ABI_SOURCES})
-    target_include_directories(neoscript_vector_api_regression PRIVATE ${NEOSCRIPT_C_ABI_DIR})
-    target_link_libraries(neoscript_vector_api_regression PRIVATE neoscript Threads::Threads)
-    add_test(NAME neoscript_vector_api_regression COMMAND neoscript_vector_api_regression)
-    set_tests_properties(neoscript_vector_api_regression PROPERTIES TIMEOUT 60)
-
-    add_executable(neoscript_vector_ref_regression Tests/vector_ref_regression.cpp)
-    target_link_libraries(neoscript_vector_ref_regression PRIVATE neoscript Threads::Threads)
-    add_test(NAME neoscript_vector_ref_regression COMMAND neoscript_vector_ref_regression)
-    set_tests_properties(neoscript_vector_ref_regression PROPERTIES TIMEOUT 60)
-    add_executable(neoscript_selector_regression Tests/selector_regression.cpp)
-    target_link_libraries(neoscript_selector_regression PRIVATE neoscript Threads::Threads)
-    add_test(NAME neoscript_selector_regression COMMAND neoscript_selector_regression)
-    set_tests_properties(neoscript_selector_regression PROPERTIES TIMEOUT 120)
 endif()
 
 if(NEOCORE_BUILD_UNITY_BRIDGE)
     add_subdirectory(Unity/NeoCore)
+    if(NEOCORE_BUILD_TESTS)
+        add_executable(neocore_unity_boundary_regression Tests/neocore_unity_boundary_regression.cpp)
+        target_link_libraries(neocore_unity_boundary_regression PRIVATE NeoCoreUnity)
+        add_test(NAME neocore_unity_boundary_regression COMMAND neocore_unity_boundary_regression)
+        set_tests_properties(neocore_unity_boundary_regression PROPERTIES TIMEOUT 30)
+        add_executable(neocore_unity_integration_regression Tests/neocore_unity_integration_regression.cpp)
+        target_link_libraries(neocore_unity_integration_regression PRIVATE NeoCoreUnity)
+        add_test(NAME neocore_unity_integration_regression COMMAND neocore_unity_integration_regression)
+        set_tests_properties(neocore_unity_integration_regression PROPERTIES TIMEOUT 30)
+        if(WIN32)
+            add_custom_command(TARGET neocore_unity_boundary_regression POST_BUILD
+                COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                    "$<TARGET_FILE:NeoCoreUnity>" "$<TARGET_FILE_DIR:neocore_unity_boundary_regression>")
+            add_custom_command(TARGET neocore_unity_integration_regression POST_BUILD
+                COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                    "$<TARGET_FILE:NeoCoreUnity>" "$<TARGET_FILE_DIR:neocore_unity_integration_regression>")
+        endif()
+    endif()
 endif()
 
 # 정적 호스트 예제도 기능 회귀 시험에 포함한다.
-if(NEOSCRIPT_BUILD_SMOKE OR NEOSCRIPT_BUILD_EXAMPLES)
+if(NEOCORE_BUILD_TESTS OR NEOCORE_BUILD_EXAMPLES)
     add_subdirectory(Samples/neocore/minigame)
 endif()
 
-# A desktop host example; disabled by default for Android/iOS cross builds.
-if(NEOSCRIPT_BUILD_EXAMPLES)
-    add_subdirectory(Samples/minigame)
-endif()
-
-# Keep licenses beside standalone host artifacts, including multi-config builds.
-foreach(json_host neocore_backend neoscript NeoScriptShared NeoScriptStatic neocore)
-    if(TARGET ${json_host})
-        add_custom_command(TARGET ${json_host} POST_BUILD
+# 여러 구성으로 빌드해도 독립 호스트 결과물 옆에 라이선스를 복사한다.
+foreach(core_host neocore_backend neocore)
+    if(TARGET ${core_host})
+        add_custom_command(TARGET ${core_host} POST_BUILD
             COMMAND ${CMAKE_COMMAND} -E copy_if_different
                 "${CMAKE_CURRENT_SOURCE_DIR}/THIRD_PARTY_NOTICES.txt"
-                "$<TARGET_FILE_DIR:${json_host}>/NEOSCRIPT_THIRD_PARTY_NOTICES.txt"
+                "$<TARGET_FILE_DIR:${core_host}>/NEOCORE_THIRD_PARTY_NOTICES.txt"
             COMMAND ${CMAKE_COMMAND} -E copy_if_different
                 "${CMAKE_CURRENT_SOURCE_DIR}/LICENSE"
-                "$<TARGET_FILE_DIR:${json_host}>/NEOSCRIPT_LICENSE.txt")
+                "$<TARGET_FILE_DIR:${core_host}>/NEOCORE_LICENSE.txt")
     endif()
 endforeach()

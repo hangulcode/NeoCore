@@ -41,7 +41,7 @@ inline TypeId BuiltinSignatureType(TypeRegistry& types, char code)
     }
 }
 
-inline const BuiltinSignature* FindBuiltinSignature(const std::string& owner, const std::string& name)
+inline const BuiltinSignature* GetBuiltinSignatures(std::size_t& count)
 {
     static const BuiltinSignature signatures[] = {
         {"string", "sub", 's', 2, 2, "ii"},
@@ -101,7 +101,15 @@ inline const BuiltinSignature* FindBuiltinSignature(const std::string& owner, co
         {"system", "async_create", 'a', 0, 0, ""},
         {"system", "aysnc_create", 'a', 0, 0, ""}
     };
-    for (std::size_t i = 0; i < sizeof(signatures) / sizeof(signatures[0]); ++i)
+    count = sizeof(signatures) / sizeof(signatures[0]);
+    return signatures;
+}
+
+inline const BuiltinSignature* FindBuiltinSignature(const std::string& owner, const std::string& name)
+{
+    std::size_t count = 0;
+    const BuiltinSignature* signatures = GetBuiltinSignatures(count);
+    for (std::size_t i = 0; i < count; ++i)
         if (owner == signatures[i].owner && name == signatures[i].name) return &signatures[i];
     return nullptr;
 }

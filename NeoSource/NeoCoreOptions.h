@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <functional>
 #include <string>
+#include <vector>
 
 namespace NeoCore
 {
@@ -19,11 +20,23 @@ typedef NeoScript::HttpRequest HttpRequest;
 typedef NeoScript::HttpResponse HttpResponse;
 typedef NeoScript::IHttpTransport IHttpTransport;
 
+enum class CompileDefineKind { Identifier, Int, Float, String, Bool, Null };
+struct CompileDefine
+{
+    std::string name;
+    CompileDefineKind kind = CompileDefineKind::Int;
+    std::string text;
+    CompileDefine() = default;
+    CompileDefine(const std::string& defineName, CompileDefineKind defineKind, const std::string& literal)
+        : name(defineName), kind(defineKind), text(literal) {}
+};
+
 struct CompileOptions
 {
     ModuleLoader moduleLoader;
     std::shared_ptr<IHttpTransport> httpTransport;
     bool emitAsm = false;
+    std::vector<CompileDefine> defines;
 };
 
 struct ExecutionLimits

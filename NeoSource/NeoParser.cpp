@@ -2908,7 +2908,7 @@ static SOperand EmitCoreWrite(const std::string& family, bool array, bool field,
                 NOP_I64_XOR, NOP_I64_SHL, NOP_I64_SHR };
             static const eNOperation floats[] = { NOP_NONE, NOP_F64_ADD, NOP_F64_SUB, NOP_F64_MUL,
                 NOP_F64_DIV, NOP_F64_ADD, NOP_F64_SUB };
-            value = EmitCoreNumber(family == "i64" ? integers[mode] : floats[mode], oldValue, value,
+            value = EmitCoreNumber(family == "i64" || family == "i32" ? integers[mode] : floats[mode], oldValue, value,
                 ar, funs, sourceLine);
         }
     }
@@ -2961,10 +2961,11 @@ static bool ParseCoreTypedIntrinsic(SOperand& result, const std::string& name,
                 }
             }
             if (component == -1 && (operation == "ai64write" || operation == "af64write" ||
+                operation == "ai32write" || operation == "af32write" ||
                 operation == "ci64write" || operation == "cf64write") &&
-                mode <= (operation.substr(1) == "i64write" ? 12 : 6))
+                mode <= (operation[1] == 'i' ? 12 : 6))
             {
-                writeFamily = operation.substr(1) == "i64write" ? "i64" : "f64";
+                writeFamily = operation.substr(1, 3);
                 arrayWrite = operation[0] == 'a';
                 fieldWrite = operation[0] == 'c';
             }

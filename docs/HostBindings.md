@@ -3,7 +3,8 @@
 NeoCore resolves registered host members and their signatures before script
 execution. Include [`NeoCoreHost.h`](../NeoSource/NeoCoreHost.h), link
 `NeoCore::Runtime`, and supply bindings to `Program::Compile`.
-This is the scalar/vector/native binding slice, not a complete tagless VM.
+The frontend fixes signatures before execution; the backend is not a completely
+tagless VM.
 
 ## Schema and execution connections
 
@@ -14,8 +15,8 @@ The schema contains no live object pointers or executable function addresses.
 
 Supported parameter/property types are `int` (int64), `float` (binary64), `bool`,
 `string`, `Vector2`, `Vector3`, `Vector4`, `Quaternion`, registered native object
-types, and their nullable forms. Methods also
-support `void` results. Every member has one exact signature; scripts receive
+types, typed lists/maps/sets/arrays, structs, function values, and nullable forms.
+Methods also support `void` results. Every member has one exact signature; scripts receive
 ordinary int-to-float widening before the call. The language has no reference parameters.
 
 Create all schema entries before constructing `HostBindings`. Bind every method,
@@ -58,6 +59,12 @@ or `Object`/`ObjectId`. For nullable parameters,
 check `IsNull` before accessing the payload. These accessors are not dynamic
 conversions; matching them to the registered signature is the adapter's contract.
 `Receiver()` supplies the already-resolved object for the member's owner type.
+
+Use `HostCall::Argument` and `ReturnValue` for owning aggregate/function values.
+Declare struct names and fields in `schema.Types()` before binding members;
+indirect cycles such as `list<Node>` are supported, while recursive inline struct
+values are rejected. Collections retain fixed types and shared identity; structs
+copy by value across the host boundary.
 
 Use the matching `Return*` method for a non-void result, or `ReturnNull` for a
 nullable result. Return `true` without a result for a void method/setter.
@@ -153,7 +160,7 @@ than running the continuation inside the current call. Positive sleep uses elaps
 real time and takes integer milliseconds. Negative sleep durations clamp to zero;
 durations above `INT32_MAX` milliseconds fail at runtime. `Resume(deltaTime)` accepts
 a finite, nonnegative duration within the float32 range, but that parameter is currently reserved and does not advance the
-sleep timer. A resume may suspend again or return the completed scalar result.
+sleep timer. A resume may suspend again or return the completed typed result.
 
 One instance owns one pending execution. Calling a new exported function while it
 is suspended fails without replacing the pending call. Queue such events in the
@@ -176,8 +183,8 @@ by `Receiver`/`Object` are borrowed only until reentry or an external lifetime
 change; they are not pinned resources.
 
 Use `HostCall::CallScript(name, arguments)` for a synchronous nested call. It uses
-the exported scalar `Instance::Call` boundary of the invoking instance: native
-objects and null arguments are not supported there. A shared service callback
+the checked `Instance::Call` boundary of the invoking instance. Typed native,
+nullable and aggregate arguments follow their registered signatures. A shared service callback
 therefore reenters its caller's instance. Reentry while that instance's top-level
 initialization is incomplete is rejected. It invalidates the host call's cached object
 pointers before and after execution. Reacquire them through `Receiver`/`Object`
@@ -198,7 +205,10 @@ local C++ pointer merely because the wrapper's cache was invalidated. Do not
 destroy the executing `Instance` (or a `Program` owning its executing default
 instance), and do not invoke instances sharing the program concurrently from
 another thread. Retaining a `HostCall`, borrowed pointer, or argument reference for later
-asynchronous execution is unsupported; typed retained callbacks are future work.
+asynchronous execution is unsupported. Retain an owning function value instead
+and invoke it through the checked instance/host-call API. Closures remain bound to
+their creating instance and are rejected after reset or in a peer instance;
+named function values can execute in peers sharing the same program.
 
 A property read invokes its getter. Assignment first evaluates the right-hand
 side, then the entire target receiver path once. Compound assignment then reads
@@ -254,11 +264,13 @@ read/write `Position: Vector3` property. `pr` keeps the returned parent ID even
 if the parent relationship later changes. The saved parent object is resolved
 from that saved ID rather than by reevaluating `GameObject.Parent`.
 
-Host value structs, arrays/other collections, overloads, default arguments,
-full callback signatures, asynchronous callbacks, richer coroutine scheduling,
-and typed C ABI/Unity adapters are deferred. Basic `sleep` and host-driven resume
-are supported by the execution-instance API.
-Type and binding IDs are local to their schema snapshot; a portable offline
-binding ABI, schema fingerprinting, and serialized binding-table relinking are
-also future work. Do not serialize live callback pointers or treat these IDs as
-stable across independently constructed schemas.
+Typed structs, collections and retained function values use owning boundary
+values. [Unity.md](Unity.md) describes the corresponding C ABI and managed
+adapters. Overloads, default arguments and general asynchronous script reentry
+remain unsupported. Basic sleep and host-driven resume use the instance API.
+
+Type and binding IDs are local to their schema snapshot. Serialized program
+images include the schema and validate the supplied host registrations at load;
+the current format requires matching registration order. Callbacks, resolvers,
+object IDs and transports are reattached rather than serialized. Do not persist
+live pointers or treat IDs as stable across independently constructed schemas.

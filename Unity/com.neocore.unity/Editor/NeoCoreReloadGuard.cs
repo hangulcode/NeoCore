@@ -7,12 +7,13 @@ namespace NeoCore.Unity.Editor
     {
         static NeoCoreReloadGuard()
         {
-            AssemblyReloadEvents.beforeAssemblyReload += Resources.DisposeAll;
-            EditorApplication.quitting += Resources.DisposeAll;
+            AssemblyReloadEvents.beforeAssemblyReload += Cleanup;
+            EditorApplication.quitting += Cleanup;
             EditorApplication.playModeStateChanged += change =>
             {
-                if (change == PlayModeStateChange.EnteredEditMode) Resources.DisposeAll();
+                if (change == PlayModeStateChange.EnteredEditMode) Cleanup();
             };
         }
+        private static void Cleanup() { Resources.DisposeAll(); Diagnostics.ClearLogSink(); }
     }
 }

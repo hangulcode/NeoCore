@@ -1,8 +1,9 @@
 # Typed sample migration
 
-The typed runner is `neocore`; the inherited `console` remains a separate `.ns`
-regression host. These examples use executable paths relative to the repository
-root:
+The runner is `neocore`. This checkout contains the typed samples and tests;
+the original `.ns` console and corpus are maintained in the
+[NeoScript repository](https://github.com/hangulcode/NeoScript).
+These examples use executable paths relative to the repository root:
 
 ```powershell
 Build/neocore/bin/Release/neocore.exe --run delegate
@@ -85,19 +86,22 @@ destroyed; they are not per-instance counters, and retained pool capacity is not
 the same as live script objects. `--file` paths remain relative to the current
 working directory unless an absolute path is supplied.
 
+`--dap` runs the typed stdio debugger adapter: breakpoints, stepping, call stacks,
+variables, evaluation and exception details use original `.nc` source locations.
+`--lsp` supplies typed completion, hover, signature help and diagnostics, including
+open module overlays. These services have separate protocol regressions and are
+used by the [NeoCore VS Code extension](../Tools/vscode-neocore/README.md).
+
 The following inherited modes are explicitly rejected with a diagnostic and a
 nonzero exit status:
 
 | Mode | Remaining work |
 | --- | --- |
 | `--globals` | Names alone cannot define static globals. An embedding host must supply their types and bindings through `HostSchema` and `HostBindings`; a typed CLI declaration format is not implemented. |
-| `--dap` | A typed debugger adapter and its breakpoint/stepping/inspection checks are not implemented. |
-| `--lsp` | A language service for `.nc` static types, symbols, and diagnostics is not implemented. |
 | `--v2smoke` | The inherited dynamic VM/embedding regression command has no equivalent typed console suite. Typed CTest/API regressions cover their own contracts separately. |
 
-The inherited `.ns` console and its tests remain available separately. Successfully
-running the typed smoke command does not certify those unsupported services or the
-entire legacy regression corpus.
+Successfully running the smoke command does not certify those unsupported services.
+The dynamic NeoScript console and tests are no longer distributed in this checkout.
 
 ## Console examples
 
@@ -124,17 +128,17 @@ The legacy misspelling `contailer` is retained as the sample name.
 | regex | Typed match/search/replace, including nullable search results |
 | time | UTC round trips, TimeSpan and Stopwatch |
 | performance | Full workload preserved; compilation only in automatic tests |
-| regression, literal_totype, cycle | Typed counterparts; original dynamic stress suites remain separate |
+| regression, literal_totype, cycle | Typed compiler, literal-conversion and cycle checks |
 
 Heterogeneous collections are expressed as structs or nested homogeneous
 collections. Recursive dynamic `dump` is replaced by typed string-map and integer-list formatters.
 The module example's source-string execution goes through `Program::Compile` and
 an exported signature; it does not expose the untyped `system.load`/`pcall` path.
 
-The original `.ns` regression, literal-conversion, GC, debugger and compiler-error
-fixtures are intentionally retained. Their dynamic-language rejection cases and
-heterogeneous graphs are not silently accepted by the static frontend. Typed
-counterparts do not imply a line-for-line conversion of that legacy stress corpus.
+The original dynamic-language rejection cases and heterogeneous graphs are not
+silently accepted by the static frontend. Typed counterparts do not imply a
+line-for-line conversion of the original stress corpus. That corpus remains in
+the NeoScript repository rather than maintaining a second dynamic build here.
 
 ## HTTP and HTTPS
 
@@ -182,14 +186,42 @@ The [typed mini game](../Samples/neocore/minigame/README.md) keeps its shared-pr
 instance acceptance scenario and adds the original movement/replay demonstration.
 The replay reuses the existing browser viewer format.
 
-The [typed Unity package](../Unity/NeoCore/README.md) is separate from the legacy
-NeoScript package. It includes a real `.nc` Basic sample, typed scalar C ABI,
-C# ownership/status wrappers and an `.nc` importer. Vector calculations stay in
-the script and exported scalar components update the Unity transform. C ABI and
-managed P/Invoke checks can run without an Editor license; PlayMode/domain-reload
-checks require a licensed Unity Editor.
+The [Unity package](../Unity/NeoCore/README.md) includes `.nc` examples, typed C ABI,
+C# ownership/status wrappers, static host schemas, an importer and instance-based
+execution. Vectors, typed collections/structs, retained callbacks, modules, HTTP,
+JSON and serialized programs use checked boundaries. C ABI and managed P/Invoke
+checks can run without an Editor license; actual Editor/PlayMode/domain-reload
+execution requires a licensed Unity Editor.
 
-## Console menu validation (2026-10-31)
+## Current migration verification (2026-10-31)
+
+This snapshot covers the typed distribution after removing the duplicated NeoScript
+console, sample/test corpus, Unity package and VS Code extension. The shared VM
+implementation remains because NeoCore executes on it.
+
+- Windows Release CTest: 65/65 passed.
+- Windows Debug selected regressions: 11/11 passed; this is not a full Debug CTest run.
+- Linux strict C++11 build and CTest: 63/63 passed.
+- Typed DAP/LSP protocol regression: 62 checks, no failures; the VS Code extension
+  regression also passed using the real NeoCore executable.
+- Compile definitions and compact arrays: 78 functional checks passed, including
+  debug/non-debug execution, source mapping, modules, image values and narrowing.
+- Native Windows Release and Debug functional smoke: 24 offline samples passed in
+  each configuration. The mini-game acceptance check passed.
+- The local HTTP console regression passed all six cases using typed `.nc` scripts.
+- Managed P/Invoke checks passed, and managed integration compiled against actual
+  Unity Editor assemblies. This does not establish an Editor/PlayMode run.
+- Actual Unity Editor/PlayMode execution was blocked by the unavailable license.
+  iOS binaries were not built in this environment.
+
+These are functional/build checks. No performance benchmark or live-network result
+is claimed by this migration. Earlier snapshots below retain their original scope
+and must not be used as current test totals.
+
+## Console menu validation before legacy cleanup (2026-10-31)
+
+This snapshot includes the former dynamic backend suite. Its total is historical;
+run the current typed CTest configuration for the post-cleanup test list and results.
 
 - Native Windows Debug x64 build: no warnings or errors; all 31 CLI scenarios passed.
 - Windows Release CTest: 95/95 passed, including the new console regressions.
@@ -203,7 +235,7 @@ checks require a licensed Unity Editor.
   sample command instead of being reported as successful.
 
 Full performance benchmarks, timed pool diagnostics, and live HTTPS requests were
-not run for this change. The unsupported modes listed above remain unsupported.
+not run for that snapshot. The current supported modes are described above.
 
 ## Earlier sample migration validation (2026-10-31)
 

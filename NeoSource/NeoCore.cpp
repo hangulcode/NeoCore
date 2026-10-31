@@ -1,22 +1,63 @@
 ﻿#include "NeoCore.h"
 #include "NeoCoreModules.h"
 #include "NeoCoreCompiler.h"
+#include "NeoCoreImage.h"
+#include "NeoCoreDebugAccess.h"
 #include "NeoCoreHostRuntime.h"
 #include "NeoCoreHostBridge.h"
+#include "NeoCoreValueBoundary.h"
 #include "NeoScript.h"
 #include <stdexcept>
 #include <cmath>
 #include <limits>
 #include <utility>
+#include <cstring>
+#include <algorithm>
 
 namespace NeoCore
 {
+void SetLogHandler(void (*print)(const char*), void (*error)(const char*))
+{ NeoScript::SetLogHandler(print,error); }
 
 Scalar Scalar::Int(std::int64_t value) { Scalar s; s.kind_ = Kind::Int; s.integer_ = value; return s; }
 Scalar Scalar::Float(double value) { Scalar s; s.kind_ = Kind::Float; s.number_ = value; return s; }
 Scalar Scalar::Bool(bool value) { Scalar s; s.kind_ = Kind::Bool; s.integer_ = value; return s; }
 Scalar Scalar::String(const std::string& value) { Scalar s; s.kind_ = Kind::String; s.string_ = value; return s; }
 Scalar Scalar::Null() { Scalar s; s.kind_ = Kind::Null; return s; }
+Scalar Scalar::Vector(Kind kind, const float* components)
+{
+    if (!components || kind < Kind::Vector2 || kind > Kind::Quaternion)
+        throw std::invalid_argument("invalid vector value");
+    Scalar value;
+    value.kind_ = kind;
+    const int count = kind == Kind::Vector2 ? 2 : kind == Kind::Vector3 ? 3 : 4;
+    std::copy(components, components + count, value.vector_);
+    return value;
+}
+Scalar Scalar::Object(const std::string& typeName, std::uint64_t id)
+{
+    if (typeName.empty() || !id) throw std::invalid_argument("native value requires a type and nonzero ID");
+    Scalar value;
+    value.kind_ = Kind::Object;
+    value.string_ = typeName;
+    value.object_ = id;
+    return value;
+}
+const float* Scalar::asVector() const
+{
+    if (kind_ < Kind::Vector2 || kind_ > Kind::Quaternion) throw std::logic_error("NeoCore value is not a vector");
+    return vector_;
+}
+std::uint64_t Scalar::asObject() const
+{
+    if (kind_ != Kind::Object) throw std::logic_error("NeoCore value is not a native object");
+    return object_;
+}
+const std::string& Scalar::objectType() const
+{
+    if (kind_ != Kind::Object) throw std::logic_error("NeoCore value is not a native object");
+    return string_;
+}
 std::int64_t Scalar::asInt() const
 {
     if (kind_ != Kind::Int) throw std::logic_error("NeoCore scalar is not int");
@@ -66,6 +107,8 @@ struct Program::Impl
     StaticCompileResult checked;
     ModuleBundle bundle;
     std::string sourceName;
+    bool includeDebugInfo = false;
+    std::vector<std::uint8_t> imageBytecode;
     NeoScript::IRuntime* runtime = nullptr;
     NeoScript::ProgramHandle program;
     std::unique_ptr<HostRuntime> host;
@@ -111,11 +154,13 @@ struct Instance::Impl
     Result initialization;
     NeoScript::Invocation pending;
     const StaticFunctionSignature* pendingSignature = nullptr;
+    StaticFunctionSignature pendingOwnedSignature;
     std::string pendingName;
     bool deferredCall = false;
     std::string deferredName;
     std::vector<Scalar> deferredArguments;
     ExecutionLimits deferredLimits;
+    Scalar deferredFunction;
 
     ~Impl()
     {
@@ -153,6 +198,24 @@ Program::~Program() = default;
 Instance::Instance(std::unique_ptr<Impl> impl) : impl_(std::move(impl)) {}
 Instance::~Instance() = default;
 
+bool DebugAccess::Get(Program& owner, NeoScript::IRuntime*& runtime,
+    NeoScript::ProgramHandle& program, NeoScript::InstanceHandle& instance,
+    const StaticCompileResult*& checked, const ModuleBundle*& bundle)
+{
+    runtime = nullptr;
+    program = NeoScript::ProgramHandle();
+    instance = NeoScript::InstanceHandle();
+    checked = nullptr;
+    bundle = nullptr;
+    if (!owner.impl_ || !owner.defaultInstance_ || !owner.defaultInstance_->impl_) return false;
+    runtime = owner.impl_->runtime;
+    program = owner.impl_->program;
+    instance = owner.defaultInstance_->impl_->instance;
+    checked = &owner.impl_->checked;
+    bundle = &owner.impl_->bundle;
+    return runtime && program && instance;
+}
+
 static Error TranslateError(const NeoScript::Error& backend, const std::string& name)
 {
     Error error;
@@ -181,20 +244,22 @@ std::unique_ptr<Program> Program::CompileImpl(const std::string& source, Error& 
     error = Error();
     std::shared_ptr<Impl> impl(new Impl());
     impl->sourceName = sourceName;
+    impl->includeDebugInfo = debug;
     if (bindings)
     {
         if (!bindings->Validate(error.message)) { error.sourceName = sourceName; return std::unique_ptr<Program>(); }
         impl->host.reset(new HostRuntime(*bindings));
     }
     std::vector<std::string> externalNames;
+    for(const auto& define:options.defines) externalNames.push_back(define.name);
     if (bindings)
     {
         const HostSchema& schema = bindings->Schema();
         for (const auto& global : schema.Globals()) externalNames.push_back(global.name);
         for (const auto& type : schema.Types().NamedTypes())
-            if (schema.Types().Get(type.second).kind == TypeKind::Native) externalNames.push_back(type.first);
+            if (schema.Types().Get(type.second).kind == TypeKind::Native || schema.Types().Get(type.second).kind == TypeKind::Struct) externalNames.push_back(type.first);
     }
-    if (!BundleModules(source, sourceName, options.moduleLoader, impl->bundle, error, externalNames))
+    if (!BundleModules(source, sourceName, options.moduleLoader, impl->bundle, error, externalNames, &options.defines))
         return std::unique_ptr<Program>();
     if (!CompileStaticSource(impl->bundle.source, impl->checked, impl->host ? &impl->host->Schema() : nullptr))
     {
@@ -248,6 +313,95 @@ std::unique_ptr<Program> Program::CompileImpl(const std::string& source, Error& 
     return result;
 }
 
+bool Program::SaveImage(std::vector<std::uint8_t>& image, Error& error) const
+{
+    image.clear();
+    error = Error();
+    error.sourceName = impl_->sourceName;
+    if (impl_->imageBytecode.empty())
+    {
+        // 정적 검사 결과의 IR에서 저장용 코드를 만든다. 로드할 때 소스나 파서를 다시 실행하지 않는다.
+        NeoScript::CompileDesc desc;
+        desc.source = impl_->checked.loweredSource;
+        desc.coreIntrinsicPrefix = impl_->checked.backendIntrinsicPrefix;
+        desc.coreTypedIR = &impl_->checked.typedIR;
+        desc.sourceName = impl_->sourceName;
+        desc.includeDebugInfo = impl_->includeDebugInfo;
+        const NeoScript::Error compiled = impl_->runtime->CompileToBytecode(desc, impl_->imageBytecode);
+        if (!compiled.ok())
+        {
+            error = TranslateError(compiled, impl_->sourceName);
+            impl_->bundle.Translate(error);
+            return false;
+        }
+    }
+    Image::Data data;
+    data.checked = impl_->checked;
+    data.bundle = impl_->bundle;
+    data.sourceName = impl_->sourceName;
+    data.debug = impl_->includeDebugInfo;
+    data.bytecode = impl_->imageBytecode;
+    return Image::Write(data, impl_->host ? &impl_->host->Schema() : nullptr, image, error);
+}
+
+std::unique_ptr<Program> Program::LoadImage(const std::vector<std::uint8_t>& image,
+    Error& error, const CompileOptions& options)
+{
+    return LoadImageImpl(image, error, nullptr, options);
+}
+
+std::unique_ptr<Program> Program::LoadImage(const std::vector<std::uint8_t>& image,
+    const HostBindings& bindings, Error& error, const CompileOptions& options)
+{
+    return LoadImageImpl(image, error, &bindings, options);
+}
+
+std::unique_ptr<Program> Program::LoadImageImpl(const std::vector<std::uint8_t>& image,
+    Error& error, const HostBindings* bindings, const CompileOptions& options)
+{
+    error = Error();
+    if (bindings && !bindings->Validate(error.message)) return std::unique_ptr<Program>();
+    Image::Data data;
+    if (!Image::Read(image, bindings ? &bindings->Schema() : nullptr, data, error)) return std::unique_ptr<Program>();
+    if (bindings && data.checked.hostPrefix.empty())
+    { error.message = "NeoCore host image is missing its binding prefix"; return std::unique_ptr<Program>(); }
+    std::shared_ptr<Impl> impl(new Impl());
+    impl->checked = std::move(data.checked);
+    impl->bundle = std::move(data.bundle);
+    impl->sourceName = std::move(data.sourceName);
+    impl->includeDebugInfo = data.debug;
+    impl->imageBytecode = std::move(data.bytecode);
+    if (bindings) impl->host.reset(new HostRuntime(*bindings));
+    NeoScript::RuntimeDesc runtimeDesc;
+    runtimeDesc.httpTransport = options.httpTransport;
+    impl->runtime = NeoScript::CreateRuntime(runtimeDesc);
+    if (!impl->runtime)
+    { error.message = "could not create NeoCore image runtime"; error.sourceName = impl->sourceName; return std::unique_ptr<Program>(); }
+    if (impl->host && !impl->host->Link(*impl->runtime, impl->checked.hostPrefix, error.message))
+    { error.sourceName = impl->sourceName; return std::unique_ptr<Program>(); }
+    impl->runtime->FreezeBindings();
+    NeoScript::Error backendError;
+    impl->program = impl->runtime->LoadProgram(
+        NeoScript::Span<const std::uint8_t>(impl->imageBytecode.data(), impl->imageBytecode.size()), &backendError);
+    if (!impl->program || !backendError.ok())
+    {
+        error = TranslateError(backendError, impl->sourceName);
+        if (error.ok()) error = impl->BackendError("could not load NeoCore bytecode");
+        return std::unique_ptr<Program>();
+    }
+    std::vector<std::pair<std::string, std::size_t>> signatures;
+    for (const StaticFunctionSignature& function : impl->checked.functions)
+        if (function.exported) signatures.push_back(std::make_pair(function.name, function.parameterTypes.size()));
+    if (!NeoCoreBackend::ValidateImageFunctions(*impl->runtime, impl->program, signatures, error.message))
+        return std::unique_ptr<Program>();
+    if (impl->includeDebugInfo && !NeoCoreBackend::RemapSourceLines(*impl->runtime, impl->program, impl->checked.hostWriteSourceLines))
+    { error.message = "could not restore NeoCore image source locations"; return std::unique_ptr<Program>(); }
+    std::unique_ptr<Program> result(new Program(std::move(impl)));
+    result->defaultInstance_ = result->CreateInstance(error);
+    if (!result->defaultInstance_) return std::unique_ptr<Program>();
+    return result;
+}
+
 std::unique_ptr<Instance> Program::CreateInstance(Error& error)
 {
     error = Error();
@@ -273,7 +427,11 @@ Result Program::Call(const std::string& name, const std::vector<Scalar>& argumen
 }
 Result Program::Resume(double deltaTime, std::uint32_t budget) { return defaultInstance_->Resume(deltaTime, budget); }
 bool Program::IsSuspended() const { return defaultInstance_->IsSuspended(); }
+bool Program::IsExecuting() const { return defaultInstance_->IsExecuting(); }
+bool Program::Cancel(Error& error) { return defaultInstance_->Cancel(error); }
+bool Program::Reset(Error& error) { return defaultInstance_->Reset(error); }
 std::int64_t Program::TrimMemory(bool force) { return impl_->runtime->TrimMemory(force); }
+std::int64_t Program::CollectCycles(bool force) { return impl_->runtime->CollectCycles(force); }
 void Program::SetEmptyPageHoldSeconds(float seconds) { impl_->runtime->SetEmptyPageHoldSeconds(seconds); }
 void Program::SetTrimPagesPerCall(int pages) { impl_->runtime->SetTrimPagesPerCall(pages); }
 bool Program::SetHostObject(const std::string& name, ObjectHandle object, Error& error)
@@ -288,6 +446,39 @@ bool Instance::SetHostObject(const std::string& name, ObjectHandle object, Error
     return impl_->host->SetGlobal(name, object, error.message);
 }
 bool Instance::IsSuspended() const { return impl_->suspended; }
+bool Instance::IsExecuting() const { return impl_->executing != 0; }
+bool Instance::Cancel(Error& error)
+{
+    error = Error();
+    if (impl_->executing) { error.message = "cannot cancel an executing instance"; return false; }
+    if (!impl_->runtime->Cancel(impl_->instance)) { error = impl_->BackendError("could not cancel instance"); return false; }
+    impl_->pending = NeoScript::Invocation();
+    impl_->pendingSignature = nullptr;
+    impl_->pendingName.clear();
+    impl_->deferredCall = false;
+    impl_->deferredArguments.clear();
+    impl_->deferredName.clear();
+    impl_->suspended = false;
+    if (impl_->initializing)
+    {
+        impl_->initializing = false;
+        impl_->initialization = Failure("global initialization was cancelled; reset before use", impl_->sourceName);
+    }
+    return true;
+}
+bool Instance::Reset(Error& error)
+{
+    error = Error();
+    if (impl_->executing) { error.message = "cannot reset an executing instance"; return false; }
+    if (impl_->suspended && !Cancel(error)) return false;
+    impl_->pending = NeoScript::Invocation();
+    if (!impl_->runtime->ResetInstance(impl_->instance)) { error = impl_->BackendError("could not reset instance"); return false; }
+    if (!NeoCoreBackend::EnableCooperativeSleep(*impl_->runtime, impl_->instance))
+    { error = impl_->BackendError("could not reset cooperative execution"); return false; }
+    impl_->initialized = impl_->initializing = impl_->suspended = false;
+    impl_->initialization = Result();
+    return true;
+}
 
 Result Instance::Run()
 {
@@ -329,11 +520,176 @@ static TypeId ScalarType(const TypeRegistry& types, Scalar::Kind kind)
     case Scalar::Kind::Bool: return types.Bool();
     case Scalar::Kind::String: return types.String();
     case Scalar::Kind::Null: return types.Null();
+    case Scalar::Kind::Vector2: return types.Vector2();
+    case Scalar::Kind::Vector3: return types.Vector3();
+    case Scalar::Kind::Vector4: return types.Vector4();
+    case Scalar::Kind::Quaternion: return types.Quaternion();
+    case Scalar::Kind::Object: return InvalidType;
+    case Scalar::Kind::List:
+    case Scalar::Kind::Map:
+    case Scalar::Kind::Set:
+    case Scalar::Kind::Array:
+    case Scalar::Kind::Function:
+    case Scalar::Kind::Struct: return InvalidType;
     }
     return InvalidType;
 }
 
+#include "NeoCoreValueBoundary.inl"
+
+static TypeId BoundaryTypeByName(const TypeRegistry& types, const std::string& name)
+{
+    for(TypeId type=1; types.Get(type).kind!=TypeKind::Invalid; ++type)
+        if(types.DisplayName(type)==name) return type;
+    throw std::invalid_argument("type is not declared by this program: " + name);
+}
+
+Scalar Program::CreateValue(const std::string& typeName, Error& error)
+{
+    error = Error();
+    try
+    {
+        const TypeId type=BoundaryTypeByName(impl_->checked.types,typeName);
+        if (impl_->checked.types.Get(type).kind == TypeKind::Struct)
+            return DefaultBoundaryValue(*impl_->runtime,impl_->checked.types,type,impl_);
+        return BoundaryAccess::Wrap(*impl_->runtime,impl_->checked.types,type,impl_,
+            NewCollection(*impl_->runtime,impl_->checked.types,type,impl_));
+    }
+    catch (const std::exception& failure) { error.message = failure.what(); }
+    return Scalar();
+}
+
+Scalar Program::CreateValue(const std::string& typeName, const std::vector<Scalar>& fields, Error& error)
+{
+    error=Error();
+    try
+    {
+        const auto& types=impl_->checked.types;
+        const TypeId type=BoundaryTypeByName(types,typeName);
+        const TypeDesc& desc=types.Get(type);
+        if(desc.kind!=TypeKind::Struct) throw std::invalid_argument("field initialization requires a struct type");
+        if(fields.size()!=desc.fields.size()) throw std::invalid_argument("struct field count does not match its declaration");
+        const auto value=NewCollection(*impl_->runtime,types,type,impl_);
+        for(std::size_t index=0; index<fields.size(); ++index)
+            if(!NeoCoreBackend::ValueAppend(value,BoundaryAccess::Copy(*impl_->runtime,types,desc.fields[index].type,impl_,fields[index])))
+                throw std::runtime_error("could not initialize struct field");
+        return BoundaryAccess::Wrap(*impl_->runtime,types,type,impl_,value);
+    }
+    catch(const std::exception& failure) { error.message=failure.what(); }
+    return Scalar();
+}
+
+Scalar Program::FindFunction(const std::string& name, Error& error)
+{
+    error=Error();
+    try
+    {
+        const StaticFunctionSignature* signature=nullptr;
+        for(const auto& candidate:impl_->checked.functions)
+            if(candidate.name==name && candidate.exported) { signature=&candidate; break; }
+        if(!signature) throw std::invalid_argument("exported function not found: "+name);
+        const TypeId type=impl_->checked.types.FunctionOf(signature->returnType,signature->parameterTypes);
+        return BoundaryAccess::Wrap(*impl_->runtime,impl_->checked.types,type,impl_,
+            NeoCoreBackend::FindFunction(*impl_->runtime,impl_->program,name,impl_));
+    }
+    catch(const std::exception& failure) { error.message=failure.what(); }
+    return Scalar();
+}
+
+Scalar Program::ParseJson(const std::string& typeName, const std::string& json, Error& error, bool strictIntegers)
+{
+    error=Error();
+    try
+    {
+        if(defaultInstance_->IsExecuting()) throw std::logic_error("cannot parse JSON through the default instance during execution");
+        const auto& types=impl_->checked.types;
+        const TypeId type=BoundaryTypeByName(types,typeName);
+        std::vector<std::string> warnings;
+        const auto raw=NeoCoreBackend::DecodeJson(*impl_->runtime,defaultInstance_->impl_->instance,json,strictIntegers,false,impl_,error.message,warnings);
+        if(!raw) return Scalar();
+        const auto normalized=ConvertJsonValue(*impl_->runtime,types,type,impl_,raw,true,0);
+        return BoundaryAccess::Wrap(*impl_->runtime,types,type,impl_,normalized);
+    }
+    catch(const std::exception& failure) { error.message=failure.what(); }
+    return Scalar();
+}
+
+std::string Program::ToJson(const Scalar& value, Error& error, bool sortKeys)
+{
+    error=Error();
+    try
+    {
+        const auto& types=impl_->checked.types;
+        const TypeId type=value.bound_?BoundaryTypeByName(types,value.typeName()):ScalarType(types,value.kind());
+        if(type==InvalidType || type==types.Void() || value.kind()==Scalar::Kind::Object)
+            throw std::invalid_argument("value cannot be encoded as JSON");
+        if(value.kind()==Scalar::Kind::Null) return "null";
+        const auto raw=BoundaryAccess::Copy(*impl_->runtime,types,type,impl_,value);
+        const auto normalized=ConvertJsonValue(*impl_->runtime,types,type,impl_,raw,false,0);
+        std::string result;
+        std::vector<std::string> warnings;
+        if(!NeoCoreBackend::EncodeJson(normalized,sortKeys,result,error.message,warnings)) return std::string();
+        return result;
+    }
+    catch(const std::exception& failure) { error.message=failure.what(); }
+    return std::string();
+}
+
+Result Instance::ReadGlobal(const std::string& name)
+{
+    try
+    {
+        if (impl_->executing || impl_->suspended) return Failure("cannot read globals while the instance is busy",impl_->sourceName);
+        const StaticGlobalSignature* global = nullptr;
+        for (const auto& candidate : impl_->checked.globals)
+            if (candidate.name == name && candidate.exported) { global=&candidate; break; }
+        if (!global) return Failure("exported global not found: " + name,impl_->sourceName);
+        Result result=Run();
+        if (!result.ok() || result.suspended()) return result;
+        auto value=NeoCoreBackend::ReadGlobal(*impl_->runtime,impl_->instance,name,impl_->module);
+        for(const auto& symbol:impl_->checked.debugSymbols)
+            if(symbol.backendName==name && symbol.boxed) { value=NeoCoreBackend::ValueAt(value,0); break; }
+        result.value=BoundaryAccess::Wrap(*impl_->runtime,impl_->checked.types,global->type,impl_->module,value);
+        if(result.value.kind()==Scalar::Kind::Struct)
+            result.value=BoundaryAccess::Wrap(*impl_->runtime,impl_->checked.types,global->type,impl_->module,
+                BoundaryAccess::Copy(*impl_->runtime,impl_->checked.types,global->type,impl_->module,result.value));
+        return result;
+    }
+    catch(const std::exception& failure) { return Failure(failure.what(),impl_->sourceName); }
+}
+Result Instance::WriteGlobal(const std::string& name, const Scalar& value)
+{
+    try
+    {
+        if (impl_->executing || impl_->suspended) return Failure("cannot write globals while the instance is busy",impl_->sourceName);
+        const StaticGlobalSignature* global = nullptr;
+        for (const auto& candidate : impl_->checked.globals)
+            if (candidate.name == name && candidate.exported) { global=&candidate; break; }
+        if (!global) return Failure("exported global not found: " + name,impl_->sourceName);
+        if (!BoundaryAccess::Accepts(impl_->checked.types,global->type,value))
+            return Failure("global value requires " + impl_->checked.types.DisplayName(global->type),impl_->sourceName);
+        if(value.bound_ && !NeoCoreBackend::CanPassValue(*impl_->runtime,impl_->instance,value.bound_->value))
+            return Failure("global value belongs to another program or contains an unavailable closure",impl_->sourceName);
+        Result result=Run();
+        if (!result.ok() || result.suspended()) return result;
+        const auto stored=BoundaryAccess::Copy(*impl_->runtime,impl_->checked.types,global->type,impl_->module,value);
+        bool boxed=false;
+        for(const auto& symbol:impl_->checked.debugSymbols)
+            if(symbol.backendName==name && symbol.boxed) { boxed=true; break; }
+        const bool written=boxed ? NeoCoreBackend::ValueSet(NeoCoreBackend::ReadGlobal(*impl_->runtime,impl_->instance,name,impl_->module),0,stored)
+            : NeoCoreBackend::WriteGlobal(*impl_->runtime,impl_->instance,name,stored);
+        if (!written)
+            return Failure("could not update exported global",impl_->sourceName);
+        return result;
+    }
+    catch(const std::exception& failure) { return Failure(failure.what(),impl_->sourceName); }
+}
+
 Result Instance::Call(const std::string& name, const std::vector<Scalar>& arguments, const ExecutionLimits& limits)
+{ return Invoke(name,nullptr,arguments,limits); }
+Result Instance::Call(const Scalar& function, const std::vector<Scalar>& arguments, const ExecutionLimits& limits)
+{ return Invoke("<callback>",&function,arguments,limits); }
+Result Instance::Invoke(const std::string& name, const Scalar* function, const std::vector<Scalar>& arguments, const ExecutionLimits& limits)
 {
     if (impl_->suspended) return Failure("instance has a suspended call; resume it before starting another call", impl_->sourceName);
     if (limits.timeoutMs < -1) return Failure("call timeout must be -1 or nonnegative", impl_->sourceName);
@@ -341,7 +697,20 @@ Result Instance::Call(const std::string& name, const std::vector<Scalar>& argume
     result.status = ExecutionStatus::Failed;
     result.error.sourceName = impl_->sourceName;
     const StaticFunctionSignature* signature = nullptr;
-    for (const auto& candidate : impl_->checked.functions)
+    StaticFunctionSignature callable;
+    if (function)
+    {
+        if(function->kind()!=Scalar::Kind::Function || !function->bound_ || function->bound_->runtime!=impl_->runtime)
+            return Failure("callback does not belong to this program",impl_->sourceName);
+        if(!NeoCoreBackend::CanPassValue(*impl_->runtime,impl_->instance,function->bound_->value))
+            return Failure("callback is unavailable in this instance",impl_->sourceName);
+        const TypeDesc& desc=function->bound_->types->Get(function->bound_->type);
+        callable.name=name;
+        callable.parameterTypes=desc.parameters;
+        callable.returnType=desc.returnType;
+        signature=&callable;
+    }
+    else for (const auto& candidate : impl_->checked.functions)
         if (candidate.name == name && candidate.exported) { signature = &candidate; break; }
     if (!signature)
     {
@@ -358,25 +727,25 @@ Result Instance::Call(const std::string& name, const std::vector<Scalar>& argume
     if (types.IsNullable(hostReturn)) hostReturn = types.Get(hostReturn).element;
     const TypeKind hostKind = types.Get(hostReturn).kind;
     if (hostKind != TypeKind::Void && hostKind != TypeKind::Int && hostKind != TypeKind::Float &&
-        hostKind != TypeKind::Bool && hostKind != TypeKind::String)
+        hostKind != TypeKind::Bool && hostKind != TypeKind::String &&
+        hostKind != TypeKind::Vector2 && hostKind != TypeKind::Vector3 && hostKind != TypeKind::Vector4 &&
+        hostKind != TypeKind::Quaternion && hostKind != TypeKind::Native && hostKind != TypeKind::Array &&
+        hostKind != TypeKind::Array32 && hostKind != TypeKind::List && hostKind != TypeKind::Map &&
+        hostKind != TypeKind::Set && hostKind != TypeKind::Function && hostKind != TypeKind::Struct)
     {
-        // 스칼라 경계로 전달할 수 없는 반환형이면 전역 초기화나 함수 본문도 실행하지 않는다.
-        result.error.message = "host scalar API does not support return type " + types.DisplayName(signature->returnType);
+        // 호스트 경계로 전달할 수 없는 반환형이면 전역 초기화나 함수 본문도 실행하지 않는다.
+        result.error.message = "host API does not support return type " + types.DisplayName(signature->returnType);
         return result;
     }
     for (std::size_t i = 0; i < arguments.size(); ++i)
     {
-        if (!types.CanAssign(signature->parameterTypes[i], ScalarType(types, arguments[i].kind())) ||
+        if(arguments[i].bound_ && !NeoCoreBackend::CanPassValue(*impl_->runtime,impl_->instance,arguments[i].bound_->value))
+            return Failure("argument belongs to another program or contains an unavailable closure",impl_->sourceName);
+        if (!BoundaryAccess::Accepts(types,signature->parameterTypes[i],arguments[i]) ||
             arguments[i].kind() == Scalar::Kind::Void)
         {
             result.error.message = "argument " + std::to_string(i + 1) + " requires " +
                 types.DisplayName(signature->parameterTypes[i]);
-            return result;
-        }
-        // 기존 호스트 호출 어댑터에는 null 인자를 쓰는 진입점이 아직 없다.
-        if (arguments[i].kind() == Scalar::Kind::Null)
-        {
-            result.error.message = "null host arguments are not supported by this milestone";
             return result;
         }
     }
@@ -389,9 +758,11 @@ Result Instance::Call(const std::string& name, const std::vector<Scalar>& argume
         impl_->deferredName = name;
         impl_->deferredArguments = arguments;
         impl_->deferredLimits = limits;
+        impl_->deferredFunction = function ? *function : Scalar();
         return initialized;
     }
-    NeoScript::Invocation call = impl_->runtime->Call(impl_->instance, name);
+    NeoScript::Invocation call = function ? NeoCoreBackend::CallFunction(*impl_->runtime,impl_->instance,function->bound_->value)
+        : impl_->runtime->Call(impl_->instance, name);
     if (!call)
     {
         result.error = impl_->BackendError("could not invoke " + name);
@@ -412,7 +783,34 @@ Result Instance::Call(const std::string& name, const std::vector<Scalar>& argume
         case Scalar::Kind::Float: call.argFloat(argument.asFloat()); break;
         case Scalar::Kind::Bool: call.argBool(argument.asBool()); break;
         case Scalar::Kind::String: call.argString(argument.asString()); break;
-        case Scalar::Kind::Null: break;
+        case Scalar::Kind::Null:
+            if (!NeoCoreBackend::AppendNull(call)) return Failure("could not append null argument", impl_->sourceName);
+            break;
+        case Scalar::Kind::Vector2: call.argVec(argument.asVector(), 2); break;
+        case Scalar::Kind::Vector3: call.argVec(argument.asVector(), 3); break;
+        case Scalar::Kind::Vector4:
+        case Scalar::Kind::Quaternion: call.argVec(argument.asVector(), 4); break;
+        case Scalar::Kind::Object:
+        {
+            const std::uint64_t id = argument.asObject();
+            std::int64_t bits;
+            std::memcpy(&bits, &id, sizeof(bits));
+            call.argInt(bits);
+            break;
+        }
+        case Scalar::Kind::List:
+        case Scalar::Kind::Map:
+        case Scalar::Kind::Set:
+        case Scalar::Kind::Array:
+        case Scalar::Kind::Function:
+        case Scalar::Kind::Struct:
+            try
+            {
+                if (!NeoCoreBackend::AppendValue(call,BoundaryAccess::Copy(*impl_->runtime,types,target,impl_->module,argument)))
+                    return Failure("could not transfer typed argument",impl_->sourceName);
+            }
+            catch(const std::exception& failure) { return Failure(failure.what(),impl_->sourceName); }
+            break;
         }
     }
     ExecutionScope executing(impl_->executing);
@@ -421,7 +819,8 @@ Result Instance::Call(const std::string& name, const std::vector<Scalar>& argume
     {
         impl_->suspended = true;
         impl_->pending = std::move(call);
-        impl_->pendingSignature = signature;
+        impl_->pendingOwnedSignature = *signature;
+        impl_->pendingSignature = &impl_->pendingOwnedSignature;
         impl_->pendingName = name;
         result.status = ExecutionStatus::Suspended;
         return result;
@@ -442,20 +841,59 @@ Result Instance::Impl::ReadResult(NeoScript::Invocation& call, const StaticFunct
     result.status = ExecutionStatus::Failed;
     result.error.sourceName = sourceName;
     const TypeRegistry& types = checked.types;
+    TypeId expected = signature.returnType;
+    if (types.IsNullable(expected)) expected = types.Get(expected).element;
+    const TypeKind expectedKind = types.Get(expected).kind;
+    if (expectedKind == TypeKind::Array || expectedKind == TypeKind::Array32 || expectedKind == TypeKind::List ||
+        expectedKind == TypeKind::Map || expectedKind == TypeKind::Set || expectedKind == TypeKind::Function || expectedKind == TypeKind::Struct)
+    {
+        try
+        {
+            result.value = BoundaryAccess::Wrap(*runtime,types,signature.returnType,module,NeoCoreBackend::CaptureResult(call,module));
+            if (expectedKind == TypeKind::Struct && result.value.kind() != Scalar::Kind::Null)
+                result.value = BoundaryAccess::Wrap(*runtime,types,expected,module,BoundaryAccess::Copy(*runtime,types,expected,module,result.value));
+            result.status = ExecutionStatus::Completed;
+        }
+        catch (const std::exception& failure) { result.error.message = failure.what(); }
+        return result;
+    }
     switch (call.retType())
     {
     case NeoScript::ValueType::None:
         if (signature.returnType != types.Void()) result.value = Scalar::Null();
         break;
     case NeoScript::ValueType::Bool: result.value = Scalar::Bool(call.retBool()); break;
-    case NeoScript::ValueType::Int: result.value = Scalar::Int(call.retInt()); break;
+    case NeoScript::ValueType::Int:
+        if (expectedKind == TypeKind::Native)
+        {
+            const std::int64_t bits = call.retInt();
+            std::uint64_t id;
+            std::memcpy(&id, &bits, sizeof(id));
+            if (!id) { result.error.message = "backend returned an invalid object ID"; return result; }
+            result.value = Scalar::Object(types.Get(expected).name, id);
+        }
+        else result.value = Scalar::Int(call.retInt());
+        break;
     case NeoScript::ValueType::Float: result.value = Scalar::Float(call.retFloat()); break;
     case NeoScript::ValueType::String: result.value = Scalar::String(call.retString().str()); break;
+    case NeoScript::ValueType::Vec2:
+    case NeoScript::ValueType::Vec3:
+    case NeoScript::ValueType::Vec4:
+    {
+        float components[4] = {};
+        const int dimension = expectedKind == TypeKind::Vector2 ? 2 : expectedKind == TypeKind::Vector3 ? 3 : 4;
+        if (!call.retVec(components, dimension)) { result.error.message = "backend vector dimension mismatch"; return result; }
+        const Scalar::Kind kind = expectedKind == TypeKind::Quaternion ? Scalar::Kind::Quaternion :
+            dimension == 2 ? Scalar::Kind::Vector2 : dimension == 3 ? Scalar::Kind::Vector3 : Scalar::Kind::Vector4;
+        result.value = Scalar::Vector(kind, components);
+        break;
+    }
     default: result.error.message = "backend returned an unsupported host value"; return result;
     }
     // 실제 값의 타입도 대조하여 변환 누락을 호스트로 조용히 전달하지 않는다.
-    TypeId actual = ScalarType(types, result.value.kind());
-    TypeId expected = signature.returnType;
+    TypeId actual = result.value.kind() == Scalar::Kind::Object
+        ? types.LookupNamed(result.value.objectType()) : ScalarType(types, result.value.kind());
+    expected = signature.returnType;
     if (types.IsNullable(expected) && actual != types.Null()) expected = types.Get(expected).element;
     if (expected != actual && !(types.IsNullable(expected) && actual == types.Null()))
         result.error.message = "backend result type disagrees with the static signature of " + name;
@@ -503,8 +941,10 @@ Result Instance::Resume(double deltaTime, std::uint32_t instructionBudget)
     {
         const std::string name = std::move(impl_->deferredName);
         std::vector<Scalar> arguments = std::move(impl_->deferredArguments);
+        Scalar function = std::move(impl_->deferredFunction);
         impl_->deferredCall = false;
-        if (result.ok()) return Call(name, arguments, impl_->deferredLimits);
+        if (result.ok()) return function.kind() == Scalar::Kind::Function
+            ? Call(function,arguments,impl_->deferredLimits) : Call(name, arguments, impl_->deferredLimits);
     }
     return result;
 }

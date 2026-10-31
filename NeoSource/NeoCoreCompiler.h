@@ -19,6 +19,32 @@ struct StaticFunctionSignature
     bool exported = false;
 };
 
+struct StaticDebugSymbol
+{
+    std::string backendName;
+    std::string name;
+    TypeId type = InvalidType;
+    bool boxed = false;
+};
+
+struct StaticGlobalSignature
+{
+    std::string name;
+    TypeId type = InvalidType;
+    bool exported = false;
+};
+
+struct StaticDeclaration
+{
+    std::string name;
+    std::string type;
+    std::vector<std::string> parameters;
+    std::size_t offset = 0;
+    bool function = false;
+};
+
+void CollectStaticDeclarations(const std::string& source, std::vector<StaticDeclaration>& declarations);
+
 struct StaticCompileResult
 {
     bool success = false;
@@ -36,10 +62,21 @@ struct StaticCompileResult
     int errorColumn = 0;
     TypeRegistry types;
     std::vector<StaticFunctionSignature> functions;
+    std::vector<StaticDebugSymbol> debugSymbols;
+    std::vector<StaticGlobalSignature> globals;
 };
 
 // 타입 검사한 숫자 식은 IR로, 아직 이관하지 않은 문장과 식은 줄 수를 보존한 골격으로 내린다.
 // IR은 원본 위치를 보존한다. 기존 경로의 변환 식 때문에 백엔드 열 위치는 달라질 수 있다.
-bool CompileStaticSource(const std::string& source, StaticCompileResult& result, const HostSchema* hostSchema = nullptr);
+struct CompileDefine;
+struct StaticDefineReplacement
+{
+    std::size_t begin = 0, end = 0;
+    std::string text;
+};
+bool ExpandStaticDefines(const std::string& source, const std::vector<CompileDefine>& defines,
+    std::vector<StaticDefineReplacement>& replacements, std::string& error, int& line, int& column);
+bool CompileStaticSource(const std::string& source, StaticCompileResult& result, const HostSchema* hostSchema = nullptr,
+    const std::vector<CompileDefine>* defines = nullptr);
 
 }

@@ -1249,6 +1249,7 @@ int CNeoVMWorker::RunHostCall(int iFunctionID, std::vector<VarInfo>& _args, VarI
 		// Validate before detaching the parent or touching its stack frame.
 		if (closureValue != nullptr && (closureValue->GetType() != VAR_CLOSURE ||
 			closureValue->_closure == nullptr || closureValue->_closure->_funIndex != iFunctionID ||
+			closureValue->_closure->_ownerWorkerId != GetWorkerID() ||
 			iFunctionID < 0 || iFunctionID >= (int)Functions().size() ||
 			closureValue->_closure->_captures.size() != Functions()[iFunctionID]._captures.size()))
 			return NEOEXEC_ERROR;
@@ -2326,6 +2327,8 @@ bool	CNeoVMWorker::RunInternal(int iBreakingCallStack)
 		NEOCORE_ARRAY_DISPATCH(V2, Vector2)
 		NEOCORE_ARRAY_DISPATCH(V3, Vector3)
 		NEOCORE_ARRAY_DISPATCH(V4, Vector4)
+		NEOCORE_ARRAY_DISPATCH(I32, Int32)
+		NEOCORE_ARRAY_DISPATCH(F32, Float32)
 #undef NEOCORE_ARRAY_DISPATCH
 		case NOP_ARRAY_LEN: StoreNumberInt(GetVarPtrF1(OP), GetVarPtr2(OP)->_array->_count); break;
 		case NOP_ARRAY_RESIZE: TypedArrayResize(OP); break;
@@ -2436,6 +2439,13 @@ bool CNeoVMWorker::StopCoroutine(bool doDead)
 
 bool CNeoVMWorker::StartCoroutione(int argSP_Vars, int n3)
 {
+	if (m_pRegisterActive && m_pRegisterActive->_function.GetType() == VAR_CLOSURE &&
+		(m_pRegisterActive->_function._closure == nullptr ||
+		m_pRegisterActive->_function._closure->_ownerWorkerId != GetWorkerID()))
+	{
+		SetError(RTE_CALL_INVALID);
+		return false;
+	}
 	CoroutineBase* pThis = (CoroutineBase*)this;
 	if (m_pCur)
 	{
@@ -2567,6 +2577,11 @@ VarInfo* CNeoVMWorker::testCall(VarInfo* function, VarInfo* args, int argc)
 		return NULL;
 
 	ClosureInfo* closure = function->_closure;
+	if (closure->_ownerWorkerId != GetWorkerID())
+	{
+		SetError(RTE_CALL_INVALID);
+		return NULL;
+	}
 	if (closure->_funIndex < 0 || closure->_funIndex >= (int)Functions().size())
 		return NULL;
 	const SFunctionTable& fun = Functions()[closure->_funIndex];
@@ -2626,7 +2641,7 @@ void CNeoVMWorker::CallFunctionValue(int functionIndex, int argumentCount)
 
 void CNeoVMWorker::Call(ClosureInfo* closure, int n2, int returnValueIndex)
 {
-	if (closure == nullptr || closure->_funIndex < 0 ||
+	if (closure == nullptr || closure->_ownerWorkerId != GetWorkerID() || closure->_funIndex < 0 ||
 		closure->_funIndex >= (int)Functions().size())
 	{
 		SetError(RTE_CALL_INVALID);

@@ -1,605 +1,73 @@
-# NeoScript × Unity
+# NeoCore in Unity
 
-Running the NeoScript VM from Unity. For the language itself see
-[ScriptAuthoring.md](ScriptAuthoring.md), for the functions a script can call see
-[API.md](API.md), and for the C++ host API see [Embedding.md](Embedding.md).
+Use the typed [Unity package](../Unity/com.neocore.unity) and
+[bridge build instructions](../Unity/NeoCore/README.md). Scripts use `.nc`.
+The importer, runtime wrappers and native plugin compile through the static
+NeoCore frontend; the former NeoScript plugin is a separate product.
 
-## Layers
+## Surface and setup
 
-C# cannot take C++ name mangling, virtual functions or `std::` types across
-P/Invoke, so there are three layers.
+The package exposes Program, Instance, Result, Scalar, CompileOptions, typed host
+schemas and owning value handles. C consumers use
+[NeoCoreC.h](../Unity/NeoCore/NeoCoreC.h), whose `Nc*` entry points use opaque
+handles and length-delimited UTF-8 strings. Check `NcGetAbiVersion` rather than
+assuming the old NeoScript ABI or result layout is unchanged.
 
-| Layer | Location | Role |
-| :--- | :--- | :--- |
-| C++ facade | `NeoSource/NeoScript.h` | The VM's public API. The engine (a C++ host) uses this directly |
-| C ABI | `Unity/Native/NeoScriptC.h` `.cpp` | The facade flattened to plain C — the only shape P/Invoke can call |
-| C# binding | `Unity/com.neoscript.unity/Runtime/` | A UPM package wrapping the C ABI |
+The supported boundary includes int64, binary64, bool, strings, nullable values,
+Vector2/3/4, quaternions, registered object IDs, typed collections, structs and
+function values. Unity vectors marshal through float32 components. Quaternion
+host values use w,x,y,z; the Unity conversion helpers reorder to/from Unity's
+constructor layout.
 
-The C ABI lives outside `NeoSource/` for one reason: the engine repository
-compiles `NeoSource/*.cpp` wholesale, and the engine uses the C++ facade
-directly, so it has no use for this shim. Keeping it there would drag a file
-into every engine build that nothing in that build calls.
+Register native object types, properties, methods and globals before compilation.
+`CompileOptions` also supplies module loading and an optional HTTP transport.
+Object resolvers validate live IDs at use; do not retain an engine pointer across
+script reentry. [HostBindings.md](HostBindings.md) defines the same contract for
+C++ and managed adapters.
 
-## Updating from an older checkout
-
-Close Unity, update the UPM sources, then rebuild the native plugin for each
-target platform. The current binding requires **C ABI 8**; an older DLL is
-rejected at runtime construction with an ABI mismatch. This is the native
-binding revision, not a package or bytecode version. Recompile cached bytecode
-with the current core; old images may be rejected by its image-version check.
-ABI 8 adds sized vector reads/writes and quaternion collection/call helpers without changing ABI 7 structure layouts. See [Sized native vector access](native-vector-api.md) for short-vector rejection and compatibility.
-
-ABI 7 uses C# `long` for script integers and `double` for scalar floats, including
-arguments, results, globals, and collection values. Array views use `Span<long>` and
-`Span<double>`. Vector components and Unity vector types remain float32.
-`NsCallResult.d` stores scalar results; `f[4]` stores vectors. Its size is 64 bytes on
-Windows x64/x86 and ARM with eight-byte double alignment. Rebuild native plugins
-together with the managed package. Explicitly narrow scalar results for Unity float fields.
-Collection lengths, indices, handles, and statuses retain their existing widths.
-
-ABI 5 added `NsRuntimeTryDestroy` and `NsTryDestroyInstance`, which the managed
-binding uses to reject unsafe disposal without releasing its managed handles.
-ABI 5 preserved ABI 4 structure layouts; ABI 6 changed integer payloads; ABI 7 changes scalar floats and `NsCallResult` as described above. Update the package and plugin together.
-
-The binding now exposes the shared JSON codec, collection null/native-object
-checks, storage identity and string-key enumeration. See the examples below.
-The Basic sample also demonstrates vector component assignment through a C#
-property. Library features such as `replaceAll`, `format`, list insertion,
-removal and sorting are available to scripts through the rebuilt core; they do
-not need separate C# implementations. See [API.md](API.md).
-
-## Setup
-
-### 1. Build the native plugin
+The Basic sample and managed smoke driver illustrate initialization, exported
+calls and transform updates. Build the native plugin before importing/playing:
 
 ```powershell
-pwsh Unity\build_windows.ps1                 # editor + Win64 player
-pwsh Unity\build_android.ps1                 # arm64-v8a
-pwsh Unity\build_android.ps1 -Abi armeabi-v7a
+pwsh Unity/NeoCore/build_windows.ps1
+pwsh Unity/NeoCore/check_managed.ps1
 ```
 
-```bash
-./Unity/build_ios.sh                         # macOS with Xcode only
-```
-
-Unity does not produce `libNeoScriptUnity.a`. It is built from the same sources
-as every other platform — the VM plus the C ABI — through the `NeoScriptStatic`
-CMake target, and it needs the Xcode toolchain, which exists only on macOS. If
-nobody on the team has a Mac, the `ios-static` CI job builds it on a `macos-latest`
-runner; download the artifact and drop it into `Runtime/Plugins/iOS/`.
-
-Each script copies its output straight into
-`Unity/com.neoscript.unity/Runtime/Plugins/`.
-
-**The binaries are not in the repository.** They are build output and are
-gitignored, so a fresh checkout has to run the scripts above before opening
-Unity.
-
-Importer settings are not committed either — `NeoPluginImportSettings.cs`
-applies them in code. Unity deletes a `.meta` whose asset is missing, so
-without the binaries there is no way to commit the settings alone.
-
-### 2. Reference the package from a Unity project
-
-Add a local path to the project's `Packages/manifest.json`. Relative paths
-resolve against the `Packages` folder.
-
-```json
-{
-  "dependencies": {
-    "com.neoscript.unity": "file:../../path/to/NeoScript/Unity/com.neoscript.unity",
-    ...
-  }
-}
-```
-
-Edits made in the repository show up in the editor immediately. Not keeping a
-copy is the whole point.
-
-## Minimal use
-
-```csharp
-using NeoScript;
-using UnityEngine;
-
-// print/error are process-global hooks. Install them once at startup.
-NeoRuntime.SetLogSink(Debug.Log, Debug.LogError);
-
-var runtime = new NeoRuntime();
-runtime.RegisterObject("Unity", new UnityBridge());   // register before Freeze
-runtime.Freeze();
-
-NeoProgram program = runtime.Compile(sourceText, "enemy.ns");
-NeoInstance instance = program.CreateInstance();
-
-int hp = instance.Call("GetHp").InvokeInt();
-```
-
-Teardown has an order. These are native resources; the GC will not collect them.
-
-```csharp
-function?.Dispose();
-instance?.Dispose();
-program?.Dispose();
-runtime?.Dispose();
-```
-
-`NeoInstance.Dispose()` and `NeoRuntime.Dispose()` throw `NeoException` while
-an invocation or executing callback still needs the target. Rejection leaves
-the native owner, managed wrapper, binding slots, and GC handles intact. Finish
-or abandon outstanding calls, return from callbacks, then retry disposal.
-`NeoInstance.Reset()` returns `false` under the same active-use guard; successful
-reset preserves the original `runGlobalInit` creation setting.
-
-For direct C ABI use, `NsTryDestroyInstance` and `NsRuntimeTryDestroy` return
-`0` on refusal and `1` on success. The existing void destroy functions delegate
-to the same guard. They do not queue a deferred destruction.
-
-## Exposing a C# object to script
-
-`INeoObject` receives every method through one dispatcher. Implement
-`INeoProperties` as well if the object needs fields.
-
-```csharp
-sealed class UnityBridge : INeoObject, INeoProperties
-{
-    public bool Invoke(NeoCallContext ctx, NeoName method)
-    {
-        if (method.Is("Log"))         { Debug.Log(ctx.ArgString(0)); return true; }
-        if (method.Is("SetPosition")) { target.position = ctx.ArgVector3(0); return true; }
-
-        ctx.Fail(1, "unknown method: " + method.ToString());
-        return false;
-    }
-
-    public bool GetProperty(NeoCallContext ctx, NeoName name)
-    {
-        if (name.Is("time")) { ctx.Return(Time.time); return true; }
-        return false;
-    }
-
-    public bool SetProperty(NeoCallContext ctx, NeoName name) => false;
-}
-```
-
-Script side:
-
-```
-Unity.Log("hello");
-Unity.SetPosition(math.Vector3(1.0, 2.0, 3.0));
-var t = Unity.time;
-```
-
-`NeoName` is a UTF-8 view, not a string. The dispatcher runs on every call, so
-comparing with `method.ToString()` allocates once per call and piles up garbage
-every frame. Compare with `Is()`, which does not allocate.
-
-`Vector2/3/4` and `Quaternion` are VM value types. Vector helpers preserve
-component order. Script quaternions use **w,x,y,z**, while Unity's constructor
-uses **x,y,z,w**: `ArgQuaternion`, `NeoResult.AsQuaternion`, and `Return(Quaternion)`
-reorder those four components. For example, `math.Quaternion(1,2,3,4)` becomes
-`new Quaternion(2,3,4,1)` in Unity. Raw `Vector4` helpers and array views preserve
-script order, including when the four components represent a quaternion.
-
-## Constraints worth knowing up front
-
-**Only `export`ed declarations are visible to the host.** Functions need
-`export fun` and globals need `export var` before `Call` / `TryGetInt` can reach
-them. A plain `var` global cannot be found.
-
-**Every call must be finished.** `instance.Call(...)` borrows the instance's
-execution context. The `Invoke*` terminals return it automatically, but if you
-push arguments and then abandon the call, call `Abandon()`. One instance has at
-most one live call at a time (a nested native-to-script call is the exception).
-
-**Readers and builders are valid only inside the scope that issued them.**
-`NeoMapReader`, `NeoListReader` and `NeoArrayView` are views over VM storage, so
-nothing is copied. Carry one outside its dispatcher call or its `InvokeReadMap`
-callback and it points at dead memory. Copy out what you need while inside.
-
-At the lower C ABI level, `NsCallRetMap`, `NsCallRetList`, `NsCallRetArray`,
-their descendant handles, and borrowed key descriptor arrays belong to the
-issuing `NsCall`. Calls on different instances can interleave and end in either
-order without invalidating one another's readers. Repeated return-reader access
-within the same call preserves earlier readers. End that call with `NsCallEnd`
-before destroying its instance. Starting another call on the same instance
-invalidates the earlier borrowed return. Native-dispatch and `InvokeRead*`
-callback readers still expire when their issuing callback returns.
-
-```csharp
-int gold = 0;
-instance.Call("GetInventory").InvokeReadMap(map => map.TryGet("gold", out gold));
-```
-
-**Native object aliases retain their source instance identity.** When a native
-object is shared into another instance, directly or inside a map/list, its
-callback still identifies the source instance. Resetting or destroying that
-source invalidates old native aliases; a later method/property access fails
-instead of using a released binding. A successful reset creates fresh bindings
-for newly obtained objects. This does not transfer ownership of host `userData`.
-Object-type tokens belong to their runtime, are invalid after its destruction,
-and are rejected by C ABI operations targeting another runtime. Repeated type
-lookup in a live runtime returns the same token.
-
-**At most 64 native object types can be registered.** The VM's dispatcher is a
-bare function pointer with nowhere to carry context, so each type needs its own
-fixed thunk, which is what caps the count. Raise `NS_MAX_OBJECT_SLOTS` in
-`NeoScriptC.h` and rebuild the native plugin if you need more.
-
-**A VM instance is not thread-safe.** Use one instance from one thread, which in
-Unity means the main thread.
-
-**Never let an exception escape a callback.** The binding wraps every
-`INeoObject` implementation in try/catch and turns a leak into a script runtime
-error, but leaving a reason with `ctx.Fail(code, reason)` and returning `false`
-is far better than being swallowed — that is what attaches the script IP, line
-and stack trace.
-
-## Keeping the frame
-
-Two handles keep a runaway or infinite script from eating a whole frame.
-
-```csharp
-// 1. a per-call ceiling
-instance.Call(update).Arg(Time.deltaTime).Timeout(8).Invoke();
-
-// 2. slice a long job across frames
-instance.StartSliced("BuildWorld", timeoutMs: 4);
-while (instance.UpdateSliced() == NeoRunStatus.Suspended)
-    yield return null;
-```
-
-## Precompiling to bytecode
-
-`Compile` runs the parser. Baking once at build time and shipping only the image
-is the normal arrangement: it loads faster and the source is not packaged
-verbatim.
-
-```csharp
-// build time (editor)
-byte[] image = runtime.CompileToBytecode(source, "enemy.ns");
-File.WriteAllBytes(outputPath, image);
-
-// runtime
-NeoProgram program = runtime.LoadProgram(bytes);
-```
-
-## Resolving imports
-
-`import` is a compile-time include. Unity has no filesystem paths, so supply the
-loader yourself.
-
-```csharp
-var runtime = new NeoRuntime(new NeoRuntimeOptions
-{
-    Loader = path =>
-    {
-        var asset = Resources.Load<TextAsset>("NeoScripts/" + Path.GetFileNameWithoutExtension(path));
-        return asset != null ? asset.bytes : null;   // null when not found
-    },
-});
-```
-
-Built-in modules such as `math` go through the loader first as well. Returning
-`null` makes the engine fall back to its own implementation, so there is nothing
-to special-case.
-
-## Platforms
-
-| Platform | Output | Resolution | Verified |
-| :--- | :--- | :--- | :--- |
-| Windows editor (Mono) | `NeoScript.dll` | `DllImport("NeoScript")` | yes — all three suites pass |
-| Windows player x64 (**IL2CPP**) | `NeoScript.dll` | same | yes — PlayMode tests pass inside the built player |
-| Android arm64-v8a (**IL2CPP**) | `libNeoScript.so` | same | APK verified structurally; never run on a device |
-| iOS arm64 | `libNeoScriptUnity.a` | `DllImport("__Internal")` — dynamic loading is forbidden, so it links statically | no — needs macOS with Xcode |
-
-The Android build script also accepts `-Abi armeabi-v7a` and `-Abi x86_64`.
-Managed layout verification selects the expected native sizes from `IntPtr.Size`,
-so 32-bit ARMv7 does not use the 64-bit structure sizes. This layout support does
-not imply device testing of those targets.
-
-The IL2CPP run matters more than the platform it ran on. iOS has no alternative
-to IL2CPP, and AOT adds steps Mono never takes: generating reverse P/Invoke
-wrappers for every callback, and stripping managed code. Both were exercised —
-the player was built with managed stripping at **High**, so a stripping bug
-could not hide. What the binding does to be AOT-correct:
-
-- every native-to-managed callback is `static` and carries `[MonoPInvokeCallback]`
-- no managed exception is allowed to cross the boundary; each callback body is
-  wrapped in try/catch
-- the delegates handed to native code are held in static fields, so the GC
-  cannot collect their thunks
-- `link.xml` preserves the binding assembly, because the callbacks are reachable
-  only through `Marshal.GetFunctionPointerForDelegate` and the linker cannot see
-  that
-- every struct crossing the boundary is blittable, and callbacks take
-  pointer-plus-length instead of a struct by value
-
-To re-run it: flip the backend, then run the PlayMode tests inside a built
-player rather than in the editor.
-
-```powershell
-# sets IL2CPP with High stripping, so a stripping bug cannot hide
-Unity.exe -batchmode -nographics -projectPath <project> `
-          -executeMethod NeoScriptTest.NeoPlayerBuildSetup.UseIl2Cpp -logFile -
-
-Unity.exe -batchmode -projectPath <project> `
-          -runTests -testPlatform StandaloneWindows64 -testResults results.xml
-```
-
-This needs the Windows Build Support (IL2CPP) module. Where several editor
-installs of the same version exist, only some carry it — check
-`Editor/Data/PlaybackEngines/windowsstandalonesupport/Variations` for
-`*_il2cpp` entries rather than trusting the folder name.
-
-An arm64-v8a IL2CPP APK has been taken apart and checked: `libNeoScript.so`
-lands in `lib/arm64-v8a/`, exports its `Ns*` C entry points and no C++ runtime
-symbols, needs only `libc`/`libm`/`libdl`, and its LOAD segments align at
-`0x4000`. IL2CPP emitted a `ReversePInvokeWrapper_*` for all nine callbacks, so
-script-to-C# calls really are compiled ahead of time for arm64. Nobody has run
-it on a device yet — that is the one step left, and the demo scene reports it in
-logcat as `[neo] runtime up` followed by `[neo] neo script is driving this
-transform`.
-
-The Android `.so` is stripped in release and keeps its C++ runtime to itself.
-Unstripped it carries about 19MB of debug symbols into every APK, and without
-`-Wl,--exclude-libs,ALL` the statically linked libc++ re-exports about 1300
-`std::` symbols. Unity loads `libunity.so` and `libil2cpp.so` with their own C++
-runtime into the same process, so those exports would let the dynamic linker
-bind their calls into our copy, leaving two libc++ instances on one heap. After
-both, the `.so` exports its `Ns*` C entry points and nothing else, and needs
-only `libc`, `libm` and `libdl`.
-
-HTTP requests use a host-supplied transport. Set `NeoRuntimeOptions.HttpTransport` to a synchronous
-`Func<NeoHttpRequest, NeoHttpResponse>` before constructing the runtime. It runs on a background
-thread: do not call Unity APIs or reenter the VM there. Poll `request.IsCancellationRequested`
-while waiting, including with `TimeoutMs == -1`. Cancellation can only be read during the callback;
-method, URL, body and headers are copied managed values.
-
-`NeoHttpClientTransport` is an optional .NET HTTP/HTTPS adapter with normal TLS validation, no
-redirect following, and an 8 MiB response buffer limit. Keep it alive until all runtimes using it
-have been disposed. It does not own the runtime:
-
-```csharp
-using (var transport = new NeoHttpClientTransport())
-using (var runtime = new NeoRuntime(new NeoRuntimeOptions { HttpTransport = transport.Send }))
-{
-    // Create and run scripts here.
-}
-```
-
-A missing transport still reports `HTTP transport is not configured`. The new registration entry
-point requires rebuilding the native plugin, even though the unchanged descriptor layouts remain
-ABI 7. The VM starts a background thread only when an HTTP request is submitted.
-
-## Rebuilding the native plugin
-
-**Close the editor first.** Unity never releases a native plugin it has loaded
-through DllImport, so `NeoScript.dll` cannot be overwritten while the editor is
-running.
-
-The usual workaround is to drop the reference with `FreeLibrary`. **This package
-does not do that. It was tried and it failed twice, both measured.**
-
-- Releasing the module without a domain reload leaves Mono holding cached
-  P/Invoke function pointers into freed memory. The next call jumps there and
-  takes the whole editor down.
-- Releasing it inside a domain reload does not crash, but the plugin never comes
-  back. Unity resolves the plugin name to an already-loaded module handle and
-  does not reload it once that handle is dead, so every later call raises
-  `EntryPointNotFoundException`.
-
-Iterating on the native side without closing the editor would require the
-binding to resolve entry points itself through `LoadLibrary`/`GetProcAddress`
-instead of DllImport. That is a design change in the binding layer, not
-something a workaround can reach.
-
-## Module visibility
-
-`export` is for the C# host; `public` is for another script module. For example,
-with a loader that resolves `import util;` to `util.ns`:
-
-```cpp
-// util.ns
-var privateCounter = 0;
-public const STEP = 3;
-public var value = 5;
-public fun Triple(var v) { return v * 3; }
-```
-
-```cpp
-// main.ns
-import util;
-export fun Update(var dt) { util.value += util.STEP; }
-```
-
-Use `export public fun` or `export public var` only when both consumers need
-access. `export const` is an error; module constants use `public const`.
-Functions may call later function definitions, but variables and constants
-must still be declared before use, including inside function bodies.
-Existing imported helpers declared with only `export fun` need `public fun`.
-
-## JSON from scripts and C# callbacks
-
-Scripts can call `system.jsonEncode(value, sortKeys)` and
-`system.jsonDecode(text)`, and inspect `system.jsonError()` on failure.
-C# callbacks use the **same core codec**:
-
-```csharp
-if (method.Is("Encode"))
-{
-    if (!ctx.ArgToJson(0, out string text, out NeoJsonResult result, sortKeys: true))
-    {
-        ctx.Fail(1, result.Error);
-        return false;
-    }
-    ctx.Return(text);
-    return true;
-}
-if (method.Is("Decode"))
-{
-    string text = ctx.ArgString(0);
-    if (!ctx.ReturnJson(text, out NeoJsonResult result))
-    {
-        ctx.Fail(1, result.Error);
-        return false;
-    }
-    return true;
-}
-```
-
-The helpers return a success flag; they do not raise a VM error themselves.
-`ArgToJson` produces null text on failure. `ReturnJson` leaves a null return
-value on failure. A successfully decoded JSON `null` also returns null, so
-check the flag to distinguish it from failure. `NeoJsonResult.Error` and
-`Warnings` are managed copies and remain valid after the callback returns.
-
-Decode defaults to strict int64 integers and accepts any supported root value.
-`requireMap: true` restricts the root to a map. `strictIntegers: false` allows
-out-of-int64 integers to become finite float64 values with warnings. Float64
-values retain real notation (`100.0`) when encoded. Encoding optionally sorts
-map keys; lists keep their order.
-
-Only null, bool, int64, float64, strings, string-key maps and lists are
-supported. Native objects, vectors, functions, sets, dense arrays, cycles,
-invalid text and nesting beyond 64 containers fail with a full path such as
-`$.items[2].position`. Map nulls are omitted; list nulls are preserved. See
-[JSON.md](JSON.md) for the complete shared contract.
-
-`NeoListBuilder.PushNull()` explicitly adds a null slot. Readers expose
-`IsNull`, `IsNativeObject` and `SameStorage`. Missing keys and invalid indices
-are not null values. `ArgIsNativeObject` detects native objects even when their
-userData is zero; `ArgObjectUserData == IntPtr.Zero` alone cannot do that.
-`NeoMapReader.TryGetStringKeys` copies all keys to managed strings, without
-sorting, and rejects mixed-key maps without returning partial keys. Readers
-remain borrowed views and must not escape their issuing callback.
-
-The Android/Linux shared-library link uses an export map to keep yyjson and
-C++ implementation symbols private even if a dependency requests default
-visibility. The Android build script verifies this before deploying the plugin.
-
-## Vector arrays
-
-`system.array(math.Vector3(0,0,0), count)` and the Vector2/Vector4 equivalents store
-16-byte `VarInfo` values. Vector2/3 store components inline; Vector4 uses copy-on-write
-storage. `NeoArrayView` exposes `ElementType`,
-`Count`, `VectorDimension` (2/3/4), and `TryGet(index, out Vector2/3/4)` /
-`TrySet(index, Vector2/3/4)`. Both return false for an invalid index or a dimension mismatch.
-Reads copy the components to Unity and writes copy them back; script values read from the array
-earlier are not affected by either.
-
-```csharp
-var positions = ctx.ArgArray(0);
-if (positions.TryGet(0, out Vector3 position))
-    positions.TrySet(0, position + Vector3.up);
-```
-
-`VectorComponents` and `NsArrayVectorData` were removed in C ABI 4; rebuild the native plugin
-with the matching managed bindings. `Floats` remains exclusive to double arrays.
-`system.array32` exposes `NeoArrayElementType.Int32` or `.Float32`, with `Ints32`
-(`Span<int>`) and `Floats32` (`Span<float>`) respectively. Nonmatching accessors return
-empty spans. The spans are borrowed and must not outlive the callback or survive a
-script resize. Native plugins must include `NsArrayInts32` and `NsArrayFloats32`.
-The view is borrowed for the existing callback scope; copied Vector2/3/4 values can be retained.
-
-C++ uses `ArrayView::getVec(index, out4)` and `setVec(index, components, dimension)`;
-the C ABI uses `NsArrayGetVec` and `NsArraySetVec`. `getVec` writes four floats,
-zeroing unused components. Quaternion arrays remain Vector4 and retain script w,x,y,z
-component order; convert explicitly for Unity quaternions.
-
-## Vector properties
-
-The Basic sample exposes a writable `Unity.position` property. Both whole-value
-and component assignments call its setter:
-
-```cpp
-Unity.position = math.Vector3(1.0, 2.0, 3.0);
-Unity.position[1] += dt;
-```
-
-Component assignment reads the parent property once after evaluating the right
-side and writes the changed vector back once. Implement `SetProperty` and
-return true only when the assignment was accepted. A getter-only property
-must return false from the setter; the error identifies the property name.
-
-## Domain reloads
-
-The package cleans up at the reload boundary (`NeoDomainReloadGuard`). Managed
-`NeoRuntime` objects vanish with the domain while the native runtimes do not, so
-they are all destroyed just before the reload, and the log callback the native
-side holds is detached as well — that callback is the address of a managed
-delegate thunk, which dies with the reload while the module keeps pointing at it.
-
-Which means **a component that calls into script every frame has to survive a
-reload.** With "Recompile And Continue Playing" a reload can happen mid-play:
-the component survives, but the instance it held is dead and its non-serialized
-fields are reset to null, and `Awake` is not called again. Check
-`instance.IsAlive` and rebuild when it is dead —
-`Samples~/Basic/NeoScriptDemo.cs` is shaped that way.
-
-## Verification
-
-The C ABI itself is covered by a smoke test written in plain C. Compiling it as
-C is half the test: if C++ ever creeps into the ABI header, it fails here rather
-than inside a P/Invoke host.
-
-```powershell
-cmake -S . -B build\unity -A x64
-cmake --build build\unity --config Release --target neoscript_c_abi_smoke
-build\unity\Release\neoscript_c_abi_smoke.exe
-cmake --build build\unity --config Release --target neoscript_host_c_abi_regression
-build\unity\Release\neoscript_host_c_abi_regression.exe
-```
-
-The host C ABI regression covers interleaved borrowed readers, invalid calls,
-object-type ownership, disposal guards, and native structure sizes. The managed
-smoke suite also checks Quaternion conversion, raw Vector4 order, layout
-verification, rejected disposal from a callback, and managed HTTP request/response, exception and
-shutdown cancellation behavior.
-
-On the Unity side there are three suites, because each is blind to what the
-others catch. The edit-mode smoke test sweeps the whole binding surface.
-
-```powershell
-Unity.exe -batchmode -nographics -projectPath <project> `
-          -executeMethod NeoScript.Tests.NeoSmokeTest.RunAll -logFile -
-```
-
-It returns the failure count as its exit code, so it drops straight into CI. In
-the editor it is **Tools > NeoScript > Run smoke test**.
-
-The PlayMode tests see what that one cannot. The edit-mode smoke test finishes
-inside a single frame, so it **cannot observe a lifetime problem that only
-appears across frame boundaries**. The bug where entering play mode destroyed a
-native runtime underneath a live component, raising `ObjectDisposedException`,
-was caught here and nowhere else.
-
-```powershell
-Unity.exe -batchmode -projectPath <project> `
-          -runTests -testPlatform PlayMode -testResults results.xml
-```
-
-These live inside the package, so the project's `Packages/manifest.json` needs
-the following for Unity to find them.
-
-```json
-"testables": [ "com.neoscript.unity" ]
-```
-
-The third suite covers the domain reload boundary. Both of the others run
-**inside a single domain**, so neither can see cleanup that goes wrong across a
-reload. This one uses the plugin before and after one.
-
-```powershell
-Unity.exe -batchmode -nographics -projectPath <project> `
-          -executeMethod NeoScript.Tests.NeoReloadCycleTest.RunAll -logFile -
-```
-
-## When the ABI drifts
-
-`NeoScriptC.h` and `NeoNative.cs` mirror each other. Rather than corrupting
-memory quietly, a mismatch fails loudly at startup: struct sizes are compared
-(`NeoNativeLayout.Verify`) and the ABI version is checked. When you change C
-ABI layouts or existing function signatures, raise `NS_ABI_VERSION` and raise
-`NeoNative.AbiVersion` on the C# side to match. The C++ enums and the C constants are pinned by `static_assert` in
-`NeoScriptC.cpp`.
+The package has Android and iOS build routes under `Unity`; follow the bridge
+instructions for toolchain prerequisites. Native plugin artifacts are build
+outputs, not source-controlled binaries.
+
+## Ownership and execution
+
+Programs share code across instances. Each instance keeps its own globals,
+object IDs and pending execution. Calls expose completion, suspension and failure;
+`RequireCompleted()` rejects both errors and unfinished results. Call/Resume budgets,
+cancellation/reset, exported globals, image save/load, collection operations,
+typed JSON and retained function calls are exposed through the typed bridge.
+
+Dispose owned programs, instances, retained values and options explicitly.
+A copied managed Scalar containing an owned handle shares that handle; use
+`Clone()` when an independent handle is required. Dispose does not deep-destroy
+other shared collection aliases. Runtime resources are not freed from arbitrary
+GC finalizer threads. The editor reload guard releases tracked resources before
+a domain reload. Do not dispose/reset an executing instance inside its callback;
+the API checks active execution.
+
+Callbacks must obey their declared signature. Their argument/return accessors
+are not dynamic coercion APIs. Retained closures cannot migrate to another
+instance or survive reset as executable callbacks. Named functions may be used
+by peer instances of the same compiled program.
+
+The HTTP adapter runs transport work off the script thread. A transport observes
+cancellation and returns an owned response; it must not call Unity main-thread
+APIs or reenter the VM from its worker callback. Script completion callbacks run
+when the instance processes completion. Install a transport explicitly; the core
+does not contain an HTTP implementation.
+
+## Validation limits
+
+C ABI smoke and managed P/Invoke tests run without a Unity Editor license.
+`Unity/NeoCore/check_unity.ps1` exercises the importer, PlayMode sample and domain
+reload in an installed, licensed Editor. A successful native/managed check alone
+does not certify PlayMode or every mobile device. See the bridge README for
+available platform scripts and observed validation.
