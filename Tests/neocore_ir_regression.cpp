@@ -688,6 +688,53 @@ void DiscardStructure()
     Check(consumed == 2, "nested and expression assignments keep their results: " + std::to_string(consumed));
 }
 
+// 명령 삭제만이 아니라 실제 프레임의 임시 슬롯도 줄어드는지 확인한다.
+void DirectDestinationStructure(IRuntime& runtime, bool debug)
+{
+    NeoCore::StaticCompileResult checked;
+    Check(NeoCore::CompileStaticSource(
+        "int Twice(int value){return value+value;}"
+        "export int Arithmetic(int value){int sum=1;sum+=value+2;return sum;}"
+        "export int Postfix(int value){value++;return value;}"
+        "export int Negate(int value){value=-value;return value;}"
+        "export int Convert(float value){int result=0;result=int(value);return result;}"
+        "export int Call(int value){value=Twice(value);return value;}"
+        "export void Store(list<int> target,int index,int value){target[index]=value;}",checked),
+        "direct destination shape frontend: "+checked.errorMessage);
+    if(!checked.success) return;
+    std::vector<uint8_t> bytes;
+    const Error compiled=runtime.CompileToBytecode(Description(checked,debug),bytes);
+    Check(compiled.ok(),"direct destination shape image: "+compiled.message);
+    if(!compiled.ok()) return;
+    std::string message;
+    CNeoVMProgram* program=CNeoVMProgram::Create(bytes.data(),static_cast<int>(bytes.size()),&message);
+    Check(program!=nullptr,"direct destination shape load: "+message);
+    if(!program) return;
+    const struct Case { const char* name; int temps; } cases[]={
+        {"Arithmetic",1},{"Postfix",0},{"Negate",0},{"Convert",0},{"Call",debug?1:0},{"Store",0}
+    };
+    for(const auto& test:cases)
+    {
+        const int function=program->FindFunction(test.name);
+        Check(function>=0,"direct destination function exists");
+        if(function<0) continue;
+        const SFunctionTable& frame=program->functions[function];
+        Check(frame._localTempMax==test.temps,std::string(test.name)+" only allocates live temporaries: "+std::to_string(frame._localTempMax));
+        int end=program->GetCodeSize();
+        for(const auto& other:program->functions)
+            if(other._codePtr>frame._codePtr && other._codePtr<end) end=other._codePtr;
+        for(int offset=frame._codePtr;offset<end;offset+=sizeof(SVMOperation))
+        {
+            const auto& operation=program->code[static_cast<std::size_t>(offset)/sizeof(SVMOperation)];
+            if(std::strcmp(test.name,"Call")==0 && (operation.op==NOP_CALL || operation.op==NOP_CALL_L))
+                Check(debug?operation.n3!=1:operation.n3==1,"script return uses the argument destination only outside debug mode");
+            if(std::strcmp(test.name,"Store")==0)
+                Check(operation.op!=NOP_MOV && operation.op!=NOP_MOV_L,"pure list store has no snapshot MOV");
+        }
+    }
+    program->Release();
+}
+
 void CallStructure()
 {
     const char* source = "struct Box{int x;};\nBox Copy(Box value){return value;}\n"
@@ -997,6 +1044,7 @@ int main()
         ScalarWrites(*runtime, debug);
         ScalarWriteErrors(*runtime, debug);
         DiscardedWrites(*runtime, debug);
+        DirectDestinationStructure(*runtime, debug);
         CallTransfers(*runtime, debug);
         CallReturnKinds(*runtime, debug);
         CallErrors(*runtime, debug);

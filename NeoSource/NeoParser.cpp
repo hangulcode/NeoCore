@@ -2755,9 +2755,9 @@ static SOperand EmitCoreAggregate(const std::string& operation, const SOperand* 
 }
 
 static SOperand EmitCoreNumber(eNOperation op, const SOperand& left, const SOperand& right,
-    CArchiveRdWC& ar, SFunctions& funs, int sourceLine)
+    CArchiveRdWC& ar, SFunctions& funs, int sourceLine, int destination = INVALID_ERROR_PARSEJOB)
 {
-    const int destination = funs._cur->AllocLocalTempVar();
+    if (destination == INVALID_ERROR_PARSEJOB) destination = funs._cur->AllocLocalTempVar();
     funs._cur->Push_OP(ar, op, destination, left._iVar, right._iVar, sourceLine);
     return SOperand(destination);
 }
@@ -2938,11 +2938,11 @@ static bool ParseCoreTypedIntrinsic(SOperand& result, const std::string& name,
             laterEffects |= effects[later];
         const bool identityInput = aggregate && IsIdentityAggregateOperation(aggregate->op);
         if ((aggregate && !identityInput) || !writeFamily.empty() ||
-            (collectionSet && i == 0) || NeedsSnapshot(arguments[i], laterEffects)) SnapshotValue(arguments[i], ar, funs);
+            NeedsSnapshot(arguments[i], laterEffects)) SnapshotValue(arguments[i], ar, funs);
     }
     if (collectionSet)
     {
-        // 값은 대상 해석 전에 보존했다. 저장 결과도 같은 값으로 돌려주며 원소 포인터는 보관하지 않는다.
+        // 뒤 인자가 값을 바꿀 때만 보존했다. 저장 결과도 같은 값이며 원소 포인터는 보관하지 않는다.
         funs._cur->Push_OP(ar, NOP_CLT_MOV, arguments[1]._iVar, arguments[2]._iVar, arguments[0]._iVar, sourceLine);
         result = arguments[0];
         return true;
@@ -3278,11 +3278,11 @@ static SOperand ReadCoreIRStorage(const NeoCore::IRNode& node, const SOperand& t
 }
 
 static bool EmitCoreIRNode(std::size_t index, SOperand& result,
-    CArchiveRdWC& ar, SFunctions& funs, SVars& vars);
+    CArchiveRdWC& ar, SFunctions& funs, SVars& vars, int destination = INVALID_ERROR_PARSEJOB);
 
 // 호출 인자는 순서대로 평가한 뒤 한꺼번에 인자 창으로 옮긴다. 중첩 호출이 같은 창을 재사용한다.
 static bool EmitCoreIRCall(const NeoCore::IRNode& node, const std::string& name, SOperand& result,
-    CArchiveRdWC& ar, SFunctions& funs, SVars& vars)
+    CArchiveRdWC& ar, SFunctions& funs, SVars& vars, int destination = INVALID_ERROR_PARSEJOB)
 {
     if (funs.GetCurFunName() == GLOBAL_INIT_FUN_NAME && !ar._allowGlobalInitLogic)
     { SetParserCompileError(ar, PCE_GLOBAL_CALL_NOT_ALLOWED); return false; }
@@ -3326,7 +3326,10 @@ static bool EmitCoreIRCall(const NeoCore::IRNode& node, const std::string& name,
         else if (!TryPushImmediate(ar, funs, slot, arguments[i], node.source.line))
             funs._cur->Push_OP2(ar, NOP_MOV, slot, arguments[i]._iVar, arguments[i].IsShort(), node.source.line);
     }
-    result = SOperand(funs._cur->AllocLocalTempVar());
+    // 일반 변수의 최종 대입만 직접 반환한다. 디버그에서는 복귀와 대입 사이의 중단 위치를 유지한다.
+    const bool direct = !ar._debug && destination != INVALID_ERROR_PARSEJOB &&
+        ((destination > 0 && destination < COMPILE_LOCALTMP_VAR_BEGIN) || destination <= COMPILE_GLOBAL_VAR_BEGIN);
+    result = SOperand(direct ? destination : funs._cur->AllocLocalTempVar());
     funs._cur->Push_Call(ar, NOP_CALL, function->_funID, static_cast<int>(arguments.size()), result._iVar, node.source.line);
     return true;
 }
@@ -3337,16 +3340,20 @@ static bool EmitCoreIRStorage(const NeoCore::IRNode& node, SOperand& result,
     using NeoCore::IROp;
     // 필드·셀이 없는 변수 대입은 우변 뒤에 읽기만 이어지므로 우변 슬롯을 복사해 둘 필요가 없다.
     const bool plainVariable = node.storage.kind == NeoCore::IRStorageKind::Variable && node.storage.fields.empty();
+    SOperand target;
+    // 일반 변수의 슬롯 조회는 코드나 부작용을 만들지 않는다. 필드·셀의 실행 경로는 여전히 우변 뒤에 찾는다.
+    if (plainVariable && !ResolveCoreIRStorage(node, target, ar, funs, vars)) return false;
+    const int destination = plainVariable && node.discardResult ? target._iVar : INVALID_ERROR_PARSEJOB;
     SOperand value;
     if (!node.inputs.empty())
     {
         // 우변을 먼저 끝내고 값을 보존한 다음 대상 셀과 옛 값을 찾는다.
-        if (!EmitCoreIRNode(node.inputs[0], value, ar, funs, vars)) return false;
+        if (!EmitCoreIRNode(node.inputs[0], value, ar, funs, vars,
+            node.op == IROp::Assign ? destination : INVALID_ERROR_PARSEJOB)) return false;
         if (plainVariable) MaterializeValue(value, ar, funs);
         else value = SnapshotCoreIRValue(value, ar, funs, node.source.line);
     }
-    SOperand target;
-    if (!ResolveCoreIRStorage(node, target, ar, funs, vars)) return false;
+    if (!plainVariable && !ResolveCoreIRStorage(node, target, ar, funs, vars)) return false;
     if (node.op == IROp::LoadStorage)
     {
         result = ReadCoreIRStorage(node, target, ar, funs);
@@ -3361,7 +3368,7 @@ static bool EmitCoreIRStorage(const NeoCore::IRNode& node, SOperand& result,
         if (postfix && !node.discardResult) old = SnapshotCoreIRValue(old, ar, funs, node.source.line);
         if (node.inputs.empty())
             value = SOperand(node.type == NeoCore::IRValueType::Float ? funs.AddStaticNum(1.0) : funs.AddStaticInt(1));
-        value = EmitCoreNumber(CoreIRWriteOp(node.op, node.type), old, value, ar, funs, node.source.line);
+        value = EmitCoreNumber(CoreIRWriteOp(node.op, node.type), old, value, ar, funs, node.source.line, destination);
     }
     SOperand stored = value;
     if (!node.storage.fields.empty())
@@ -3376,9 +3383,10 @@ static bool EmitCoreIRStorage(const NeoCore::IRNode& node, SOperand& result,
     }
     else if (node.discardResult)
     {
-        // 결과를 버리는 변수 대입. 직전 산술 명령이 임시에 쓴 결과면 peephole 이 그 목적지를 변수로 바꿔
-        // MOV 를 없앤다. 산술 핸들러는 오류 검사와 계산을 끝낸 뒤에만 저장하므로 실패 시 변수는 그대로다.
-        funs._cur->Push_OP2(ar, NOP_MOV, target._iVar, value._iVar, false, node.source.line);
+        // 산술·스크립트 호출은 처음부터 목적지에 쓴다. 나머지 경로만 기존 안전한 저장 규칙을 사용한다.
+        if (value._iVar != target._iVar && !TryStoreCallResult(ar, funs, target._iVar, value) &&
+            !TryPushImmediate(ar, funs, target._iVar, value, node.source.line))
+            funs._cur->Push_OP2(ar, NOP_MOV, target._iVar, value._iVar, false, node.source.line);
         result = target;
         return true;
     }
@@ -3392,7 +3400,7 @@ static bool EmitCoreIRStorage(const NeoCore::IRNode& node, SOperand& result,
 }
 
 static bool EmitCoreIRNode(std::size_t index, SOperand& result,
-    CArchiveRdWC& ar, SFunctions& funs, SVars& vars)
+    CArchiveRdWC& ar, SFunctions& funs, SVars& vars, int destination)
 {
     using NeoCore::IROp;
     ParserDepthGuard depth(ar);
@@ -3458,7 +3466,7 @@ static bool EmitCoreIRNode(std::size_t index, SOperand& result,
         return valid;
     }
     case IROp::ScriptCall:
-        return EmitCoreIRCall(node, ar.m_coreTypedIR->functions[node.functionIndex].backendName, result, ar, funs, vars);
+        return EmitCoreIRCall(node, ar.m_coreTypedIR->functions[node.functionIndex].backendName, result, ar, funs, vars, destination);
     case IROp::NullableConvert:
         return EmitCoreIRNode(node.inputs[0], result, ar, funs, vars);
     case IROp::CopyStruct:
@@ -3482,7 +3490,7 @@ static bool EmitCoreIRNode(std::size_t index, SOperand& result,
         { const NS_INT value = NeoIntNeg(operands[0]._intLiteral); result.SetIntLiteral(funs.AddStaticInt(value), value); return true; }
         if (operands[0].IsFloatLiteral())
         { const NS_FLOAT value = -operands[0]._floatLiteral; result.SetFloatLiteral(funs.AddStaticNum(value), value); return true; }
-        result = SOperand(funs._cur->AllocLocalTempVar());
+        result = SOperand(destination != INVALID_ERROR_PARSEJOB ? destination : funs._cur->AllocLocalTempVar());
         funs._cur->Push_OP2(ar, node.type == NeoCore::IRValueType::Int ? NOP_I64_NEG : NOP_F64_NEG,
             result._iVar, operands[0]._iVar, false, node.source.line);
         return true;
@@ -3491,7 +3499,7 @@ static bool EmitCoreIRNode(std::size_t index, SOperand& result,
     {
         if (operands[0].IsIntLiteral())
         { const NS_INT value = ~operands[0]._intLiteral; result.SetIntLiteral(funs.AddStaticInt(value), value); return true; }
-        result = EmitCoreNumber(NOP_I64_XOR, operands[0], SOperand(funs.AddStaticInt(-1)), ar, funs, node.source.line);
+        result = EmitCoreNumber(NOP_I64_XOR, operands[0], SOperand(funs.AddStaticInt(-1)), ar, funs, node.source.line, destination);
         return true;
     }
     if (node.op == IROp::LogicalNot)
@@ -3508,7 +3516,7 @@ static bool EmitCoreIRNode(std::size_t index, SOperand& result,
                 result = operands[0]; return true;
             }
         }
-        result = SOperand(funs._cur->AllocLocalTempVar());
+        result = SOperand(destination != INVALID_ERROR_PARSEJOB ? destination : funs._cur->AllocLocalTempVar());
         funs._cur->Push_OP2(ar, NOP_LOG_NOT, result._iVar, operands[0]._iVar, false, node.source.line);
         return true;
     }
@@ -3520,7 +3528,7 @@ static bool EmitCoreIRNode(std::size_t index, SOperand& result,
     if (node.inputs.size() == 2 && TryFoldLiteralBinOp(operands[0], TypedBinaryOp(op), operands[1], funs))
     { result = operands[0]; return true; }
     if (node.op == IROp::Greater || node.op == IROp::GreaterEqual) std::swap(operands[0], operands[1]);
-    result = SOperand(funs._cur->AllocLocalTempVar());
+    result = SOperand(destination != INVALID_ERROR_PARSEJOB ? destination : funs._cur->AllocLocalTempVar());
     if (node.inputs.size() == 1)
         funs._cur->Push_OP2(ar, op, result._iVar, operands[0]._iVar, false, node.source.line);
     else

@@ -127,12 +127,56 @@ void TestInitialization(bool debug)
     if (debug) Require(initError.error.line == 1 && cachedError.error.line == 1 &&
         initError.error.sourceName == "instances.nc", "resumed initialization source location cached");
 }
+
+// 호출 결과를 변수로 직접 받을 때도 일시 정지·실패 중에는 기존 값을 보존한다.
+void TestDirectCallWrites(bool debug)
+{
+    auto program=Compile(
+        "export int target=9;export string text=\"old\";\n"
+        "int Wait(int value){sleep(0);return value;}\n"
+        "int Broken(){sleep(0);int zero=0;return 1/zero;}\n"
+        "string Delayed(string value){sleep(0);return value;}\n"
+        "export int Assign(){target=Wait(target+4);return target;}\n"
+        "export int Fail(){target=Broken();return target;}\n"
+        "export int Local(int value){value=Wait(value+1);return value;}\n"
+        "export string Text(){text=Delayed(text..\"!\");return text;}\n",debug);
+    NeoCore::Error error;
+    std::vector<std::uint8_t> image;
+    Require(program->SaveImage(image,error),"save direct call writes image");
+    for(int pass=0;pass<2;++pass)
+    {
+        if(pass) program=NeoCore::Program::LoadImage(image,error);
+        Require(bool(program),"load direct call writes image: "+error.message);
+        auto instance=program->CreateInstance(error);
+        Require(bool(instance),"create direct call writes instance");
+        Suspended(instance->Call("Assign"),"direct call assignment waits");
+        Require(instance->Cancel(error),"cancel pending direct assignment");
+        CompleteInt(instance->ReadGlobal("target"),9,"cancelled pending call preserves global destination");
+        Suspended(instance->Call("Assign"),"direct call assignment waits again");
+        CompleteInt(instance->Resume(),13,"direct call stores on return");
+        Suspended(instance->Call("Fail"),"failing direct call waits");
+        Require(instance->Cancel(error),"cancel pending failing assignment");
+        CompleteInt(instance->ReadGlobal("target"),13,"cancelled pending failure preserves global destination");
+        Suspended(instance->Call("Fail"),"failing direct call waits again");
+        Require(!instance->Resume().ok(),"direct callee failure propagates");
+        CompleteInt(instance->ReadGlobal("target"),13,"failed call preserves global destination");
+        Suspended(instance->Call("Local",{NeoCore::Scalar::Int(7)}),"parameter call assignment waits");
+        CompleteInt(instance->Resume(),8,"parameter destination survives reentry and resume");
+        Suspended(instance->Call("Text"),"string call assignment waits");
+        Require(instance->Cancel(error),"cancel pending string assignment");
+        const auto old=instance->ReadGlobal("text");
+        Require(old.ok() && old.value.asString()=="old","cancelled pending call retains the old string");
+        Suspended(instance->Call("Text"),"string call assignment waits again");
+        const auto text=instance->Resume();
+        Require(text.ok() && text.value.asString()=="old!","string call stores owned return value");
+    }
+}
 }
 int main()
 {
     try
     {
-        for (bool debug : {false, true}) { TestInstances(debug); TestInitialization(debug); }
+        for (bool debug : {false, true}) { TestInstances(debug); TestInitialization(debug); TestDirectCallWrites(debug); }
         NeoCore::Error error;
         Require(!NeoCore::Program::Compile("export void F() { sleep(0.5); }", error), "sleep rejects float");
         Require(!NeoCore::Program::Compile("export void F() { sleep(); }", error), "sleep rejects wrong arity");

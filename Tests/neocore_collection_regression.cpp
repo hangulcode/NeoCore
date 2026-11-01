@@ -247,6 +247,11 @@ export int Functions(){list<fn()->int> a=[null];map<string,fn()->int> m={};a[0]=
 struct Copy {int n;};
 export int StructCopy(){Copy value=Copy(1);list<Copy> a=[Copy(0)];Copy result=(a[0]=value);value.n=2;result.n=3;return a[0].n;}
 export int NullValues(){list<string> a=["old"];map<string,string> m={"null":"old"};string result=(a[0]=null);m["null"]=null;if(result==null&&a[0]==null&&!m.contains("null"))return 1;return 0;}
+export int LocalSnapshot(){list<int> a=[0];int value=7;a[(value=0)]=value;return a[0]*10+value;}
+int shared=5;
+int Change(){shared=9;return 3;}
+export int ConsumedSnapshot(){list<int> a=[0];int result=(a[0]=shared)+Change();return result*100+a[0]*10+shared;}
+export int ConsumedLocalSnapshot(){list<int> a=[0];int value=5;int result=(a[0]=value)+(value=9);return result*100+a[0]*10+value;}
 )NC";
     NeoCore::Error error;
     auto program=NeoCore::Program::Compile(source,error,"collection-order.nc",debug);
@@ -262,7 +267,8 @@ export int NullValues(){list<string> a=["old"];map<string,string> m={"null":"old
         const struct Case { const char* name; std::int64_t expected; } cases[]={
             {"List",12120},{"Array",12120},{"Compact",12120},{"Map",12120},
             {"Rebind",41},{"Snapshot",781},{"Results",53},{"Nested",2120},{"StringMap",212},
-            {"Functions",77},{"StructCopy",1},{"NullValues",1}
+            {"Functions",77},{"StructCopy",1},{"NullValues",1},
+            {"LocalSnapshot",70},{"ConsumedSnapshot",859},{"ConsumedLocalSnapshot",1459}
         };
         for(const auto& test:cases)
         {

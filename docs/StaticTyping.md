@@ -94,14 +94,23 @@ remain only for component writes.
 An assignment or increment that forms a whole statement does not use its result. The
 checker marks that root node (`IRNode::discardResult`), and the emitter then stores
 into a plain local, parameter or file variable directly: the arithmetic instruction's
-destination becomes the variable and no result temporary or trailing `MOV` is emitted,
+destination is supplied before generating that final instruction, so neither a
+result temporary slot nor a trailing `MOV` is needed,
 and a variable on the right-hand side is read in place instead of being copied first.
 `sum += i + bias;` therefore compiles to two typed instructions, `t = i;` to one `MOV`,
 and a discarded postfix increment does not keep the old value. Assignments whose
 result is consumed (`a = (b = 1)`, `(x = 1) + (x = 2)`, a returned or passed
-assignment), struct field paths and captured cells keep the result temporary and the
-RHS snapshot. Typed arithmetic handlers check and compute before they store, so a
-failing direct write still leaves the variable unchanged.
+assignment) retain their stored values independently of later writes. The destination
+is not passed into inner assignments or operand calculations. Struct field paths and
+captured cells retain their existing resolution and value-preservation paths.
+Typed arithmetic handlers check and compute before they store, so a failing direct
+write still leaves the variable unchanged. Transitional expression producers can
+still use the existing guarded adjacent-instruction optimization when necessary.
+
+A discarded assignment from a named script call writes directly to the variable
+on normal return, without allocating a return temporary. Errors, suspension and
+cancellation do not perform that write. Debug-info compilation retains the return
+temporary and following assignment so return/assignment stepping remains unchanged.
 
 Named script calls carry resolved function signatures and ordered argument nodes.
 Arguments finish left to right before being moved to the shared call window.
@@ -707,6 +716,11 @@ compound-arithmetic instructions or runtime numeric type dispatch. Receiver, ind
 and RHS evaluation follow the same RHS-first rule as array writes, including
 prefix/postfix results. Plain list/map assignment also follows this rule and
 preserves its stored value when used as an expression.
+Plain list/map writes snapshot a variable RHS only when evaluating the receiver or
+index could change that value. Container element reads are materialized before
+evaluating the target, and assignments, calls and possible host selectors retain
+the conservative snapshot rules. A simple `values[i] = value` needs no snapshot
+`MOV` when all three operands are unaffected local variables.
 
 Maps accept `{}` or typed key/value literals, and gain entries through `m[key] = value`. Direct
 `m[key]` reads have type `V`. An absent key always raises a runtime error
