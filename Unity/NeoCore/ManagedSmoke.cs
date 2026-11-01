@@ -196,6 +196,38 @@ internal static class ManagedSmoke
         }
     }
 
+    private static void CheckNullCollections()
+    {
+        using (var program = NeoCore.Unity.Program.Compile(
+            "import system;export set<string> Make(){return set<string>();}"
+            + "export set<int> Ints(){return set<int>();}"
+            + "export int Count(array<int> values){return values.len();}", "null-collections.nc", true))
+        using (var instance = program.CreateInstance())
+        using (var values = instance.Call("Make").RequireCompleted())
+        {
+            values.Append(Scalar.Null());
+            values.Append(Scalar.Null());
+            Require(values.Count == 1 && values.Contains(Scalar.Null()), "managed set deduplicates null");
+            Require(values.At(0).Kind == ScalarKind.Null, "managed null set enumeration");
+            string json = program.ToJson(values);
+            Require(json == "[null]", "managed null set encoding");
+            using (var decoded = program.ParseJson("set<string>", json))
+            {
+                Require(decoded.Count == 1 && decoded.Contains(Scalar.Null()), "managed null set decoding");
+                Require(decoded.Remove(Scalar.Null()) && decoded.Count == 0, "managed null set removal");
+            }
+            using (var integers = instance.Call("Ints").RequireCompleted())
+            {
+                bool rejected = false;
+                try { integers.Append(Scalar.Null()); } catch (InvalidOperationException) { rejected = true; }
+                Require(rejected && integers.Count == 0, "managed int set rejects null");
+            }
+            Result failed = instance.Call("Count", Scalar.Null());
+            Require(failed.Status == ExecutionStatus.Failed && failed.Error.Contains("null array"),
+                "managed null array parameter fails safely");
+        }
+    }
+
     private static void CheckScriptJson()
     {
         using (var options = new CompileOptions())
@@ -315,6 +347,7 @@ internal static class ManagedSmoke
             CheckMigratedBoundaries();
             CheckHostEvents();
             CheckScriptJson();
+            CheckNullCollections();
             Console.WriteLine("NeoCore managed smoke passed: typed schema, events, values, closures, JSON, modules, images, vectors, budgets, ownership, cleanup");
             return 0;
         }

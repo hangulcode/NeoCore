@@ -2201,7 +2201,10 @@ bool	CNeoVMWorker::RunInternal(int iBreakingCallStack)
 		NEOCORE_ARRAY_DISPATCH(I32, Int32)
 		NEOCORE_ARRAY_DISPATCH(F32, Float32)
 #undef NEOCORE_ARRAY_DISPATCH
-		case NOP_ARRAY_LEN: StoreNumberInt(GetVarPtrF1(OP), GetVarPtr2(OP)->_array->_count); break;
+		case NOP_ARRAY_LEN:
+            if (CheckTypedArrayReceiver(GetVarPtr2(OP)))
+                StoreNumberInt(GetVarPtrF1(OP), GetVarPtr2(OP)->_array->_count);
+            break;
 		case NOP_ARRAY_RESIZE: TypedArrayResize(OP); break;
 		case NOP_ARRAY_RESERVE: TypedArrayReserve(OP); break;
 		case NOP_NONE:          handle_NONE(OP); break;

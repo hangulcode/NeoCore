@@ -2388,6 +2388,8 @@ int CNeoVM::FindDefaultNativeIndex(const VMString* pStr)
 {
 	if (pStr == nullptr)
 		return -1;
+    // 이전 이미지의 내부 이름만 새 이름으로 연결한다. 새 소스에는 예약 프리픽스만 노출한다.
+    if (pStr->_str == "__neocore_fail") return FindDefaultNativeIndex("$neocore_fail");
 
 	TYPE_NeoLib f;
 	if (g_sNeoFunLib_Default.TryGetValue(pStr, &f) == false)
@@ -2401,7 +2403,7 @@ int CNeoVM::FindDefaultNativeIndex(const VMString* pStr)
 
 int CNeoVM::FindDefaultNativeIndex(const std::string& name)
 {
-	auto it = g_sNeoFunLib_DefaultNativeIndex.find(name);
+	auto it = g_sNeoFunLib_DefaultNativeIndex.find(name == "__neocore_fail" ? "$neocore_fail" : name);
 	if (it == g_sNeoFunLib_DefaultNativeIndex.end())
 		return -1;
 	return it->second;
@@ -2441,7 +2443,7 @@ static void AddGlobalLibFun()
 
 	AddDefaultNativeFun("print", &neo_libs::io_print);
 	// 정적 프런트엔드의 로우어링 헬퍼가 쓰는 런타임 오류 보고. 인자 문자열이 오류 메시지가 된다.
-	AddDefaultNativeFun("__neocore_fail", &neo_libs::core_fail);
+	AddDefaultNativeFun("$neocore_fail", &neo_libs::core_fail);
 
 	g_sCurrentSystem = "math";
 	AddSystemFun("abs", &neo_libs::Math_abs, "float", "float x");
@@ -2553,7 +2555,7 @@ bool CNeoVM::IsGlobalLibFun(std::string& FunName)
 {
 	//InitLib();
 	//return g_sNeoFunLib_Default.IsKey(FunName);
-	return FunName == "print" || FunName == "__neocore_fail";
+	return FunName == "print" || FunName == "$neocore_fail";
 }
 const std::list< SystemFun>* CNeoVM::GetSystemModule(const std::string& module)
 {

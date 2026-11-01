@@ -3,6 +3,7 @@
 #include <cmath>
 #include <cstdio>
 #include <string>
+#include <vector>
 
 namespace
 {
@@ -229,6 +230,66 @@ void Rejections(bool debug)
     }
 }
 
+void NullReceivers(bool debug)
+{
+    const struct Storage { const char* array; const char* element; const char* initial; } storage[] = {
+        {"array<int>", "int", "7"}, {"array<float>", "float", "1.5"}, {"array<bool>", "bool", "true"},
+        {"array<Vector2>", "Vector2", "Vector2(1,2)"}, {"array<Vector3>", "Vector3", "Vector3(1,2,3)"},
+        {"array<Vector4>", "Vector4", "Vector4(1,2,3,4)"}, {"array<Quaternion>", "Quaternion", "Quaternion()"},
+        {"array32<int>", "int", "7"}, {"array32<float>", "float", "1.5"}
+    };
+    for (const Storage& type : storage)
+    {
+        const std::string actions[] = {
+            "int count=value.len();", std::string(type.element)+" item=value[0];",
+            std::string("value[0]=")+type.initial+";", std::string("value.append(")+type.initial+");",
+            "value.resize(1);", "value.reserve(1);"
+        };
+        for (const std::string& action : actions)
+            for (bool clear : {false, true})
+            {
+                const std::string declaration = std::string(type.array)+" value"+
+                    (clear ? "="+std::string(type.array)+"(1,"+type.initial+");value=null;" : ";");
+                const std::string source = "export int reached=0;\nexport int Probe(){\n"+declaration+"\n"+
+                    action+"\nreached=1;return 0;}\nexport int Good(){return 7;}export int Reached(){return reached;}";
+                NeoCore::Error error;
+                auto program = NeoCore::Program::Compile(source, error, "null-array.nc", debug);
+                Check(bool(program), "null array source compiles: "+error.message);
+                if (!program) continue;
+                const NeoCore::Result failed = program->Call("Probe");
+                Check(!failed.ok() && failed.error.message.find("null array")!=std::string::npos,
+                    std::string(type.array)+" null receiver: "+action);
+                if (debug) Check(failed.error.line==4 && failed.error.sourceName=="null-array.nc", "null array error source");
+                const NeoCore::Result reached = program->Call("Reached");
+                Check(reached.ok() && reached.value.asInt()==0, "null array failure prevents following writes");
+                const NeoCore::Result good = program->Call("Good");
+                Check(good.ok() && good.value.asInt()==7, "fresh call works after null array failure");
+            }
+    }
+    for (const char* source : {
+        "array<int> Empty(){return null;}export int Probe(){return Empty()[0];}",
+        "export int Probe(){list<array<int>> values=[null];return values[0].len();}",
+        "export int Probe(){array<Vector3> values;values[0].x+=1;return 0;}"
+    })
+    {
+        NeoCore::Error error;
+        auto program = NeoCore::Program::Compile(source, error, "nested-null-array.nc", debug);
+        Check(bool(program), "nested null array source compiles: "+error.message);
+        if (!program) continue;
+        const NeoCore::Result result = program->Call("Probe");
+        Check(!result.ok() && result.error.message.find("null array")!=std::string::npos, "null returned or nested array fails");
+        std::vector<std::uint8_t> image;
+        Check(program->SaveImage(image, error), "save null array image");
+        auto loaded = NeoCore::Program::LoadImage(image, error);
+        Check(bool(loaded), "load null array image");
+        if (loaded)
+        {
+            const NeoCore::Result failed = loaded->Call("Probe");
+            Check(!failed.ok() && failed.error.message.find("null array")!=std::string::npos, "null array image fails safely");
+        }
+    }
+}
+
 void HostBoundary(bool debug)
 {
     NeoCore::Error error;
@@ -265,6 +326,7 @@ int main()
         VectorWrites(debug);
         EvaluationOrder(debug);
         RuntimeFailures(debug);
+        NullReceivers(debug);
         Rejections(debug);
         HostBoundary(debug);
     }

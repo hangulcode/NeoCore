@@ -3455,7 +3455,7 @@ private:
         }
         if (getHelper_) result += "\nfun " + internalPrefix_ + "get(var m,var k,var fallback){var v=m[k];if(v==null)return fallback;return v;}";
         // 값 타입이 null 을 담을 수 없는 맵의 색인 읽기. 없는 키는 조용히 null 이 되는 대신 런타임 오류를 낸다.
-        if (mapReadHelper_) result += "\nfun " + internalPrefix_ + "mapread(var m,var k){var v=m[k];if(v==null)__neocore_fail(\"map key not found: \"..tostring(k));return v;}";
+        if (mapReadHelper_) result += "\nfun " + internalPrefix_ + "mapread(var m,var k){var v=m[k];if(v==null)" + internalPrefix_ + "fail(\"map key not found: \"..tostring(k));return v;}";
         if (concatHelper_) result += "\nfun " + internalPrefix_ + "concat(var a,var b){var r=a.clone();foreach(var v in b)r.append(v);return r;}";
         if (unionHelper_) result += "\nfun " + internalPrefix_ + "union(var a,var b){var r=a.clone();foreach(var v in b)r.add(v);return r;}";
         if (intersectionHelper_) result += "\nfun " + internalPrefix_ + "intersection(var a,var b){var r=a.clone();foreach(var v in a)if(!b.contains(v))r.remove(v);return r;}";

@@ -204,6 +204,8 @@ not JSON data. Script calls reject unsupported types recursively during compilat
 including an empty collection of functions or a struct containing a non-string-key
 map. Nonfinite scalar/vector output is rejected. Nesting is bounded;
 cyclic collections cannot be serialized. Set decoding applies set uniqueness.
+`set<string>` preserves null elements in both script and host conversions;
+`[null,null]` decodes to a set containing one null. `set<int>` rejects null elements.
 Copying or encoding a collection does not change its declared element type.
 
 Always check `Error` or the returned C/managed result. A failed conversion is not

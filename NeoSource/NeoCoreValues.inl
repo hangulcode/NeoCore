@@ -367,7 +367,6 @@ bool ValueAppend(const ValuePtr& owner, const ValuePtr& element)
     }
     if (owner->value.GetType() == NeoScript::VAR_SET)
     {
-        if (element->value.GetType() == NeoScript::VAR_NONE) return false;
         owner->value._set->Insert(&element->value);
         return true;
     }

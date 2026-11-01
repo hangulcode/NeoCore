@@ -158,6 +158,14 @@ NEOS_FORCEINLINE bool CheckTypedArrayValue(const VarInfo* value)
     return true;
 }
 
+NEOS_FORCEINLINE bool CheckTypedArrayReceiver(const VarInfo* value)
+{
+    // 참조 타입은 null일 수 있다. ClearType 뒤 남은 이전 포인터 페이로드를 읽기 전에 태그로 검사한다.
+    if (value->GetType() != VAR_NONE) return true;
+    SetError("cannot access a null array");
+    return false;
+}
+
 template<NeoArrayElementType Element>
 NEOS_NOINLINE void TypedArrayNew(const SVMOperation& op)
 {
@@ -181,7 +189,9 @@ NEOS_NOINLINE void TypedArrayNew(const SVMOperation& op)
 template<NeoArrayElementType Element>
 NEOS_NOINLINE void TypedArrayGet(const SVMOperation& op)
 {
-    ArrayInfo* array = GetVarPtr2(op)->_array;
+    const VarInfo* owner = GetVarPtr2(op);
+    if (!CheckTypedArrayReceiver(owner)) return;
+    ArrayInfo* array = owner->_array;
     const NS_INT index = GetVarPtr3(op)->_int;
     if (!array->IsValidIndex(index))
     {
@@ -195,6 +205,7 @@ template<NeoArrayElementType Element>
 NEOS_NOINLINE void TypedArraySet(const SVMOperation& op)
 {
     const VarInfo* arguments = GetVarPtr_L(op.n2);
+    if (!CheckTypedArrayReceiver(&arguments[1])) return;
     ArrayInfo* array = arguments[1]._array;
     const NS_INT index = arguments[2]._int;
     if (!array->IsValidIndex(index))
@@ -210,7 +221,9 @@ NEOS_NOINLINE void TypedArraySet(const SVMOperation& op)
 template<NeoArrayElementType Element>
 NEOS_NOINLINE void TypedArrayAppend(const SVMOperation& op)
 {
-    ArrayInfo* array = GetVarPtr2(op)->_array;
+    const VarInfo* owner = GetVarPtr2(op);
+    if (!CheckTypedArrayReceiver(owner)) return;
+    ArrayInfo* array = owner->_array;
     const int index = array->_count;
     if (index == INT32_MAX)
     {
@@ -229,25 +242,29 @@ NEOS_NOINLINE void TypedArrayAppend(const SVMOperation& op)
 
 NEOS_NOINLINE void TypedArrayResize(const SVMOperation& op)
 {
+    const VarInfo* owner = GetVarPtr2(op);
+    if (!CheckTypedArrayReceiver(owner)) return;
     const NS_INT size = GetVarPtr3(op)->_int;
     if (size > INT32_MAX)
     {
         SetError("collection capacity exceeds limit");
         return;
     }
-    GetVM()->ArrayResize(GetVarPtr2(op)->_array, size < 0 ? 0 : static_cast<int>(size));
+    GetVM()->ArrayResize(owner->_array, size < 0 ? 0 : static_cast<int>(size));
     Var_SetNone(GetVarPtrF1(op));
 }
 
 NEOS_NOINLINE void TypedArrayReserve(const SVMOperation& op)
 {
+    const VarInfo* owner = GetVarPtr2(op);
+    if (!CheckTypedArrayReceiver(owner)) return;
     const NS_INT size = GetVarPtr3(op)->_int;
     if (size < 0 || size > INT32_MAX)
     {
         SetError(size < 0 ? "reserve capacity must not be negative" : "collection capacity exceeds limit");
         return;
     }
-    GetVM()->ArrayReserve(GetVarPtr2(op)->_array, static_cast<int>(size));
+    GetVM()->ArrayReserve(owner->_array, static_cast<int>(size));
     Var_SetNone(GetVarPtrF1(op));
 }
 

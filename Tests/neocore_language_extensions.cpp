@@ -100,6 +100,12 @@ int main()
         FailsAtRuntime("export int Probe(){list<int> a;return a[0];}", "null", "index read on a null list fails at runtime", debug);
         FailsAtRuntime("export int Probe(){fn()->int f;return f();}", "null", "calling a null function value fails at runtime", debug);
         FailsAtRuntime("export int Probe(){map<string,int> m={\"a\":1};return m[\"b\"];}", "map key not found", "missing key read on a value map fails at runtime", debug);
+        FailsAtRuntime("void __neocore_fail(string message){}export int Probe(){map<string,int> m={};return m[\"missing\"];}",
+            "map key not found", "a user function cannot intercept an internal failure", debug);
+        FailsAtRuntime("int __neocore_fail=7;export int Probe(){map<string,int> m={};return m[\"missing\"];}",
+            "map key not found", "a user variable cannot hide an internal failure", debug);
+        Expect("int count=0;void __neocore_fail(string text){count+=1;}export int Probe(){__neocore_fail(\"user\");return count;}",
+            1, "double underscore names remain valid user declarations", debug);
         Expect("export int Probe(){map<string,int> m={\"a\":1};m[\"b\"]=2;return m[\"a\"]*10+m[\"b\"]+m.get(\"c\",100);}", 112, "value map reads writes and get fallback", debug);
     }
     Reject("string? s=null;", "nullable marker on a reference type");

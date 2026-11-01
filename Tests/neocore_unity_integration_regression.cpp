@@ -80,6 +80,8 @@ void Collections(bool debug)
         "export int Read(list<int> x){return x[0];}\n"
         "export map<string,int> MakeMap(){return {}; }\n"
         "export set<int> MakeSet(){return set<int>([1]);}\n"
+        "export set<string> MakeStringSet(){return set<string>();}\n"
+        "export int ArrayCount(array<int> input){return input.len();}\n"
         "export array<int> MakeArray(){return array<int>(2);}\n"
         "export array<Vector3> MakeVectors(){return array<Vector3>(2,Vector3(1,2,3));}\n"
         "export fn()->int Make(){int n=4;return fn()->int {n+=1;return n;};}\n", debug);
@@ -118,6 +120,25 @@ void Collections(bool debug)
     Check(NcValueCount(set.get()) == 2, "set deduplicates");
     Result contains(NcValueContains(set.get(), nine.get()), &NcResultDestroy);
     Status(contains.get(), NC_COMPLETED, "set membership"); Check(NcResultBool(contains.get()) != 0, "set contains added value");
+    Arguments nullArguments(NcArgumentsCreate(), &NcArgumentsDestroy);
+    Check(NcArgumentsNull(nullArguments.get()) != 0, "null argument");
+    Value nullValue(NcArgumentsValueAt(nullArguments.get(), 0), &NcValueDestroy);
+    Value strings = Capture(Call(instance.get(), "MakeStringSet"), NC_SET, "string set result");
+    Done(NcValueAppend(strings.get(), nullValue.get()), "C ABI null string set add");
+    Done(NcValueAppend(strings.get(), nullValue.get()), "C ABI duplicate null set add");
+    Check(NcValueCount(strings.get()) == 1, "C ABI set deduplicates null");
+    Capture(NcValueAt(strings.get(), 0), NC_NULL, "C ABI null set element");
+    Result nullJson(NcToJson(program.get(), strings.get(), 0), &NcResultDestroy);
+    Status(nullJson.get(), NC_COMPLETED, "C ABI null set encoding");
+    uint32_t nullLength = 0;
+    const char* nullText = NcResultString(nullJson.get(), &nullLength);
+    Check(std::string(nullText, nullLength)=="[null]", "C ABI null set JSON");
+    Value restored = Capture(NcParseJson(program.get(), "set<string>", 11, nullText, nullLength, 1), NC_SET, "C ABI null set decoding");
+    Check(NcValueCount(restored.get())==1, "C ABI null set roundtrip count");
+    Done(NcValueRemove(restored.get(), nullValue.get()), "C ABI null set remove");
+    Check(NcValueCount(restored.get())==0, "C ABI null removed");
+    Rejected(NcValueAppend(set.get(), nullValue.get()), "C ABI int set rejects null");
+    Rejected(Call(instance.get(), "ArrayCount", nullArguments.get()), "C ABI null array argument fails safely");
     Value array = Capture(Call(instance.get(), "MakeArray"), NC_ARRAY, "array result");
     Done(NcValueSet(array.get(), 1, nine.get()), "array write");
     Int(NcValueAt(array.get(), 1), 9, "array read");

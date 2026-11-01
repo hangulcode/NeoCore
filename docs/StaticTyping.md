@@ -721,6 +721,9 @@ After `import system;`, `set<T>()`, `set<T>(typedList)`, or `system.set(typedLis
 construct a typed set. Sets support `len`, `add`, `remove`, `contains`, `values`,
 `clear`, and `clone`. Union `|`, intersection `&`, and difference `-` return new
 sets of the same type and leave the operands unchanged.
+`set<string>` can contain null as one distinct element. Construction, insertion,
+membership, removal, enumeration, host APIs and JSON conversion preserve it;
+repeated nulls are deduplicated. `set<int>` rejects null.
 
 `foreach (T value in collection)` iterates lists, arrays, or sets. Map iteration
 uses `foreach (K key, V value in map)`; use `map.values()` to iterate values alone.
