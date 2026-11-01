@@ -589,6 +589,105 @@ void ScalarWriteErrors(IRuntime& runtime, bool debug)
             }
 }
 
+// 문장 위치의 대입·증감은 결과를 버리므로 임시 슬롯 없이 변수에 바로 저장한다.
+// 결과를 소비하는 대입, 실패하는 쓰기, 구조체 필드 경로는 기존 규칙을 그대로 지켜야 한다.
+void DiscardedWrites(IRuntime& runtime, bool debug)
+{
+    struct IntCase { const char* source; std::int64_t expected; const char* label; };
+    const IntCase cases[] = {
+        {"export int Probe(){int sum=0;int bias=1;for(int i in 0,10,1){sum+=i+bias;}return sum;}",
+            55, "discarded compound assignment accumulates"},
+        {"export int Probe(){int sum=0;for(int i in 0,10,1){sum=sum+i;}return sum;}",
+            45, "discarded assignment reading its own target"},
+        {"export int Probe(){int t=0;int u=5;t=u;u=9;return t*10+u;}",
+            59, "discarded copy from a variable does not alias it"},
+        {"export int Probe(){int v=6;v=v*2;v+=v;v-=4;v*=2;v/=5;v%=5;return v;}",
+            3, "discarded compound chain"},
+        {"export int Probe(){int c=0;c++;++c;c--;c++;return c;}",
+            2, "discarded increments"},
+        {"int a=0;int b=0;export int Probe(){int i=3;a=(b=i+1);return a*10+b;}",
+            44, "nested assignment stores both targets"},
+        {"int x=0;export int Probe(){int r=(x=1)+(x=2);return r*10+x;}",
+            32, "assignment results inside an expression are preserved"},
+        {"export int Probe(){int x=1;int y=9;int a=(x=y);y=2;x+=3;return x*100+y*10+a;}",
+            1229, "consumed assignment result still independent of later writes"},
+        {"int g=0;export int Probe(){int local=4;g=local;local=1;g+=local;return g*10+local;}",
+            51, "discarded writes to a global"},
+        {"struct S{int x;};export int Probe(){S s=S(1);s.x+=5;s.x=s.x*2;return s.x;}",
+            12, "discarded struct field writes keep the field path"},
+        {"export int Probe(){float f=1.5;f*=2.0;f+=f;f-=1;int c=0;c++;return toint(f)*10+c;}",
+            51, "discarded float compound assignment"},
+        {"export int Probe(){int x=9;x=x;x+=0;return x;}",
+            9, "self assignment"},
+        {"int Inc(int v){return v+1;}export int Probe(){int x=1;x=Inc(x);x+=Inc(x);return x;}",
+            5, "discarded assignment from call results"}
+    };
+    for (const auto& item : cases)
+        for (bool image : {false, true})
+        {
+            const Value direct = Run(runtime, item.source, debug, image, std::string(item.label) + " IR");
+            Check(direct.status == RunStatus::Completed && direct.type == ValueType::Int && direct.integer == item.expected,
+                std::string(item.label) + " expected value");
+        }
+
+    // 실패한 쓰기는 변수를 덮어쓰지 않는다. 임시 슬롯이 없으므로 핸들러가 저장 전에 검사해야 한다.
+    struct ErrorCase { const char* source; const char* error; std::int64_t expected; };
+    const ErrorCase errors[] = {
+        {"int target=9;export int Probe(){\nint z=0;\ntarget/=z;\nreturn 0;}\nexport int State(){return target;}",
+            "integer division by zero", 9},
+        {"int target=9;export int Probe(){\nint z=0;\ntarget%=z;\nreturn 0;}\nexport int State(){return target;}",
+            "integer division by zero", 9},
+        {"int target=9;export int Probe(){\nint n=64;\ntarget<<=n;\nreturn 0;}\nexport int State(){return target;}",
+            "shift count must be between 0 and 63", 9},
+        {"int target=-9223372036854775808;export int Probe(){\nint m=-1;\ntarget/=m;\nreturn 0;}"
+            "\nexport int State(){if(target==-9223372036854775808)return 1;return 0;}", "integer division overflow", 1},
+        {"int target=9;int Zero(){return 0;}export int Probe(){\nint z=0;\ntarget=target/Zero();\nreturn 0;}\nexport int State(){return target;}",
+            "integer division by zero", 9}
+    };
+    for (std::size_t index = 0; index < sizeof(errors) / sizeof(errors[0]); ++index)
+        for (bool image : {false, true})
+        {
+            const std::string label = "discarded write failure " + std::to_string(index) + " IR";
+            NeoCore::StaticCompileResult checked;
+            Check(NeoCore::CompileStaticSource(errors[index].source, checked), label + " frontend");
+            if (!checked.success) continue;
+            ProgramHandle program = Compile(runtime, checked, debug, image, label);
+            if (!program) continue;
+            InstanceHandle instance = runtime.CreateInstance(program);
+            Check(bool(instance), label + " instance");
+            if (instance)
+            {
+                const Value value = Invoke(runtime, instance, "Probe");
+                Check(value.status == RunStatus::Failed && value.error.message.find(errors[index].error) == 0,
+                    label + " expected runtime error: " + value.error.message);
+                const Value state = Invoke(runtime, instance, "State");
+                Check(state.status == RunStatus::Completed && state.type == ValueType::Int && state.integer == errors[index].expected,
+                    label + " leaves the target unchanged");
+                if (debug) Check(value.error.line == 3, label + " reports source write line: " + value.error.message);
+                runtime.DestroyInstance(instance);
+            }
+            runtime.DestroyProgram(program);
+        }
+}
+
+// 결과 폐기 표시는 문장 루트의 대입·증감에만 붙고, 식 안의 대입에는 붙지 않는다.
+void DiscardStructure()
+{
+    const char* source = "int a=0;int b=0;export int Probe(){int i=1;a=(b=i+1);i+=2;i++;int r=(a=3)+i;return r;}";
+    NeoCore::StaticCompileResult checked;
+    Check(NeoCore::CompileStaticSource(source, checked), "discard metadata frontend: " + checked.errorMessage);
+    if (!checked.success) return;
+    int discarded = 0, consumed = 0;
+    for (const auto& node : checked.typedIR.nodes)
+    {
+        const bool mutation = node.op >= NeoCore::IROp::Assign && node.op <= NeoCore::IROp::PostDecrement;
+        if (!mutation) { Check(!node.discardResult, "non-mutation nodes carry no discard metadata"); continue; }
+        if (node.discardResult) ++discarded; else ++consumed;
+    }
+    Check(discarded == 3, "statement-level assignment and increments are marked discarded: " + std::to_string(discarded));
+    Check(consumed == 2, "nested and expression assignments keep their results: " + std::to_string(consumed));
+}
+
 void CallStructure()
 {
     const char* source = "struct Box{int x;};\nBox Copy(Box value){return value;}\n"
@@ -885,6 +984,7 @@ int main()
     StorageStructure();
     CallStructure();
     RejectReferences();
+    DiscardStructure();
     for (bool debug : {false, true})
     {
         InternalNameBoundary(*runtime, debug);
@@ -896,6 +996,7 @@ int main()
         ErrorOrder(*runtime, debug);
         ScalarWrites(*runtime, debug);
         ScalarWriteErrors(*runtime, debug);
+        DiscardedWrites(*runtime, debug);
         CallTransfers(*runtime, debug);
         CallReturnKinds(*runtime, debug);
         CallErrors(*runtime, debug);

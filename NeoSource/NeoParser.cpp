@@ -3075,6 +3075,8 @@ class CoreIRValidator
         else if (node.storage.kind != NeoCore::IRStorageKind::Invalid || !node.storage.backendName.empty() ||
             node.storage.symbolId != 0 || !node.storage.fields.empty())
             return Fail(index, "operation does not accept storage metadata");
+        if (node.discardResult && (!storage || node.op == IROp::LoadStorage))
+            return Fail(index, "operation does not accept discard metadata");
         unsigned char effects = node.op == IROp::LegacyExpression ? EXPR_EFFECT_ALL
             : node.op == IROp::ScriptCall || node.op == IROp::CopyStruct ? EXPR_EFFECT_CALL
             : storage && node.op != IROp::LoadStorage ? EXPR_EFFECT_ASSIGN : 0;
@@ -3333,12 +3335,15 @@ static bool EmitCoreIRStorage(const NeoCore::IRNode& node, SOperand& result,
     CArchiveRdWC& ar, SFunctions& funs, SVars& vars)
 {
     using NeoCore::IROp;
+    // 필드·셀이 없는 변수 대입은 우변 뒤에 읽기만 이어지므로 우변 슬롯을 복사해 둘 필요가 없다.
+    const bool plainVariable = node.storage.kind == NeoCore::IRStorageKind::Variable && node.storage.fields.empty();
     SOperand value;
     if (!node.inputs.empty())
     {
         // 우변을 먼저 끝내고 값을 보존한 다음 대상 셀과 옛 값을 찾는다.
         if (!EmitCoreIRNode(node.inputs[0], value, ar, funs, vars)) return false;
-        value = SnapshotCoreIRValue(value, ar, funs, node.source.line);
+        if (plainVariable) MaterializeValue(value, ar, funs);
+        else value = SnapshotCoreIRValue(value, ar, funs, node.source.line);
     }
     SOperand target;
     if (!ResolveCoreIRStorage(node, target, ar, funs, vars)) return false;
@@ -3352,7 +3357,8 @@ static bool EmitCoreIRStorage(const NeoCore::IRNode& node, SOperand& result,
     {
         old = ReadCoreIRStorage(node, target, ar, funs);
         const bool postfix = node.op == IROp::PostIncrement || node.op == IROp::PostDecrement;
-        if (postfix) old = SnapshotCoreIRValue(old, ar, funs, node.source.line);
+        // 결과를 버리는 후위 증감은 옛 값을 돌려줄 필요가 없다.
+        if (postfix && !node.discardResult) old = SnapshotCoreIRValue(old, ar, funs, node.source.line);
         if (node.inputs.empty())
             value = SOperand(node.type == NeoCore::IRValueType::Float ? funs.AddStaticNum(1.0) : funs.AddStaticInt(1));
         value = EmitCoreNumber(CoreIRWriteOp(node.op, node.type), old, value, ar, funs, node.source.line);
@@ -3367,6 +3373,14 @@ static bool EmitCoreIRStorage(const NeoCore::IRNode& node, SOperand& result,
     {
         const SOperand arguments[] = { value, target };
         stored = EmitCoreAggregate("cellset", arguments, 0, ar, funs, node.source.line);
+    }
+    else if (node.discardResult)
+    {
+        // 결과를 버리는 변수 대입. 직전 산술 명령이 임시에 쓴 결과면 peephole 이 그 목적지를 변수로 바꿔
+        // MOV 를 없앤다. 산술 핸들러는 오류 검사와 계산을 끝낸 뒤에만 저장하므로 실패 시 변수는 그대로다.
+        funs._cur->Push_OP2(ar, NOP_MOV, target._iVar, value._iVar, false, node.source.line);
+        result = target;
+        return true;
     }
     else
     {

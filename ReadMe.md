@@ -134,8 +134,14 @@ case medians 75.1% above the archived NeoScript baseline in the same session. Th
 of commit `dca2d64` measured a sum 26.6% above Lua, and a paired run in the same
 session found that build 7.3% slower than a rebuild of `91d6d58` with identical
 bytecode, which it attributes to build layout rather than to any one commit until a
-layout-controlled pair is measured. The typed path has not been measured against the
-inherited VM since `fd0e229`.
+layout-controlled pair is measured. The [third three-way snapshot](docs/ThreeWayBenchmark3.md)
+of commit `cb522bb`, which lowers map reads to dedicated VM operations, measured a
+sum 1.9% above Lua with `map_str` at 1.85× Lua, and a paired run against the
+`dca2d64` build put `map_str` at 0.31× its earlier time. A follow-up pair in the
+same report measured the direct-destination lowering of statement-level assignments
+at 0.87× the `2b096ca` sum, with `loop_sum` at 0.60×; that session was the first
+with the NeoCore sum below the Lua sum. The typed path has not been measured
+against the inherited VM since `fd0e229`.
 The typed host boundary also supports collections, structs and retained function
 values. VS Code uses the same frontend for diagnostics and debugging. The
 remaining compiler/VM migration is described in the
@@ -255,7 +261,9 @@ Lua, and C++ binaries; its NeoCore sum of case medians is 75.1% above NeoScript
 without a paired generic-op control. The [three-way snapshot](docs/ThreeWayBenchmark.md)
 measures commit `91d6d58` against Lua and C++ only, and the
 [second three-way snapshot](docs/ThreeWayBenchmark2.md) measures commit `dca2d64`
-the same way with a paired run against `91d6d58`. Each report identifies its
+the same way with a paired run against `91d6d58`, and the
+[third three-way snapshot](docs/ThreeWayBenchmark3.md) measures commit `cb522bb`
+with a paired run against `dca2d64`. Each report identifies its
 measured snapshot; none of them reports a later build.
 
 For embedding, `NeoSource/NeoCore.h` is the static entry point in namespace

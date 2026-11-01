@@ -470,6 +470,8 @@ struct Expr
     bool assignmentTarget = false;
     // 값 타입이 null 을 담을 수 없는 맵 읽기. 없는 키는 런타임 오류다.
     bool checkedMapRead = false;
+    // 문장 위치의 대입·증감. 결과가 소비되지 않으므로 IR 에 그대로 전달한다.
+    bool discardResult = false;
     std::string hostWriteHelper;
     std::string typedWriteIntrinsic;
     bool typedWriteFloat = false;
@@ -2928,8 +2930,15 @@ private:
             return FallsThrough;
         }
         case StatementKind::Expression:
-            CheckExpr(*statement.expressions[0]);
+        {
+            Expr& expression = *statement.expressions[0];
+            CheckExpr(expression);
+            // 결과를 버리는 대입·증감만 표시한다. a = (b = 1) 의 안쪽 대입이나 식 안의 대입은 결과를 소비한다.
+            expression.discardResult = expression.kind == ExprKind::Assignment ||
+                (expression.kind == ExprKind::Unary && (expression.op == "++" || expression.op == "--" ||
+                    expression.op == "post++" || expression.op == "post--"));
             return FallsThrough;
+        }
         case StatementKind::If:
         {
             CheckExpr(*statement.expressions[0]); Require(*statement.expressions[0], types_.Bool(), "if condition");
@@ -3258,6 +3267,7 @@ private:
         else if (ScalarMutationIROp(expression, node.op))
         {
             ScalarStorage(*expression.children[0], &node.storage);
+            node.discardResult = expression.discardResult;
             if (expression.kind == ExprKind::Assignment)
             {
                 std::size_t value = BuildValueIR(*expression.children[1]);

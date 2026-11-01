@@ -91,6 +91,18 @@ Struct fields store values directly, without alias cells. Whole-struct assignmen
 replaces the destination with an independent copy. Internal boxed vector locals
 remain only for component writes.
 
+An assignment or increment that forms a whole statement does not use its result. The
+checker marks that root node (`IRNode::discardResult`), and the emitter then stores
+into a plain local, parameter or file variable directly: the arithmetic instruction's
+destination becomes the variable and no result temporary or trailing `MOV` is emitted,
+and a variable on the right-hand side is read in place instead of being copied first.
+`sum += i + bias;` therefore compiles to two typed instructions, `t = i;` to one `MOV`,
+and a discarded postfix increment does not keep the old value. Assignments whose
+result is consumed (`a = (b = 1)`, `(x = 1) + (x = 2)`, a returned or passed
+assignment), struct field paths and captured cells keep the result temporary and the
+RHS snapshot. Typed arithmetic handlers check and compute before they store, so a
+failing direct write still leaves the variable unchanged.
+
 Named script calls carry resolved function signatures and ordered argument nodes.
 Arguments finish left to right before being moved to the shared call window.
 Struct copy and the transfer of `null` into a reference-typed slot are explicit IR operations. Return records
@@ -949,7 +961,11 @@ Lua sum, with `loop_sum` at 1.79× and `map_str` at 6.10× Lua. The
 [second three-way snapshot](ThreeWayBenchmark2.md) of commit `dca2d64` measured
 1.27× the Lua sum and, in a paired run, 1.07× the rebuilt `91d6d58` executable
 with byte-identical bytecode, so the difference is attributed to the executables'
-layout until a layout-controlled pair says otherwise. Local operand
+layout until a layout-controlled pair says otherwise. The
+[third three-way snapshot](ThreeWayBenchmark3.md) of commit `cb522bb`, after map
+reads moved from generated helper calls to dedicated VM operations, measured
+1.02× the Lua sum with `map_str` at 1.85× Lua and, in a paired run, `map_str` at
+0.31× the `dca2d64` build. Local operand
 handling, constant localization, and numeric conversion costs require fresh paired
 measurements before claiming an improvement or attributing that difference.
 Performance claims require paired baseline/trial runs with matching results; inherited NeoScript benchmark

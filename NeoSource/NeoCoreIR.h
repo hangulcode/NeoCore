@@ -58,6 +58,8 @@ struct IRNode
     std::string legacySource;
     IRStorageTarget storage;
     std::size_t functionIndex = static_cast<std::size_t>(-1);
+    // 문장 위치의 대입·증감은 결과를 쓰지 않는다. 백엔드가 임시 슬롯 없이 변수에 바로 저장할 수 있다.
+    bool discardResult = false;
 };
 
 struct IRFunction
