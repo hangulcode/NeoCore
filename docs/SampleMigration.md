@@ -100,7 +100,7 @@ nonzero exit status:
 
 | Mode | Remaining work |
 | --- | --- |
-| `--globals` | Names alone cannot define static globals. An embedding host must supply their types and bindings through `HostSchema` and `HostBindings`; a typed CLI declaration format is not implemented. |
+| `--globals` | Names alone cannot define static globals. Use `--host host.json` for a typed schema and optional `--host-impl fake.nc` implementations; see [HeadlessHost.md](HeadlessHost.md). |
 | `--v2smoke` | The inherited dynamic VM/embedding regression command has no equivalent typed console suite. Typed CTest/API regressions cover their own contracts separately. |
 
 Successfully running the smoke command does not certify those unsupported services.

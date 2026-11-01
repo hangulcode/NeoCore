@@ -2,7 +2,9 @@
 
 #include "NeoCoreTypes.h"
 #include "NeoCoreIR.h"
+#include "NeoCoreDiagnostics.h"
 #include <string>
+#include <functional>
 #include <utility>
 #include <vector>
 
@@ -10,6 +12,7 @@ namespace NeoCore
 {
 
 class HostSchema;
+struct ScriptHostCompileConfig;
 
 struct StaticFunctionSignature
 {
@@ -60,6 +63,8 @@ struct StaticCompileResult
     std::string errorMessage;
     int errorLine = 0;
     int errorColumn = 0;
+    std::vector<CompileDiagnostic> diagnostics;
+    bool diagnosticsTruncated = false;
     TypeRegistry types;
     std::vector<StaticFunctionSignature> functions;
     std::vector<StaticDebugSymbol> debugSymbols;
@@ -77,6 +82,8 @@ struct StaticDefineReplacement
 bool ExpandStaticDefines(const std::string& source, const std::vector<CompileDefine>& defines,
     std::vector<StaticDefineReplacement>& replacements, std::string& error, int& line, int& column);
 bool CompileStaticSource(const std::string& source, StaticCompileResult& result, const HostSchema* hostSchema = nullptr,
-    const std::vector<CompileDefine>* defines = nullptr);
+    const std::vector<CompileDefine>* defines = nullptr, std::size_t diagnosticLimit = 100,
+    const ScriptHostCompileConfig* scriptHost = nullptr,
+    const std::function<bool(int)>& implementationSource = std::function<bool(int)>());
 
 }

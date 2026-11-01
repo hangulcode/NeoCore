@@ -79,7 +79,9 @@
   <ItemGroup>
     <ClCompile Include="main.cpp" />
     <ClCompile Include="ConsoleTooling.cpp" />
+    <ClCompile Include="ConsoleHost.cpp" />
     <ClInclude Include="ConsoleTooling.h" />
+    <ClInclude Include="ConsoleHost.h" />
     <ClInclude Include="SampleHost.h" />
     <ClInclude Include="CompilerErrors.h" />
     <ClInclude Include="Benchmarks.h" />

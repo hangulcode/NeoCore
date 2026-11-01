@@ -888,6 +888,13 @@ suspension and error unwinding remain runtime responsibilities.
 
 ## Remaining implementation stages
 
+Host interfaces and compile defines can be exported/imported through
+`HostSchemaDocument`. The console accepts `--host` for typed CLI/LSP diagnostics
+and `--host-impl` for synchronous, receiver-aware mock functions in the same
+program/instance. Compile errors are collected up to a configurable bundle-wide
+limit. See [HeadlessHost.md](HeadlessHost.md); engine integration and external-host
+DAP execution remain separate work.
+
 1. Expand typed operations to remaining collection reads/writes and
    function argument/result transfers. Preserve the VM dispatch, frame, and
    execution-control architecture.

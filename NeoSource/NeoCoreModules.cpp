@@ -427,8 +427,8 @@ private:
 class Bundler
 {
 public:
-    Bundler(const ModuleLoader& loader, const std::vector<std::string>& externalNames, const std::vector<CompileDefine>* defines)
-        : loader_(loader), defines_(defines)
+    Bundler(const ModuleLoader& loader, const std::vector<std::string>& externalNames, const std::vector<CompileDefine>* defines, std::size_t diagnosticLimit)
+        : loader_(loader), defines_(defines), diagnosticLimit_(std::max<std::size_t>(1, diagnosticLimit))
     {
         static const char* const words[] = {
             "var", "fun", "int", "float", "bool", "string", "void", "int32", "float32", "any",
@@ -451,6 +451,13 @@ public:
         identities_[sourceName] = 0;
         units_.push_back(std::move(root));
         Visit(0, 0);
+        if (!diagnostics_.empty())
+        {
+            Diagnostic failure;
+            failure.error.message=diagnostics_.front().message; failure.error.sourceName=diagnostics_.front().sourceName;
+            failure.error.line=diagnostics_.front().line; failure.error.column=diagnostics_.front().column;
+            failure.error.diagnostics=diagnostics_; throw failure;
+        }
         std::string prefix = "__ncmodule_";
         for (;;)
         {
@@ -478,6 +485,8 @@ private:
     std::vector<std::unique_ptr<Unit>> units_;
     std::map<std::string, std::size_t> identities_;
     std::set<std::string> preserved_;
+    std::vector<CompileDiagnostic> diagnostics_;
+    std::size_t diagnosticLimit_;
 
     void Visit(std::size_t index, unsigned depth)
     {
@@ -486,37 +495,46 @@ private:
         unit.visiting = true;
         for (Import& import : unit.imports)
         {
+            if (diagnostics_.size() >= diagnosticLimit_) break;
             if (import.builtin) continue;
-            const Token& token = unit.tokens[import.first];
-            if (!loader_) Fail(unit.input.sourceName, token, "user module imports require a ModuleLoader");
-            ModuleSource input;
-            Error error;
-            if (!loader_(import.name, unit.input.sourceName, input, error))
+            try
             {
-                if (error.message.empty()) error.message = "cannot load module: " + import.name;
-                if (error.sourceName.empty()) { error.sourceName = unit.input.sourceName; error.line = token.line; error.column = token.column; }
-                Diagnostic failure; failure.error = error; throw failure;
+                const Token& token = unit.tokens[import.first];
+                if (!loader_) Fail(unit.input.sourceName, token, "user module imports require a ModuleLoader");
+                ModuleSource input;
+                Error error;
+                if (!loader_(import.name, unit.input.sourceName, input, error))
+                {
+                    if (error.message.empty()) error.message = "cannot load module: " + import.name;
+                    if (error.sourceName.empty()) { error.sourceName = unit.input.sourceName; error.line = token.line; error.column = token.column; }
+                    Diagnostic failure; failure.error = error; throw failure;
+                }
+                if (input.sourceName.empty()) input.sourceName = import.name + ".nc";
+                const std::map<std::string, std::size_t>::const_iterator known = identities_.find(input.sourceName);
+                if (known != identities_.end())
+                {
+                    import.target = known->second;
+                    if (units_[import.target]->visiting) Fail(unit.input.sourceName, token, "cyclic module import: " + input.sourceName);
+                    if (units_[import.target]->input.source != input.source)
+                        Fail(unit.input.sourceName, token, "module loader returned inconsistent source: " + input.sourceName);
+                    continue;
+                }
+                if (units_.size() >= 1024) Fail(unit.input.sourceName, token, "module count exceeds compiler limit");
+                std::unique_ptr<Unit> loaded(new Unit);
+                loaded->input = std::move(input);
+                Analyze(*loaded, defines_);
+                if (!loaded->tokens.empty() && loaded->tokens.back().text != ";" && loaded->tokens.back().text != "}")
+                    Fail(loaded->input.sourceName, loaded->tokens.back(), "incomplete statement at end of module source");
+                import.target = units_.size();
+                identities_[loaded->input.sourceName] = import.target;
+                units_.push_back(std::move(loaded));
+                Visit(import.target, depth + 1);
             }
-            if (input.sourceName.empty()) input.sourceName = import.name + ".nc";
-            const std::map<std::string, std::size_t>::const_iterator known = identities_.find(input.sourceName);
-            if (known != identities_.end())
+            catch (const Diagnostic& failure)
             {
-                import.target = known->second;
-                if (units_[import.target]->visiting) Fail(unit.input.sourceName, token, "cyclic module import: " + input.sourceName);
-                if (units_[import.target]->input.source != input.source)
-                    Fail(unit.input.sourceName, token, "module loader returned inconsistent source: " + input.sourceName);
-                continue;
+                CompileDiagnostic item; item.message=failure.error.message; item.sourceName=failure.error.sourceName;
+                item.line=failure.error.line; item.column=failure.error.column; diagnostics_.push_back(item);
             }
-            if (units_.size() >= 1024) Fail(unit.input.sourceName, token, "module count exceeds compiler limit");
-            std::unique_ptr<Unit> loaded(new Unit);
-            loaded->input = std::move(input);
-            Analyze(*loaded, defines_);
-            if (!loaded->tokens.empty() && loaded->tokens.back().text != ";" && loaded->tokens.back().text != "}")
-                Fail(loaded->input.sourceName, loaded->tokens.back(), "incomplete statement at end of module source");
-            import.target = units_.size();
-            identities_[loaded->input.sourceName] = import.target;
-            units_.push_back(std::move(loaded));
-            Visit(import.target, depth + 1);
         }
         unit.visiting = false;
         unit.visited = true;
@@ -644,13 +662,13 @@ void ModuleBundle::Translate(Error& error) const
 
 bool BundleModules(const std::string& source, const std::string& sourceName,
     const ModuleLoader& loader, ModuleBundle& result, Error& error,
-    const std::vector<std::string>& externalNames, const std::vector<CompileDefine>* defines)
+    const std::vector<std::string>& externalNames, const std::vector<CompileDefine>* defines, std::size_t diagnosticLimit)
 {
     result = ModuleBundle();
     error = Error();
     try
     {
-        Bundler bundler(loader, externalNames, defines);
+        Bundler bundler(loader, externalNames, defines, diagnosticLimit);
         bundler.Build(source, sourceName, result);
         return true;
     }

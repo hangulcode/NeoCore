@@ -76,6 +76,7 @@
     <ClCompile Include="..\NeoSource\NeoCoreCompiler.cpp" />
     <ClCompile Include="..\NeoSource\NeoCoreTypes.cpp" />
     <ClCompile Include="..\NeoSource\NeoCoreHost.cpp" />
+    <ClCompile Include="..\NeoSource\NeoCoreHostSchemaIO.cpp" />
     <ClCompile Include="..\NeoSource\NeoCoreHostSchema.cpp" />
     <ClCompile Include="..\NeoSource\NeoExport.cpp" />
     <ClCompile Include="..\NeoSource\NeoJson.cpp" />
@@ -112,6 +113,10 @@
     <ClInclude Include="..\NeoSource\NeoCoreTypes.h" />
     <ClInclude Include="..\NeoSource\NeoCoreHost.h" />
     <ClInclude Include="..\NeoSource\NeoCoreHostSchema.h" />
+    <ClInclude Include="..\NeoSource\NeoCoreHostSchemaIO.h" />
+    <ClInclude Include="..\NeoSource\NeoCoreScriptHost.h" />
+    <ClInclude Include="..\NeoSource\NeoCoreTextFile.h" />
+    <ClInclude Include="..\NeoSource\NeoCoreDiagnostics.h" />
     <ClInclude Include="..\NeoSource\NeoCoreHostBridge.h" />
     <ClInclude Include="..\NeoSource\NeoCoreHostRuntime.h" />
     <ClInclude Include="..\NeoSource\NeoCoreInstanceContext.h" />

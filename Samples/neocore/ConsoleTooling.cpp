@@ -1,4 +1,5 @@
 ﻿#include "ConsoleTooling.h"
+#include "ConsoleHost.h"
 #include "HttpTransport.h"
 #include "../../NeoSource/NeoCoreDebugger.h"
 #include "../../NeoSource/NeoCoreCompiler.h"
@@ -1258,12 +1259,25 @@ public:
 	std::unordered_map<std::string, std::string> documents;
 	std::vector<BuiltinInfo> builtins;
 	bool terminated = false;
-    std::map<std::string, std::map<std::string, std::string>> diagnosticsByRoot;
+    std::map<std::string, std::map<std::string, std::vector<std::string>>> diagnosticsByRoot;
+    std::unique_ptr<ConsoleHost> host;
+    std::vector<NeoCore::CompileDefine> defines;
+    std::size_t diagnosticLimit;
+    std::string implementationPath;
 
-	NeoLspSession()
-	{
+    NeoLspSession(const std::string& schemaPath, const std::string& implementation, const std::string& resourceRoot, std::size_t limit)
+        : diagnosticLimit(limit), implementationPath(implementation.empty()?"":FullPathOrSelf(implementation))
+    {
         TypedBuiltins(builtins);
-	}
+        if (!schemaPath.empty())
+        {
+            NeoCore::HostSchemaDocument document; std::string error;
+            if (!NeoCore::HostSchemaDocument::LoadFile(FullPathOrSelf(schemaPath),document,error)) throw std::runtime_error(error);
+            defines=document.defines;
+            host.reset(new ConsoleHost(document,implementation.empty()?"":FullPathOrSelf(implementation),resourceRoot));
+        }
+    }
+
 
     std::vector<BuiltinInfo> DocumentBuiltins(const std::string& source)
     {
@@ -1295,7 +1309,7 @@ public:
         for (const auto& root : diagnosticsByRoot)
         {
             const auto found = root.second.find(target);
-            if (found != root.second.end()) diagnostics.insert(found->second);
+            if (found != root.second.end()) diagnostics.insert(found->second.begin(),found->second.end());
         }
         std::string values;
         for (const std::string& diagnostic : diagnostics)
@@ -1319,13 +1333,51 @@ public:
         NeoCore::Error error;
         NeoCore::ModuleLoader loader = [&](const std::string& name, const std::string& importer, NeoCore::ModuleSource& result, NeoCore::Error& failure)
         { return LoadModule(name, importer, "", result, failure, &overlays); };
-        if (NeoCore::BundleModules(current->second, path, loader, bundle, error))
+        std::vector<std::string> external;
+        if (host)
+        {
+            for (const auto& global:host->Schema().Globals()) external.push_back(global.name);
+            for (const auto& type:host->Schema().Types().NamedTypes()) external.push_back(type.first);
+        }
+        std::string bundleSource=current->second, bundlePath=path;
+        if (!implementationPath.empty())
+        {
+            const auto overlay=overlays.find(implementationPath);
+            std::string implementationSource;
+            if (overlay!=overlays.end()) implementationSource=overlay->second;
+            else if (!ReadSource(implementationPath,implementationSource))
+            {
+                error.message="cannot read host implementation: "+implementationPath;
+                error.sourceName=implementationPath;
+            }
+            const NeoCore::ModuleLoader fallback=loader;
+            const std::string implementation=implementationPath, application=bundleSource;
+            bundlePath+="#console-host";
+            const std::string launcher=bundlePath;
+            loader=[fallback,implementation,implementationSource,path,application,launcher](
+                const std::string& name,const std::string& importer,NeoCore::ModuleSource& out,NeoCore::Error& failure){
+                if(importer==launcher && name=="__console_host_impl"){out.sourceName=implementation;out.source=implementationSource;return true;}
+                if(importer==launcher && name=="__console_host_app"){out.sourceName=path;out.source=application;return true;}
+                return fallback(name,importer,out,failure);
+            };
+            bundleSource="import __console_host_impl;\nimport __console_host_app;\n";
+        }
+        if (error.ok() && NeoCore::BundleModules(bundleSource, bundlePath, loader, bundle, error,external,&defines,diagnosticLimit))
         {
             NeoCore::StaticCompileResult checked;
-            if (!NeoCore::CompileStaticSource(bundle.source, checked))
+            const auto config=host?host->Config():std::shared_ptr<const NeoCore::ScriptHostCompileConfig>();
+            const auto allowed=[&](int line){return config && line>0 && static_cast<std::size_t>(line)<=bundle.lines.size() && config->allowsSource(bundle.lines[static_cast<std::size_t>(line-1)].sourceName);};
+            if (!NeoCore::CompileStaticSource(bundle.source, checked,host?&host->Schema():nullptr,nullptr,diagnosticLimit,config.get(),allowed))
             {
                 error.sourceName = path; error.message = checked.errorMessage; error.line = checked.errorLine; error.column = checked.errorColumn;
                 bundle.Translate(error);
+                for (const auto& diagnostic:checked.diagnostics)
+                {
+                    NeoCore::Error mapped; mapped.message=diagnostic.message; mapped.sourceName=path; mapped.line=diagnostic.line; mapped.column=diagnostic.column;
+                    bundle.Translate(mapped);
+                    NeoCore::CompileDiagnostic value; value.message=mapped.message; value.sourceName=mapped.sourceName; value.line=mapped.line; value.column=mapped.column;
+                    error.diagnostics.push_back(value);
+                }
             }
         }
         std::set<std::string> affected;
@@ -1333,20 +1385,28 @@ public:
         diagnosticsByRoot[uri].clear();
         if (!error.ok())
         {
-            std::string target = PathUri(error.sourceName.empty() ? path : error.sourceName);
+            if (error.diagnostics.empty())
+            {
+                NeoCore::CompileDiagnostic first; first.message=error.message; first.sourceName=error.sourceName; first.line=error.line; first.column=error.column;
+                error.diagnostics.push_back(first);
+            }
+            for (const auto& diagnostic:error.diagnostics)
+            {
+            std::string target = PathUri(diagnostic.sourceName.empty() ? path : diagnostic.sourceName);
             std::string source;
             for (const auto& document : documents)
-                if (UriPath(document.first) == error.sourceName) { target = document.first; source = document.second; break; }
-            if (source.empty()) ReadSource(error.sourceName, source);
-            if (error.sourceName == path) target = uri;
+                if (UriPath(document.first) == diagnostic.sourceName) { target = document.first; source = document.second; break; }
+            if (source.empty()) ReadSource(diagnostic.sourceName, source);
+            if (diagnostic.sourceName == path) target = uri;
             affected.insert(target);
-            const int line = std::max(0, error.line - 1);
-            const int character = Utf16Column(source, error.line, error.column);
+            const int line = std::max(0, diagnostic.line - 1);
+            const int character = Utf16Column(source, diagnostic.line, diagnostic.column);
             std::ostringstream message;
-            message << "{\"severity\":1,\"source\":\"NeoCore\",\"message\":\"" << JsonEscape(error.message)
+            message << "{\"severity\":1,\"source\":\"NeoCore\",\"message\":\"" << JsonEscape(diagnostic.message)
                 << "\",\"range\":{\"start\":{\"line\":" << line << ",\"character\":" << character
                 << "},\"end\":{\"line\":" << line << ",\"character\":" << character << "}}}";
-            diagnosticsByRoot[uri][target] = message.str();
+            diagnosticsByRoot[uri][target].push_back(message.str());
+            }
         }
         else affected.insert(uri);
         for (const std::string& target : affected) PublishDiagnosticTarget(target);
@@ -1545,13 +1605,13 @@ public:
 
 };
 
-int RunLanguageServerImpl()
+int RunLanguageServerImpl(const std::string& hostSchema,const std::string& hostImplementation,const std::string& resourceRoot,std::size_t diagnosticLimit)
 {
 #ifdef _WIN32
 	_setmode(_fileno(stdin), _O_BINARY);
 	_setmode(_fileno(stdout), _O_BINARY);
 #endif
-	NeoLspSession session;
+	NeoLspSession session(hostSchema,hostImplementation,resourceRoot,diagnosticLimit);
 	std::string body;
 	while (!session.terminated && DapReadMessage(body))
 		session.Handle(body);
@@ -1560,4 +1620,8 @@ int RunLanguageServerImpl()
 
 }
 int RunNeoCoreDebugAdapter() { return RunDebugAdapterImpl(); }
-int RunNeoCoreLanguageServer() { return RunLanguageServerImpl(); }
+int RunNeoCoreLanguageServer(const std::string& hostSchema,const std::string& hostImplementation,const std::string& resourceRoot,std::size_t diagnosticLimit)
+{
+    try { return RunLanguageServerImpl(hostSchema,hostImplementation,resourceRoot,diagnosticLimit); }
+    catch(const std::exception& error) { std::fprintf(stderr,"%s\n",error.what()); return 2; }
+}

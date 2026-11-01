@@ -1,6 +1,7 @@
 ﻿#include "NeoCore.h"
 #include "NeoCoreModules.h"
 #include "NeoCoreCompiler.h"
+#include "NeoCoreScriptHost.h"
 #include "NeoCoreImage.h"
 #include "NeoCoreDebugAccess.h"
 #include "NeoCoreDebugger.h"
@@ -355,15 +356,28 @@ std::unique_ptr<Program> Program::CompileImpl(const std::string& source, Error& 
         for (const auto& type : schema.Types().NamedTypes())
             if (schema.Types().Get(type.second).kind == TypeKind::Native || schema.Types().Get(type.second).kind == TypeKind::Struct) externalNames.push_back(type.first);
     }
-    if (!BundleModules(source, sourceName, options.moduleLoader, impl->bundle, error, externalNames, &options.defines))
+    if (!BundleModules(source, sourceName, options.moduleLoader, impl->bundle, error, externalNames, &options.defines, options.diagnosticLimit))
         return std::unique_ptr<Program>();
-    if (!CompileStaticSource(impl->bundle.source, impl->checked, impl->host ? &impl->host->Schema() : nullptr))
+    const auto implementationSource = [&](int line) {
+        return options.scriptHost && options.scriptHost->allowsSource && line > 0 &&
+            static_cast<std::size_t>(line) <= impl->bundle.lines.size() &&
+            options.scriptHost->allowsSource(impl->bundle.lines[static_cast<std::size_t>(line - 1)].sourceName);
+    };
+    if (!CompileStaticSource(impl->bundle.source, impl->checked, impl->host ? &impl->host->Schema() : nullptr,
+        nullptr, options.diagnosticLimit, options.scriptHost.get(), implementationSource))
     {
         error.message = impl->checked.errorMessage;
         error.sourceName = sourceName;
         error.line = impl->checked.errorLine;
         error.column = impl->checked.errorColumn;
         impl->bundle.Translate(error);
+        for (const CompileDiagnostic& diagnostic : impl->checked.diagnostics)
+        {
+            Error translated; translated.message = diagnostic.message; translated.sourceName = sourceName;
+            translated.line = diagnostic.line; translated.column = diagnostic.column; impl->bundle.Translate(translated);
+            CompileDiagnostic original; original.message = translated.message; original.sourceName = translated.sourceName;
+            original.line = translated.line; original.column = translated.column; error.diagnostics.push_back(original);
+        }
         return std::unique_ptr<Program>();
     }
     NeoScript::CompileDesc desc;

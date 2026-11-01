@@ -19,6 +19,14 @@ typed executable; otherwise it uses the debugger executable.
 
 The extension starts local compiler processes only in trusted workspaces.
 
+For host-aware language diagnostics, set `neoCore.hostSchema` to an exported
+HostSchema JSON file. Optional `neoCore.hostImplementation` and
+`neoCore.resourceRoot` configure a console mock; `neoCore.maxDiagnostics` limits
+independent errors (default 100). These paths accept `${workspaceFolder}`.
+Settings changes restart the language server; restart it after exporting a new
+schema. This does not configure DAP execution. See
+[HeadlessHost.md](../../docs/HeadlessHost.md).
+
 ## Language support
 
 - `.nc` syntax highlighting and snippets use explicit types, typed collections,

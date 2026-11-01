@@ -1,6 +1,7 @@
 ﻿#pragma once
 
 #include "NeoCoreOptions.h"
+#include "NeoCoreDiagnostics.h"
 #include <cstdint>
 #include <memory>
 #include <string>
@@ -21,6 +22,7 @@ struct Error
     std::string sourceName;
     int line = 0;
     int column = 0;
+    std::vector<CompileDiagnostic> diagnostics;
     bool ok() const { return message.empty(); }
 };
 

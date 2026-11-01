@@ -9,6 +9,7 @@
 namespace NeoCore
 {
 struct Error;
+struct ScriptHostCompileConfig;
 struct ModuleSource
 {
     std::string source;
@@ -37,6 +38,8 @@ struct CompileOptions
     std::shared_ptr<IHttpTransport> httpTransport;
     bool emitAsm = false;
     std::vector<CompileDefine> defines;
+    std::size_t diagnosticLimit = 100;
+    std::shared_ptr<const ScriptHostCompileConfig> scriptHost;
 };
 
 struct ExecutionLimits

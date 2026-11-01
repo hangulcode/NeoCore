@@ -1,4 +1,4 @@
-const fs = require("fs");
+﻿const fs = require("fs");
 const fsp = require("fs/promises");
 const path = require("path");
 const { spawn } = require("child_process");
@@ -160,7 +160,8 @@ class NeoCoreDebugAdapterDescriptorFactory {
 }
 
 class NeoCoreLanguageClient {
-  constructor(executablePath, cwd) {
+  constructor(executablePath, cwd, args) {
+    this.args = args;
     this.executablePath = executablePath;
     this.cwd = cwd;
     this.process = undefined;
@@ -175,7 +176,7 @@ class NeoCoreLanguageClient {
     }
 
     try {
-      this.process = spawn(this.executablePath, ["--lsp"], {
+      this.process = spawn(this.executablePath, this.args, {
         cwd: this.cwd,
         stdio: ["pipe", "pipe", "ignore"],
         windowsHide: true
@@ -355,7 +356,13 @@ function startLanguageClient(context) {
   }
 
   const cwd = folder ? folder.uri.fsPath : path.dirname(executablePath);
-  languageClient = new NeoCoreLanguageClient(executablePath, cwd);
+  const config = vscode.workspace.getConfiguration("neoCore", folder?.uri);
+  const args = ["--lsp", "--max-errors", String(config.get("maxDiagnostics", 100))];
+  for (const [setting, option] of [["hostSchema", "--host"], ["hostImplementation", "--host-impl"], ["resourceRoot", "--resource-root"]]) {
+    const value = config.get(setting, "");
+    if (value) args.push(option, resolveVariables(value, folder));
+  }
+  languageClient = new NeoCoreLanguageClient(executablePath, cwd, args);
   if (!languageClient.start()) {
     languageClient = undefined;
     return undefined;
@@ -527,6 +534,15 @@ function activate(context) {
       if (event.event === "neoCoreCompileError") {
         setCompileDiagnostic(event.body);
       }
+    })
+  );
+  context.subscriptions.push(
+    vscode.workspace.onDidChangeConfiguration((event) => {
+      if (!event.affectsConfiguration("neoCore")) return;
+      if (languageClient) languageClient.dispose();
+      languageClient = undefined;
+      diagnosticCollection.clear();
+      startLanguageClient(context);
     })
   );
   startLanguageClient(context);

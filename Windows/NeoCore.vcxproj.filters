@@ -8,6 +8,11 @@
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="..\NeoSource\NeoCoreModules.cpp"><Filter>NeoCore</Filter></ClCompile>
+    <ClCompile Include="..\NeoSource\NeoCoreHostSchemaIO.cpp"><Filter>NeoCore</Filter></ClCompile>
+    <ClInclude Include="..\NeoSource\NeoCoreHostSchemaIO.h"><Filter>NeoCore</Filter></ClInclude>
+    <ClInclude Include="..\NeoSource\NeoCoreDiagnostics.h"><Filter>NeoCore</Filter></ClInclude>
+    <ClInclude Include="..\NeoSource\NeoCoreScriptHost.h"><Filter>NeoCore</Filter></ClInclude>
+    <ClInclude Include="..\NeoSource\NeoCoreTextFile.h"><Filter>NeoCore</Filter></ClInclude>
     <ClCompile Include="..\NeoSource\NeoCoreImage.cpp"><Filter>NeoCore</Filter></ClCompile>
     <ClCompile Include="..\NeoSource\NeoCore.cpp"><Filter>NeoCore</Filter></ClCompile>
     <ClCompile Include="..\NeoSource\NeoCoreCompiler.cpp"><Filter>NeoCore</Filter></ClCompile>

@@ -28,7 +28,8 @@ async function run(executable) {
       isTrusted: true,
       workspaceFolders: [{ uri: uri(pathToFileURL(directory).toString()) }],
       textDocuments: [document],
-      getConfiguration: () => ({ get: () => executable }),
+      getConfiguration: () => ({ get: (key, fallback) => key.endsWith("Path") ? executable : key === "maxDiagnostics" ? 7 : fallback }),
+      onDidChangeConfiguration: noop,
       onDidOpenTextDocument: noop, onDidChangeTextDocument: noop, onDidCloseTextDocument: noop
     },
     window: { activeTextEditor: { document }, showErrorMessage: (message) => { throw new Error(message); } },
@@ -58,7 +59,9 @@ async function run(executable) {
   };
   const moduleObject = { exports: {} };
   const children = [];
+  const spawned = [];
   const childProcess = { ...require("child_process"), spawn(...args) {
+    spawned.push(args);
     const child = require("child_process").spawn(...args);
     children.push(child);
     return child;
@@ -87,6 +90,7 @@ async function run(executable) {
     assert.strictEqual(adapter.args[0], "--dap");
     assert(commands["neoCore.createLaunchConfig"] && commands["neoCore.openSettings"]);
     assert.strictEqual(diagnostics.get(document.uri.toString()).length, 0);
+    assert.deepStrictEqual(Array.from(spawned[0][1]), ["--lsp", "--max-errors", "7"]);
   } finally {
     moduleObject.exports.deactivate();
     await Promise.all(children.map((child) => child.exitCode !== null ? Promise.resolve() : new Promise((resolve) => {

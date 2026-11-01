@@ -397,6 +397,12 @@ live pointers or treat IDs as stable across independently constructed schemas.
 
 ## Host migration responsibilities
 
+Export registered types, members, globals and compile defines with
+`HostSchemaDocument` from `NeoCoreHostSchemaIO.h`. The console accepts the exported
+schema for checking, language diagnostics and optional `.nc` mock implementations.
+See [HeadlessHost.md](HeadlessHost.md) for the format, CLI workflow, receiver and
+object-lifetime rules, and the bounded `Error::diagnostics` list.
+
 - Create one runtime from a complete, fixed schema and binding set. Compile each
   script asset through that runtime and cache its program.
 - Create instances for individual script attachments. Set their host context and

@@ -2,6 +2,7 @@
 #include "NeoCoreCompiler.h"
 #include "NeoCoreModules.h"
 #include "SampleHost.h"
+#include "ConsoleHost.h"
 #include "CompilerErrors.h"
 #include "Benchmarks.h"
 #include "ConsoleDiagnostics.h"
@@ -69,7 +70,12 @@ static const std::size_t SampleCount = sizeof(Samples) / sizeof(Samples[0]);
 
 static void PrintError(const NeoCore::Error& error)
 {
-    std::fprintf(stderr, "%s:%d:%d: %s\n", error.sourceName.c_str(),
+    if (!error.diagnostics.empty())
+    {
+        for (const auto& diagnostic : error.diagnostics)
+            std::fprintf(stderr, "%s:%d:%d: %s\n", diagnostic.sourceName.c_str(), diagnostic.line, diagnostic.column, diagnostic.message.c_str());
+    }
+    else std::fprintf(stderr, "%s:%d:%d: %s\n", error.sourceName.c_str(),
         error.line, error.column, error.message.c_str());
 }
 
@@ -244,6 +250,8 @@ struct ConsoleSettings
     bool debug;
     bool emitAsm;
     bool stats;
+    std::string hostSchema, hostImplementation, resourceRoot;
+    std::size_t diagnosticLimit = 100;
     ConsoleSettings() : debug(false), emitAsm(false), stats(false) {}
 };
 
@@ -280,23 +288,73 @@ static int Execute(const std::string& mode, const std::string& argument,
     options.httpTransport = CreateConsoleHttpTransport();
 #endif
     SampleHost host(sample ? argument : std::string());
+    std::unique_ptr<ConsoleHost> consoleHost;
+    options.diagnosticLimit = settings.diagnosticLimit;
+    if (!settings.hostSchema.empty())
+    {
+        NeoCore::HostSchemaDocument document;
+        if (!NeoCore::HostSchemaDocument::LoadFile(Canonical(settings.hostSchema), document, error.message))
+        { PrintError(error); return 1; }
+        options.defines = document.defines;
+        const std::string implementation = settings.hostImplementation.empty() ? "" : Canonical(settings.hostImplementation);
+        try { consoleHost.reset(new ConsoleHost(document, implementation,
+            settings.resourceRoot.empty() ? Directory(path) : Canonical(settings.resourceRoot))); }
+        catch (const std::exception& failure) { std::fprintf(stderr, "%s\n", failure.what()); return 1; }
+        options.scriptHost = consoleHost->Config();
+        if (!implementation.empty())
+        {
+            std::string implementationSource;
+            if (!Read(implementation, implementationSource)) { std::fprintf(stderr, "cannot read host implementation: %s\n", implementation.c_str()); return 1; }
+            const std::string applicationPath = path, applicationSource = source;
+            const NeoCore::ModuleLoader fallback = options.moduleLoader;
+            path += "#console-host";
+            const std::string launcher = path;
+            options.moduleLoader = [fallback, implementation, implementationSource, applicationPath, applicationSource, launcher](
+                const std::string& name, const std::string& importer, NeoCore::ModuleSource& output, NeoCore::Error& failure) {
+                if (importer == launcher && name == "__console_host_impl") { output.sourceName = implementation; output.source = implementationSource; return true; }
+                if (importer == launcher && name == "__console_host_app") { output.sourceName = applicationPath; output.source = applicationSource; return true; }
+                return fallback(name, importer, output, failure);
+            };
+            source = "import __console_host_impl;\nimport __console_host_app;\n";
+        }
+    }
     if (sample && argument == "http") options.httpTransport = CreateSampleHttpTransport();
     if (mode == "--emit-backend")
     {
         NeoCore::ModuleBundle bundle;
-        if (!NeoCore::BundleModules(source, path, options.moduleLoader, bundle, error)) { PrintError(error); return 1; }
+        std::vector<std::string> external;
+        if (consoleHost)
+        {
+            for (const auto& global : consoleHost->Schema().Globals()) external.push_back(global.name);
+            for (const auto& type : consoleHost->Schema().Types().NamedTypes()) external.push_back(type.first);
+        }
+        if (!NeoCore::BundleModules(source, path, options.moduleLoader, bundle, error, external, &options.defines, options.diagnosticLimit)) { PrintError(error); return 1; }
         NeoCore::StaticCompileResult result;
-        if (!NeoCore::CompileStaticSource(bundle.source, result))
+        const auto implementationSource = [&](int line) {
+            return options.scriptHost && line > 0 && static_cast<std::size_t>(line) <= bundle.lines.size() &&
+                options.scriptHost->allowsSource(bundle.lines[static_cast<std::size_t>(line - 1)].sourceName);
+        };
+        if (!NeoCore::CompileStaticSource(bundle.source, result, consoleHost ? &consoleHost->Schema() : nullptr,
+            nullptr, options.diagnosticLimit, options.scriptHost.get(), implementationSource))
         {
             error.sourceName = path; error.message = result.errorMessage;
             error.line = result.errorLine; error.column = result.errorColumn;
-            bundle.Translate(error); PrintError(error); return 1;
+            bundle.Translate(error);
+            for (const auto& diagnostic : result.diagnostics)
+            {
+                NeoCore::Error translated; translated.sourceName=path; translated.message=diagnostic.message;
+                translated.line=diagnostic.line; translated.column=diagnostic.column;
+                bundle.Translate(translated);
+                NeoCore::CompileDiagnostic item; item.sourceName=translated.sourceName; item.message=translated.message;
+                item.line=translated.line; item.column=translated.column; error.diagnostics.push_back(item);
+            }
+            PrintError(error); return 1;
         }
         if (std::fwrite(result.loweredSource.data(), 1, result.loweredSource.size(), stdout) != result.loweredSource.size() || std::fflush(stdout) != 0)
         { std::fprintf(stderr, "cannot write backend output\n"); return 1; }
         return 0;
     }
-    const NeoCore::HostBindings* bindings = host.Bindings();
+    const NeoCore::HostBindings* bindings = consoleHost ? &consoleHost->Bindings() : host.Bindings();
     std::unique_ptr<NeoCore::Program> program = bindings
         ? NeoCore::Program::Compile(source, *bindings, error, path, settings.debug, options)
         : NeoCore::Program::Compile(source, error, path, settings.debug, options);
@@ -392,6 +450,8 @@ static int Usage(int status = 2)
     std::puts("       neocore --pooltrim-check                Untimed memory-pool checks");
     std::puts("       neocore --file|--check|--emit-backend <file.nc>");
     std::puts("Options: --debug, --asm, --stats (before or after the command)");
+    std::puts("         --host <schema.json> --host-impl <implementation.nc> --resource-root <directory>");
+    std::puts("         --max-errors <count> (default 100); host implementations are console-only");
     std::puts("       neocore --dap | --lsp                    Typed editor protocols (stdio)");
     std::puts("Not yet ported: --v2smoke, untyped --globals.");
     return status;
@@ -439,10 +499,27 @@ static int ConsoleMain(const std::vector<std::string>& arguments)
         if (argument == "--debug") settings.debug = true;
         else if (argument == "--asm") settings.emitAsm = true;
         else if (argument == "--stats") settings.stats = true;
+        else if (argument == "--host" || argument == "--host-impl" || argument == "--resource-root" || argument == "--max-errors")
+        {
+            if (i + 1 == arguments.size()) { std::fprintf(stderr, "%s needs a value\n", argument.c_str()); return 2; }
+            const std::string value = arguments[++i];
+            if (argument == "--host") settings.hostSchema = value;
+            else if (argument == "--host-impl") settings.hostImplementation = value;
+            else if (argument == "--resource-root") settings.resourceRoot = value;
+            else
+            {
+                char* end = nullptr; const unsigned long long count = std::strtoull(value.c_str(), &end, 10);
+                if (value.empty() || value[0] == '-' || *end || count == 0 || count > 10000)
+                { std::fprintf(stderr, "--max-errors must be in [1, 10000]\n"); return 2; }
+                settings.diagnosticLimit = static_cast<std::size_t>(count);
+            }
+        }
         else if (argument == "--globals")
         { std::fprintf(stderr, "NeoCore requires HostSchema/HostBindings for typed globals; --globals name-only declarations are unsupported.\n"); return 2; }
         else positional.push_back(argument);
     }
+    if (!settings.hostImplementation.empty() && settings.hostSchema.empty())
+    { std::fprintf(stderr, "--host-impl requires --host\n"); return 2; }
     const std::string sampleDirectory = FindSamples(arguments[0]);
     if (positional.empty()) return RunMenu(settings, sampleDirectory);
     const std::string& mode = positional[0];
@@ -457,8 +534,12 @@ static int ConsoleMain(const std::vector<std::string>& arguments)
         if (mode == "--bench-check") return RunBenchmarkChecks(settings.debug);
         if (mode == "--pooltrim") return RunPoolTrim(settings.debug);
         if (mode == "--pooltrim-check") return RunPoolTrimChecks(settings.debug);
-        if (mode == "--dap") return RunNeoCoreDebugAdapter();
-        if (mode == "--lsp") return RunNeoCoreLanguageServer();
+        if (mode == "--dap")
+        {
+            if (!settings.hostSchema.empty()) { std::fprintf(stderr, "--host is supported by --check, --file, --emit-backend and --lsp; DAP host loading is not implemented\n"); return 2; }
+            return RunNeoCoreDebugAdapter();
+        }
+        if (mode == "--lsp") return RunNeoCoreLanguageServer(settings.hostSchema, settings.hostImplementation, settings.resourceRoot, settings.diagnosticLimit);
         if (mode == "--v2smoke")
         {
             std::fprintf(stderr, "%s is not yet ported to NeoCore; the legacy NeoScript VM/debugger/language-service checks do not validate .nc.\n", mode.c_str());

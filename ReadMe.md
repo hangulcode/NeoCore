@@ -11,6 +11,7 @@ through its static frontend; they do not accept dynamic NeoScript source.
 
 **[Language design and implementation status](docs/StaticTyping.md)** ·
 **[Typed host bindings](docs/HostBindings.md)** ·
+**[Host schemas and headless execution](docs/HeadlessHost.md)** ·
 **[Converted samples and run commands](docs/SampleMigration.md)** ·
 **[Source repository](https://github.com/hangulcode/NeoCore)**
 

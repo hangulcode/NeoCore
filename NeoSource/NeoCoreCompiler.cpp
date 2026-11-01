@@ -1,6 +1,7 @@
 ﻿#include "NeoCoreCompiler.h"
 
 #include "NeoCoreHostSchema.h"
+#include "NeoCoreScriptHost.h"
 #include "NeoCoreBuiltins.h"
 #include "NeoCoreOptions.h"
 #include "NeoNumberLiteral.h"
@@ -45,6 +46,23 @@ static void Fail(const Token& token, const std::string& message)
 {
     throw Diagnostic(token, message);
 }
+
+struct DiagnosticLimit {};
+struct DependentDiagnostic {};
+struct Recovery
+{
+    StaticCompileResult& result;
+    std::size_t limit;
+    Recovery(StaticCompileResult& output, std::size_t maximum) : result(output), limit((std::max)(std::size_t(1), maximum)) {}
+    void Add(const Diagnostic& error)
+    {
+        for (const auto& previous : result.diagnostics)
+            if (previous.line == error.token.line && previous.column == error.token.column && previous.message == error.message) return;
+        CompileDiagnostic value; value.message = error.message; value.line = error.token.line; value.column = error.token.column;
+        result.diagnostics.push_back(value);
+        if (result.diagnostics.size() >= limit) { result.diagnosticsTruncated = true; throw DiagnosticLimit(); }
+    }
+};
 
 static bool IdentifierStart(unsigned char c)
 {
@@ -432,6 +450,8 @@ struct Expr
     bool constant = false;
     bool constantInitializer = false;
     bool vectorConstructor = false;
+    HostBindingId hostBinding = InvalidHostBinding;
+    bool scriptHostRegistration = false;
     // 상수 문맥의 루트만 평가값을 소유한다. 이름 참조는 Symbol을 통해 이 값을 재사용한다.
     std::unique_ptr<ConstantValue> evaluatedConstant;
     bool branchCondition = false;
@@ -486,6 +506,7 @@ struct Statement
     bool isPublic = false, isExported = false, isConst = false;
     // switch 의 default 절이다. case 절은 expressions 에 상수 레이블을 둔다.
     bool isDefault = false;
+    bool invalid = false;
     std::vector<Parameter> parameters;
     std::vector<std::unique_ptr<Expr>> expressions;
     std::vector<std::unique_ptr<Statement>> children;
@@ -496,7 +517,7 @@ struct Statement
 class Parser
 {
 public:
-    Parser(const std::vector<Token>& tokens, TypeRegistry& types) : tokens_(tokens), types_(types) {}
+    Parser(const std::vector<Token>& tokens, TypeRegistry& types, Recovery* recovery = nullptr) : tokens_(tokens), types_(types), recovery_(recovery) {}
 
     std::vector<std::unique_ptr<Statement>> Read()
     {
@@ -508,14 +529,18 @@ public:
             if (braces == 0 && tokens_[i].text == "struct")
             {
                 const Token& name = tokens_[i + 1];
-                if (name.kind != TokenKind::Identifier || IsReserved(name.text)) Fail(name, "expected a structure name");
-                if (!declarations.insert(name.text).second || types_.DeclareStruct(name.text) == InvalidType) Fail(name, "duplicate or invalid structure name");
+                try
+                {
+                    if (name.kind != TokenKind::Identifier || IsReserved(name.text)) Fail(name, "expected a structure name");
+                    if (!declarations.insert(name.text).second || types_.DeclareStruct(name.text) == InvalidType) Fail(name, "duplicate or invalid structure name");
+                }
+                catch (const Diagnostic& error) { if (!recovery_) throw; recovery_->Add(error); }
             }
             if (tokens_[i].text == "{") ++braces;
             else if (tokens_[i].text == "}") --braces;
         }
         std::vector<std::unique_ptr<Statement>> program;
-        while (Peek().kind != TokenKind::End) program.push_back(ParseStatement(true));
+        while (Peek().kind != TokenKind::End) program.push_back(ReadStatement(true));
         return program;
     }
 
@@ -524,6 +549,41 @@ private:
     TypeRegistry& types_;
     std::size_t position_ = 0;
     int depth_ = 0;
+    Recovery* recovery_;
+
+    // 실패한 문장은 균형이 맞는 문장 끝 또는 블록 끝까지 버린다. 중간 AST는 실행에 사용하지 않는다.
+    std::unique_ptr<Statement> ReadStatement(bool topLevel)
+    {
+        const std::size_t first = position_;
+        const int depth = depth_;
+        try { return ParseStatement(topLevel); }
+        catch (const Diagnostic& error)
+        {
+            if (!recovery_) throw;
+            recovery_->Add(error); depth_ = depth;
+            int braces = 0, parentheses = 0, brackets = 0;
+            std::size_t next = first;
+            for (; next + 1 < tokens_.size(); ++next)
+            {
+                const std::string& text = tokens_[next].text;
+                if (text == "{") ++braces;
+                else if (text == "}")
+                {
+                    if (braces == 0) break;
+                    if (--braces == 0 && parentheses == 0 && brackets == 0) { ++next; if (tokens_[next].text == ";") ++next; break; }
+                }
+                else if (text == "(") ++parentheses;
+                else if (text == ")") { if (parentheses > 0) --parentheses; }
+                else if (text == "[") ++brackets;
+                else if (text == "]") { if (brackets > 0) --brackets; }
+                else if (text == ";" && braces == 0 && parentheses == 0 && brackets == 0) { ++next; break; }
+            }
+            position_ = next;
+            if (topLevel && position_ == first && Peek().kind != TokenKind::End) ++position_;
+            std::unique_ptr<Statement> empty(new Statement(StatementKind::Empty, tokens_[first]));
+            empty->invalid = true; empty->end = Peek().begin; return empty;
+        }
+    }
 
     struct Depth
     {
@@ -692,7 +752,7 @@ private:
             while (!At("}"))
             {
                 if (Peek().kind == TokenKind::End) Fail(Peek(), "expected '}'");
-                s->children.push_back(ParseStatement(false));
+                s->children.push_back(ReadStatement(false));
             }
             s->end = Take().end;
             return s;
@@ -723,7 +783,7 @@ private:
                 while (!At("case") && !At("default") && !At("}"))
                 {
                     if (Peek().kind == TokenKind::End) Fail(Peek(), "expected '}'");
-                    clause->children.push_back(ParseStatement(false));
+                    clause->children.push_back(ReadStatement(false));
                     clause->end = clause->children.back()->end;
                 }
                 s->children.push_back(std::move(clause));
@@ -744,8 +804,8 @@ private:
         {
             std::unique_ptr<Statement> s(new Statement(StatementKind::If, at));
             Expect("("); s->expressions.push_back(ParseExpression()); Expect(")");
-            s->children.push_back(ParseStatement(false));
-            if (Accept("else")) s->children.push_back(ParseStatement(false));
+            s->children.push_back(ReadStatement(false));
+            if (Accept("else")) s->children.push_back(ReadStatement(false));
             s->end = s->children.back()->end;
             return s;
         }
@@ -753,7 +813,7 @@ private:
         {
             std::unique_ptr<Statement> s(new Statement(StatementKind::While, at));
             Expect("("); s->expressions.push_back(ParseExpression()); Expect(")");
-            s->children.push_back(ParseStatement(false));
+            s->children.push_back(ReadStatement(false));
             s->end = s->children.back()->end;
             return s;
         }
@@ -763,7 +823,7 @@ private:
             Expect("("); s->declared = ParseType(); s->name = Name(); Expect("in");
             s->expressions.push_back(ParseExpression()); Expect(","); s->expressions.push_back(ParseExpression());
             if (Accept(",")) s->expressions.push_back(ParseExpression());
-            Expect(")"); s->children.push_back(ParseStatement(false));
+            Expect(")"); s->children.push_back(ReadStatement(false));
             s->end = s->children.back()->end;
             return s;
         }
@@ -781,7 +841,7 @@ private:
             do { Parameter p; p.type = ParseType(); p.name = Name(); s->parameters.push_back(p); } while (Accept(","));
             if (s->parameters.size() > 2) Fail(at, "foreach accepts one value or a key and value");
             Expect("in"); s->expressions.push_back(ParseExpression()); Expect(")");
-            s->children.push_back(ParseStatement(false));
+            s->children.push_back(ReadStatement(false));
             s->end = s->children.back()->end;
             return s;
         }
@@ -840,7 +900,7 @@ private:
                 }
                 Expect(")");
                 if (!At("{")) Fail(Peek(), "a function definition requires a body");
-                s->children.push_back(ParseStatement(false));
+                s->children.push_back(ReadStatement(false));
             }
             else
             {
@@ -944,7 +1004,7 @@ private:
             if (!At(")")) do { Parameter p; p.type = ParseType(); p.name = Name(); function.parameters.push_back(p); } while (Accept(","));
             Expect(")"); Expect("->"); function.declared = ParseType();
             if (!At("{")) Fail(Peek(), "an anonymous function requires a body");
-            function.children.push_back(ParseStatement(false));
+            function.children.push_back(ReadStatement(false));
             result->end = tokens_[position_ - 1].end;
             function.end = result->end;
         }
@@ -1037,7 +1097,7 @@ struct Symbol
     TypeId type;
     bool constant;
     const ConstantValue* constantValue = nullptr;
-    bool boxed = false, parameter = false;
+    bool boxed = false, parameter = false, invalid = false;
     bool hostGlobal = false;
     bool fileGlobal = false;
     std::size_t hostGlobalIndex = 0;
@@ -1053,7 +1113,10 @@ struct Symbol
 class Checker
 {
 public:
-    Checker(const std::string& source, StaticCompileResult& result, const HostSchema* hostSchema) : source_(source), result_(result), types_(result.types), hostSchema_(hostSchema)
+    Checker(const std::string& source, StaticCompileResult& result, const HostSchema* hostSchema, Recovery* recovery = nullptr,
+        const ScriptHostCompileConfig* scriptHost = nullptr, const std::function<bool(int)>& implementationSource = std::function<bool(int)>())
+        : source_(source), result_(result), types_(result.types), hostSchema_(hostSchema), recovery_(recovery),
+          scriptHost_(scriptHost), implementationSource_(implementationSource)
     {
         scopes_.push_back(std::map<std::string, Symbol*>());
         result_.backendIntrinsicPrefix = internalPrefix_ + "op_";
@@ -1084,36 +1147,56 @@ public:
         }
         for (const auto& node : program)
         {
-            if (node->kind == StatementKind::Struct)
+            try
             {
-                if (hostSchema_ && hostSchema_->FindGlobal(node->name.text)) Fail(node->name, "a structure cannot hide a host global");
-                structures_.push_back(node->declared.type);
+                if (node->invalid) continue;
+                if (node->kind == StatementKind::Struct)
+                {
+                    if (hostSchema_ && hostSchema_->FindGlobal(node->name.text)) Fail(node->name, "a structure cannot hide a host global");
+                    structures_.push_back(node->declared.type);
+                }
+                if (node->kind != StatementKind::Function) continue;
+                if (functions_.count(node->name.text)) Fail(node->name, "duplicate function '" + node->name.text + "'");
+                if (hostSchema_ && hostSchema_->FindGlobal(node->name.text)) Fail(node->name, "a function cannot hide a host global");
+                if (types_.LookupNamed(node->name.text) != InvalidType) Fail(node->name, "a function cannot have the same name as a declared type");
+                StaticFunctionSignature signature;
+                signature.name = node->name.text;
+                signature.returnType = node->declared.type;
+                signature.exported = node->isExported;
+                for (const Parameter& parameter : node->parameters)
+                {
+                    if (!types_.IsStorable(parameter.type.type)) Fail(parameter.type.first, "a parameter cannot have this type");
+                    signature.parameterTypes.push_back(parameter.type.type);
+                }
+                functions_[signature.name] = signature;
+                result_.functions.push_back(signature);
+                {
+                    IRFunction function;
+                    function.backendName = signature.name;
+                    function.returnType = signature.returnType;
+                    function.parameterTypes = signature.parameterTypes;
+                    irFunctions_[signature.name] = result_.typedIR.functions.size();
+                    result_.typedIR.functions.push_back(std::move(function));
+                }
             }
-            if (node->kind != StatementKind::Function) continue;
-            if (functions_.count(node->name.text)) Fail(node->name, "duplicate function '" + node->name.text + "'");
-            if (hostSchema_ && hostSchema_->FindGlobal(node->name.text)) Fail(node->name, "a function cannot hide a host global");
-            if (types_.LookupNamed(node->name.text) != InvalidType) Fail(node->name, "a function cannot have the same name as a declared type");
-            StaticFunctionSignature signature;
-            signature.name = node->name.text;
-            signature.returnType = node->declared.type;
-            signature.exported = node->isExported;
-            for (const Parameter& parameter : node->parameters)
-            {
-                if (!types_.IsStorable(parameter.type.type)) Fail(parameter.type.first, "a parameter cannot have this type");
-                signature.parameterTypes.push_back(parameter.type.type);
-            }
-            functions_[signature.name] = signature;
-            result_.functions.push_back(signature);
-            {
-                IRFunction function;
-                function.backendName = signature.name;
-                function.returnType = signature.returnType;
-                function.parameterTypes = signature.parameterTypes;
-                irFunctions_[signature.name] = result_.typedIR.functions.size();
-                result_.typedIR.functions.push_back(std::move(function));
-            }
+            catch (const Diagnostic& error) { if (!recovery_) throw; node->invalid = true; recovery_->Add(error); }
         }
-        for (const auto& node : program) CheckStatement(*node);
+        for (const auto& node : program)
+        {
+            bindingDeclaration_ = node->kind == StatementKind::Expression && node->expressions.size() == 1 ? node->expressions[0].get() : nullptr;
+            if (!node->invalid) RecoverStatement(*node);
+        }
+        bindingDeclaration_ = nullptr;
+        if (!result_.diagnostics.empty()) return;
+        CheckScriptImplementations(program);
+        for (const auto& use : hostUses_)
+        {
+            const auto implementation = scriptImplementations_.find(use.binding);
+            if (implementation == scriptImplementations_.end()) continue;
+            currentFunction_ = use.caller;
+            RecordScriptCall(use.token, implementation->second);
+        }
+        currentFunction_.clear();
         CheckGlobalInitializationCalls();
         FinishStorage();
         for (const StaticDefineReplacement& replacement : replacements)
@@ -1144,6 +1227,7 @@ public:
         result_.loweredSource = Lower();
         const std::string helpers = Helpers();
         int generatedLine = 1 + static_cast<int>(std::count(result_.loweredSource.begin(), result_.loweredSource.end(), '\n'));
+        generatedLine += static_cast<int>(scriptImplementations_.size());
         for (const HostWrite& write : hostWrites_)
             result_.hostWriteSourceLines.push_back(std::make_pair(++generatedLine, write.line));
         // 사용자 위치가 없는 공통 도우미는 0행으로 표시한다. 람다 본문과 호스트 쓰기의 원본 매핑은 보존한다.
@@ -1164,6 +1248,17 @@ private:
     StaticCompileResult& result_;
     TypeRegistry& types_;
     const HostSchema* hostSchema_;
+    Recovery* recovery_;
+    const ScriptHostCompileConfig* scriptHost_;
+    std::function<bool(int)> implementationSource_;
+    std::map<HostBindingId, std::string> scriptImplementations_;
+    const Expr* bindingDeclaration_ = nullptr;
+    struct HostUse { Token token; HostBindingId binding; std::string caller; };
+    std::vector<HostUse> hostUses_;
+    void RecordHostUse(const Token& token, HostBindingId binding)
+    {
+        if (scriptHost_ && binding) hostUses_.push_back(HostUse{token,binding,currentFunction_});
+    }
     std::map<std::string, StaticFunctionSignature> functions_;
     std::map<std::string, std::size_t> irFunctions_;
     std::vector<std::pair<const Statement*, std::size_t>> returns_;
@@ -1234,6 +1329,55 @@ private:
                 Fail(call.first, "function '" + call.second + "' can access a global before its initializer completes");
     }
 
+    void CheckScriptImplementations(const std::vector<std::unique_ptr<Statement>>& program)
+    {
+        if (!scriptHost_ || scriptImplementations_.empty()) return;
+        std::map<std::string, const Statement*> functions;
+        for (const auto& node : program)
+            if (node->kind == StatementKind::Function) functions[node->name.text] = node.get();
+        for (const auto& implementation : scriptImplementations_)
+        {
+            std::set<std::string> visited;
+            std::vector<std::string> pending(1, implementation.second);
+            while (!pending.empty())
+            {
+                const std::string name = pending.back(); pending.pop_back();
+                if (!visited.insert(name).second) continue;
+                const auto function = functions.find(name);
+                if (function == functions.end()) throw std::logic_error("missing script host function");
+                const auto addBinding = [&](HostBindingId binding) {
+                    const auto target = scriptImplementations_.find(binding);
+                    if (target != scriptImplementations_.end()) pending.push_back(target->second);
+                };
+                std::function<void(const Expr&)> expression;
+                std::function<void(const Statement&)> statement;
+                expression = [&](const Expr& value) {
+                    if (value.kind == ExprKind::Lambda) return;
+                    if (value.kind == ExprKind::Call)
+                    {
+                        if (value.indirectCall || value.callName == "sleep" || value.callName == "coroutine.resume")
+                            Fail(value.token, "host implementation functions must be synchronous; suspension and indirect calls are not allowed");
+                        if (functions.count(value.callName)) pending.push_back(value.callName);
+                        if (value.hostBinding) addBinding(value.hostBinding);
+                    }
+                    if (value.hostProperty)
+                    {
+                        if (!value.writeTarget) addBinding(value.hostProperty->getter);
+                        if (value.writeTarget || value.assignmentTarget) addBinding(value.hostProperty->setter);
+                    }
+                    for (const auto& child : value.children) expression(*child);
+                };
+                statement = [&](const Statement& value) {
+                    if (value.kind == StatementKind::Yield)
+                        Fail(value.token, "host implementation functions must be synchronous; yield is not allowed");
+                    for (const auto& valueExpression : value.expressions) expression(*valueExpression);
+                    for (const auto& child : value.children) statement(*child);
+                };
+                statement(*function->second);
+            }
+        }
+    }
+
     bool IsStruct(TypeId type) const { return types_.Get(type).kind == TypeKind::Struct; }
     bool IsScalarValue(TypeId type) const
     {
@@ -1266,7 +1410,11 @@ private:
     bool IsArray(TypeId type) const { return types_.Get(type).kind == TypeKind::Array || types_.Get(type).kind == TypeKind::Array32; }
     bool IsCollection(TypeId type) const { return types_.Get(type).kind == TypeKind::List || types_.Get(type).kind == TypeKind::Map || types_.Get(type).kind == TypeKind::Set || IsArray(type); }
     std::string Helper(const char* operation, TypeId type) const { return internalPrefix_ + operation + "_" + std::to_string(type); }
-    std::string HostCall(HostBindingId binding) const { return result_.hostPrefix + "b" + std::to_string(binding) + ".call"; }
+    std::string NativeHostCall(HostBindingId binding) const { return result_.hostPrefix + "b" + std::to_string(binding) + ".call"; }
+    std::string HostCall(HostBindingId binding) const
+    {
+        return scriptImplementations_.count(binding) ? internalPrefix_ + "mock_" + std::to_string(binding) : NativeHostCall(binding);
+    }
 
     bool IsArrayWriteTarget(const Expr& target) const
     {
@@ -1321,6 +1469,7 @@ private:
             expression.typedWriteIntrinsic = Intrinsic(name, expression.token.line);
             return;
         }
+        RecordHostUse(expression.token, property.hostProperty->setter);
         HostWrite write;
         write.name = internalPrefix_ + "hostwrite_" + std::to_string(hostWrites_.size());
         write.property = property.hostProperty;
@@ -1694,6 +1843,10 @@ private:
         if (IsNativeValue(receiver.type))
         {
             const TypeId ownerType = NativeReceiverType(receiver);
+            if (scriptHost_ && hostSchema_->FindGlobal(scriptHost_->apiGlobal) &&
+                ownerType == hostSchema_->FindGlobal(scriptHost_->apiGlobal)->type &&
+                (!implementationSource_ || !implementationSource_(member.token.line)))
+                Fail(member.token, "console host implementation API is only available in the implementation module");
             const HostBinding* binding = hostSchema_ ? hostSchema_->FindMethod(ownerType, member.op) : nullptr;
             if (!binding) Fail(member.token, "unknown host method '" + member.op + "'");
             if (count != binding->parameters.size()) Fail(member.token, "host method argument count does not match its declaration");
@@ -1710,6 +1863,24 @@ private:
                 if (callback.kind == ExprKind::Literal && callback.op == "null") Fail(callback.token, "a host event callback cannot be null");
             }
             for (std::size_t i = 0; i < count; ++i) Convert(*expression.children[i + 1], binding->parameters[i]);
+            if (scriptHost_ && member.op == "Bind" && hostSchema_->FindGlobal(scriptHost_->apiGlobal) &&
+                ownerType == hostSchema_->FindGlobal(scriptHost_->apiGlobal)->type)
+            {
+                if (&expression != bindingDeclaration_ || !receiver.symbol || !receiver.symbol->hostGlobal ||
+                    receiver.symbol->name.text != scriptHost_->apiGlobal)
+                    Fail(member.token, "host implementation bindings must be standalone Headless.Bind declarations at file scope");
+                const std::string path = DecodeStringLiteral(expression.children[1]->token);
+                const auto target = scriptHost_->members.find(path);
+                if (target == scriptHost_->members.end()) Fail(member.token, "unknown host implementation member: " + path);
+                const Expr& callback = *expression.children[2];
+                if (callback.kind != ExprKind::Name || callback.symbol || callback.callName.empty())
+                    Fail(callback.token, "a host implementation must be a named function");
+                if (!scriptImplementations_.emplace(target->second, callback.callName).second)
+                    Fail(member.token, "host implementation is already defined: " + path);
+                expression.scriptHostRegistration = true;
+            }
+            if (!expression.scriptHostRegistration) RecordHostUse(expression.token, binding->id);
+            expression.hostBinding = binding->id;
             expression.callName = HostCall(binding->id);
             expression.type = binding->returnType;
             return;
@@ -2177,6 +2348,10 @@ private:
                 RecordScriptCall(expression.token, expression.op);
                 return;
             }
+            if (symbol->invalid) throw DependentDiagnostic();
+            if (scriptHost_ && symbol->hostGlobal && symbol->name.text == scriptHost_->apiGlobal &&
+                (!implementationSource_ || !implementationSource_(expression.token.line)))
+                Fail(expression.token, "console host implementation API is only available in the implementation module");
             expression.type = symbol->type;
             expression.constant = symbol->constant;
             expression.symbol = symbol;
@@ -2333,6 +2508,7 @@ private:
                 const HostProperty* property = hostSchema_ ? hostSchema_->FindProperty(ownerType, expression.op) : nullptr;
                 if (!property) Fail(expression.token, "unknown host property '" + expression.op + "'");
                 if (!expression.writeTarget && !property->getter) Fail(expression.token, "host property is write-only");
+                if (!expression.writeTarget) RecordHostUse(expression.token, property->getter);
                 expression.hostProperty = property;
                 expression.type = property->type;
                 return;
@@ -2645,6 +2821,27 @@ private:
         return result;
     }
 
+    int RecoverStatement(Statement& statement)
+    {
+        const std::size_t scopes = scopes_.size(), lambdas = activeLambdas_.size();
+        const TypeId resultType = returnType_;
+        const int loops = loopDepth_, switches = switchDepth_, functions = functionDepth_;
+        const bool constant = checkingConstant_;
+        const std::string function = currentFunction_;
+        try { return CheckStatement(statement); }
+        catch (const Diagnostic& error) { if (!recovery_) throw; recovery_->Add(error); }
+        catch (const DependentDiagnostic&) { if (!recovery_) throw; }
+        scopes_.resize(scopes); activeLambdas_.resize(lambdas);
+        returnType_ = resultType; loopDepth_ = loops; switchDepth_ = switches; functionDepth_ = functions;
+        checkingConstant_ = constant; currentFunction_ = function;
+        if (statement.kind == StatementKind::Declaration && !Lookup(statement.name.text) && types_.IsStorable(statement.declared.type))
+        {
+            try { Define(statement.name, statement.declared.type, false).invalid = true; }
+            catch (const Diagnostic&) {}
+        }
+        return statement.kind == StatementKind::Return ? Returns : FallsThrough;
+    }
+
     int CheckStatement(Statement& statement)
     {
         if (statement.kind != StatementKind::Return)
@@ -2659,7 +2856,7 @@ private:
             int flow = FallsThrough;
             for (const auto& child : statement.children)
             {
-                const int next = CheckStatement(*child);
+                const int next = RecoverStatement(*child);
                 if (flow & FallsThrough) flow = (flow & ~FallsThrough) | next;
             }
             scopes_.pop_back();
@@ -2713,10 +2910,12 @@ private:
                 symbol.functionBody = statement.children[0]->token.end;
                 ReplaceType(parameter.type, "var");
             }
+            const std::size_t errorsBeforeBody = result_.diagnostics.size();
             const int flow = CheckStatement(*statement.children[0]);
             scopes_.pop_back();
             --functionDepth_;
-            if (returnType_ != types_.Void() && (flow & FallsThrough)) Fail(statement.name, "not all paths return a value");
+            if (result_.diagnostics.size() == errorsBeforeBody && returnType_ != types_.Void() && (flow & FallsThrough))
+                Fail(statement.name, "not all paths return a value");
             returnType_ = previousReturn;
             currentFunction_ = previousFunction;
             return FallsThrough;
@@ -3245,7 +3444,8 @@ private:
         case ExprKind::Call:
         {
             const Expr& callee = *expression.children[0];
-            std::string callName = expression.callName;
+            if (expression.scriptHostRegistration) { text = "null" + Lines(expression.begin, expression.end); break; }
+            std::string callName = expression.hostBinding ? HostCall(expression.hostBinding) : expression.callName;
             if (expression.indirectCall) callName = "(" + RenderExpr(callee) + ")";
             const bool builtinMethod = !callName.empty() && callName[0] == '.';
             if (builtinMethod)
@@ -3375,6 +3575,19 @@ private:
     std::string Helpers() const
     {
         std::string result;
+        for (const auto& implementation : scriptImplementations_)
+        {
+            const HostBinding& binding = *hostSchema_->FindBinding(implementation.first);
+            const auto validator = scriptHost_->validators.find(binding.ownerType);
+            if (validator == scriptHost_->validators.end()) throw std::logic_error("missing script host receiver validator");
+            std::size_t apiGlobal = 0;
+            while (apiGlobal < hostSchema_->Globals().size() && hostSchema_->Globals()[apiGlobal].name != scriptHost_->apiGlobal) ++apiGlobal;
+            result += "\nfun " + HostCall(binding.id) + "(var self";
+            for (std::size_t i=0;i<binding.parameters.size();++i) result += ",var a" + std::to_string(i);
+            result += "){" + NativeHostCall(validator->second) + "(" + result_.hostPrefix + "g" + std::to_string(apiGlobal) + ".call(),self);return " + implementation.second + "(self";
+            for (std::size_t i=0;i<binding.parameters.size();++i) result += ",a" + std::to_string(i);
+            result += ");}";
+        }
         for (const HostWrite& write : hostWrites_)
         {
             const bool increment = write.operation == "++" || write.operation == "--" || write.operation == "post++" || write.operation == "post--";
@@ -3578,9 +3791,11 @@ bool ExpandStaticDefines(const std::string& source, const std::vector<CompileDef
 }
 
 bool CompileStaticSource(const std::string& source, StaticCompileResult& result, const HostSchema* hostSchema,
-    const std::vector<CompileDefine>* defines)
+    const std::vector<CompileDefine>* defines, std::size_t diagnosticLimit,
+    const ScriptHostCompileConfig* scriptHost, const std::function<bool(int)>& implementationSource)
 {
     result = StaticCompileResult();
+    Recovery recovery(result, diagnosticLimit);
     try
     {
         if (hostSchema)
@@ -3593,19 +3808,26 @@ bool CompileStaticSource(const std::string& source, StaticCompileResult& result,
             return false;
         std::vector<Token> tokens = Lexer(source).Read();
         ApplyDefineTokens(tokens, replacements);
-        std::vector<std::unique_ptr<Statement>> program = Parser(tokens, result.types).Read();
-        Checker(source, result, hostSchema).Check(program, replacements);
-        result.success = true;
-        return true;
+        std::vector<std::unique_ptr<Statement>> program = Parser(tokens, result.types, &recovery).Read();
+        Checker(source, result, hostSchema, &recovery, scriptHost, implementationSource).Check(program, replacements);
+        result.success = result.diagnostics.empty();
+        if (result.success) return true;
     }
     catch (const Diagnostic& diagnostic)
     {
-        result.errorMessage = diagnostic.message;
-        result.errorLine = diagnostic.token.line;
-        result.errorColumn = diagnostic.token.column;
-        result.loweredSource.clear();
-        return false;
+        try { recovery.Add(diagnostic); } catch (const DiagnosticLimit&) {}
     }
+    catch (const DiagnosticLimit&) {}
+    std::stable_sort(result.diagnostics.begin(), result.diagnostics.end(), [](const CompileDiagnostic& a, const CompileDiagnostic& b) {
+        return a.line < b.line || (a.line == b.line && a.column < b.column);
+    });
+    if (!result.diagnostics.empty())
+    {
+        const CompileDiagnostic& first = result.diagnostics.front();
+        result.errorMessage = first.message; result.errorLine = first.line; result.errorColumn = first.column;
+    }
+    result.loweredSource.clear(); result.typedIR = TypedIR();
+    return false;
 }
 
 // 편집 중인 문서는 문장이 미완성이어도 정적 타입 선언의 이름과 서명을 제공한다.

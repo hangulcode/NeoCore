@@ -37,6 +37,6 @@ struct ModuleBundle
 bool BundleModules(const std::string& source, const std::string& sourceName,
     const ModuleLoader& loader, ModuleBundle& result, Error& error,
     const std::vector<std::string>& externalNames = std::vector<std::string>(),
-    const std::vector<CompileDefine>* defines = nullptr);
+    const std::vector<CompileDefine>* defines = nullptr, std::size_t diagnosticLimit = 100);
 
 }

@@ -145,6 +145,22 @@
           "default": "",
           "description": "Path to the typed neocore executable supporting --dap. Empty discovers a native or CMake NeoCore build."
         },
+        "neoCore.hostSchema": {
+          "type": "string", "default": "",
+          "description": "HostSchema JSON used by typed language diagnostics. Supports ${workspaceFolder}."
+        },
+        "neoCore.hostImplementation": {
+          "type": "string", "default": "",
+          "description": "Optional .nc host implementation module used with hostSchema."
+        },
+        "neoCore.resourceRoot": {
+          "type": "string", "default": "",
+          "description": "Resource directory for the console host implementation."
+        },
+        "neoCore.maxDiagnostics": {
+          "type": "integer", "default": 100, "minimum": 1, "maximum": 10000,
+          "description": "Maximum independent compile diagnostics for a module bundle."
+        },
         "neoCore.languageServerPath": {
           "type": "string",
           "default": "",
