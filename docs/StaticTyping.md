@@ -67,6 +67,9 @@ programs and saved images do not retain pointers to the graph.
 Host/builtin calls, container/host writes, and selectors that have not migrated to IR use typed
 `LegacyExpression` leaves. Each leaf is compiled when traversal reaches its original
 evaluation position, with the current lexical scope and original source coordinates.
+The synchronous fragment parser borrows its parent constant scope instead of copying
+the entire table per leaf. The parent outlives the fragment; imports remain isolated,
+and no borrowed compiler pointer survives into a program or bytecode image.
 For example, `(1 / 0) + F()` must fail before `F()` executes. Earlier operands are
 snapshotted before later effects, including assignments hidden inside an IR marker.
 Logical short-circuiting remains in the existing statement/expression compiler.

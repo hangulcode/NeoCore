@@ -938,9 +938,9 @@ static TK_TYPE ApplyCompileDefine(CArchiveRdWC& ar, TK_TYPE tkType, std::string&
 		return tkType;
 
 	// 스크립트 const (모듈-로컬) 우선 조회 — 호스트 define 과의 충돌은 선언 시점에 에러 처리됨
-	auto its = ar.m_sScriptDefines.values.find(tk);
-	if (its != ar.m_sScriptDefines.values.end())
-		return CompileDefineTokenToToken((*its).second, tk);
+	const NeoCompileDefineToken* scriptDefine = ar.FindScriptDefine(tk);
+	if (scriptDefine)
+		return CompileDefineTokenToToken(*scriptDefine, tk);
 
 	if (ar.m_pDefines == nullptr)
 		return tkType;
@@ -3436,7 +3436,8 @@ static bool EmitCoreIRNode(std::size_t index, SOperand& result,
         fragment.m_iFileSeq = ar.m_iFileSeq;
         fragment.m_pDebugSourceFiles = ar.m_pDebugSourceFiles;
         fragment.m_pDefines = ar.m_pDefines;
-        fragment.m_sScriptDefines = ar.m_sScriptDefines;
+        // 부모는 이 조각의 파싱이 끝날 때까지 살아 있고 상수 표도 변경되지 않는다.
+        fragment.m_pScriptDefineParent = &ar;
         fragment.m_pGlobalSymbols = ar.m_pGlobalSymbols;
         fragment.m_pLoader = ar.m_pLoader;
         fragment.m_coreIntrinsicPrefix = ar.m_coreIntrinsicPrefix;
@@ -6241,7 +6242,7 @@ bool ParseConstDef(CArchiveRdWC& ar, SFunctions& funs, SVars& vars, bool exporte
 		SetParserCompileError(ar, PCE_EXPECTED_TOKEN, "const name", name.c_str());
 		return false;
 	}
-	if (ar.m_sScriptDefines.values.find(name) != ar.m_sScriptDefines.values.end() ||
+	if (ar.FindScriptDefine(name) != nullptr ||
 		(ar.m_pDefines != nullptr && ar.m_pDefines->values.find(name) != ar.m_pDefines->values.end()) ||
 		vars.FindVar(name) != -1 ||
 		funs.FindFun(name) != NULL || funs._curModule->_defModules.count(name) != 0)

@@ -1,4 +1,4 @@
-#include "NeoCore.h"
+﻿#include "NeoCore.h"
 #include "NeoCoreCompiler.h"
 
 #include <cmath>
@@ -93,6 +93,36 @@ void Matrix(bool debug)
         NeoCore::Scalar::Int(100), debug);
 }
 
+// 이전 파서로 남긴 식의 상수를 바이트코드 저장·재로딩 뒤에도 확인한다.
+void FragmentConstants(bool debug)
+{
+    const std::string source =
+        "import math;const int N=2;const float R=-1.25;const string KEY=\"v\";const bool ON=true;"
+        "export int Probe(){list<list<int>> rows=[[3,5],[7,11]];map<string,int> m={};m[KEY]=13;"
+        "if(!ON)return 0;return rows[N-1][toint(math.abs(R))]+m[KEY]+toint(math.abs(R));}";
+    NeoCore::StaticCompileResult checked;
+    Check(NeoCore::CompileStaticSource(source, checked), "fragment constants frontend: " + checked.errorMessage);
+    int fragments = 0;
+    for (const auto& node : checked.typedIR.nodes)
+        if (node.op == NeoCore::IROp::LegacyExpression) ++fragments;
+    Check(fragments > 0, "constant regression exercises retained expression fragments");
+    Value(source, NeoCore::Scalar::Int(25), debug);
+    // 서로 다른 프로그램을 반복 컴파일해도 앞선 상수 표의 참조가 남으면 안 된다.
+    for (int run = 0; run != 3; ++run)
+    {
+        std::string many = "import math;";
+        for (int i = 0; i != 128; ++i)
+            many += "const int K" + std::to_string(i) + "=" + std::to_string(run+i) + ";";
+        many += "export int Probe(){list<int> items=[K127,K0];return items[0]+toint(math.abs(float(items[1])));}";
+        Value(many, NeoCore::Scalar::Int(127+2*run), debug);
+    }
+    NeoCore::Error error;
+    Check(!NeoCore::Program::Compile("export int Probe(){list<int> a=[LATER];return a[0];}const int LATER=3;",
+        error, "later.nc", debug), "fragment cannot read a later constant");
+    Check(!NeoCore::Program::Compile("const int A=1;const int A=2;export int Probe(){return A;}",
+        error, "duplicate.nc", debug), "duplicate constants still rejected");
+}
+
 void Reject(const std::string& source, const std::string& message)
 {
     NeoCore::StaticCompileResult checked;
@@ -154,7 +184,7 @@ void Modules(bool debug)
 
 int main()
 {
-    for (bool debug : {false, true}) { Matrix(debug); Modules(debug); }
+    for (bool debug : {false, true}) { Matrix(debug); FragmentConstants(debug); Modules(debug); }
     Rejections();
     std::printf("NeoCore constants: %d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;

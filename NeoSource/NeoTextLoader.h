@@ -151,6 +151,8 @@ public:
 	std::vector<std::string>* m_pDebugSourceFiles = nullptr;
 	const NeoCompileDefines* m_pDefines = nullptr;
 	NeoCompileDefines m_sScriptDefines;      // 스크립트 내부 const 선언 (모듈-로컬, import 시 전파 안 함)
+	// 동기적으로 파싱하는 표현식 조각만 부모를 빌린다. import에는 전달하지 않는다.
+	const CArchiveRdWC* m_pScriptDefineParent = nullptr;
 	bool m_bSuppressDefines = false;         // const 이름 토큰을 raw 로 읽기 위한 치환 억제 플래그
 	const NeoGlobalSymbolTable* m_pGlobalSymbols = nullptr;
 	INeoLoader* m_pLoader = nullptr;          // import 해석 loader: param→top archive 세팅, 중첩 모듈로 전파
@@ -161,6 +163,15 @@ public:
 		m_iSize = 0;
 		m_iCurLine = 1;
 		m_iCurCol = 1;
+	}
+	const NeoCompileDefineToken* FindScriptDefine(const std::string& name) const
+	{
+		for (const CArchiveRdWC* scope = this; scope; scope = scope->m_pScriptDefineParent)
+		{
+			const auto it = scope->m_sScriptDefines.values.find(name);
+			if (it != scope->m_sScriptDefines.values.end()) return &it->second;
+		}
+		return nullptr;
 	}
 	void SetData(std::u16string source)
 	{
