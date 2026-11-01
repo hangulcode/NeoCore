@@ -121,7 +121,14 @@ not create script helper frames or invoke native library constructors. Three/fou
 input operations use a validated contiguous temporary-slot range. Each instruction
 still occupies eight bytes; there are no extension slots or hidden resume states.
 
-Constant initializers retain the existing constant evaluator. Host/builtin calls,
+`const` initializers, `case` labels and struct field defaults share one frontend
+constant evaluator over the checked expression tree. Constants are evaluated once
+at declaration, including integer-to-float widening, and subsequent references use
+that stored value. Lowering emits the evaluated literal rather than asking the
+backend to recalculate the expression. Integer wraparound, division errors, shift
+bounds, decoded strings and signed zero follow the same rules in all three uses.
+Only a resolved vector/Quaternion constructor can be evaluated as a call; an
+ordinary function returning a vector is not a constant constructor. Host/builtin calls,
 lists/maps, whole-struct helpers and host property
 write composition retain their existing paths. Host vector calculations use the
 new instructions inside the write helper, while getter/setter calls independently
@@ -264,8 +271,10 @@ their boundaries, not merely rely on the source declaration.
 `const`, `public`, and `export` declarations are file-scoped. A constant needs an
 initializer. Scalar literals, earlier constants, numeric arithmetic, and integer
 bit operations are supported. Logical operators (including `!`), comparisons, and
-string concatenation in constant initializers are rejected until the typed
-constant evaluator is implemented. The same operators remain available in ordinary
+string concatenation in constant initializers remain unsupported. Nonfinite constant
+results, division by zero, integer division overflow and shift counts outside
+`[0,63]` are compile errors at the original expression. The same logical and string
+operators remain available in ordinary
 runtime expressions. `export const` is rejected; use `public const` for a module constant.
 
 ## Value parameters
@@ -504,7 +513,7 @@ and struct fields cannot declare defaults; they start as null or use their own f
 defaults. Declared defaults apply to `Position p;`, `Position()`, and to fields that
 lenient JSON decoding finds missing. They are evaluated once, stored in the type
 table and the image, and reused by the host boundary.
-Default field initializer expressions, methods, and `const` struct declarations
+Nonconstant field initializer expressions, methods, and `const` struct declarations
 remain deferred. Copying a struct copies its nested struct values, while its
 collection fields keep their shared-container identities.
 

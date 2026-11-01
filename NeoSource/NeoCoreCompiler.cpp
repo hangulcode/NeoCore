@@ -16,6 +16,8 @@
 #include <set>
 #include <stdexcept>
 #include <utility>
+#include <sstream>
+#include <locale>
 
 namespace NeoCore
 {
@@ -395,6 +397,24 @@ static void ApplyDefineTokens(std::vector<Token>& tokens, const std::vector<Stat
 
 struct Symbol;
 struct Statement;
+struct ConstantValue
+{
+    enum Kind { Int, Float, Bool, String, Vector, Null };
+    Kind kind = Null;
+    std::int64_t integer = 0;
+    double number = 0;
+    bool boolean = false;
+    std::string text;
+    TypeId vectorType = InvalidType;
+    float vector[4] = {};
+    double Number() const { return kind == Int ? static_cast<double>(integer) : number; }
+    static std::int64_t FromBits(std::uint64_t bits)
+    {
+        std::int64_t value;
+        std::memcpy(&value, &bits, sizeof(value));
+        return value;
+    }
+};
 enum class ExprKind { Literal, Name, Unary, Binary, Assignment, Call, Member, Index, List, Map, Lambda };
 struct Expr
 {
@@ -411,6 +431,9 @@ struct Expr
     TypeId jsonType = InvalidType;
     bool constant = false;
     bool constantInitializer = false;
+    bool vectorConstructor = false;
+    // 상수 문맥의 루트만 평가값을 소유한다. 이름 참조는 Symbol을 통해 이 값을 재사용한다.
+    std::unique_ptr<ConstantValue> evaluatedConstant;
     bool branchCondition = false;
     int treeDepth = 1;
     Symbol* symbol = nullptr;
@@ -1013,6 +1036,7 @@ struct Symbol
 {
     TypeId type;
     bool constant;
+    const ConstantValue* constantValue = nullptr;
     bool boxed = false, parameter = false;
     bool hostGlobal = false;
     bool fileGlobal = false;
@@ -1352,9 +1376,11 @@ private:
     // 선언 기본값을 백엔드 리터럴 텍스트로 낸다. 호스트 경계의 FieldDefaultScalar 와 같은 값이어야 한다.
     static std::string FloatLiteral(double value)
     {
-        char buffer[64];
-        std::snprintf(buffer, sizeof(buffer), "%.17g", value);
-        std::string text(buffer);
+        std::ostringstream number;
+        number.imbue(std::locale::classic());
+        number.precision(std::numeric_limits<double>::max_digits10);
+        number << value;
+        std::string text = number.str();
         if (text.find_first_of(".eE") == std::string::npos) text += ".0";
         return text;
     }
@@ -1949,6 +1975,7 @@ private:
                     : "vector constructor requires no arguments or exactly its component count");
             for (std::size_t i = 1; i < expression.children.size(); ++i) Convert(*expression.children[i], types_.Float());
             expression.callName = VectorConstructor(structure, callee.token.line);
+            expression.vectorConstructor = true;
             if (count == 0)
             {
                 for (std::size_t i = 0; i < components; ++i)
@@ -2362,123 +2389,175 @@ private:
         }
     }
 
-    // 구조체 필드 기본값의 컴파일 타임 상수 평가. 리터럴, const 이름, 부호, 정수·실수 산술, 성분이 상수인 벡터 생성자를 받는다.
-    struct ConstValue
+    // const·case·필드 기본값은 같은 식 트리를 평가하고, const 이름은 선언 때 확정한 값을 재사용한다.
+    bool EvaluateConstant(const Expr& expression, ConstantValue& out, int depth = 0) const
     {
-        int kind = 0; // 0 int, 1 float, 2 bool, 3 string, 4 vector
-        std::int64_t integer = 0;
-        double number = 0.0;
-        bool boolean = false;
-        std::string text;
-        TypeId vectorType = InvalidType;
-        float vector[4];
-        ConstValue() { vector[0] = vector[1] = vector[2] = vector[3] = 0.0f; }
-        double Number() const { return kind == 0 ? static_cast<double>(integer) : number; }
-    };
-
-    bool EvaluateConstant(const Expr& expression, ConstValue& out, int depth) const
-    {
-        if (depth > 64) return false;
+        if (depth > 256) Fail(expression.token, "constant expression nesting exceeds compiler limit");
         switch (expression.kind)
         {
         case ExprKind::Literal:
-            if (expression.token.kind == TokenKind::Integer) { out.kind = 0; out.integer = expression.integerValue; return true; }
-            if (expression.token.kind == TokenKind::Float) { out.kind = 1; out.number = expression.floatValue; return true; }
-            if (expression.token.kind == TokenKind::String) { out.kind = 3; out.text = DecodeStringLiteral(expression.token); return true; }
-            if (expression.op == "true" || expression.op == "false") { out.kind = 2; out.boolean = expression.op == "true"; return true; }
-            return false;
+            if (expression.token.kind == TokenKind::Integer) { out.kind = ConstantValue::Int; out.integer = expression.integerValue; }
+            else if (expression.token.kind == TokenKind::Float) { out.kind = ConstantValue::Float; out.number = expression.floatValue; }
+            else if (expression.token.kind == TokenKind::String) { out.kind = ConstantValue::String; out.text = DecodeStringLiteral(expression.token); }
+            else if (expression.op == "true" || expression.op == "false") { out.kind = ConstantValue::Bool; out.boolean = expression.op == "true"; }
+            else if (expression.op == "null") out.kind = ConstantValue::Null;
+            else return false;
+            break;
         case ExprKind::Name:
-            return expression.symbol && expression.symbol->constant && expression.symbol->declaration
-                && !expression.symbol->declaration->expressions.empty()
-                && EvaluateConstant(*expression.symbol->declaration->expressions[0], out, depth + 1);
+            if (!expression.symbol || !expression.symbol->constantValue) return false;
+            out = *expression.symbol->constantValue;
+            break;
         case ExprKind::Unary:
         {
-            ConstValue value;
-            if (!EvaluateConstant(*expression.children[0], value, depth + 1)) return false;
-            if (value.kind == 1)
+            if (!EvaluateConstant(*expression.children[0], out, depth + 1)) return false;
+            if (out.kind == ConstantValue::Float)
             {
-                if (expression.op == "-") { out.kind = 1; out.number = -value.number; return true; }
-                if (expression.op == "+") { out = value; return true; }
-                return false;
+                if (expression.op == "-") out.number = -out.number;
+                else if (expression.op != "+") return false;
             }
-            if (value.kind != 0) return false;
-            const std::uint64_t bits = static_cast<std::uint64_t>(value.integer);
-            std::uint64_t result;
-            if (expression.op == "-") result = 0u - bits;
-            else if (expression.op == "+") result = bits;
-            else if (expression.op == "~") result = ~bits;
+            else if (out.kind == ConstantValue::Int)
+            {
+                if (expression.op == "-") out.integer = ConstantValue::FromBits(0u - static_cast<std::uint64_t>(out.integer));
+                else if (expression.op == "~") out.integer = ~out.integer;
+                else if (expression.op != "+") return false;
+            }
             else return false;
-            out.kind = 0; out.integer = static_cast<std::int64_t>(result);
-            return true;
+            break;
         }
         case ExprKind::Binary:
         {
-            ConstValue left, right;
+            ConstantValue left, right;
             if (!EvaluateConstant(*expression.children[0], left, depth + 1) || !EvaluateConstant(*expression.children[1], right, depth + 1)) return false;
-            if ((left.kind != 0 && left.kind != 1) || (right.kind != 0 && right.kind != 1)) return false;
+            if ((left.kind != ConstantValue::Int && left.kind != ConstantValue::Float) ||
+                (right.kind != ConstantValue::Int && right.kind != ConstantValue::Float)) return false;
             const std::string& op = expression.op;
-            if (left.kind == 1 || right.kind == 1)
+            if (left.kind == ConstantValue::Float || right.kind == ConstantValue::Float)
             {
                 const double a = left.Number(), b = right.Number();
-                out.kind = 1;
+                out.kind = ConstantValue::Float;
                 if (op == "+") out.number = a + b;
                 else if (op == "-") out.number = a - b;
                 else if (op == "*") out.number = a * b;
-                else if (op == "/") out.number = a / b;
+                else if (op == "/")
+                {
+                    if (b == 0) Fail(expression.token, "division by zero in constant expression");
+                    out.number = a / b;
+                }
                 else return false;
-                return true;
             }
-            const std::uint64_t a = static_cast<std::uint64_t>(left.integer), b = static_cast<std::uint64_t>(right.integer);
-            std::uint64_t result;
-            if (op == "+") result = a + b;
-            else if (op == "-") result = a - b;
-            else if (op == "*") result = a * b;
-            else if (op == "/" || op == "%")
+            else
             {
-                if (right.integer == 0 || (left.integer == (std::numeric_limits<std::int64_t>::min)() && right.integer == -1)) return false;
-                result = static_cast<std::uint64_t>(op == "/" ? left.integer / right.integer : left.integer % right.integer);
+                const std::int64_t a = left.integer, b = right.integer;
+                out.kind = ConstantValue::Int;
+                if (op == "+") out.integer = ConstantValue::FromBits(static_cast<std::uint64_t>(a) + static_cast<std::uint64_t>(b));
+                else if (op == "-") out.integer = ConstantValue::FromBits(static_cast<std::uint64_t>(a) - static_cast<std::uint64_t>(b));
+                else if (op == "*") out.integer = ConstantValue::FromBits(static_cast<std::uint64_t>(a) * static_cast<std::uint64_t>(b));
+                else if (op == "/" || op == "%")
+                {
+                    if (b == 0) Fail(expression.token, "division by zero in constant expression");
+                    if (a == (std::numeric_limits<std::int64_t>::min)() && b == -1)
+                        Fail(expression.token, "integer division overflow in constant expression");
+                    out.integer = op == "/" ? a / b : a % b;
+                }
+                else if (op == "&") out.integer = a & b;
+                else if (op == "|") out.integer = a | b;
+                else if (op == "^") out.integer = a ^ b;
+                else if (op == "<<" || op == ">>")
+                {
+                    if (b < 0 || b >= 64) Fail(expression.token, "constant shift count must be in [0, 63]");
+                    std::uint64_t bits = static_cast<std::uint64_t>(a);
+                    if (op == "<<") bits <<= b;
+                    else
+                    {
+                        bits >>= b;
+                        if (a < 0 && b != 0) bits |= (~std::uint64_t(0)) << (64 - b);
+                    }
+                    std::memcpy(&out.integer, &bits, sizeof(bits));
+                }
+                else return false;
             }
-            else if (op == "&") result = a & b;
-            else if (op == "|") result = a | b;
-            else if (op == "^") result = a ^ b;
-            else return false;
-            out.kind = 0; out.integer = static_cast<std::int64_t>(result);
-            return true;
+            break;
         }
         case ExprKind::Call:
         {
-            // Vector2/3/4(), Quaternion() 생성자. 인자가 없으면 영벡터·단위 쿼터니언, 있으면 성분 수와 같아야 한다.
-            if (!IsVector(expression.type) || expression.children.empty()) return false;
+            // 반환형이 벡터인 일반 함수는 생성자가 아니다. 타입 검사에서 확정한 생성자만 평가한다.
+            if (!expression.vectorConstructor) return false;
             const std::size_t count = expression.children.size() - 1;
-            out.kind = 4; out.vectorType = expression.type;
+            out.kind = ConstantValue::Vector; out.vectorType = expression.type;
             for (int i = 0; i < 4; ++i) out.vector[i] = 0.0f;
             if (count == 0) { if (expression.type == types_.Quaternion()) out.vector[0] = 1.0f; return true; }
-            if (count != static_cast<std::size_t>(VectorSize(expression.type))) return false;
             for (std::size_t i = 0; i < count; ++i)
             {
-                ConstValue component;
-                if (!EvaluateConstant(*expression.children[i + 1], component, depth + 1) || (component.kind != 0 && component.kind != 1)) return false;
-                out.vector[i] = static_cast<float>(component.Number());
+                ConstantValue component;
+                if (!EvaluateConstant(*expression.children[i + 1], component, depth + 1) ||
+                    (component.kind != ConstantValue::Int && component.kind != ConstantValue::Float)) return false;
+                // 상수는 유한한 float32 결과만 저장한다. FLT_MAX 바로 위의 반올림 구간도 보존한다.
+                const double number = component.Number();
+                const float maximum = (std::numeric_limits<float>::max)();
+                const double overflow = 3.40282356779733661637539395458142568448e38;
+                if (number >= overflow || number <= -overflow)
+                    Fail(expression.token, "non-finite constant vector component cannot be represented");
+                out.vector[i] = number > maximum ? maximum : number < -maximum ? -maximum : static_cast<float>(number);
             }
-            return true;
+            break;
         }
         default:
             return false;
         }
+        // 이름 참조와 부분식에 붙은 int→float 승격까지 반영해 다음 문맥에서도 같은 값을 쓴다.
+        if (expression.widen && out.kind == ConstantValue::Int)
+        {
+            out.number = static_cast<double>(out.integer);
+            out.kind = ConstantValue::Float;
+        }
+        if (out.kind == ConstantValue::Float && !std::isfinite(out.number))
+            Fail(expression.token, "non-finite constant result cannot be represented");
+        return true;
+    }
+
+    void ResolveConstant(Expr& expression) const
+    {
+        std::unique_ptr<ConstantValue> value(new ConstantValue());
+        if (!EvaluateConstant(expression, *value))
+            Fail(expression.token, "initializer must be a constant expression; calls are limited to vector constructors");
+        expression.evaluatedConstant = std::move(value);
+    }
+
+    std::string ConstantLiteral(const ConstantValue& value) const
+    {
+        switch (value.kind)
+        {
+        case ConstantValue::Int: return std::to_string(value.integer);
+        case ConstantValue::Float: return FloatLiteral(value.number);
+        case ConstantValue::Bool: return value.boolean ? "true" : "false";
+        case ConstantValue::String: return QuotedLiteral(value.text);
+        case ConstantValue::Vector:
+        {
+            std::string text = VectorConstructor(value.vectorType) + "(";
+            for (int i = 0; i < VectorSize(value.vectorType); ++i)
+            {
+                if (i) text += ",";
+                text += FloatLiteral(value.vector[i]);
+            }
+            return text + ")";
+        }
+        case ConstantValue::Null: return "null";
+        }
+        return "";
     }
 
     // 평가된 기본값을 타입 표의 필드로 옮긴다. 필드 타입과 맞지 않으면 실패한다.
-    void ApplyFieldDefault(const Token& at, TypeId structure, std::size_t index, const StructField& declared, const ConstValue& value)
+    void ApplyFieldDefault(const Token& at, TypeId structure, std::size_t index, const StructField& declared, const ConstantValue& value)
     {
         StructField field(declared.name, declared.type);
         field.hasDefault = true;
         const TypeKind kind = types_.Get(declared.type).kind;
         bool valid = false;
-        if (kind == TypeKind::Int && value.kind == 0) { field.defaultInteger = value.integer; valid = true; }
-        else if (kind == TypeKind::Float && (value.kind == 0 || value.kind == 1)) { field.defaultNumber = value.Number(); valid = true; }
-        else if (kind == TypeKind::Bool && value.kind == 2) { field.defaultInteger = value.boolean ? 1 : 0; valid = true; }
-        else if (kind == TypeKind::String && value.kind == 3) { field.defaultText = value.text; valid = true; }
-        else if (IsVector(declared.type) && value.kind == 4 && value.vectorType == declared.type)
+        if (kind == TypeKind::Int && value.kind == ConstantValue::Int) { field.defaultInteger = value.integer; valid = true; }
+        else if (kind == TypeKind::Float && (value.kind == ConstantValue::Int || value.kind == ConstantValue::Float)) { field.defaultNumber = value.Number(); valid = true; }
+        else if (kind == TypeKind::Bool && value.kind == ConstantValue::Bool) { field.defaultInteger = value.boolean ? 1 : 0; valid = true; }
+        else if (kind == TypeKind::String && value.kind == ConstantValue::String) { field.defaultText = value.text; valid = true; }
+        else if (IsVector(declared.type) && value.kind == ConstantValue::Vector && value.vectorType == declared.type)
         {
             for (int i = 0; i < 4; ++i) field.defaultVector[i] = value.vector[i];
             valid = true;
@@ -2486,76 +2565,6 @@ private:
         if (!valid) Fail(at, "field default does not match the field type '" + types_.DisplayName(declared.type) + "'");
         std::string error;
         if (!types_.SetStructFieldDefault(structure, index, field, &error)) Fail(at, error);
-    }
-
-    struct CaseKey
-    {
-        int kind = 0; // 0 int, 1 bool, 2 string
-        std::int64_t integer = 0;
-        bool boolean = false;
-        std::string text;
-        bool operator==(const CaseKey& other) const
-        {
-            if (kind != other.kind) return false;
-            return kind == 0 ? integer == other.integer : kind == 1 ? boolean == other.boolean : text == other.text;
-        }
-    };
-
-    // 중복 case 검사를 위한 프런트엔드 상수 평가다. const 초기화식에 허용되는 연산만 다루고,
-    // 여기서 평가하지 못한 레이블은 백엔드의 상수 평가와 중복 검사가 그대로 처리한다.
-    bool EvaluateCaseKey(const Expr& expression, CaseKey& out, int depth) const
-    {
-        if (depth > 64) return false;
-        switch (expression.kind)
-        {
-        case ExprKind::Literal:
-            if (expression.token.kind == TokenKind::Integer) { out.kind = 0; out.integer = expression.integerValue; return true; }
-            if (expression.token.kind == TokenKind::String) { out.kind = 2; out.text = expression.token.text; return true; }
-            if (expression.op == "true" || expression.op == "false") { out.kind = 1; out.boolean = expression.op == "true"; return true; }
-            return false;
-        case ExprKind::Name:
-            return expression.symbol && expression.symbol->constant && expression.symbol->declaration
-                && !expression.symbol->declaration->expressions.empty()
-                && EvaluateCaseKey(*expression.symbol->declaration->expressions[0], out, depth + 1);
-        case ExprKind::Unary:
-        {
-            CaseKey value;
-            if (!EvaluateCaseKey(*expression.children[0], value, depth + 1) || value.kind != 0) return false;
-            const std::uint64_t bits = static_cast<std::uint64_t>(value.integer);
-            std::uint64_t result;
-            if (expression.op == "-") result = 0u - bits;
-            else if (expression.op == "+") result = bits;
-            else if (expression.op == "~") result = ~bits;
-            else return false;
-            out.kind = 0; out.integer = static_cast<std::int64_t>(result);
-            return true;
-        }
-        case ExprKind::Binary:
-        {
-            CaseKey left, right;
-            if (!EvaluateCaseKey(*expression.children[0], left, depth + 1) || left.kind != 0) return false;
-            if (!EvaluateCaseKey(*expression.children[1], right, depth + 1) || right.kind != 0) return false;
-            const std::uint64_t a = static_cast<std::uint64_t>(left.integer), b = static_cast<std::uint64_t>(right.integer);
-            std::uint64_t result;
-            const std::string& op = expression.op;
-            if (op == "+") result = a + b;
-            else if (op == "-") result = a - b;
-            else if (op == "*") result = a * b;
-            else if (op == "/" || op == "%")
-            {
-                if (right.integer == 0 || (left.integer == (std::numeric_limits<std::int64_t>::min)() && right.integer == -1)) return false;
-                result = static_cast<std::uint64_t>(op == "/" ? left.integer / right.integer : left.integer % right.integer);
-            }
-            else if (op == "&") result = a & b;
-            else if (op == "|") result = a | b;
-            else if (op == "^") result = a ^ b;
-            else return false;
-            out.kind = 0; out.integer = static_cast<std::int64_t>(result);
-            return true;
-        }
-        default:
-            return false;
-        }
     }
 
     // 레거시 switch 와 같은 테이블 디스패치다. 선택식은 int/string 만 허용하고 bool 은 if 로 쓰게 한다.
@@ -2570,7 +2579,7 @@ private:
         if (key != types_.Int() && key != types_.String())
             Fail(selector.token, "switch requires an int or string value, not '" + types_.DisplayName(key) + "'");
         bool hasDefault = false;
-        std::vector<CaseKey> seen;
+        std::vector<ConstantValue> seen;
         int flow = 0;
         ++switchDepth_;
         for (const auto& child : statement.children)
@@ -2589,13 +2598,13 @@ private:
                 if (!label->constant) Fail(label->token, "case value must be a compile-time constant");
                 if (label->type != key)
                     Fail(label->token, "case value type '" + types_.DisplayName(label->type) + "' does not match switch value type '" + types_.DisplayName(key) + "'");
-                CaseKey value;
-                if (EvaluateCaseKey(*label, value, 0))
-                {
-                    for (std::size_t i = 0; i < seen.size(); ++i)
-                        if (seen[i] == value) Fail(label->token, "duplicate case value in switch");
-                    seen.push_back(value);
-                }
+                ResolveConstant(*label);
+                const ConstantValue& value = *label->evaluatedConstant;
+                for (const ConstantValue& previous : seen)
+                    if (value.kind == previous.kind && (value.kind == ConstantValue::Int
+                        ? value.integer == previous.integer : value.text == previous.text))
+                        Fail(label->token, "duplicate case value in switch");
+                seen.push_back(value);
                 roots_.push_back(label.get());
             }
             checkingConstant_ = savedConstant;
@@ -2662,6 +2671,7 @@ private:
                 CheckExpr(value);
                 if (statement.isConst && !value.constant) Fail(value.token, "const initializer must be a constant expression");
                 Convert(value, statement.declared.type);
+                if (statement.isConst) ResolveConstant(value);
             }
             else
             {
@@ -2671,6 +2681,7 @@ private:
             checkingConstant_ = savedConstant;
             Symbol& symbol = Define(statement.name, statement.declared.type, statement.isConst);
             symbol.declaration = &statement;
+            if (statement.isConst) symbol.constantValue = statement.expressions[0]->evaluatedConstant.get();
             symbol.defaultValue = initial;
             ReplaceType(statement.declared, statement.isConst ? "" : "var");
             ReplaceModifiers(statement);
@@ -2827,12 +2838,13 @@ private:
                 const TypeKind kind = types_.Get(parameter.type.type).kind;
                 if (kind != TypeKind::Int && kind != TypeKind::Float && kind != TypeKind::Bool && kind != TypeKind::String && !IsVector(parameter.type.type))
                     Fail(initializer.token, "only int, float, bool, string and vector fields can declare a default; other fields start as null or use their own field defaults");
-                // 상수 문맥 제한 대신 아래 상수 평가기가 허용 형태를 정한다(벡터 생성자도 받아야 한다).
+                const bool savedConstant = checkingConstant_;
+                checkingConstant_ = true;
                 CheckExpr(initializer);
                 Convert(initializer, parameter.type.type);
-                ConstValue value;
-                if (!EvaluateConstant(initializer, value, 0)) Fail(initializer.token, "a field default must be a literal, a const name, a sign, constant arithmetic or a vector constructor with constant components");
-                ApplyFieldDefault(initializer.token, statement.declared.type, i, description.fields[i], value);
+                ResolveConstant(initializer);
+                checkingConstant_ = savedConstant;
+                ApplyFieldDefault(initializer.token, statement.declared.type, i, description.fields[i], *initializer.evaluatedConstant);
             }
             std::string lines;
             for (std::size_t i = statement.token.begin; i < statement.end; ++i) if (source_[i] == '\n') lines += '\n';
@@ -3107,6 +3119,8 @@ private:
 
     std::string RenderExpr(const Expr& expression, bool allowIR = true, bool applyWrappers = true) const
     {
+        if (expression.evaluatedConstant)
+            return ConstantLiteral(*expression.evaluatedConstant) + Lines(expression.begin, expression.end);
         std::string text;
         IROp operation;
         if (allowIR && !expression.constantInitializer &&
