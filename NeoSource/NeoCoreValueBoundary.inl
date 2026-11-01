@@ -71,6 +71,23 @@ static NeoCoreBackend::ValuePtr NewCollection(NeoScript::IRuntime& runtime,
     return result;
 }
 
+// 구조체 필드에 선언된 기본값을 호스트 값으로 만든다. 컴파일러의 default 헬퍼와 같은 데이터다.
+static Scalar FieldDefaultScalar(const TypeRegistry& types, const StructField& field)
+{
+    switch (types.Get(field.type).kind)
+    {
+    case TypeKind::Int: return Scalar::Int(field.defaultInteger);
+    case TypeKind::Float: return Scalar::Float(field.defaultNumber);
+    case TypeKind::Bool: return Scalar::Bool(field.defaultInteger != 0);
+    case TypeKind::String: return Scalar::String(field.defaultText);
+    case TypeKind::Vector2: return Scalar::Vector(Scalar::Kind::Vector2, field.defaultVector);
+    case TypeKind::Vector3: return Scalar::Vector(Scalar::Kind::Vector3, field.defaultVector);
+    case TypeKind::Vector4: return Scalar::Vector(Scalar::Kind::Vector4, field.defaultVector);
+    case TypeKind::Quaternion: return Scalar::Vector(Scalar::Kind::Quaternion, field.defaultVector);
+    default: throw std::invalid_argument("struct field default has an unsupported type");
+    }
+}
+
 static Scalar DefaultBoundaryValue(NeoScript::IRuntime& runtime, const TypeRegistry& types,
     TypeId type, const std::shared_ptr<void>& lifetime)
 {
@@ -91,7 +108,7 @@ static Scalar DefaultBoundaryValue(NeoScript::IRuntime& runtime, const TypeRegis
         const auto result = NewCollection(runtime,types,type,lifetime);
         for (const StructField& field : desc.fields)
         {
-            Scalar value = DefaultBoundaryValue(runtime,types,field.type,lifetime);
+            Scalar value = field.hasDefault ? FieldDefaultScalar(types, field) : DefaultBoundaryValue(runtime,types,field.type,lifetime);
             if (!NeoCoreBackend::ValueAppend(result,BoundaryAccess::Copy(runtime,types,field.type,lifetime,value)))
                 throw std::runtime_error("could not initialize struct field");
         }
@@ -345,17 +362,21 @@ bool BoundaryAccess::Return(Instance& owner, NeoScript::CallContext& context, Ty
     catch(const std::exception& failure) { error=failure.what(); return false; }
 }
 
+// JSON 값을 선언 타입으로 바꾼다. 실패 메시지는 "$.field[2]: reason" 처럼 위치를 앞에 적는다.
+// lenient 는 구조체 해독에서 빠진 필드를 기본값으로 채우고 남는 필드를 무시한다. 타입 불일치는 그대로 실패다.
 static NeoCoreBackend::ValuePtr ConvertJsonValue(NeoScript::IRuntime& runtime, const TypeRegistry& types,
-    TypeId type, const std::shared_ptr<void>& lifetime, const NeoCoreBackend::ValuePtr& value, bool decoding, unsigned depth)
+    TypeId type, const std::shared_ptr<void>& lifetime, const NeoCoreBackend::ValuePtr& value, bool decoding, bool lenient,
+    const std::string& path, unsigned depth)
 {
     using namespace NeoCoreBackend;
-    if(depth>128) throw std::invalid_argument("JSON value nesting exceeds 128 levels or contains a cycle");
+    const auto fail=[&path](const std::string& reason) { return std::invalid_argument(path+": "+reason); };
+    if(depth>128) throw fail("value nesting exceeds 128 levels or contains a cycle");
     ValueData data;
-    if(!ReadValue(value,data)) throw std::invalid_argument("invalid JSON boundary value");
+    if(!ReadValue(value,data)) throw fail("invalid JSON boundary value");
     if(data.kind==ValueKind::Null)
     {
         if(!types.AllowsNull(type))
-            throw std::invalid_argument("JSON null requires a target type that can be null");
+            throw fail("null is not allowed for "+types.DisplayName(type));
         return value;
     }
     type=Underlying(types,type);
@@ -377,24 +398,25 @@ static NeoCoreBackend::ValuePtr ConvertJsonValue(NeoScript::IRuntime& runtime, c
         const std::size_t count=desc.kind==TypeKind::Vector2?2:desc.kind==TypeKind::Vector3?3:4;
         if(decoding)
         {
-            if(data.kind!=ValueKind::List || ValueSize(value)!=count) break;
+            if(data.kind!=ValueKind::List || ValueSize(value)!=count)
+                throw fail("expected an array of "+std::to_string(count)+" numbers for "+types.DisplayName(type));
             ValueData vector;
             vector.kind=count==2?ValueKind::Vector2:count==3?ValueKind::Vector3:ValueKind::Vector4;
             for(std::size_t i=0;i<count;++i)
             {
                 ValueData component;
                 if(!ReadValue(ValueAt(value,i),component) || (component.kind!=ValueKind::Int && component.kind!=ValueKind::Float))
-                    throw std::invalid_argument("JSON vector components must be numbers");
+                    throw std::invalid_argument(path+"["+std::to_string(i)+"]: vector components must be numbers");
                 const double number=component.kind==ValueKind::Int?static_cast<double>(component.integer):component.number;
                 vector.vector[i]=NeoCoreBackend::NarrowFloat32(number);
-                if(!std::isfinite(vector.vector[i])) throw std::invalid_argument("JSON vector component exceeds finite float32 range");
+                if(!std::isfinite(vector.vector[i])) throw std::invalid_argument(path+"["+std::to_string(i)+"]: vector component exceeds finite float32 range");
             }
             return MakeValue(runtime,vector,lifetime);
         }
         const auto result=MakeCollection(runtime,ValueKind::List,ArrayStorage::Int64,lifetime);
         for(std::size_t i=0;i<count;++i)
         {
-            if(!std::isfinite(data.vector[i])) throw std::invalid_argument("JSON cannot encode nonfinite vector components");
+            if(!std::isfinite(data.vector[i])) throw fail("cannot encode nonfinite vector components");
             ValueData component; component.kind=ValueKind::Float; component.number=data.vector[i];
             if(!ValueAppend(result,MakeValue(runtime,component,lifetime))) throw std::runtime_error("could not encode JSON vector");
         }
@@ -405,18 +427,19 @@ static NeoCoreBackend::ValuePtr ConvertJsonValue(NeoScript::IRuntime& runtime, c
     case TypeKind::List:
     case TypeKind::Set:
     {
-        if(decoding && data.kind!=ValueKind::List) break;
+        if(decoding && data.kind!=ValueKind::List) throw fail("expected an array for "+types.DisplayName(type));
         const auto result=decoding?NewCollection(runtime,types,type,lifetime):MakeCollection(runtime,ValueKind::List,ArrayStorage::Int64,lifetime);
         const std::size_t count=ValueSize(value);
         if(!ValueReserve(result,count)) throw std::runtime_error("could not reserve JSON collection");
         for(std::size_t i=0;i<count;++i)
         {
-            const auto element=ConvertJsonValue(runtime,types,desc.element,lifetime,ValueAt(value,i),decoding,depth+1);
+            const std::string child=path+"["+std::to_string(i)+"]";
+            const auto element=ConvertJsonValue(runtime,types,desc.element,lifetime,ValueAt(value,i),decoding,lenient,child,depth+1);
             if(decoding && desc.kind==TypeKind::Array32 && desc.element==types.Float())
             {
                 ValueData number;
                 if(!ReadValue(element,number) || !std::isfinite(NeoCoreBackend::NarrowFloat32(number.number)))
-                    throw std::invalid_argument("JSON compact array element exceeds finite float32 range");
+                    throw std::invalid_argument(child+": compact array element exceeds finite float32 range");
             }
             if(!ValueAppend(result,element))
                 throw std::runtime_error("could not store JSON collection element");
@@ -425,48 +448,74 @@ static NeoCoreBackend::ValuePtr ConvertJsonValue(NeoScript::IRuntime& runtime, c
     }
     case TypeKind::Map:
     {
-        if(desc.key!=types.String()) throw std::invalid_argument("JSON objects require map<string, T>");
-        if(data.kind!=ValueKind::Map) break;
+        if(desc.key!=types.String()) throw fail("JSON objects require map<string, T>");
+        if(data.kind!=ValueKind::Map) throw fail("expected an object for "+types.DisplayName(type));
         const auto result=MakeCollection(runtime,ValueKind::Map,ArrayStorage::Int64,lifetime);
         std::vector<std::pair<ValuePtr,ValuePtr>> entries;
         if(!SnapshotMap(value,entries)) throw std::runtime_error("could not enumerate JSON object");
         for(const auto& entry:entries)
-            if(!ValuePut(result,entry.first,ConvertJsonValue(runtime,types,desc.value,lifetime,entry.second,decoding,depth+1)))
+        {
+            ValueData key;
+            const std::string child=path+"."+(ReadValue(entry.first,key) && key.kind==ValueKind::String ? key.text : std::string("<key>"));
+            if(!ValuePut(result,entry.first,ConvertJsonValue(runtime,types,desc.value,lifetime,entry.second,decoding,lenient,child,depth+1)))
                 throw std::runtime_error("could not store JSON object field");
+        }
         return result;
     }
     case TypeKind::Struct:
     {
-        if(decoding && (data.kind!=ValueKind::Map || ValueSize(value)!=desc.fields.size()))
-            throw std::invalid_argument("JSON struct fields must exactly match its declaration");
+        if(decoding && data.kind!=ValueKind::Map) throw fail("expected an object for struct "+types.DisplayName(type));
         const auto result=decoding?NewCollection(runtime,types,type,lifetime):MakeCollection(runtime,ValueKind::Map,ArrayStorage::Int64,lifetime);
         for(std::size_t i=0;i<desc.fields.size();++i)
         {
-            ValueData name; name.kind=ValueKind::String; name.text=desc.fields[i].name;
+            const StructField& declared=desc.fields[i];
+            ValueData name; name.kind=ValueKind::String; name.text=declared.name;
             const auto key=MakeValue(runtime,name,lifetime);
-            const auto field=decoding?ValueFind(value,key):ValueAt(value,i);
-            if(!field) throw std::invalid_argument("JSON struct field is missing: "+name.text);
-            const auto converted=ConvertJsonValue(runtime,types,desc.fields[i].type,lifetime,field,decoding,depth+1);
+            const std::string child=path+"."+declared.name;
+            auto field=decoding?ValueFind(value,key):ValueAt(value,i);
+            ValuePtr converted;
+            if(!field)
+            {
+                // 엄격 모드는 빠진 필드를 이름으로 보고하고, 너그러운 모드는 선언 기본값(없으면 타입 기본값)으로 채운다.
+                if(!decoding || !lenient) throw std::invalid_argument(child+": missing field");
+                converted=BoundaryAccess::Copy(runtime,types,declared.type,lifetime,
+                    declared.hasDefault?FieldDefaultScalar(types,declared):DefaultBoundaryValue(runtime,types,declared.type,lifetime));
+            }
+            else converted=ConvertJsonValue(runtime,types,declared.type,lifetime,field,decoding,lenient,child,depth+1);
             if(!(decoding?ValueAppend(result,converted):ValuePut(result,key,converted))) throw std::runtime_error("could not store JSON struct field");
+        }
+        if(decoding && !lenient && ValueSize(value)!=desc.fields.size())
+        {
+            // 남는 필드는 어떤 키인지 알려 준다. 너그러운 모드는 무시한다.
+            std::vector<std::pair<ValuePtr,ValuePtr>> entries;
+            if(!SnapshotMap(value,entries)) throw std::runtime_error("could not enumerate JSON object");
+            for(const auto& entry:entries)
+            {
+                ValueData key;
+                if(!ReadValue(entry.first,key) || key.kind!=ValueKind::String) throw fail("struct keys must be strings");
+                bool known=false;
+                for(std::size_t i=0;i<desc.fields.size() && !known;++i) known=desc.fields[i].name==key.text;
+                if(!known) throw std::invalid_argument(path+"."+key.text+": unknown field");
+            }
         }
         return result;
     }
-    default: throw std::invalid_argument("JSON does not support this declared type: "+types.DisplayName(type));
+    default: throw fail("JSON does not support this declared type: "+types.DisplayName(type));
     }
-    throw std::invalid_argument("JSON value requires "+types.DisplayName(type));
+    throw fail("expected "+types.DisplayName(type));
 }
 
 // JSON은 호출자의 타입 표와 할당 영역에서 변환한다. 기본 인스턴스로 우회하지 않는다.
 static NeoCoreBackend::ValuePtr DecodeTypedJson(NeoScript::IRuntime& runtime, NeoScript::InstanceHandle instance,
     const TypeRegistry& types, TypeId type, const std::shared_ptr<void>& lifetime,
-    const std::string& text, bool strictIntegers, std::string& error)
+    const std::string& text, bool strictIntegers, bool lenient, std::string& error)
 {
     if (!types.IsJsonType(type))
         throw std::invalid_argument("JSON does not support this declared type: " + types.DisplayName(type));
     std::vector<std::string> warnings;
     const auto raw = NeoCoreBackend::DecodeJson(runtime, instance, text, strictIntegers, false, lifetime, error, warnings);
     if (!raw) return NeoCoreBackend::ValuePtr();
-    return ConvertJsonValue(runtime, types, type, lifetime, raw, true, 0);
+    return ConvertJsonValue(runtime, types, type, lifetime, raw, true, lenient, "$", 0);
 }
 
 Scalar BoundaryAccess::ParseJson(Instance& owner, TypeId type, const std::string& text,
@@ -476,7 +525,7 @@ Scalar BoundaryAccess::ParseJson(Instance& owner, TypeId type, const std::string
     try
     {
         const auto value = DecodeTypedJson(*owner.impl_->runtime, owner.impl_->instance,
-            owner.impl_->checked.types, type, owner.impl_->module, text, strictIntegers, error);
+            owner.impl_->checked.types, type, owner.impl_->module, text, strictIntegers, false, error);
         if (!value) return Scalar();
         return Wrap(*owner.impl_->runtime, owner.impl_->checked.types, type, owner.impl_->module, value);
     }
@@ -494,7 +543,7 @@ bool BoundaryAccess::EncodeJson(Instance& owner, const NeoScript::CallContext& c
         if (!types.IsJsonType(type))
             throw std::invalid_argument("JSON does not support this declared type: " + types.DisplayName(type));
         const auto raw = NeoCoreBackend::CaptureArgument(context, index, owner.impl_->module);
-        const auto normalized = ConvertJsonValue(*owner.impl_->runtime, types, type, owner.impl_->module, raw, false, 0);
+        const auto normalized = ConvertJsonValue(*owner.impl_->runtime, types, type, owner.impl_->module, raw, false, false, "$", 0);
         std::vector<std::string> warnings;
         return NeoCoreBackend::EncodeJson(normalized, sortKeys, text, error, warnings);
     }
@@ -502,17 +551,38 @@ bool BoundaryAccess::EncodeJson(Instance& owner, const NeoScript::CallContext& c
 }
 
 bool BoundaryAccess::DecodeJson(Instance& owner, NeoScript::CallContext& context, TypeId type,
-    const std::string& text, std::string& error)
+    const std::string& text, bool lenient, int fallbackIndex, std::string& error)
 {
     error.clear();
     try
     {
         const auto normalized = DecodeTypedJson(*owner.impl_->runtime, owner.impl_->instance,
-            owner.impl_->checked.types, type, owner.impl_->module, text, true, error);
-        if (!normalized) return false;
-        if (NeoCoreBackend::ReturnValue(context, normalized)) return true;
-        error = "could not return JSON value to the active script instance";
+            owner.impl_->checked.types, type, owner.impl_->module, text, true, lenient, error);
+        if (normalized)
+        {
+            owner.impl_->jsonError.clear();
+            if (NeoCoreBackend::ReturnValue(context, normalized)) return true;
+            error = "could not return JSON value to the active script instance";
+        }
+    }
+    catch (const std::exception& failure) { error = failure.what(); }
+    // 실패를 값으로 받는 변형은 이유를 인스턴스에 남기고 호출자가 넘긴 대체값을 그대로 돌려준다. 부분 값은 만들지 않는다.
+    owner.impl_->jsonError = error;
+    if (fallbackIndex < 0) return false;
+    try
+    {
+        if (NeoCoreBackend::ReturnValue(context, NeoCoreBackend::CaptureArgument(context, static_cast<std::size_t>(fallbackIndex), owner.impl_->module)))
+        {
+            error.clear();
+            return true;
+        }
+        error = "could not return the JSON fallback value";
     }
     catch (const std::exception& failure) { error = failure.what(); }
     return false;
+}
+
+const std::string& BoundaryAccess::JsonError(Instance& owner)
+{
+    return owner.impl_->jsonError;
 }

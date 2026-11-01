@@ -44,8 +44,16 @@ struct StructField
 {
     std::string name;
     TypeId type = InvalidType;
-    StructField() = default;
-    StructField(const std::string& fieldName, TypeId fieldType) : name(fieldName), type(fieldType) {}
+    // 선언된 기본값. hasDefault 가 false 면 타입 종류의 기본값(0, 0.0, false, 영벡터, 단위 쿼터니언, null)을 쓴다.
+    // 컴파일러의 default 헬퍼와 호스트 경계의 기본값 생성이 같은 데이터를 읽으므로 평가된 값만 보관한다.
+    bool hasDefault = false;
+    std::int64_t defaultInteger = 0;   // int 와 bool(0/1)
+    double defaultNumber = 0.0;        // float
+    std::string defaultText;           // string
+    float defaultVector[4];            // 벡터·쿼터니언 성분. 쿼터니언은 w,x,y,z 순서다.
+    StructField() { defaultVector[0] = defaultVector[1] = defaultVector[2] = defaultVector[3] = 0.0f; }
+    StructField(const std::string& fieldName, TypeId fieldType) : name(fieldName), type(fieldType)
+    { defaultVector[0] = defaultVector[1] = defaultVector[2] = defaultVector[3] = 0.0f; }
 };
 
 struct TypeDesc
@@ -114,6 +122,8 @@ public:
     bool DefineStructFields(TypeId structure, const std::vector<StructField>& fields, std::string* error = nullptr);
     // 성공한 정의의 필드 주소·순서는 레지스트리 수명 동안 유지된다. 실패한 조회는 인덱스도 무효화한다.
     const StructField* FindStructField(TypeId structure, const std::string& name, std::size_t* index = nullptr) const;
+    // 정의가 끝난 구조체 필드에 선언된 기본값을 붙인다. 이름과 타입은 바뀌지 않는다.
+    bool SetStructFieldDefault(TypeId structure, std::size_t index, const StructField& value, std::string* error = nullptr);
 
 private:
     struct Key

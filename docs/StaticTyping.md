@@ -130,8 +130,8 @@ conversions. Numeric expressions now emit from structured IR; the remaining
 compile-only intrinsics and compatibility leaves are explicit migration boundaries,
 not a complete typed-AST-to-bytecode backend replacement.
 NeoCore bytecode images use version `0151` and must be regenerated; the NeoCore
-image container that carries the static type table is at version 2 after the
-nullable type kind was removed. The five generic `NOP_TABLE_*` arithmetic-write
+image container that carries the static type table is at version 3 after the
+nullable type kind was removed and struct field defaults were added. The five generic `NOP_TABLE_*` arithmetic-write
 instructions, their handlers and
 unused table-update helpers have been removed. Compound collection writes now
 emit a read, arithmetic operation and ordinary write; WREF pairs only with
@@ -490,9 +490,20 @@ The [complete sample](../Samples/neocore/scripts/structs.nc) prints
 
 `Position(x, y)` is a positional constructor with one argument per field. Ordinary
 numeric conversion rules apply to each field. `Position()` and `Position p;` use
-recursive defaults: numeric zero, `false`, zero vectors, null for string,
-collection, function and host-object fields, or a nested struct whose fields have
-defaults. The positional constructor still requires one argument per field.
+recursive defaults: numeric zero, `false`, zero vectors, the identity quaternion,
+null for string, collection, function and host-object fields, or a nested struct
+whose fields have defaults. The positional constructor still requires one argument
+per field; declared defaults do not shorten it.
+
+A field of type `int`, `float`, `bool`, `string`, `Vector2/3/4` or `Quaternion` may
+declare its own default: `int target = -1;`, `float best = 999.0;`,
+`string name = LABEL;`, `Vector3 spawn = Vector3(0, 1, 0);`. The initializer is a
+compile-time constant: a literal, a `const` name, a sign, constant arithmetic, or a
+vector constructor whose components are constants. Collection, function, host-object
+and struct fields cannot declare defaults; they start as null or use their own field
+defaults. Declared defaults apply to `Position p;`, `Position()`, and to fields that
+lenient JSON decoding finds missing. They are evaluated once, stored in the type
+table and the image, and reused by the host boundary.
 Default field initializer expressions, methods, and `const` struct declarations
 remain deferred. Copying a struct copies its nested struct values, while its
 collection fields keep their shared-container identities.

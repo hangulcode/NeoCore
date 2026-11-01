@@ -38,7 +38,9 @@ functions or variables to the host. Neither keyword implies the other.
 
 ```cpp
 struct Position { float x; float y; };
+struct Target { int id = -1; float weight = 1.0; string label; };
 Position point = Position(1.0, 2.0);
+Target missing;                 // id -1, weight 1.0, label null
 Position copy = point;
 copy.x = 3.0;
 
@@ -122,6 +124,9 @@ see [the API reference](API.md#mathematics-and-vectors) and
 Import `system` to encode a checked value with `system.jsonEncode(value)` or
 decode text with `system.jsonDecode<T>(text)`. For example,
 `list<int> values = system.jsonDecode<list<int>>("[1,2,3]");`.
+`system.jsonDecodeOr<T>(text, fallback)` returns the fallback on failure and
+`system.jsonError()` tells why; `system.jsonDecodeLenient<T>(text)` fills missing
+struct fields from their declared defaults and ignores unknown fields.
 Structs use named JSON object fields. Invalid text or a schema mismatch is a
 runtime error; missing and extra struct fields are rejected. See [JSON.md](JSON.md).
 

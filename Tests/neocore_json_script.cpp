@@ -233,6 +233,61 @@ void Failures(bool debug)
         Check(!instance->Call("OptionalData", {Scalar::String(text)}).ok(), "nested fields cannot be omitted or defaulted");
 }
 
+// 실패를 값으로 받는 해독, 너그러운 해독, 경로가 붙은 오류 메시지, 필드 기본값 채움.
+void DecodeVariants(bool debug)
+{
+    Error error;
+    auto program = Program::Compile(
+        "import system;\n"
+        "const int NO_TARGET = -1;\n"
+        "struct Inventory { int slots = 20; list<int> items; };\n"
+        "struct Slot { int version = 3; int gold; int target = NO_TARGET; float best = 999.0; string name; Inventory inventory; Vector3 spawn = Vector3(0, 1, 0); };\n"
+        "export string OrError(string text) { Slot s = system.jsonDecodeOr<Slot>(text, Slot()); return system.jsonError(); }\n"
+        "export int OrGold(string text) { Slot s = system.jsonDecodeOr<Slot>(text, Slot()); return s.gold; }\n"
+        "export int LenientTarget(string text) { Slot s = system.jsonDecodeLenient<Slot>(text); return s.target; }\n"
+        "export int LenientSlots(string text) { return system.jsonDecodeLenient<Slot>(text).inventory.slots; }\n"
+        "export float LenientSpawnY(string text) { return system.jsonDecodeLenient<Slot>(text).spawn.y; }\n"
+        "export string LenientOrError(string text) { Slot s = system.jsonDecodeLenientOr<Slot>(text, Slot()); return system.jsonError(); }\n"
+        "export int Strict(string text) { return system.jsonDecode<Slot>(text).gold; }\n"
+        "export string ListError(string text) { list<int> v = system.jsonDecodeOr<list<int>>(text, []); return system.jsonError(); }\n",
+        error, "json-variants.nc", debug);
+    Check(program && error.ok(), "compile JSON variants: " + error.message);
+    if (!program) return;
+    const auto text = [&](const char* function, const char* argument, const char* expected, const char* label)
+    {
+        const Result result = program->Call(function, {Scalar::String(argument)});
+        Completed(result, label);
+        if (result.ok()) Check(result.value.asString() == expected, std::string(label) + ": " + result.value.asString());
+    };
+    const char* ok = "{\"version\":3,\"gold\":120,\"target\":7,\"best\":41.5,\"name\":\"a\",\"inventory\":{\"slots\":5,\"items\":[1,2]},\"spawn\":[1,2,3]}";
+    const char* missing = "{\"version\":3,\"gold\":120}";
+    const char* extra = "{\"version\":3,\"gold\":120,\"target\":7,\"best\":41.5,\"name\":\"a\",\"inventory\":{\"slots\":5,\"items\":[1,2]},\"spawn\":[1,2,3],\"legacyScore\":77}";
+    const char* old = "{\"version\":2,\"gold\":50,\"legacyScore\":77,\"inventory\":{\"items\":[9]}}";
+    const char* badType = "{\"version\":2,\"gold\":\"many\"}";
+    const char* nestedBad = "{\"version\":3,\"gold\":1,\"target\":7,\"best\":1.0,\"name\":\"a\",\"inventory\":{\"slots\":5,\"items\":[1,\"x\"]},\"spawn\":[1,2,3]}";
+    text("OrError", missing, "$.target: missing field", "missing field reports its path");
+    Integer(program->Call("OrGold", {Scalar::String(missing)}), 0, "failed decode returns the fallback, not a partial value");
+    text("OrError", extra, "$.legacyScore: unknown field", "strict decode reports unknown fields");
+    text("OrError", badType, "$.gold: expected int", "type mismatch reports its path");
+    text("OrError", nestedBad, "$.inventory.items[1]: expected int", "nested paths include fields and indices");
+    text("OrError", ok, "", "successful decode clears jsonError");
+    Integer(program->Call("LenientTarget", {Scalar::String(old)}), -1, "lenient decode fills a missing field from its declared default");
+    Integer(program->Call("LenientSlots", {Scalar::String(old)}), 20, "lenient decode fills nested struct defaults");
+    const Result spawn = program->Call("LenientSpawnY", {Scalar::String(old)});
+    Completed(spawn, "lenient vector default");
+    if (spawn.ok()) Check(spawn.value.asFloat() == 1.0, "lenient decode fills a vector default");
+    text("LenientOrError", badType, "$.gold: expected int", "lenient decode still rejects a type mismatch");
+    text("LenientOrError", old, "", "lenient decode ignores unknown fields");
+    const Result strict = program->Call("Strict", {Scalar::String(missing)});
+    Check(!strict.ok() && strict.error.message.find("$.target: missing field") != std::string::npos,
+        "strict decode fails with the missing field path: " + strict.error.message);
+    text("ListError", "[1,\"x\"]", "$[1]: expected int", "list element paths use indices");
+    const Result truncated = program->Call("OrError", {Scalar::String("{\"version\":3,\"go")});
+    Completed(truncated, "truncated input");
+    if (truncated.ok()) Check(truncated.value.asString().find("unexpected end of data") != std::string::npos,
+        "truncated input reports the parser position: " + truncated.value.asString());
+}
+
 void RejectedTypes()
 {
     const char* invalid[] = {
@@ -250,7 +305,13 @@ void RejectedTypes()
         "import system; Stopwatch x=system.jsonDecode<Stopwatch>(\"{}\");",
         "import system; string s=system.jsonEncode(system.stopwatch());",
         "import system; import coroutine; void F(){} coroutine<fn()->void> c=coroutine.create(F); string s=system.jsonEncode(c);",
-        "import system; string s=system.jsonDecode<void>(\"null\");"
+        "import system; string s=system.jsonDecode<void>(\"null\");",
+        "import system; int x=system.jsonDecodeOr<int>(\"1\");",
+        "import system; int x=system.jsonDecodeOr<int>(\"1\",\"a\");",
+        "import system; int x=system.jsonDecodeLenient<int>(\"1\",2);",
+        "import system; int x=system.jsonDecodeLenientOr(\"1\",2);",
+        "import system; string e=system.jsonError(1);",
+        "string e=system.jsonError();"
     };
     for (const char* source : invalid)
     {
@@ -323,7 +384,8 @@ int main()
     }
     const struct Test { const char* name; void (*run)(bool); } tests[] = {
         {"roundtrip", &RoundTrips}, {"program isolation", &ProgramIsolation},
-        {"module types", &ImportedTypes}, {"runtime errors", &Failures}, {"host decode", &HostDecode}
+        {"module types", &ImportedTypes}, {"runtime errors", &Failures}, {"host decode", &HostDecode},
+        {"decode variants", &DecodeVariants}
     };
     for (bool debug : {false, true})
         for (const Test& test : tests)

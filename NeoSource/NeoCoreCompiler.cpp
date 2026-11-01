@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <cctype>
 #include <deque>
+#include <cstdio>
 #include <cstring>
 #include <limits>
 #include <map>
@@ -70,7 +71,13 @@ static unsigned EventUnicodeEscape(const Token& token, std::size_t& position)
     return value;
 }
 
-static std::string EventLiteralName(const Token& token)
+// system.jsonDecode 계열: 모두 <T> 대상 타입을 받는다.
+static bool IsJsonDecodeName(const std::string& name)
+{
+    return name == "jsonDecode" || name == "jsonDecodeOr" || name == "jsonDecodeLenient" || name == "jsonDecodeLenientOr";
+}
+
+static std::string DecodeStringLiteral(const Token& token)
 {
     std::string name;
     // 백엔드 문자열 규칙대로 해석해야 바인딩 선택과 호스트가 받는 이름이 일치한다.
@@ -436,10 +443,13 @@ struct TypeSyntax
     TypeId type = InvalidType;
 };
 
+struct Expr;
 struct Parameter
 {
     TypeSyntax type;
     Token name;
+    // 구조체 필드의 선언 기본값 식. 없으면 비어 있다.
+    std::shared_ptr<Expr> initializer;
 };
 
 enum class StatementKind { Empty, Block, Declaration, Function, Expression, If, While, For, Return, Break, Continue, Import, Struct, Foreach, Yield, Switch, Case };
@@ -636,7 +646,8 @@ private:
             Parameter field;
             field.type = ParseType();
             field.name = Name();
-            if (At("=")) Fail(Peek(), "structure field initializers are not supported; use the positional constructor");
+            // 기본값은 상수식이어야 한다. 검사 단계에서 const 이름을 풀어 평가하고 타입 표에 값으로 보관한다.
+            if (Accept("=")) field.initializer = std::shared_ptr<Expr>(ParseExpression().release());
             Expect(";");
             fields.push_back(StructField(field.name.text, field.type.type));
             s->parameters.push_back(field);
@@ -933,10 +944,10 @@ private:
         else Fail(token, "expected an expression");
         for (;;)
         {
-            if (At("<") && result->kind == ExprKind::Member && result->op == "jsonDecode" &&
+            if (At("<") && result->kind == ExprKind::Member && IsJsonDecodeName(result->op) &&
                 result->children[0]->kind == ExprKind::Name && result->children[0]->op == "system")
             {
-                if (result->jsonType != InvalidType) Fail(Peek(), "jsonDecode accepts only one target type");
+                if (result->jsonType != InvalidType) Fail(Peek(), result->op + " accepts only one target type");
                 Take();
                 result->jsonType = ParseType().type;
                 result->end = TypeClose().end;
@@ -1338,6 +1349,52 @@ private:
         return defaultable_[type];
     }
 
+    // 선언 기본값을 백엔드 리터럴 텍스트로 낸다. 호스트 경계의 FieldDefaultScalar 와 같은 값이어야 한다.
+    static std::string FloatLiteral(double value)
+    {
+        char buffer[64];
+        std::snprintf(buffer, sizeof(buffer), "%.17g", value);
+        std::string text(buffer);
+        if (text.find_first_of(".eE") == std::string::npos) text += ".0";
+        return text;
+    }
+    static std::string QuotedLiteral(const std::string& text)
+    {
+        std::string result = "\"";
+        for (std::size_t i = 0; i < text.size(); ++i)
+        {
+            const unsigned char c = static_cast<unsigned char>(text[i]);
+            if (c == '"' || c == '\\') { result += '\\'; result += static_cast<char>(c); }
+            else if (c == '\n') result += "\\n";
+            else if (c == '\r') result += "\\r";
+            else if (c == '\t') result += "\\t";
+            else if (c < 0x20)
+            {
+                char escape[8];
+                std::snprintf(escape, sizeof(escape), "\\u%04x", c);
+                result += escape;
+            }
+            else result += static_cast<char>(c);
+        }
+        return result + "\"";
+    }
+    std::string FieldDefaultValue(const StructField& field) const
+    {
+        if (!field.hasDefault) return DefaultValue(field.type);
+        const TypeKind kind = types_.Get(field.type).kind;
+        if (kind == TypeKind::Int) return std::to_string(field.defaultInteger);
+        if (kind == TypeKind::Float) return FloatLiteral(field.defaultNumber);
+        if (kind == TypeKind::Bool) return field.defaultInteger ? "true" : "false";
+        if (kind == TypeKind::String) return QuotedLiteral(field.defaultText);
+        std::string result = VectorConstructor(field.type) + "(";
+        for (int i = 0; i < VectorSize(field.type); ++i)
+        {
+            if (i) result += ",";
+            result += FloatLiteral(field.defaultVector[i]);
+        }
+        return result + ")";
+    }
+
     std::string DefaultValue(TypeId type) const
     {
         if (type == types_.Int()) return "0";
@@ -1611,7 +1668,7 @@ private:
                 const Expr& name = *expression.children[1];
                 if (name.kind != ExprKind::Literal || name.token.kind != TokenKind::String)
                     Fail(name.token, "host event name must be a string literal so its callback signature is known at compile time");
-                const std::string eventName = EventLiteralName(name.token);
+                const std::string eventName = DecodeStringLiteral(name.token);
                 binding = hostSchema_->FindEvent(ownerType, member.op, eventName);
                 if (!binding) Fail(name.token, "unknown host event '" + eventName + "' for '" + member.op + "'");
                 // 함수값은 null 을 담을 수 있지만 이벤트 등록에 null 리터럴을 넘기는 것은 의미가 없다.
@@ -1823,6 +1880,9 @@ private:
                 Contextualize(*expression.children[i], types_.ListOf(types_.Get(callee.constructorType).element));
             if (IsStruct(namedType) && i <= types_.Get(namedType).fields.size())
                 Contextualize(*expression.children[i], types_.Get(namedType).fields[i - 1].type);
+            // jsonDecodeOr<T>(text, fallback): 대체값 리터럴은 대상 타입 T 의 문맥에서 검사한다.
+            if (i == 2 && callee.kind == ExprKind::Member && callee.jsonType != InvalidType && IsJsonDecodeName(callee.op))
+                Contextualize(*expression.children[i], callee.jsonType);
             if (name == "coroutine.resume" && i >= 2 && types_.Get(expression.children[1]->type).kind == TypeKind::Coroutine)
             {
                 const TypeDesc& signature = types_.Get(types_.Get(expression.children[1]->type).element);
@@ -1963,7 +2023,20 @@ private:
             }
             return;
         }
-        if (name == "system.jsonEncode" || name == "system.jsonDecode")
+        if (name == "system.jsonError")
+        {
+            if (!imports_.count("system")) Fail(callee.token, "system must be imported before use");
+            if (checkingConstant_) Fail(callee.token, "JSON conversion is not a constant initializer");
+            if (count != 0) Fail(callee.token, "jsonError takes no arguments");
+            expression.type = types_.String();
+            expression.callName = internalPrefix_ + "json_error.call";
+            const std::string global = internalPrefix_ + "json_error";
+            if (std::find(result_.typedIR.nativeGlobals.begin(), result_.typedIR.nativeGlobals.end(), global) == result_.typedIR.nativeGlobals.end())
+                result_.typedIR.nativeGlobals.push_back(global);
+            return;
+        }
+        if (name == "system.jsonEncode" || (callee.kind == ExprKind::Member && callee.children[0]->kind == ExprKind::Name
+            && callee.children[0]->op == "system" && IsJsonDecodeName(callee.op)))
         {
             if (!imports_.count("system")) Fail(callee.token, "system must be imported before use");
             if (checkingConstant_) Fail(callee.token, "JSON conversion is not a constant initializer");
@@ -1979,12 +2052,18 @@ private:
             }
             else
             {
-                if (callee.jsonType == InvalidType) Fail(callee.token, "jsonDecode requires an explicit target type: system.jsonDecode<T>(text)");
-                if (count != 1) Fail(callee.token, "jsonDecode<T> requires one string argument");
+                // jsonDecode / jsonDecodeLenient 는 실패 시 런타임 오류, *Or 변형은 대체값을 돌려주고 jsonError 에 이유를 남긴다.
+                const bool lenient = callee.op == "jsonDecodeLenient" || callee.op == "jsonDecodeLenientOr";
+                const bool fallback = callee.op == "jsonDecodeOr" || callee.op == "jsonDecodeLenientOr";
+                if (callee.jsonType == InvalidType) Fail(callee.token, callee.op + " requires an explicit target type: system." + callee.op + "<T>(...)");
+                if (count != (fallback ? 2u : 1u))
+                    Fail(callee.token, callee.op + (fallback ? "<T> requires a string argument and a fallback value" : "<T> requires one string argument"));
                 Require(*expression.children[1], types_.String(), "JSON text");
+                if (fallback) Convert(*expression.children[2], callee.jsonType);
                 expression.jsonType = callee.jsonType;
                 expression.type = callee.jsonType;
                 expression.callName = internalPrefix_ + "json_decode.call";
+                expression.extraArgument = std::to_string((lenient ? 1 : 0) | (fallback ? 2 : 0));
             }
             if (!types_.IsJsonType(expression.jsonType))
                 Fail(callee.token, "JSON does not support type '" + types_.DisplayName(expression.jsonType) + "'");
@@ -2281,6 +2360,132 @@ private:
             return;
         }
         }
+    }
+
+    // 구조체 필드 기본값의 컴파일 타임 상수 평가. 리터럴, const 이름, 부호, 정수·실수 산술, 성분이 상수인 벡터 생성자를 받는다.
+    struct ConstValue
+    {
+        int kind = 0; // 0 int, 1 float, 2 bool, 3 string, 4 vector
+        std::int64_t integer = 0;
+        double number = 0.0;
+        bool boolean = false;
+        std::string text;
+        TypeId vectorType = InvalidType;
+        float vector[4];
+        ConstValue() { vector[0] = vector[1] = vector[2] = vector[3] = 0.0f; }
+        double Number() const { return kind == 0 ? static_cast<double>(integer) : number; }
+    };
+
+    bool EvaluateConstant(const Expr& expression, ConstValue& out, int depth) const
+    {
+        if (depth > 64) return false;
+        switch (expression.kind)
+        {
+        case ExprKind::Literal:
+            if (expression.token.kind == TokenKind::Integer) { out.kind = 0; out.integer = expression.integerValue; return true; }
+            if (expression.token.kind == TokenKind::Float) { out.kind = 1; out.number = expression.floatValue; return true; }
+            if (expression.token.kind == TokenKind::String) { out.kind = 3; out.text = DecodeStringLiteral(expression.token); return true; }
+            if (expression.op == "true" || expression.op == "false") { out.kind = 2; out.boolean = expression.op == "true"; return true; }
+            return false;
+        case ExprKind::Name:
+            return expression.symbol && expression.symbol->constant && expression.symbol->declaration
+                && !expression.symbol->declaration->expressions.empty()
+                && EvaluateConstant(*expression.symbol->declaration->expressions[0], out, depth + 1);
+        case ExprKind::Unary:
+        {
+            ConstValue value;
+            if (!EvaluateConstant(*expression.children[0], value, depth + 1)) return false;
+            if (value.kind == 1)
+            {
+                if (expression.op == "-") { out.kind = 1; out.number = -value.number; return true; }
+                if (expression.op == "+") { out = value; return true; }
+                return false;
+            }
+            if (value.kind != 0) return false;
+            const std::uint64_t bits = static_cast<std::uint64_t>(value.integer);
+            std::uint64_t result;
+            if (expression.op == "-") result = 0u - bits;
+            else if (expression.op == "+") result = bits;
+            else if (expression.op == "~") result = ~bits;
+            else return false;
+            out.kind = 0; out.integer = static_cast<std::int64_t>(result);
+            return true;
+        }
+        case ExprKind::Binary:
+        {
+            ConstValue left, right;
+            if (!EvaluateConstant(*expression.children[0], left, depth + 1) || !EvaluateConstant(*expression.children[1], right, depth + 1)) return false;
+            if ((left.kind != 0 && left.kind != 1) || (right.kind != 0 && right.kind != 1)) return false;
+            const std::string& op = expression.op;
+            if (left.kind == 1 || right.kind == 1)
+            {
+                const double a = left.Number(), b = right.Number();
+                out.kind = 1;
+                if (op == "+") out.number = a + b;
+                else if (op == "-") out.number = a - b;
+                else if (op == "*") out.number = a * b;
+                else if (op == "/") out.number = a / b;
+                else return false;
+                return true;
+            }
+            const std::uint64_t a = static_cast<std::uint64_t>(left.integer), b = static_cast<std::uint64_t>(right.integer);
+            std::uint64_t result;
+            if (op == "+") result = a + b;
+            else if (op == "-") result = a - b;
+            else if (op == "*") result = a * b;
+            else if (op == "/" || op == "%")
+            {
+                if (right.integer == 0 || (left.integer == (std::numeric_limits<std::int64_t>::min)() && right.integer == -1)) return false;
+                result = static_cast<std::uint64_t>(op == "/" ? left.integer / right.integer : left.integer % right.integer);
+            }
+            else if (op == "&") result = a & b;
+            else if (op == "|") result = a | b;
+            else if (op == "^") result = a ^ b;
+            else return false;
+            out.kind = 0; out.integer = static_cast<std::int64_t>(result);
+            return true;
+        }
+        case ExprKind::Call:
+        {
+            // Vector2/3/4(), Quaternion() 생성자. 인자가 없으면 영벡터·단위 쿼터니언, 있으면 성분 수와 같아야 한다.
+            if (!IsVector(expression.type) || expression.children.empty()) return false;
+            const std::size_t count = expression.children.size() - 1;
+            out.kind = 4; out.vectorType = expression.type;
+            for (int i = 0; i < 4; ++i) out.vector[i] = 0.0f;
+            if (count == 0) { if (expression.type == types_.Quaternion()) out.vector[0] = 1.0f; return true; }
+            if (count != static_cast<std::size_t>(VectorSize(expression.type))) return false;
+            for (std::size_t i = 0; i < count; ++i)
+            {
+                ConstValue component;
+                if (!EvaluateConstant(*expression.children[i + 1], component, depth + 1) || (component.kind != 0 && component.kind != 1)) return false;
+                out.vector[i] = static_cast<float>(component.Number());
+            }
+            return true;
+        }
+        default:
+            return false;
+        }
+    }
+
+    // 평가된 기본값을 타입 표의 필드로 옮긴다. 필드 타입과 맞지 않으면 실패한다.
+    void ApplyFieldDefault(const Token& at, TypeId structure, std::size_t index, const StructField& declared, const ConstValue& value)
+    {
+        StructField field(declared.name, declared.type);
+        field.hasDefault = true;
+        const TypeKind kind = types_.Get(declared.type).kind;
+        bool valid = false;
+        if (kind == TypeKind::Int && value.kind == 0) { field.defaultInteger = value.integer; valid = true; }
+        else if (kind == TypeKind::Float && (value.kind == 0 || value.kind == 1)) { field.defaultNumber = value.Number(); valid = true; }
+        else if (kind == TypeKind::Bool && value.kind == 2) { field.defaultInteger = value.boolean ? 1 : 0; valid = true; }
+        else if (kind == TypeKind::String && value.kind == 3) { field.defaultText = value.text; valid = true; }
+        else if (IsVector(declared.type) && value.kind == 4 && value.vectorType == declared.type)
+        {
+            for (int i = 0; i < 4; ++i) field.defaultVector[i] = value.vector[i];
+            valid = true;
+        }
+        if (!valid) Fail(at, "field default does not match the field type '" + types_.DisplayName(declared.type) + "'");
+        std::string error;
+        if (!types_.SetStructFieldDefault(structure, index, field, &error)) Fail(at, error);
     }
 
     struct CaseKey
@@ -2613,6 +2818,22 @@ private:
             return FallsThrough;
         case StatementKind::Struct:
         {
+            const TypeDesc& description = types_.Get(statement.declared.type);
+            for (std::size_t i = 0; i < statement.parameters.size() && i < description.fields.size(); ++i)
+            {
+                const Parameter& parameter = statement.parameters[i];
+                if (!parameter.initializer) continue;
+                Expr& initializer = *parameter.initializer;
+                const TypeKind kind = types_.Get(parameter.type.type).kind;
+                if (kind != TypeKind::Int && kind != TypeKind::Float && kind != TypeKind::Bool && kind != TypeKind::String && !IsVector(parameter.type.type))
+                    Fail(initializer.token, "only int, float, bool, string and vector fields can declare a default; other fields start as null or use their own field defaults");
+                // 상수 문맥 제한 대신 아래 상수 평가기가 허용 형태를 정한다(벡터 생성자도 받아야 한다).
+                CheckExpr(initializer);
+                Convert(initializer, parameter.type.type);
+                ConstValue value;
+                if (!EvaluateConstant(initializer, value, 0)) Fail(initializer.token, "a field default must be a literal, a const name, a sign, constant arithmetic or a vector constructor with constant components");
+                ApplyFieldDefault(initializer.token, statement.declared.type, i, description.fields[i], value);
+            }
             std::string lines;
             for (std::size_t i = statement.token.begin; i < statement.end; ++i) if (source_[i] == '\n') lines += '\n';
             edits_.push_back(Edit(statement.token.begin, statement.end, lines));
@@ -3208,7 +3429,7 @@ private:
                 for (std::size_t i = 0; i < description.fields.size(); ++i)
                 {
                     if (i) result += ",";
-                    result += DefaultValue(description.fields[i].type);
+                    result += FieldDefaultValue(description.fields[i]);
                 }
                 result += "];}";
             }

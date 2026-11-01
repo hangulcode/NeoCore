@@ -69,6 +69,16 @@ static void CheckExecution(bool debug)
         4, "recursive default construction", debug);
     ExpectInt("struct S{string name;float fraction;list<int> values;};export int Probe(){S s=S(null,2,null);if(s.name==null&&s.fraction==2.0&&s.values==null)return 1;return 0;}",
         1, "reference constructor fields accept null", debug);
+    ExpectInt("const int NO_TARGET=-1;struct S{int version=3;int gold;int target=NO_TARGET;int mode=1*2+1;bool on=true;};"
+        "export int Probe(){S s;S t=S();int on=0;if(s.on)on=1;return s.version*10000+s.gold*1000+(s.target+1)*100+s.mode*10+on+t.version;}",
+        30034, "declared field defaults apply to declarations and the empty constructor", debug);
+    ExpectFloat("struct S{float best=999.0;float ratio=2;};export float Probe(){S s;return s.best+s.ratio;}", 1001.0, "float field defaults widen integers", debug);
+    ExpectString("const string NAME=\"ab\\tc\";struct S{string name=NAME;string label=\"x\\\"y\";};export string Probe(){S s;return s.name..s.label;}",
+        "ab\tcx\"y", "string field defaults keep escapes", debug);
+    ExpectFloat("struct S{Vector3 spawn=Vector3(0,1.5,-2);Quaternion q;Vector2 uv=Vector2();};export float Probe(){S s;return s.spawn.y*10+s.spawn.z+s.q.w+s.uv.x;}",
+        14.0, "vector field defaults and the identity quaternion", debug);
+    ExpectInt("struct I{int slots=20;};struct O{I inner;int n=5;};export int Probe(){O o=O();return o.inner.slots+o.n;}", 25, "nested struct defaults", debug);
+    ExpectInt("struct S{int a=7;int b;};export int Probe(){S s=S(1,2);return s.a*10+s.b;}", 12, "positional constructor still sets every field", debug);
     ExpectFloat("struct S{float x;};export float Probe(){S s=S(1);s.x=2;s.x+=3;return s.x;}",
         5.0, "field assignment materializes float", debug);
     ExpectInt("struct S{int x;};export int Probe(){S s=S(2);int a=s.x++;int b=++s.x;s.x*=3;s.x-=1;return a*100+b*10+s.x;}",
@@ -167,7 +177,6 @@ static void CheckRejections(bool debug)
         {"struct S{float32 x;};", "float32 field"},
         {"struct S{any x;};", "dynamic field"},
         {"struct S{const int x;};", "field modifier"},
-        {"struct S{int x=1;};", "field initializer"},
         {"struct S{int Method(){return 1;}};", "struct method"},
         {"void F(){struct S{int x;};}", "local struct definition"},
         {"struct S{int x;};S? s=null;", "nullable struct declaration"},
@@ -175,6 +184,14 @@ static void CheckRejections(bool debug)
         {"struct S{int x;};S s=S(1,2);", "constructor excess argument"},
         {"struct S{int x;};S s=S(1.5);", "constructor narrowing"},
         {"struct S{int x;};S s=S(null);", "nonnullable field initialization"},
+        {"struct S{int a=7;int b;};S s=S(1);", "declared defaults do not shorten the positional constructor"},
+        {"struct S{list<int> a=[];};", "collection field default"},
+        {"int v=3;struct S{int a=v;};", "non-constant field default"},
+        {"struct S{int a=1.5;};", "field default narrowing"},
+        {"struct S{int a=true;};", "field default type mismatch"},
+        {"struct S{Vector3 v=Vector3(1);};", "vector default component count"},
+        {"struct S{string s=\"a\"..\"b\";};", "string default expression"},
+        {"struct I{int x;};struct S{I i=I();};", "struct field default"},
         {"struct S{int x;};S s=S(1);s.x=1.5;", "field assignment narrowing"},
         {"struct S{int x;};S s=S(1);s.x+=1.5;", "field compound narrowing"},
         {"struct S{int x;};S s=S(1);s.missing=2;", "unknown field write"},

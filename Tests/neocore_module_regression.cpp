@@ -105,6 +105,9 @@ void CheckExecution(bool debug)
         777, "qualified struct types declared inside another module", debug);
     ExpectInt(modules, "import shape;export int Probe(){return shape.MakeHidden().v;}",
         1, "private struct values remain usable without naming the type", debug);
+    modules["defaults"] = "public const int LIMIT=7;public struct Cfg{int limit=LIMIT;string tag=\"m\";};public Cfg Make(){Cfg c;return c;}";
+    ExpectInt(modules, "import defaults;export int Probe(){defaults.Cfg c;defaults.Cfg m=defaults.Make();return c.limit*100+m.limit*10+m.tag.len();}",
+        771, "struct field defaults referencing a module constant", debug);
 
     NeoCore::ModuleBundle bundle;
     NeoCore::Error error;

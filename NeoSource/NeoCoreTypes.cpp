@@ -347,6 +347,29 @@ bool TypeRegistry::DefineStructFields(TypeId structure, const std::vector<Struct
     return true;
 }
 
+bool TypeRegistry::SetStructFieldDefault(TypeId structure, std::size_t index, const StructField& value, std::string* error)
+{
+    if (error) error->clear();
+    const TypeDesc& type = Get(structure);
+    if (type.kind != TypeKind::Struct || !type.fieldsDefined || index >= type.fields.size())
+    {
+        if (error) *error = "field default requires a defined struct field";
+        return false;
+    }
+    StructField& field = types_[structure].fields[index];
+    if (field.type != value.type)
+    {
+        if (error) *error = "field default type does not match the field";
+        return false;
+    }
+    field.hasDefault = value.hasDefault;
+    field.defaultInteger = value.defaultInteger;
+    field.defaultNumber = value.defaultNumber;
+    field.defaultText = value.defaultText;
+    for (int i = 0; i < 4; ++i) field.defaultVector[i] = value.defaultVector[i];
+    return true;
+}
+
 const StructField* TypeRegistry::FindStructField(TypeId structure, const std::string& name, std::size_t* index) const
 {
     if (index) *index = InvalidFieldIndex;

@@ -1152,6 +1152,10 @@ static void TypedBuiltins(std::vector<BuiltinInfo>& builtins)
     AddBuiltin(builtins, "system", "set", "set<T>", {"list<T> values"});
     AddBuiltin(builtins, "system", "jsonEncode", "string", {"T value", "bool sortKeys (optional)"});
     AddBuiltin(builtins, "system", "jsonDecode", "T", {"string text"}, "<T>");
+    AddBuiltin(builtins, "system", "jsonDecodeOr", "T", {"string text", "T fallback"}, "<T>");
+    AddBuiltin(builtins, "system", "jsonDecodeLenient", "T", {"string text"}, "<T>");
+    AddBuiltin(builtins, "system", "jsonDecodeLenientOr", "T", {"string text", "T fallback"}, "<T>");
+    AddBuiltin(builtins, "system", "jsonError", "string", {});
     AddBuiltin(builtins, "coroutine", "create", "coroutine<fn(...) -> void>", {"fn(...) -> void entry"});
     AddBuiltin(builtins, "coroutine", "resume", "void", {"coroutine<F> task", "entry arguments..."});
     AddBuiltin(builtins, "coroutine", "status", "string", {"coroutine<F> task"});

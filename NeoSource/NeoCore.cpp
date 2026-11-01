@@ -179,6 +179,8 @@ struct Instance::Impl
     Result initialization;
     std::uint32_t debugSliceBudget = 0;
     NeoScript::Invocation pending;
+    // 직전 jsonDecodeOr/jsonDecodeLenientOr 의 실패 이유. 성공하면 비어 있다.
+    std::string jsonError;
     const StaticFunctionSignature* pendingSignature = nullptr;
     StaticFunctionSignature pendingOwnedSignature;
     std::string pendingName;
@@ -660,9 +662,12 @@ static bool DispatchJsonDecode(NeoScript::CallContext& context, NeoScript::Strin
 {
     try
     {
+        // 인자: (타입 ID, 텍스트, [대체값], 모드). 모드 비트 0 은 너그러운 해독, 비트 1 은 대체값 존재.
         BackendInstanceContext* instance = static_cast<BackendInstanceContext*>(context.instanceUserData());
-        if (!instance || !instance->owner || context.argCount() != 2 ||
-            context.argType(0) != NeoScript::ValueType::Int || context.argType(1) != NeoScript::ValueType::String)
+        const std::size_t count = context.argCount();
+        if (!instance || !instance->owner || (count != 3 && count != 4) ||
+            context.argType(0) != NeoScript::ValueType::Int || context.argType(1) != NeoScript::ValueType::String ||
+            context.argType(count - 1) != NeoScript::ValueType::Int)
         {
             context.fail(0, "invalid internal JSON decode arguments");
             return false;
@@ -673,13 +678,39 @@ static bool DispatchJsonDecode(NeoScript::CallContext& context, NeoScript::Strin
             context.fail(0, "invalid internal JSON type");
             return false;
         }
+        const std::int64_t mode = NeoCoreBackend::ReadInt(context, count - 1);
+        const bool lenient = (mode & 1) != 0;
+        const bool hasFallback = (mode & 2) != 0;
+        if (hasFallback != (count == 4))
+        {
+            context.fail(0, "invalid internal JSON decode mode");
+            return false;
+        }
         const std::string text = NeoCoreBackend::ReadString(context, 1);
         std::string error;
-        if (BoundaryAccess::DecodeJson(*instance->owner, context, static_cast<TypeId>(type), text, error)) return true;
+        if (BoundaryAccess::DecodeJson(*instance->owner, context, static_cast<TypeId>(type), text, lenient, hasFallback ? 2 : -1, error)) return true;
         context.fail(0, error);
     }
     catch (const std::exception& failure) { context.fail(0, failure.what()); }
     catch (...) { context.fail(0, "JSON decode failed"); }
+    return false;
+}
+
+static bool DispatchJsonError(NeoScript::CallContext& context, NeoScript::StringView)
+{
+    try
+    {
+        BackendInstanceContext* instance = static_cast<BackendInstanceContext*>(context.instanceUserData());
+        if (!instance || !instance->owner || context.argCount() != 0)
+        {
+            context.fail(0, "invalid internal JSON error arguments");
+            return false;
+        }
+        context.retString(BoundaryAccess::JsonError(*instance->owner));
+        return true;
+    }
+    catch (const std::exception& failure) { context.fail(0, failure.what()); }
+    catch (...) { context.fail(0, "JSON error query failed"); }
     return false;
 }
 
@@ -693,7 +724,11 @@ static bool RegisterJsonFunctions(NeoScript::IRuntime& runtime, std::string& err
     decode.name = "$neocore_json_decode";
     decode.method = &DispatchJsonDecode;
     decode.declareGlobal = false;
-    if (runtime.RegisterObject(encode) && runtime.RegisterObject(decode)) return true;
+    NeoScript::NativeObjectDesc lastError;
+    lastError.name = "$neocore_json_error";
+    lastError.method = &DispatchJsonError;
+    lastError.declareGlobal = false;
+    if (runtime.RegisterObject(encode) && runtime.RegisterObject(decode) && runtime.RegisterObject(lastError)) return true;
     error = "could not register typed JSON functions";
     return false;
 }
@@ -781,7 +816,7 @@ std::string Program::ToJson(const Scalar& value, Error& error, bool sortKeys)
             throw std::invalid_argument("value cannot be encoded as JSON");
         if(value.kind()==Scalar::Kind::Null) return "null";
         const auto raw=BoundaryAccess::Copy(*impl_->runtime,types,type,impl_,value);
-        const auto normalized=ConvertJsonValue(*impl_->runtime,types,type,impl_,raw,false,0);
+        const auto normalized=ConvertJsonValue(*impl_->runtime,types,type,impl_,raw,false,false,"$",0);
         std::string result;
         std::vector<std::string> warnings;
         if(!NeoCoreBackend::EncodeJson(normalized,sortKeys,result,error.message,warnings)) return std::string();

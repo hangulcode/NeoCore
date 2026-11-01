@@ -305,6 +305,19 @@ static void Analyze(Unit& unit, const std::vector<CompileDefine>* defines)
                 {
                     if (!SkipType(tokens, field) || field >= tokens.size() || !tokens[field].identifier) break;
                     unit.fieldNames.insert(field++);
+                    // 필드 기본값 식은 그대로 두고 건너뛴다. 식 안의 const 이름은 일반 식별자처럼 모듈 접두사를 받는다.
+                    if (At(tokens, field, "="))
+                    {
+                        int nesting = 0;
+                        while (field < tokens.size())
+                        {
+                            const std::string& text = tokens[field].text;
+                            if (text == "(" || text == "[" || text == "{") ++nesting;
+                            else if (text == ")" || text == "]" || text == "}") --nesting;
+                            else if (text == ";" && nesting == 0) break;
+                            ++field;
+                        }
+                    }
                     if (!At(tokens, field++, ";")) break;
                 }
                 // 수식어 뒤의 struct 토큰을 다시 선언 시작으로 보지 않도록 건너뛴다. 가시성이 덮어써지지 않는다.

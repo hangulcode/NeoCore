@@ -54,6 +54,7 @@ void RoundTrip(bool debug)
     std::unique_ptr<NeoCore::Program> original = NeoCore::Program::Compile(
         "import child;\n"
         "struct Point { float x; float y; };\n"
+        "struct Config { int limit = 7; string tag = \"t\"; Vector3 up = Vector3(0, 1, 0); };\n"
         "Point point = Point(1.5, 2.5);\n"
         "list<int> values = [2, 3];\n"
         "export int count = 10;\n"
@@ -62,7 +63,8 @@ void RoundTrip(bool debug)
         "export int Wait(int x) { sleep(0); return x + count; }\n"
         "export int Broken() { return child.Broken(); }\n"
         "export string Echo(string text) { return text; }\n"
-        "export int Pick(int state) { switch (state) { case 1, 2: return 20; case 3: return 30; default: return 90; } }\n", error, "image.nc", debug, options);
+        "export int Pick(int state) { switch (state) { case 1, 2: return 20; case 3: return 30; default: return 90; } }\n"
+        "export int Defaults() { Config c; return c.limit * 100 + c.tag.len() * 10 + toint(c.up.y); }\n", error, "image.nc", debug, options);
     Require(original && error.ok(), "compile typed image fixture: " + error.message);
     Require(moduleLoads == 1, "source imports resolved once before saving");
     Int(original->Call("Step", {NeoCore::Scalar::Int(1)}), 15, "original program executes");
@@ -82,6 +84,7 @@ void RoundTrip(bool debug)
     Int(loaded->Call("Pick", {NeoCore::Scalar::Int(2)}), 20, "switch jump table survives image reload");
     Int(loaded->Call("Pick", {NeoCore::Scalar::Int(3)}), 30, "switch table second entry after reload");
     Int(loaded->Call("Pick", {NeoCore::Scalar::Int(7)}), 90, "switch default after reload");
+    Int(loaded->Call("Defaults"), 711, "struct field defaults survive image reload");
     Int(loaded->Call("Step", {NeoCore::Scalar::Int(2)}), 16, "loaded image initializes fresh globals");
     Require(!loaded->Call("Step", {NeoCore::Scalar::String("wrong")}).ok(), "loaded signature rejects invalid argument");
     Int(loaded->Call("Step", {NeoCore::Scalar::Int(0)}), 16, "rejected image call has no script effects");

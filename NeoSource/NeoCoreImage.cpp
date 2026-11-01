@@ -13,7 +13,8 @@ namespace Image
 namespace
 {
 // 2: nullable 타입 종류를 제거했다. null 가능성은 타입 종류가 정한다.
-const std::uint32_t Version = 2;
+// 3: 구조체 필드의 선언 기본값을 타입 표에 담는다.
+const std::uint32_t Version = 3;
 const char Magic[] = {'N', 'E', 'O', 'C', 'O', 'R', 'E', '\0'};
 
 struct Writer
@@ -150,7 +151,23 @@ void WriteTypes(Writer& writer, const TypeRegistry& types)
         writer.Text(type.name);
         writer.U32(type.fieldsDefined ? 1 : 0);
         writer.Count(type.fields.size());
-        for (const StructField& field : type.fields) { writer.Text(field.name); writer.U32(field.type); }
+        for (const StructField& field : type.fields)
+        {
+            writer.Text(field.name); writer.U32(field.type);
+            writer.U32(field.hasDefault ? 1 : 0);
+            if (!field.hasDefault) continue;
+            writer.U64(static_cast<std::uint64_t>(field.defaultInteger));
+            std::uint64_t bits = 0;
+            std::memcpy(&bits, &field.defaultNumber, sizeof(bits));
+            writer.U64(bits);
+            writer.Text(field.defaultText);
+            for (int i = 0; i < 4; ++i)
+            {
+                std::uint32_t component = 0;
+                std::memcpy(&component, &field.defaultVector[i], sizeof(component));
+                writer.U32(component);
+            }
+        }
     }
 }
 
@@ -188,7 +205,21 @@ void ReadTypes(Reader& reader, TypeRegistry& types)
         for (std::uint32_t field = 0; field < fields; ++field)
         {
             const std::string name = reader.Text();
-            type.fields.push_back(StructField(name, reader.U32()));
+            StructField entry(name, reader.U32());
+            entry.hasDefault = reader.Flag();
+            if (entry.hasDefault)
+            {
+                entry.defaultInteger = static_cast<std::int64_t>(reader.U64());
+                const std::uint64_t bits = reader.U64();
+                std::memcpy(&entry.defaultNumber, &bits, sizeof(bits));
+                entry.defaultText = reader.Text();
+                for (int i = 0; i < 4; ++i)
+                {
+                    const std::uint32_t component = reader.U32();
+                    std::memcpy(&entry.defaultVector[i], &component, sizeof(component));
+                }
+            }
+            type.fields.push_back(entry);
         }
         TypeId created = InvalidType;
         if (index < builtins) created = index;
