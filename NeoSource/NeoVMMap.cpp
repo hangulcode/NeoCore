@@ -283,6 +283,7 @@ void MapInfo::Reserve(int sz)
 
 VarInfo* MapInfo::Insert(VarInfo* pKey)
 {
+	if (pKey->GetType() == VAR_NONE) return nullptr;
 	if (pKey->IsContainerType())
 		MarkContainerChild();
 

@@ -205,17 +205,15 @@ internal static class ManagedSmoke
         using (var instance = program.CreateInstance())
         using (var values = instance.Call("Make").RequireCompleted())
         {
-            values.Append(Scalar.Null());
-            values.Append(Scalar.Null());
-            Require(values.Count == 1 && values.Contains(Scalar.Null()), "managed set deduplicates null");
-            Require(values.At(0).Kind == ScalarKind.Null, "managed null set enumeration");
-            string json = program.ToJson(values);
-            Require(json == "[null]", "managed null set encoding");
-            using (var decoded = program.ParseJson("set<string>", json))
-            {
-                Require(decoded.Count == 1 && decoded.Contains(Scalar.Null()), "managed null set decoding");
-                Require(decoded.Remove(Scalar.Null()) && decoded.Count == 0, "managed null set removal");
-            }
+            bool nullRejected = false;
+            try { values.Append(Scalar.Null()); } catch (InvalidOperationException) { nullRejected = true; }
+            Require(nullRejected && values.Count == 0, "managed string set rejects null");
+            Require(!values.Contains(Scalar.Null()) && !values.Remove(Scalar.Null()), "managed null set queries return false");
+            Require(program.ToJson(values) == "[]", "managed rejected set insertion leaves empty JSON");
+            bool jsonRejected = false;
+            try { using (var decoded = program.ParseJson("set<string>", "[null]")) {} }
+            catch (InvalidOperationException failure) { jsonRejected = failure.Message.Contains("$[0]"); }
+            Require(jsonRejected, "managed string set rejects null JSON at its path");
             using (var integers = instance.Call("Ints").RequireCompleted())
             {
                 bool rejected = false;

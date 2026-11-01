@@ -1146,6 +1146,14 @@ public:
         int generatedLine = 1 + static_cast<int>(std::count(result_.loweredSource.begin(), result_.loweredSource.end(), '\n'));
         for (const HostWrite& write : hostWrites_)
             result_.hostWriteSourceLines.push_back(std::make_pair(++generatedLine, write.line));
+        // 사용자 위치가 없는 공통 도우미는 0행으로 표시한다. 람다 본문과 호스트 쓰기의 원본 매핑은 보존한다.
+        std::set<int> mappedLines;
+        for (const auto& mapping : result_.hostWriteSourceLines) mappedLines.insert(mapping.first);
+        generatedLine = 1 + static_cast<int>(std::count(result_.loweredSource.begin(), result_.loweredSource.end(), '\n'));
+        const int helperLines = static_cast<int>(std::count(helpers.begin(), helpers.end(), '\n'));
+        for (int line = 1; line <= helperLines; ++line)
+            if (!mappedLines.count(generatedLine + line))
+                result_.hostWriteSourceLines.push_back(std::make_pair(generatedLine + line, 0));
         result_.loweredSource += helpers;
         result_.typedIR.types = types_;
     }
@@ -2404,7 +2412,8 @@ private:
             else return false;
             break;
         case ExprKind::Name:
-            if (!expression.symbol || !expression.symbol->constantValue) return false;
+            if (!expression.symbol || !expression.symbol->constantValue)
+                Fail(expression.token, "constant expression cannot reference non-constant variable '" + expression.token.text + "'");
             out = *expression.symbol->constantValue;
             break;
         case ExprKind::Unary:
@@ -2481,7 +2490,8 @@ private:
         case ExprKind::Call:
         {
             // 반환형이 벡터인 일반 함수는 생성자가 아니다. 타입 검사에서 확정한 생성자만 평가한다.
-            if (!expression.vectorConstructor) return false;
+            if (!expression.vectorConstructor)
+                Fail(expression.token, "constant expression cannot call this function; only vector constructors are allowed");
             const std::size_t count = expression.children.size() - 1;
             out.kind = ConstantValue::Vector; out.vectorType = expression.type;
             for (int i = 0; i < 4; ++i) out.vector[i] = 0.0f;
@@ -2519,7 +2529,7 @@ private:
     {
         std::unique_ptr<ConstantValue> value(new ConstantValue());
         if (!EvaluateConstant(expression, *value))
-            Fail(expression.token, "initializer must be a constant expression; calls are limited to vector constructors");
+            Fail(expression.token, "initializer must be a constant expression");
         expression.evaluatedConstant = std::move(value);
     }
 

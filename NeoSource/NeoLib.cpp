@@ -410,6 +410,7 @@ struct neo_libs
 	static bool Set_add(CNeoVMWorker* pN, VarInfo* pVar, short args)
 	{
 		if (pVar->GetType() != VAR_SET || args != 1) return false;
+		if (pN->GetStack(1)->GetType() == VAR_NONE) { pN->SetError("set element cannot be null"); return false; }
 		HeldValue receiver(pN, pVar);
 		SetInfo* set = receiver.value._set;
 		const int before = set->GetCount();
@@ -2207,7 +2208,8 @@ struct neo_libs
 				VarInfo* src = pListV1->GetDataUnsafe();
 				for (int i = 0; i < sz; i++)
 				{
-					pSetR->Insert(&src[i]);
+					if (src[i].GetType() == VAR_NONE) { pN->SetError("set element cannot be null"); return false; }
+					if (!pSetR->Insert(&src[i])) return false;
 				}
 				return true;
 			}

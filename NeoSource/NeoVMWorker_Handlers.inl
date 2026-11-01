@@ -609,7 +609,8 @@ NEOS_FORCEINLINE bool handle_NONE(const SVMOperation& OP) {
 }
 
 NEOS_NOINLINE bool handle_ERROR(const SVMOperation& OP) {
-    int idx = _isErrorOPIndex;
+    const int actualIndex = _isErrorOPIndex;
+    const int idx = m_iLastErrorSourceOPIndex >= 0 ? m_iLastErrorSourceOPIndex : actualIndex;
     bool blDebugInfo = IsDebugInfo();
     int _lineseq = -1;
     if (blDebugInfo)
@@ -627,7 +628,7 @@ NEOS_NOINLINE bool handle_ERROR(const SVMOperation& OP) {
     if (GetVM()->_sErrorMsgDetail.empty())
         GetVM()->_sErrorMsgDetail = chMsg;
 #else
-    detail += FormatStackTrace(idx);
+    detail += FormatStackTrace(actualIndex);
     if (GetVM()->_sErrorMsgDetail.empty())
         GetVM()->_sErrorMsgDetail = detail;
 #endif
@@ -651,8 +652,8 @@ NEOS_NOINLINE bool handle_ERROR(const SVMOperation& OP) {
 
     if (m_pDebugListener || m_iDebugBreakCount > 0 || m_eDebugRunMode != DBG_CONTINUE || m_bDebugPauseRequested)
     {
-        if (idx >= 0 && idx < (int)DebugData().size())
-            StopDebug(idx, NEO_DEBUG_STOP_EXCEPTION);
+        if (actualIndex >= 0 && actualIndex < (int)DebugData().size())
+            StopDebug(actualIndex, NEO_DEBUG_STOP_EXCEPTION);
         return true;
     }
 

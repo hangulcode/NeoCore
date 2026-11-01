@@ -14,7 +14,8 @@ namespace
 {
 // 2: nullable 타입 종류를 제거했다. null 가능성은 타입 종류가 정한다.
 // 3: 구조체 필드의 선언 기본값을 타입 표에 담는다.
-const std::uint32_t Version = 3;
+// 4: 생성 코드의 행 매핑에서 0은 사용자 호출 위치를 따라가는 도우미를 뜻한다.
+const std::uint32_t Version = 4;
 const char Magic[] = {'N', 'E', 'O', 'C', 'O', 'R', 'E', '\0'};
 
 struct Writer
@@ -417,7 +418,10 @@ void ReadMetadata(Reader& reader, Data& data)
     for (std::uint32_t i = 0; i < remaps; ++i)
     {
         const int generated = reader.Positive();
-        data.checked.hostWriteSourceLines.push_back(std::make_pair(generated, reader.Positive()));
+        const std::uint32_t original = reader.U32();
+        if (original > (std::numeric_limits<std::uint16_t>::max)())
+            throw std::runtime_error("invalid NeoCore source position");
+        data.checked.hostWriteSourceLines.push_back(std::make_pair(generated, static_cast<int>(original)));
     }
     const std::uint32_t lines = reader.Count(12);
     for (std::uint32_t i = 0; i < lines; ++i)

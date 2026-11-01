@@ -88,24 +88,17 @@ export string Sorted() {
     map<string, int> values = {"z":2, "a":1};
     return system.jsonEncode(values, true);
 }
-export bool NullSets() {
-    set<string> a = system.jsonDecode<set<string>>("[null,null,\"x\"]");
+export bool StringSets() {
+    set<string> a = system.jsonDecode<set<string>>("[\"x\",\"x\",\"y\"]");
     set<string> b = system.jsonDecode<set<string>>(system.jsonEncode(a));
-    list<string> initial = [null,"x",null];
-    set<string> c = set<string>(initial);
+    set<string> c = set<string>(["x","y","x"]);
     set<string> d = b.clone();
-    d.remove(null);
+    d.remove("y");
     set<string> joined = b | d;
     set<string> common = b & d;
     set<string> remaining = b - d;
-    set<string> onlyNull = set<string>();
-    onlyNull.add(null);
-    onlyNull.add(null);
-    return a.len() == 2 && b.len() == 2 && b.contains(null) && b.contains("x")
-        && b.values().contains(null) && c.len() == 2 && c.contains(null)
-        && !d.contains(null) && d.len() == 1 && joined.contains(null)
-        && !common.contains(null) && remaining.len() == 1 && remaining.contains(null)
-        && onlyNull.len() == 1 && system.jsonEncode(onlyNull) == "[null]";
+    return a.len() == 2 && b.len() == 2 && !b.contains(null) && !b.remove(null)
+        && c.len() == 2 && joined.len() == 2 && common.len() == 1 && remaining.len() == 1;
 }
 )NC";
 
@@ -117,25 +110,28 @@ void RoundTrips(bool debug)
     Boolean(program->Call("RoundTrip"), "struct JSON roundtrip");
     Integer(program->Call("Nested"), 5, "nested generic decode target");
     Boolean(program->Call("Storage"), "null reference, compact, vector and typed array decoding");
-    Boolean(program->Call("NullSets"), "null string set decoding, constructors, operations and encoding");
-    Scalar nullSet = program->CreateValue("set<string>", error);
+    Boolean(program->Call("StringSets"), "string set decoding, constructors, operations and encoding");
+    Scalar stringSet = program->CreateValue("set<string>", error);
     Check(error.ok(), "create host string set");
-    nullSet.Append(Scalar::Null());
-    nullSet.Append(Scalar::Null());
-    Check(nullSet.Count()==1 && nullSet.Contains(Scalar::Null()) && nullSet.At(0).kind()==Scalar::Kind::Null,
-        "C++ string set accepts and deduplicates null");
-    const std::string nullJson = program->ToJson(nullSet, error);
-    Check(error.ok() && nullJson=="[null]", "C++ string set null encoding");
-    Scalar decodedNullSet = program->ParseJson("set<string>", nullJson, error);
-    Check(error.ok() && decodedNullSet.Count()==1 && decodedNullSet.Contains(Scalar::Null()), "C++ null string set roundtrip");
-    Check(decodedNullSet.Remove(Scalar::Null()) && decodedNullSet.Count()==0, "C++ null set removal");
+    bool rejectedNull = false;
+    try { stringSet.Append(Scalar::Null()); } catch (const std::invalid_argument&) { rejectedNull = true; }
+    Check(rejectedNull && stringSet.Count()==0, "C++ string set rejects null without mutation");
+    Check(!stringSet.Contains(Scalar::Null()) && !stringSet.Remove(Scalar::Null()), "null set queries do not insert");
+    stringSet.Append(Scalar::String("x"));
+    const std::string setJson = program->ToJson(stringSet, error);
+    Check(error.ok() && setJson=="[\"x\"]", "C++ string set encoding");
+    Scalar decodedSet = program->ParseJson("set<string>", setJson, error);
+    Check(error.ok() && decodedSet.Count()==1 && decodedSet.Contains(Scalar::String("x")), "C++ string set roundtrip");
+    program->ParseJson("set<string>", "[\"x\",null]", error);
+    Check(!error.ok() && error.message.find("$[1]: set element cannot be null")!=std::string::npos,
+        "JSON string set rejects null at its path");
     Scalar intSet = program->CreateValue("set<int>", error);
     Check(error.ok(), "create host int set");
-    bool rejectedNull = false;
+    rejectedNull = false;
     try { intSet.Append(Scalar::Null()); } catch (const std::invalid_argument&) { rejectedNull = true; }
-    Check(rejectedNull && intSet.Count()==0, "C++ int set still rejects null");
+    Check(rejectedNull && intSet.Count()==0, "C++ int set rejects null");
     program->ParseJson("set<int>", "[null]", error);
-    Check(!error.ok(), "JSON int set still rejects null");
+    Check(!error.ok(), "JSON int set rejects null");
     const Result encoded = program->Call("Encode");
     Completed(encoded, "encoded struct");
     Check(encoded.value.asString().find("\"meta\":{\"id\":9007199254740993,\"label\":\"roundtrip\"}") != std::string::npos,
@@ -157,7 +153,7 @@ void RoundTrips(bool debug)
     auto loaded = Program::LoadImage(image, error);
     Check(loaded && error.ok(), "load JSON image: " + error.message);
     Boolean(loaded->Call("RoundTrip"), "image restores JSON type contracts");
-    Boolean(loaded->Call("NullSets"), "image restores null string set behavior");
+    Boolean(loaded->Call("StringSets"), "image restores non-null string set behavior");
     Integer(loaded->Call("Nested"), 5, "image restores nested generic decode contract");
 }
 

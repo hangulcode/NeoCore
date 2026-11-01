@@ -271,6 +271,7 @@ void Scalar::Set(std::size_t index, const Scalar& value) const
 void Scalar::Put(const Scalar& key, const Scalar& value) const
 {
     if(kind_!=Kind::Map) throw std::logic_error("value is not a map");
+    if(key.kind()==Kind::Null) throw std::invalid_argument("map key cannot be null");
     const TypeDesc& desc=bound_->types->Get(bound_->type);
     const auto storedKey=BoundaryAccess::Copy(*bound_->runtime,*bound_->types,desc.key,bound_->lifetime,key);
     const auto storedValue=BoundaryAccess::Copy(*bound_->runtime,*bound_->types,desc.value,bound_->lifetime,value);
@@ -279,6 +280,7 @@ void Scalar::Put(const Scalar& key, const Scalar& value) const
 void Scalar::Append(const Scalar& value) const
 {
     if(kind_!=Kind::List && kind_!=Kind::Array && kind_!=Kind::Set) throw std::logic_error("value is not appendable");
+    if(kind_==Kind::Set && value.kind()==Kind::Null) throw std::invalid_argument("set element cannot be null");
     const TypeId element=bound_->types->Get(bound_->type).element;
     if(!NeoCoreBackend::ValueAppend(bound_->value,BoundaryAccess::Copy(*bound_->runtime,*bound_->types,element,bound_->lifetime,value)))
         throw std::runtime_error("could not append collection element");
@@ -418,7 +420,7 @@ static NeoCoreBackend::ValuePtr ConvertJsonValue(NeoScript::IRuntime& runtime, c
         {
             if(!std::isfinite(data.vector[i])) throw fail("cannot encode nonfinite vector components");
             ValueData component; component.kind=ValueKind::Float; component.number=data.vector[i];
-            if(!ValueAppend(result,MakeValue(runtime,component,lifetime))) throw std::runtime_error("could not encode JSON vector");
+            if(!ValueAppend(result,MakeValue(runtime,component,lifetime))) throw fail("could not encode JSON vector");
         }
         return result;
     }
@@ -430,11 +432,15 @@ static NeoCoreBackend::ValuePtr ConvertJsonValue(NeoScript::IRuntime& runtime, c
         if(decoding && data.kind!=ValueKind::List) throw fail("expected an array for "+types.DisplayName(type));
         const auto result=decoding?NewCollection(runtime,types,type,lifetime):MakeCollection(runtime,ValueKind::List,ArrayStorage::Int64,lifetime);
         const std::size_t count=ValueSize(value);
-        if(!ValueReserve(result,count)) throw std::runtime_error("could not reserve JSON collection");
+        if(!ValueReserve(result,count)) throw fail("could not reserve JSON collection");
         for(std::size_t i=0;i<count;++i)
         {
             const std::string child=path+"["+std::to_string(i)+"]";
-            const auto element=ConvertJsonValue(runtime,types,desc.element,lifetime,ValueAt(value,i),decoding,lenient,child,depth+1);
+            const auto raw=ValueAt(value,i);
+            ValueData item;
+            if(desc.kind==TypeKind::Set && ReadValue(raw,item) && item.kind==ValueKind::Null)
+                throw std::invalid_argument(child+": set element cannot be null");
+            const auto element=ConvertJsonValue(runtime,types,desc.element,lifetime,raw,decoding,lenient,child,depth+1);
             if(decoding && desc.kind==TypeKind::Array32 && desc.element==types.Float())
             {
                 ValueData number;
@@ -442,7 +448,7 @@ static NeoCoreBackend::ValuePtr ConvertJsonValue(NeoScript::IRuntime& runtime, c
                     throw std::invalid_argument(child+": compact array element exceeds finite float32 range");
             }
             if(!ValueAppend(result,element))
-                throw std::runtime_error("could not store JSON collection element");
+                throw std::runtime_error(child+": could not store JSON collection element");
         }
         return result;
     }
@@ -452,13 +458,15 @@ static NeoCoreBackend::ValuePtr ConvertJsonValue(NeoScript::IRuntime& runtime, c
         if(data.kind!=ValueKind::Map) throw fail("expected an object for "+types.DisplayName(type));
         const auto result=MakeCollection(runtime,ValueKind::Map,ArrayStorage::Int64,lifetime);
         std::vector<std::pair<ValuePtr,ValuePtr>> entries;
-        if(!SnapshotMap(value,entries)) throw std::runtime_error("could not enumerate JSON object");
+        if(!SnapshotMap(value,entries)) throw fail("could not enumerate JSON object");
         for(const auto& entry:entries)
         {
             ValueData key;
-            const std::string child=path+"."+(ReadValue(entry.first,key) && key.kind==ValueKind::String ? key.text : std::string("<key>"));
+            if(!ReadValue(entry.first,key) || key.kind!=ValueKind::String)
+                throw fail("JSON object keys must be non-null strings");
+            const std::string child=path+"."+key.text;
             if(!ValuePut(result,entry.first,ConvertJsonValue(runtime,types,desc.value,lifetime,entry.second,decoding,lenient,child,depth+1)))
-                throw std::runtime_error("could not store JSON object field");
+                throw std::runtime_error(child+": could not store JSON object field");
         }
         return result;
     }
@@ -482,13 +490,13 @@ static NeoCoreBackend::ValuePtr ConvertJsonValue(NeoScript::IRuntime& runtime, c
                     declared.hasDefault?FieldDefaultScalar(types,declared):DefaultBoundaryValue(runtime,types,declared.type,lifetime));
             }
             else converted=ConvertJsonValue(runtime,types,declared.type,lifetime,field,decoding,lenient,child,depth+1);
-            if(!(decoding?ValueAppend(result,converted):ValuePut(result,key,converted))) throw std::runtime_error("could not store JSON struct field");
+            if(!(decoding?ValueAppend(result,converted):ValuePut(result,key,converted))) throw std::runtime_error(child+": could not store JSON struct field");
         }
         if(decoding && !lenient && ValueSize(value)!=desc.fields.size())
         {
             // 남는 필드는 어떤 키인지 알려 준다. 너그러운 모드는 무시한다.
             std::vector<std::pair<ValuePtr,ValuePtr>> entries;
-            if(!SnapshotMap(value,entries)) throw std::runtime_error("could not enumerate JSON object");
+            if(!SnapshotMap(value,entries)) throw fail("could not enumerate JSON object");
             for(const auto& entry:entries)
             {
                 ValueData key;

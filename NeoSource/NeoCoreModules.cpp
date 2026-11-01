@@ -3,6 +3,7 @@
 #include "NeoCoreCompiler.h"
 #include <algorithm>
 #include <cctype>
+#include <cstdlib>
 #include <map>
 #include <memory>
 #include <set>
@@ -604,6 +605,32 @@ private:
 void ModuleBundle::Translate(Error& error) const
 {
     if (error.line <= 0 || static_cast<std::size_t>(error.line) > lines.size()) return;
+    // VM이 붙인 위치 표기도 모듈 원본 행으로 되돌린다. 오류 본문의 임의 숫자는 바꾸지 않는다.
+    if (error.message.find("\nScript Call Stack:") != std::string::npos)
+    {
+        std::size_t begin = 0;
+        while (begin < error.message.size())
+        {
+            const std::size_t newline = error.message.find('\n', begin);
+            const std::size_t end = newline == std::string::npos ? error.message.size() : newline;
+            const std::size_t ip = error.message.rfind(" : IP(", end);
+            const std::size_t marker = ip != std::string::npos && ip >= begin ? error.message.find(", Line(", ip) : std::string::npos;
+            if (marker != std::string::npos && marker < end)
+            {
+                const std::size_t first = marker + 7;
+                char* last = nullptr;
+                const unsigned long sourceLine = std::strtoul(error.message.c_str() + first, &last, 10);
+                if (last != error.message.c_str() + first && *last == ')' && sourceLine > 0 && sourceLine <= lines.size())
+                {
+                    const std::size_t count = static_cast<std::size_t>(last - (error.message.c_str() + first));
+                    error.message.replace(first, count, std::to_string(lines[sourceLine - 1].line));
+                }
+            }
+            const std::size_t next = error.message.find('\n', begin);
+            if (next == std::string::npos) break;
+            begin = next + 1;
+        }
+    }
     const ModuleSourceLine& location = lines[static_cast<std::size_t>(error.line - 1)];
     error.sourceName = location.sourceName;
     error.line = location.line;

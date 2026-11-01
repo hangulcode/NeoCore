@@ -84,6 +84,8 @@ private:
 	int					_isErrorOPIndex = 0;
 	// 오류 핸들러가 IP와 스택을 비운 뒤에도 호출 결과에 가장 안쪽 원인 위치를 전달한다.
 	int					m_iLastErrorOPIndex = -1;
+	// 공통 도우미 안에서 실패하면 스택이 해제되기 전에 사용자 호출 위치도 따로 보관한다.
+	int					m_iLastErrorSourceOPIndex = -1;
 
 	bool					_isInitialized = false;
 	int						_iRemainSleep = 0;
@@ -497,6 +499,8 @@ public:
 
 	void SetError(const char* pErrMsg);
 	void RememberErrorLocation();
+	bool IsGeneratedHelperOp(int opIndex) const;
+	int UserErrorOpIndex(int opIndex) const;
 	NeoDebugLocation GetLastErrorLocation() const;
 	void SetErrorUnsupport(const char* pErrMsg, VarInfo* p);
 	void SetErrorFormat(const char* pErrMsg, ...);

@@ -488,9 +488,11 @@ std::string CNeoVMWorker::FormatStackTrace(int currentOpIndex)
 	std::string trace;
 	trace.reserve(512);
 	trace += "\nScript Call Stack:";
+	int visibleFrame = 0;
 
-	auto appendFrame = [&](int frameIndex, int opIndex, int stackBase)
+	auto appendFrame = [&](int, int opIndex, int stackBase)
 	{
+		if (IsGeneratedHelperOp(opIndex)) return;
 		int functionId = GetFunctionIndexFromCodeOffset(opIndex * (int)sizeof(SVMOperation));
 		std::string functionName;
 		if (functionId >= 0)
@@ -515,7 +517,7 @@ std::string CNeoVMWorker::FormatStackTrace(int currentOpIndex)
 		}
 
 		trace += "\n  #";
-		trace += std::to_string(frameIndex);
+		trace += std::to_string(visibleFrame++);
 		trace += " ";
 		trace += functionName;
 		trace += " : IP(";
@@ -663,7 +665,11 @@ void CNeoVMWorker::StopDebug(int iOPIndex, NeoDebugStopReason reason)
 	m_bDebugPauseRequested = false;
 	m_eDebugRunMode = DBG_PAUSED;
 	if (m_pDebugListener)
-		m_pDebugListener->OnNeoDebugStopped(this, m_sDebugLocation, reason);
+	{
+		// 실행 프레임은 실제 IP를 유지하고, 예외 알림 위치만 사용자 호출식으로 보고한다.
+		const NeoDebugLocation reported = reason == NEO_DEBUG_STOP_EXCEPTION ? GetLastErrorLocation() : m_sDebugLocation;
+		m_pDebugListener->OnNeoDebugStopped(this, reported, reason);
+	}
 }
 void CNeoVMWorker::ResetFaultStateForNewExecution()
 {
@@ -675,6 +681,7 @@ void CNeoVMWorker::ResetFaultStateForNewExecution()
 	// 보고된다. 이 함수는 새 실행 시작 지점(ExecuteTop/BeginHostCall)에서만 불린다.
 	_isErrorOPIndex = 0;
 	m_iLastErrorOPIndex = -1;
+	m_iLastErrorSourceOPIndex = -1;
 }
 const char* g_sNeoRuntimeErrors[RTE_COUNT] =
 {
@@ -700,14 +707,31 @@ void CNeoVMWorker::RememberErrorLocation()
 	if (_isErrorOPIndex == 0 && _pCodeBegin != nullptr && _pCodeCurrent != nullptr)
 		_isErrorOPIndex = int((const u8*)_pCodeCurrent - _pCodeBegin - 1) / sizeof(SVMOperation);
 	m_iLastErrorOPIndex = _isErrorOPIndex;
+	m_iLastErrorSourceOPIndex = UserErrorOpIndex(_isErrorOPIndex);
+}
+bool CNeoVMWorker::IsGeneratedHelperOp(int opIndex) const
+{
+	return _pProgram != nullptr && opIndex >= 0 && opIndex < (int)DebugData().size()
+		&& DebugData()[opIndex]._lineseq == 0;
+}
+int CNeoVMWorker::UserErrorOpIndex(int opIndex) const
+{
+	if (!IsGeneratedHelperOp(opIndex) || m_pCallStack == nullptr) return opIndex;
+	for (int i = (int)m_pCallStack->size() - 1; i >= 0; --i)
+	{
+		const int returnIP = (int)((*m_pCallStack)[i]._ReturnIP & IP_MASK);
+		const int caller = returnIP / (int)sizeof(SVMOperation) - 1;
+		if (caller >= 0 && !IsGeneratedHelperOp(caller)) return caller;
+	}
+	return opIndex;
 }
 NeoDebugLocation CNeoVMWorker::GetLastErrorLocation() const
 {
 	NeoDebugLocation location;
-	location.opIndex = m_iLastErrorOPIndex;
-	if (_pProgram == nullptr || m_iLastErrorOPIndex < 0 || m_iLastErrorOPIndex >= (int)DebugData().size())
+	location.opIndex = m_iLastErrorSourceOPIndex;
+	if (_pProgram == nullptr || location.opIndex < 0 || location.opIndex >= (int)DebugData().size())
 		return location;
-	const debug_info& info = DebugData()[m_iLastErrorOPIndex];
+	const debug_info& info = DebugData()[location.opIndex];
 	location.file = info._fileseq;
 	location.line = info._lineseq;
 	return location;
@@ -1140,6 +1164,7 @@ bool CNeoVMWorker::CancelExecution()
 	m_bDebugFaulted = false;
 	_isErrorOPIndex = 0;
 	m_iLastErrorOPIndex = -1;
+	m_iLastErrorSourceOPIndex = -1;
 	_isInitialized = false;
 	return true;
 }
@@ -1772,7 +1797,8 @@ void CNeoVMWorker::DebugGetStackTrace(std::vector<NeoDebugStackFrame>& frames)
 		frame.stackBase = cs._iSP_Vars;
 		const int returnIP = (int)(cs._ReturnIP & IP_MASK);
 		frame.opIndex = returnIP / (int)sizeof(SVMOperation);
-		frame.functionId = GetFunctionIndexFromCodeOffset(returnIP);
+		if (frame.opIndex > 0) --frame.opIndex;
+		frame.functionId = GetFunctionIndexFromCodeOffset(frame.opIndex * (int)sizeof(SVMOperation));
 		if (frame.functionId >= 0)
 		{
 			auto itName = _pProgram->debugFunctionNames.find(frame.functionId);
@@ -1869,13 +1895,14 @@ NEOS_NOINLINE bool CNeoVMWorker::ReportRunException()
 		try { throw; }
 		catch (const std::length_error& error) { SetError(error.what()); }
 		catch (...) { SetError(RTE_EXCEPTION); }
+		const int sourceIndex = m_iLastErrorSourceOPIndex >= 0 ? m_iLastErrorSourceOPIndex : _isErrorOPIndex;
 		bool blDebugInfo = IsDebugInfo();
 		int _lineseq = -1;
 		if (blDebugInfo)
-			_lineseq = GetDebugLine(_isErrorOPIndex);
+			_lineseq = GetDebugLine(sourceIndex);
 
 		char chMsg[256];
-		snprintf(chMsg, sizeof(chMsg), "%s : IP(%d), Line(%d)", GetVM()->_pErrorMsg.c_str(), _isErrorOPIndex, _lineseq);
+		snprintf(chMsg, sizeof(chMsg), "%s : IP(%d), Line(%d)", GetVM()->_pErrorMsg.c_str(), sourceIndex, _lineseq);
 
 		GetVM()->_sErrorMsgDetail = std::string(chMsg) + FormatStackTrace(_isErrorOPIndex);
 		if (m_pDebugListener || m_iDebugBreakCount > 0 || m_eDebugRunMode != DBG_CONTINUE || m_bDebugPauseRequested)

@@ -137,8 +137,9 @@ conversions. Numeric expressions now emit from structured IR; the remaining
 compile-only intrinsics and compatibility leaves are explicit migration boundaries,
 not a complete typed-AST-to-bytecode backend replacement.
 NeoCore bytecode images use version `0151` and must be regenerated; the NeoCore
-image container that carries the static type table is at version 3 after the
-nullable type kind was removed and struct field defaults were added. The five generic `NOP_TABLE_*` arithmetic-write
+image container that carries the static type table is at version 4. Regenerate older
+images: generated-code source mappings now mark shared helpers so their failures
+report the user callsite. The five generic `NOP_TABLE_*` arithmetic-write
 instructions, their handlers and
 unused table-update helpers have been removed. Compound collection writes now
 emit a read, arithmetic operation and ordinary write; WREF pairs only with
@@ -534,7 +535,8 @@ The owning host-call API marshals structs against their exact registered fields.
 Host schemas can declare nominal structs and use them in properties, method
 arguments and results. Structs crossing a value boundary copy nested struct fields;
 collection fields retain their container identity. Transitional generated helpers
-preserve source locations and may appear in backend call stacks.
+report runtime errors at the user callsite and are omitted from user-facing error
+stacks. User module functions and lambda bodies retain their own source locations.
 
 ## Vectors and quaternions
 
@@ -662,7 +664,9 @@ values can contain scalar, vector, struct, collection, function, or object value
 Map keys and set elements follow the same rule: only `int` or `string`, because the
 backend hashes and compares them by value. Nested collections and collection fields
 in structs are supported. A collection variable declared without an initializer is
-null; reference-typed elements may hold null while value-typed elements cannot.
+null; reference-typed list elements and map values may hold null while value-typed
+elements cannot. Map keys and set elements must never be null. Insertion and set
+construction reject null at runtime before storing it, including nullable strings.
 Language element references remain unsupported. Mutable collection types are invariant.
 
 ```cpp
@@ -673,7 +677,7 @@ values[2] = 3;
 map<string, int> counts = {};
 counts["alpha"] = 2;
 int present = counts.get("alpha", 0);
-int? missing = counts["missing"];
+int missing = counts.get("missing", 0);
 ```
 
 List literals check every element and materialize numeric widening. Indices are
@@ -721,9 +725,9 @@ After `import system;`, `set<T>()`, `set<T>(typedList)`, or `system.set(typedLis
 construct a typed set. Sets support `len`, `add`, `remove`, `contains`, `values`,
 `clear`, and `clone`. Union `|`, intersection `&`, and difference `-` return new
 sets of the same type and leave the operands unchanged.
-`set<string>` can contain null as one distinct element. Construction, insertion,
-membership, removal, enumeration, host APIs and JSON conversion preserve it;
-repeated nulls are deduplicated. `set<int>` rejects null.
+All sets reject null elements, including `set<string>`. This applies to construction,
+`add`, C++/Unity APIs and JSON decoding. A set variable itself may still be null;
+`contains(null)` and `remove(null)` on a non-null string set return false.
 
 `foreach (T value in collection)` iterates lists, arrays, or sets. Map iteration
 uses `foreach (K key, V value in map)`; use `map.values()` to iterate values alone.

@@ -55,7 +55,7 @@ struct StaticCompileResult
     TypedIR typedIR;
     // 호스트 멤버는 컴파일 때 바인딩 번호로 확정하고 비공개 호출 객체로 내린다.
     std::string hostPrefix;
-    // 생성된 프로퍼티 쓰기 함수의 줄을 원본 대입식 줄로 되돌리는 디버그 정보다.
+    // 생성 코드의 원본 행 매핑이다. 0행은 사용자 호출 위치를 따라가야 하는 공통 도우미를 뜻한다.
     std::vector<std::pair<int, int>> hostWriteSourceLines;
     std::string errorMessage;
     int errorLine = 0;

@@ -195,7 +195,8 @@ fixed return contract.
 Quaternion component order is `w,x,y,z`. Vector decoding checks float32 narrowing
 and rejects nonfinite components. Integer values can widen to float; a fractional
 JSON number does not silently become an int. Strict integer decoding rejects
-values outside the script integer range. Map keys must be strings. Strict struct
+values outside the script integer range. Map keys must be non-null strings. Encoding
+and decoding errors include the affected path, such as `$.values.bad` or `$[1]`. Strict struct
 input must contain every declared field and no extra field; the error names the
 first missing or unknown field.
 
@@ -204,8 +205,9 @@ not JSON data. Script calls reject unsupported types recursively during compilat
 including an empty collection of functions or a struct containing a non-string-key
 map. Nonfinite scalar/vector output is rejected. Nesting is bounded;
 cyclic collections cannot be serialized. Set decoding applies set uniqueness.
-`set<string>` preserves null elements in both script and host conversions;
-`[null,null]` decodes to a set containing one null. `set<int>` rejects null elements.
+All sets reject null elements, including `set<string>`. `[null]` fails at `$[0]`;
+a null set value itself is still allowed. Lists and map values with reference types
+continue to preserve null elements.
 Copying or encoding a collection does not change its declared element type.
 
 Always check `Error` or the returned C/managed result. A failed conversion is not

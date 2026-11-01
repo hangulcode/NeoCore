@@ -93,7 +93,7 @@ if(NEOCORE_BUILD_TESTS)
     find_package(Threads REQUIRED)
 
     add_executable(neocore_types Tests/neocore_types.cpp)
-    foreach(library_test math json_script constants)
+    foreach(library_test math json_script constants error_locations)
         add_executable(neocore_${library_test} Tests/neocore_${library_test}.cpp)
         target_link_libraries(neocore_${library_test} PRIVATE NeoCore::Runtime)
         add_test(NAME neocore_${library_test} COMMAND neocore_${library_test})

@@ -2334,7 +2334,7 @@ bool RemapSourceLines(NeoScript::IRuntime& runtime, NeoScript::ProgramHandle pro
     const int maximum = (std::numeric_limits<NeoScript::u16>::max)();
     for (const std::pair<int, int>& mapping : mappings)
     {
-        if (mapping.first <= 0 || mapping.first > maximum || mapping.second <= 0 || mapping.second > maximum)
+        if (mapping.first <= 0 || mapping.first > maximum || mapping.second < 0 || mapping.second > maximum)
             return false;
         const auto inserted = lines.emplace(mapping.first, mapping.second);
         if (!inserted.second && inserted.first->second != mapping.second) return false;

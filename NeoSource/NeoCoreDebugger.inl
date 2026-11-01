@@ -114,6 +114,8 @@ struct Debugger::Impl : NeoScript::IDebugListener
         if (frames.size() > 64) frames.resize(64);
         for (const auto& frame : frames)
         {
+            // 0행은 명시적으로 표시한 공통 도우미다. 사용자 모듈 함수와 람다 프레임은 그대로 남긴다.
+            if (frame.line == 0) continue;
             DebugStackFrame translated;
             translated.frameId = frame.frameId; translated.functionName = Name(program, frame.functionName);
             translated.location = Location(program, frame.line); target.frames.push_back(translated);

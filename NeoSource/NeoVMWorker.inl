@@ -104,6 +104,7 @@ NEOS_FORCEINLINE void CNeoVMWorker::CltInsert(VarInfo* pClt, VarInfo* pKey, VarI
 	}
 	else if (t == VAR_MAP)
 	{
+		if (pKey->GetType() == VAR_NONE) { SetError("map key cannot be null"); return; }
 		MapInfo* tbl = pClt->_tbl;
 		if (pValue->GetType() != VAR_NONE)
 		{
@@ -221,6 +222,7 @@ NEOS_NOINLINE void CNeoVMWorker::CltInsertRare(VarInfo* pClt, VarInfo* pKey, Var
 	}
 	case VAR_MAP:
 	{
+		if (pKey->GetType() == VAR_NONE) { SetError("map key cannot be null"); return; }
 		if (pValue->GetType() == VAR_NONE)
 		{
 			TableRemove(pClt, pKey);
@@ -284,6 +286,7 @@ NEOS_FORCEINLINE void CNeoVMWorker::CltInsert(VarInfo* pClt, VarInfo* pKey, NS_I
 	switch (pClt->GetType())
 	{
 	case VAR_MAP:
+		if (pKey->GetType() == VAR_NONE) { SetError("map key cannot be null"); return; }
 		pClt->_tbl->Insert(pKey, v);
 		return;
 	case VAR_LIST:

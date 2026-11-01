@@ -360,6 +360,7 @@ void SetInfo::Reserve(int sz)
 
 bool SetInfo::Insert(VarInfo* pKey)
 {
+	if (pKey->GetType() == VAR_NONE) return false;
 	if (pKey->IsContainerType())
 		MarkContainerChild();
 
