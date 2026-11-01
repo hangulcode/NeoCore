@@ -246,6 +246,10 @@ void CheckShape(IRuntime& runtime, const char* source, const std::vector<eNOpera
 
 void Shapes(IRuntime& runtime, bool debug)
 {
+    CheckShape(runtime, "export bool Probe(set<int> s,int key){bool a=s.add(key);bool b=s.contains(key);bool c=s.remove(key);return a&&b&&c;}",
+        {NOP_SET_I64_ADD,NOP_SET_I64_CONTAINS,NOP_SET_I64_REMOVE}, debug, "integer set operations have no native call");
+    CheckShape(runtime, "export bool Probe(set<string> s,string key){bool a=s.add(key);bool b=s.contains(key);bool c=s.remove(key);return a&&b&&c;}",
+        {NOP_SET_STRING_ADD,NOP_SET_STRING_CONTAINS,NOP_SET_STRING_REMOVE}, debug, "string set operations have no native call");
     struct NumericShape { const char* operation; eNOperation op; };
     const NumericShape numeric[] = {
         {"%",NOP_I64_MOD},{"&",NOP_I64_AND},{"|",NOP_I64_OR},
@@ -339,6 +343,43 @@ void Values(IRuntime& runtime, bool debug)
     Compare(runtime, "export float Probe(){array<Vector4> a=array<Vector4>(1);return (a[0].w=16777217)-a[0].w;}", Float(0), debug, "component assignment returns narrowed value");
     Compare(runtime, "export float Probe(){array<Quaternion> a=array<Quaternion>();a.append(Quaternion(1,2,3,4));a.resize(2);return a[0].x*10+a[1].w;}", Float(21), debug, "quaternion array default identity");
     Compare(runtime, "array<int> Replace(array<int> a){a=array<int>(2,7);return a;}export int Probe(){array<int> a=array<int>(1,3);array<int> old=a;a=Replace(a);return a.len()*100+a[1]*10+old[0];}", Int(273), debug, "explicit array replacement return");
+}
+
+void Sets(IRuntime& runtime, bool debug)
+{
+    Compare(runtime, "import system;export int Probe(){set<int> s=set<int>();if(!s.add(7)||s.add(7)||!s.contains(7)||s.contains(8))return 0;if(!s.remove(7)||s.remove(7)||s.contains(7))return 0;return s.len()+1;}",
+        Int(1), debug, "integer set add contains remove return exact booleans");
+    Compare(runtime, "import system;export int Probe(){set<string> s=set<string>();string key=\"a\"..tostring(7);if(!s.add(key)||s.add(\"a7\")||!s.contains(\"a7\"))return 0;if(!s.remove(key)||s.remove(key))return 0;return s.len()+1;}",
+        Int(1), debug, "string set dynamic keys use canonical equality");
+    Compare(runtime, "import system;export int Probe(){set<int> s=set<int>();int lo=-9223372036854775808;int hi=9223372036854775807;if(!s.add(lo)||!s.add(hi)||!s.contains(lo)||!s.remove(hi))return 0;return s.len();}",
+        Int(1), debug, "integer set full width keys");
+    Compare(runtime, "import system;export int Probe(){set<string> s=set<string>();s.add(\"\");string key=null;if(s.contains(key)||s.remove(key)||!s.contains(\"\"))return 0;return s.len();}",
+        Int(1), debug, "null set query differs from an empty string");
+    Compare(runtime, "import system;export int Probe(){set<int> s=set<int>();set<int> alias=s;s.add(2);if(!alias.contains(2))return 0;alias.remove(2);return s.len()+1;}",
+        Int(1), debug, "set mutation remains shared through aliases");
+    Compare(runtime, "import system;set<int> s=set<int>();int Replace(){s=set<int>();return 7;}export int Probe(){set<int> old=s;bool added=s.add(Replace());if(added&&old.contains(7)&&!s.contains(7))return 1;return 0;}",
+        Int(1), debug, "set add snapshots receiver before argument rebinding");
+    Compare(runtime, "import system;set<int> s=set<int>([7]);int Replace(){s=set<int>();return 7;}export int Probe(){if(s.contains(Replace())&&!s.contains(7))return 1;return 0;}",
+        Int(1), debug, "set contains snapshots receiver before argument rebinding");
+    Compare(runtime, "import system;set<int> s=set<int>([7]);int Replace(){s=set<int>([7]);return 7;}export int Probe(){set<int> old=s;if(s.remove(Replace())&&old.len()==0&&s.contains(7))return 1;return 0;}",
+        Int(1), debug, "set remove snapshots receiver before argument rebinding");
+    Compare(runtime, "import system;int order=0;set<int> s=set<int>();set<int> Owner(){order=order*10+1;return s;}int Key(){order=order*10+2;return 3;}export int Probe(){Owner().add(Key());Owner().contains(Key());Owner().remove(Key());return order;}",
+        Int(121212), debug, "each set receiver and argument evaluates once in order");
+    Compare(runtime, "import system;set<string> Make(){return set<string>([\"x\"]);}export int Probe(){if(Make().contains(\"x\")&&Make().remove(\"x\")&&Make().add(\"y\"))return 1;return 0;}",
+        Int(1), debug, "temporary set receivers survive until the result is stored");
+    Compare(runtime, "import system;export int Probe(){map<int,set<string>> m={1:set<string>()};m[1].add(\"x\");if(m[1].contains(\"x\")&&m[1].remove(\"x\"))return 1;return 0;}",
+        Int(1), debug, "set operations on stored receivers preserve ownership");
+    Compare(runtime, "import system;export int Probe(){set<string> s=set<string>();for(int i in 0,128){string key=\"item\"..tostring(i);s.add(key);}for(int i in 0,128){string key=\"item\"..tostring(i);if(!s.contains(key)||!s.remove(key))return -1;}return s.len();}",
+        Int(0), debug, "set growth and deletion preserve dynamic string keys");
+    for (const char* statement : {
+        "set<int> s=null;s.contains(1);", "set<int> s=null;s.add(1);", "set<int> s=null;s.remove(1);",
+        "set<string> s=null;s.contains(\"x\");", "set<string> s=null;s.add(\"x\");", "set<string> s=null;s.remove(\"x\");",
+        "set<string> s=set<string>();s.add(null);"
+    })
+    {
+        const std::string source=std::string("import system;export int Probe(){\n")+statement+"\nreturn 0;}";
+        Compare(runtime,source.c_str(),Outcome(),debug,statement,2);
+    }
 }
 
 void ListWrites(IRuntime& runtime, bool debug)
@@ -448,6 +489,7 @@ int main()
         Values(*runtime, debug);
         Order(*runtime, debug);
         ListWrites(*runtime, debug);
+        Sets(*runtime, debug);
         Errors(*runtime, debug);
         Cleanup(*runtime, debug);
     }

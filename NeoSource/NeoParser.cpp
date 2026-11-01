@@ -2817,6 +2817,17 @@ static SOperand EmitCoreWrite(const std::string& family, bool array, bool field,
     return whole ? result : EmitCoreAggregate(family + "get", &result, component, ar, funs, sourceLine);
 }
 
+static bool IsIdentityAggregateOperation(eNOperation op)
+{
+    switch (op)
+    {
+#define NEOCORE_IDENTITY_CASE(OP, NAME, SUFFIX, ARITY, SHAPE, DIMENSION, CONTROL) case OP: return true;
+        NEOCORE_IDENTITY_OPS(NEOCORE_IDENTITY_CASE)
+#undef NEOCORE_IDENTITY_CASE
+    default: return false;
+    }
+}
+
 // 타입 검사기가 남긴 내부 식을 호출 프레임 없이 전용 명령으로 방출한다.
 // 접두사는 현재 컴파일 요청에만 유효하며 원본 식의 줄 번호도 이름에 보존한다.
 static bool ParseCoreTypedIntrinsic(SOperand& result, const std::string& name,
@@ -2922,9 +2933,8 @@ static bool ParseCoreTypedIntrinsic(SOperand& result, const std::string& name,
         int laterEffects = scanned ? 0 : EXPR_EFFECT_ALL;
         for (size_t later = static_cast<size_t>(i) + 1; later < effects.size(); ++later)
             laterEffects |= effects[later];
-        const bool mapRead = aggregate && (aggregate->op == NOP_MAP_I64_READ || aggregate->op == NOP_MAP_STRING_READ ||
-            aggregate->op == NOP_MAP_I64_CONTAINS || aggregate->op == NOP_MAP_STRING_CONTAINS);
-        if ((aggregate && !mapRead) || !writeFamily.empty() || NeedsSnapshot(arguments[i], laterEffects)) SnapshotValue(arguments[i], ar, funs);
+        const bool identityInput = aggregate && IsIdentityAggregateOperation(aggregate->op);
+        if ((aggregate && !identityInput) || !writeFamily.empty() || NeedsSnapshot(arguments[i], laterEffects)) SnapshotValue(arguments[i], ar, funs);
     }
     if (!writeFamily.empty())
     {

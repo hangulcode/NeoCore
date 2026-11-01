@@ -31,6 +31,39 @@ NEOS_FORCEINLINE void TypedMapRead(const SVMOperation& op)
     }
 }
 
+template<bool StringKey, int Operation>
+NEOS_FORCEINLINE void TypedSetOperation(const SVMOperation& op)
+{
+    VarInfo* receiver = GetVarPtr2(op);
+    VarInfo* key = GetVarPtr3(op);
+    if (receiver->GetType() != VAR_SET)
+    {
+        SetError("cannot access a null set");
+        return;
+    }
+    if (StringKey && key->GetType() == VAR_NONE)
+    {
+        if (Operation == 1) SetError("set element cannot be null");
+        else StoreNumberBool(GetVarPtrF1(op), false);
+        return;
+    }
+    SetInfo* set = receiver->_set;
+    bool changed;
+    if (Operation == 0) changed = set->Find(key);
+    else
+    {
+        const int before = set->GetCount();
+        if (Operation == 1)
+        {
+            if (!set->Insert(key)) { SetError(RTE_CALL_INVALID); return; }
+        }
+        else set->Remove(key);
+        changed = set->GetCount() != before;
+    }
+    // 삽입·제거와 결과 계산을 끝낸 뒤 목적지의 이전 참조를 해제한다.
+    StoreNumberBool(GetVarPtrF1(op), changed);
+}
+
 template<int Dimension>
 static NEOS_FORCEINLINE void ReadTypedVector(const VarInfo* value, float* components)
 {

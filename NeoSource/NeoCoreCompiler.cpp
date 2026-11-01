@@ -1929,6 +1929,14 @@ private:
             expression.type = types_.Bool();
             return;
         }
+        if (type.kind == TypeKind::Set && (member.op == "contains" || member.op == "add" || member.op == "remove"))
+        {
+            if (count != 1) Fail(member.token, "set." + member.op + " requires exactly one element");
+            Convert(*expression.children[1], type.element);
+            expression.callName = Intrinsic(std::string(type.element == types_.Int() ? "si" : "ss") + member.op, member.token.line);
+            expression.type = types_.Bool();
+            return;
+        }
         const BuiltinSignature* builtin = FindBuiltinSignature(type.name, member.op);
         if (builtin && (receiver.type == types_.String() || type.kind == TypeKind::BuiltinObject))
         {
@@ -2004,10 +2012,10 @@ private:
             Convert(*expression.children[1], type.element);
             result = member.op == "find" ? types_.Int() : member.op == "contains" ? types_.Bool() : types_.Void();
         }
-        else if ((map || set) && (member.op == "contains" || member.op == "remove" || (set && member.op == "add")))
+        else if (map && member.op == "remove")
         {
             if (count != 1) Fail(member.token, "this collection method requires one key");
-            Convert(*expression.children[1], map ? type.key : type.element);
+            Convert(*expression.children[1], type.key);
             result = types_.Bool();
         }
         else if ((map || set) && (member.op == "values" || (map && member.op == "keys")))

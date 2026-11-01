@@ -96,6 +96,10 @@ Maps provide `contains(key)`, `remove`, `clear` and typed keys/
 values. Reading `map[key]` always fails if the key is absent; a present null value
 remains valid for reference-valued maps. `map.get` and its fallback were removed.
 Sets provide membership changes and union/intersection/difference.
+Set `contains`, `add` and `remove` are typed VM operations returning bool: membership,
+new insertion and successful removal respectively. Duplicate insertion and removal
+of an absent element return false. String null insertion fails; null membership
+and removal queries return false. A null set receiver fails for all three methods.
 Map keys and set elements must be `int` or `string`; `array` and `array32` keep
 their fixed element rules, and `list<T>` accepts any element type.
 The compiler checks operation names, argument counts and element types.

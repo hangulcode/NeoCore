@@ -50,6 +50,20 @@
     X(NOP_ARRAY_##TYPE##_SET, "ARRAY_" #TYPE "_SET", "a" SUFFIX "set", 3, Window, D, 0) \
     X(NOP_ARRAY_##TYPE##_APPEND, "ARRAY_" #TYPE "_APPEND", "a" SUFFIX "append", 2, Binary, D, 0)
 
+#define NEOCORE_SET_OPS(X, TYPE, SUFFIX) \
+    X(NOP_SET_##TYPE##_CONTAINS, "SET_" #TYPE "_CONTAINS", "s" SUFFIX "contains", 2, Binary, 0, 0) \
+    X(NOP_SET_##TYPE##_ADD, "SET_" #TYPE "_ADD", "s" SUFFIX "add", 2, Binary, 0, 0) \
+    X(NOP_SET_##TYPE##_REMOVE, "SET_" #TYPE "_REMOVE", "s" SUFFIX "remove", 2, Binary, 0, 0)
+
+// 맵·집합은 저장소를 공유한다. 뒤 인자의 부작용이 있을 때만 입력의 정체성을 보존한다.
+#define NEOCORE_IDENTITY_OPS(X) \
+    X(NOP_MAP_I64_READ, "MAP_I64_READ", "miread", 2, Binary, 0, 0) \
+    X(NOP_MAP_STRING_READ, "MAP_STRING_READ", "msread", 2, Binary, 0, 0) \
+    X(NOP_MAP_I64_CONTAINS, "MAP_I64_CONTAINS", "micontains", 2, Binary, 0, 0) \
+    X(NOP_MAP_STRING_CONTAINS, "MAP_STRING_CONTAINS", "mscontains", 2, Binary, 0, 0) \
+    NEOCORE_SET_OPS(X, I64, "i") \
+    NEOCORE_SET_OPS(X, STRING, "s")
+
 #define NEOCORE_AGGREGATE_OPS(X) \
     NEOCORE_VECTOR_OPS(X, 2, Binary) \
     NEOCORE_VECTOR_OPS(X, 3, Window) \
@@ -68,10 +82,7 @@
     X(NOP_ARRAY_LEN, "ARRAY_LEN", "alen", 1, Unary, 0, 0) \
     X(NOP_ARRAY_RESIZE, "ARRAY_RESIZE", "aresize", 2, Binary, 0, 0) \
     X(NOP_ARRAY_RESERVE, "ARRAY_RESERVE", "areserve", 2, Binary, 0, 0) \
-    X(NOP_MAP_I64_READ, "MAP_I64_READ", "miread", 2, Binary, 0, 0) \
-    X(NOP_MAP_STRING_READ, "MAP_STRING_READ", "msread", 2, Binary, 0, 0) \
-    X(NOP_MAP_I64_CONTAINS, "MAP_I64_CONTAINS", "micontains", 2, Binary, 0, 0) \
-    X(NOP_MAP_STRING_CONTAINS, "MAP_STRING_CONTAINS", "mscontains", 2, Binary, 0, 0)
+    NEOCORE_IDENTITY_OPS(X)
 
 namespace NeoScript
 {

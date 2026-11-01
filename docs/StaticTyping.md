@@ -713,7 +713,7 @@ an invalid index or empty pop fails at runtime. Maps support `len`,
 Keys and values produce typed lists. A stored key such as `"contains"` or `"len"`
 does not shadow these statically resolved methods.
 
-This change requires backend image version 0152. Rebuild host libraries and
+The current collection operations require backend image version 0153. Rebuild host libraries and
 recompile previously cached program images. Existing `map.get` calls must be
 replaced with checked indexing or an explicit `contains` guard.
 
@@ -732,6 +732,14 @@ After `import system;`, `set<T>()`, `set<T>(typedList)`, or `system.set(typedLis
 construct a typed set. Sets support `len`, `add`, `remove`, `contains`, `values`,
 `clear`, and `clone`. Union `|`, intersection `&`, and difference `-` return new
 sets of the same type and leave the operands unchanged.
+`contains`, `add` and `remove` emit dedicated int/string VM operations instead of
+native method calls. `contains` returns membership; `add` returns true only for a
+new element, and `remove` returns true only when an element was removed. Receiver
+and element expressions evaluate once, left to right. Rebinding the receiver in
+the element expression does not redirect the operation to the replacement set.
+The existing storage, string normalization, mutation tracking and shared identity
+rules are preserved. Set construction and algebra still use the existing runtime
+and generated helper paths.
 All sets reject null elements, including `set<string>`. This applies to construction,
 `add`, C++/Unity APIs and JSON decoding. A set variable itself may still be null;
 `contains(null)` and `remove(null)` on a non-null string set return false.
