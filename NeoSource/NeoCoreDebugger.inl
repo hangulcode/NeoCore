@@ -74,7 +74,7 @@ struct Debugger::Impl : NeoScript::IDebugListener
         if (depth > 16) return;
         const TypeRegistry& types = program.checked.types;
         const TypeDesc& type = types.Get(id);
-        value.type = types.DisplayName(id);
+        value.type = types.DiagnosticName(id);
         // null 을 담을 수 있는 타입의 null 값은 자식 없이 그대로 보인다.
         if (value.value == "null" && types.AllowsNull(id)) return;
         if (type.kind == TypeKind::Struct)

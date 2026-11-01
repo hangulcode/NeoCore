@@ -448,6 +448,7 @@ void ReadMetadata(Reader& reader, Data& data)
         if (!data.bundle.symbolNames.insert(std::make_pair(backend, original)).second)
             throw std::runtime_error("duplicate NeoCore image symbol mapping");
     }
+    data.checked.types.SetDiagnosticNames(data.bundle.symbolNames);
     data.checked.success = true;
 }
 }

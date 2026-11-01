@@ -28,6 +28,12 @@ map<string, list<int>> groups =
 - `system.jsonEncode(value, sortKeys = false)` returns a string. The compiler
   resolves the complete input type, including all struct fields and collection
   element types. `sortKeys` is a bool; true sorts JSON object keys.
+- `system.jsonEncodeOrNull(value, sortKeys = false)` uses the same checked input
+  type and encoder. A conversion failure returns an actual null string and records
+  its reason in `system.jsonError()`, without stopping execution. Successful
+  encoding clears that error. Encoding a null reference successfully returns the
+  string `"null"`, which is distinct from a failed call's null result. Unsupported
+  declared types remain compile errors for both encoders.
 - `system.jsonDecode<T>(text)` returns exactly `T`. Its string argument is checked
   at compile time; the JSON contents are checked at runtime. `T` can be a nested
   collection, a declared struct or another supported JSON type.
@@ -37,7 +43,8 @@ map<string, list<int>> groups =
   partly constructed value or silently substitute an empty object.
 - `system.jsonDecodeOr<T>(text, fallback)` returns `fallback` instead of failing and
   records the reason; `system.jsonError()` returns that reason, or an empty string
-  after a successful decode. The reason starts with the JSON path of the problem,
+  after a successful encode or decode. Error state belongs to the calling instance.
+  The reason starts with the JSON path of the problem,
   such as `$.gold: missing field`, `$.inventory.items[1]: expected int` or
   `$.legacyScore: unknown field`; parser failures report the byte position.
 - `system.jsonDecodeLenient<T>(text)` and `system.jsonDecodeLenientOr<T>(text, fallback)`

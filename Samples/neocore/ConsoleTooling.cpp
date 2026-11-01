@@ -1152,6 +1152,7 @@ static void TypedBuiltins(std::vector<BuiltinInfo>& builtins)
     AddBuiltin(builtins, "string", "len", "int", {});
     AddBuiltin(builtins, "system", "set", "set<T>", {"list<T> values"});
     AddBuiltin(builtins, "system", "jsonEncode", "string", {"T value", "bool sortKeys (optional)"});
+    AddBuiltin(builtins, "system", "jsonEncodeOrNull", "string", {"T value", "bool sortKeys (optional)"});
     AddBuiltin(builtins, "system", "jsonDecode", "T", {"string text"}, "<T>");
     AddBuiltin(builtins, "system", "jsonDecodeOr", "T", {"string text", "T fallback"}, "<T>");
     AddBuiltin(builtins, "system", "jsonDecodeLenient", "T", {"string text"}, "<T>");
@@ -1366,7 +1367,7 @@ public:
             NeoCore::StaticCompileResult checked;
             const auto config=host?host->Config():std::shared_ptr<const NeoCore::ScriptHostCompileConfig>();
             const auto allowed=[&](int line){return config && line>0 && static_cast<std::size_t>(line)<=bundle.lines.size() && config->allowsSource(bundle.lines[static_cast<std::size_t>(line-1)].sourceName);};
-            if (!NeoCore::CompileStaticSource(bundle.source, checked,host?&host->Schema():nullptr,nullptr,diagnosticLimit,config.get(),allowed))
+            if (!NeoCore::CompileStaticSource(bundle.source, checked,host?&host->Schema():nullptr,nullptr,diagnosticLimit,config.get(),allowed,&bundle.symbolNames))
             {
                 error.sourceName = path; error.message = checked.errorMessage; error.line = checked.errorLine; error.column = checked.errorColumn;
                 bundle.Translate(error);

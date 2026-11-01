@@ -386,6 +386,16 @@ const StructField* TypeRegistry::FindStructField(TypeId structure, const std::st
 
 std::string TypeRegistry::DisplayName(TypeId id) const
 {
+    return FormatName(id, false);
+}
+
+std::string TypeRegistry::DiagnosticName(TypeId id) const
+{
+    return FormatName(id, true);
+}
+
+std::string TypeRegistry::FormatName(TypeId id, bool diagnostic) const
+{
     const TypeDesc& type = Get(id);
     switch (type.kind)
     {
@@ -402,31 +412,36 @@ std::string TypeRegistry::DisplayName(TypeId id) const
     case TypeKind::Quaternion:
         return type.name;
     case TypeKind::Array:
-        return "array<" + DisplayName(type.element) + ">";
+        return "array<" + FormatName(type.element, diagnostic) + ">";
     case TypeKind::Array32:
-        return "array32<" + DisplayName(type.element) + ">";
+        return "array32<" + FormatName(type.element, diagnostic) + ">";
     case TypeKind::List:
-        return "list<" + DisplayName(type.element) + ">";
+        return "list<" + FormatName(type.element, diagnostic) + ">";
     case TypeKind::Map:
-        return "map<" + DisplayName(type.key) + ", " + DisplayName(type.value) + ">";
+        return "map<" + FormatName(type.key, diagnostic) + ", " + FormatName(type.value, diagnostic) + ">";
     case TypeKind::Set:
-        return "set<" + DisplayName(type.element) + ">";
+        return "set<" + FormatName(type.element, diagnostic) + ">";
     case TypeKind::Function:
     {
-        std::string result = DisplayName(type.returnType) + " function(";
+        std::string result = FormatName(type.returnType, diagnostic) + " function(";
         for (std::size_t i = 0; i < type.parameters.size(); ++i)
         {
             if (i != 0) result += ", ";
-            result += DisplayName(type.parameters[i]);
+            result += FormatName(type.parameters[i], diagnostic);
         }
         return result + ")";
     }
     case TypeKind::Struct:
     case TypeKind::Native:
     case TypeKind::BuiltinObject:
+        if (diagnostic)
+        {
+            const auto found = diagnosticNames_.find(type.name);
+            if (found != diagnosticNames_.end()) return found->second;
+        }
         return type.name;
     case TypeKind::Coroutine:
-        return "coroutine<" + DisplayName(type.element) + ">";
+        return "coroutine<" + FormatName(type.element, diagnostic) + ">";
     default:
         return "<invalid>";
     }

@@ -2841,6 +2841,7 @@ static bool ParseCoreTypedIntrinsic(SOperand& result, const std::string& name,
     bool invert = false;
     bool arrayWrite = false;
     bool fieldWrite = false;
+    bool collectionSet = false;
     int component = -1;
     int mode = -1;
     std::string writeFamily;
@@ -2872,6 +2873,7 @@ static bool ParseCoreTypedIntrinsic(SOperand& result, const std::string& name,
         }
         else
         {
+            collectionSet = operation == "cset" && component == -1;
             for (int dimension = 2; dimension <= 4; ++dimension)
                 if (operation == "v" + std::to_string(dimension) + "rmul")
                 { operation = "v" + std::to_string(dimension) + "mul"; swapOperands = true; break; }
@@ -2890,17 +2892,17 @@ static bool ParseCoreTypedIntrinsic(SOperand& result, const std::string& name,
         }
     }
     int sourceLine = 0;
-    if (info || aggregate || !writeFamily.empty())
+    if (info || aggregate || !writeFamily.empty() || collectionSet)
     {
         for (size_t i = lineAt + 2; i < suffix.size(); ++i)
         {
             const int digit = suffix[i] - '0';
             if (digit < 0 || digit > 9 || sourceLine > (INT_MAX - digit) / 10)
-            { info = nullptr; aggregate = nullptr; writeFamily.clear(); break; }
+            { info = nullptr; aggregate = nullptr; writeFamily.clear(); collectionSet = false; break; }
             sourceLine = sourceLine * 10 + digit;
         }
     }
-    if ((!info && !aggregate && writeFamily.empty()) || sourceLine <= 0)
+    if ((!info && !aggregate && writeFamily.empty() && !collectionSet) || sourceLine <= 0)
     {
         SetCompileError(ar, "invalid typed intrinsic '%s'", name.c_str());
         return false;
@@ -2913,7 +2915,7 @@ static bool ParseCoreTypedIntrinsic(SOperand& result, const std::string& name,
     }
     std::vector<int> effects;
     const bool scanned = ScanCallArguments(ar, effects);
-    const int arity = info ? info->arity : aggregate ? aggregate->arity : (arrayWrite || fieldWrite) ? 3 : 2;
+    const int arity = info ? info->arity : aggregate ? aggregate->arity : (arrayWrite || fieldWrite || collectionSet) ? 3 : 2;
     SOperand arguments[4];
     for (int i = 0; i < arity; ++i)
     {
@@ -2922,7 +2924,8 @@ static bool ParseCoreTypedIntrinsic(SOperand& result, const std::string& name,
         funs._presetExprOffset = ar.GetBufferOffset();
         const TK_TYPE end = ParseShortCircuitLogic(true, arguments[i], ar, funs, vars);
         funs._presetExprEffects = -1;
-        if (arguments[i].IsInvalidValue() || arguments[i].IsNone() || arguments[i].IsFun() ||
+        if (arguments[i].IsInvalidValue() || arguments[i].IsNone() ||
+            (arguments[i].IsFun() && (!collectionSet || i != 0)) ||
             end != (i + 1 == arity ? TK_R_SMALL : TK_COMMA))
         {
             SetParserCompileError(ar, PCE_INVALID_CALL_ARGUMENT);
@@ -2934,7 +2937,15 @@ static bool ParseCoreTypedIntrinsic(SOperand& result, const std::string& name,
         for (size_t later = static_cast<size_t>(i) + 1; later < effects.size(); ++later)
             laterEffects |= effects[later];
         const bool identityInput = aggregate && IsIdentityAggregateOperation(aggregate->op);
-        if ((aggregate && !identityInput) || !writeFamily.empty() || NeedsSnapshot(arguments[i], laterEffects)) SnapshotValue(arguments[i], ar, funs);
+        if ((aggregate && !identityInput) || !writeFamily.empty() ||
+            (collectionSet && i == 0) || NeedsSnapshot(arguments[i], laterEffects)) SnapshotValue(arguments[i], ar, funs);
+    }
+    if (collectionSet)
+    {
+        // 값은 대상 해석 전에 보존했다. 저장 결과도 같은 값으로 돌려주며 원소 포인터는 보관하지 않는다.
+        funs._cur->Push_OP(ar, NOP_CLT_MOV, arguments[1]._iVar, arguments[2]._iVar, arguments[0]._iVar, sourceLine);
+        result = arguments[0];
+        return true;
     }
     if (!writeFamily.empty())
     {

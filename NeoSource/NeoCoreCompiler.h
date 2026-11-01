@@ -84,6 +84,7 @@ bool ExpandStaticDefines(const std::string& source, const std::vector<CompileDef
 bool CompileStaticSource(const std::string& source, StaticCompileResult& result, const HostSchema* hostSchema = nullptr,
     const std::vector<CompileDefine>* defines = nullptr, std::size_t diagnosticLimit = 100,
     const ScriptHostCompileConfig* scriptHost = nullptr,
-    const std::function<bool(int)>& implementationSource = std::function<bool(int)>());
+    const std::function<bool(int)>& implementationSource = std::function<bool(int)>(),
+    const std::map<std::string, std::string>* diagnosticNames = nullptr);
 
 }

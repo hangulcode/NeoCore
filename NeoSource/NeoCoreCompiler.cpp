@@ -708,7 +708,7 @@ private:
         if (At("?"))
             Fail(Peek(), types_.AllowsNull(result.type)
                 ? "nullability is implied by the type; remove '?'"
-                : "'" + types_.DisplayName(result.type) + "' can never be null; remove '?'");
+                : "'" + types_.DiagnosticName(result.type) + "' can never be null; remove '?'");
         if (At("&"))
             Fail(Peek(), "reference types are not supported; pass and return values instead");
         return result;
@@ -1702,7 +1702,7 @@ private:
     void Convert(Expr& source, TypeId target)
     {
         if (!types_.CanAssign(target, source.type))
-            Fail(source.token, "cannot convert '" + types_.DisplayName(source.type) + "' to '" + types_.DisplayName(target) + "'");
+            Fail(source.token, "cannot convert '" + types_.DiagnosticName(source.type) + "' to '" + types_.DiagnosticName(target) + "'");
         if (source.type == types_.Int() && target == types_.Float())
         {
             source.widen = true;
@@ -1719,7 +1719,7 @@ private:
 
     void Require(Expr& expression, TypeId type, const char* context)
     {
-        if (expression.type != type) Fail(expression.token, std::string(context) + " requires '" + types_.DisplayName(type) + "'");
+        if (expression.type != type) Fail(expression.token, std::string(context) + " requires '" + types_.DiagnosticName(type) + "'");
     }
 
     Symbol* Writable(Expr& expression)
@@ -1749,7 +1749,7 @@ private:
             // null 비교는 null 을 담을 수 있는 타입에만 의미가 있다. 값 타입과의 비교는 항상 거짓이라 거부한다.
             const TypeId other = left == types_.Null() ? right : left;
             if (other == types_.Null() || types_.AllowsNull(other)) return types_.Bool();
-            Fail(token, "'" + types_.DisplayName(other) + "' can never be null; remove the null comparison");
+            Fail(token, "'" + types_.DiagnosticName(other) + "' can never be null; remove the null comparison");
         }
         if (IsVectorValue(left) || IsVectorValue(right))
         {
@@ -2247,18 +2247,20 @@ private:
                 result_.typedIR.nativeGlobals.push_back(global);
             return;
         }
-        if (name == "system.jsonEncode" || (callee.kind == ExprKind::Member && callee.children[0]->kind == ExprKind::Name
+        if (name == "system.jsonEncode" || name == "system.jsonEncodeOrNull" || (callee.kind == ExprKind::Member && callee.children[0]->kind == ExprKind::Name
             && callee.children[0]->op == "system" && IsJsonDecodeName(callee.op)))
         {
             if (!imports_.count("system")) Fail(callee.token, "system must be imported before use");
             if (checkingConstant_) Fail(callee.token, "JSON conversion is not a constant initializer");
-            const bool encode = name == "system.jsonEncode";
+            const bool encode = name == "system.jsonEncode" || name == "system.jsonEncodeOrNull";
             if (encode)
             {
-                if (count < 1 || count > 2) Fail(callee.token, "jsonEncode requires a value and optional bool sortKeys");
+                if (count < 1 || count > 2) Fail(callee.token, callee.op + " requires a value and optional bool sortKeys");
                 expression.jsonType = expression.children[1]->type;
                 if (count == 2) Require(*expression.children[2], types_.Bool(), "JSON sortKeys");
                 else expression.extraArgument = "false";
+                if (name == "system.jsonEncodeOrNull")
+                    expression.extraArgument += expression.extraArgument.empty() ? "true" : ",true";
                 expression.type = types_.String();
                 expression.callName = internalPrefix_ + "json_encode.call";
             }
@@ -2278,7 +2280,7 @@ private:
                 expression.extraArgument = std::to_string((lenient ? 1 : 0) | (fallback ? 2 : 0));
             }
             if (!types_.IsJsonType(expression.jsonType))
-                Fail(callee.token, "JSON does not support type '" + types_.DisplayName(expression.jsonType) + "'");
+                Fail(callee.token, "JSON does not support type '" + types_.DiagnosticName(expression.jsonType) + "'");
             const std::string global = internalPrefix_ + (encode ? "json_encode" : "json_decode");
             if (std::find(result_.typedIR.nativeGlobals.begin(), result_.typedIR.nativeGlobals.end(), global) == result_.typedIR.nativeGlobals.end())
                 result_.typedIR.nativeGlobals.push_back(global);
@@ -2482,7 +2484,7 @@ private:
             CheckExpr(target); Writable(target);
             // 맵 원소의 읽기-수정-쓰기는 없는 키의 의미가 정해져 있지 않아 명시적으로 거부한다.
             if (expression.op != "=" && target.kind == ExprKind::Index && types_.Get(target.children[0]->type).kind == TypeKind::Map)
-                Fail(expression.token, "compound assignment on a map element is not supported; read with get and assign the result");
+                Fail(expression.token, "compound assignment on a map element is not supported; read with map[key] and assign the result");
             TypeId writeType = target.type;
             if (expression.op == "=" && target.kind == ExprKind::Index && types_.Get(target.children[0]->type).kind == TypeKind::Map)
                 writeType = types_.Get(target.children[0]->type).value;
@@ -2753,7 +2755,7 @@ private:
             for (int i = 0; i < 4; ++i) field.defaultVector[i] = value.vector[i];
             valid = true;
         }
-        if (!valid) Fail(at, "field default does not match the field type '" + types_.DisplayName(declared.type) + "'");
+        if (!valid) Fail(at, "field default does not match the field type '" + types_.DiagnosticName(declared.type) + "'");
         std::string error;
         if (!types_.SetStructFieldDefault(structure, index, field, &error)) Fail(at, error);
     }
@@ -2768,7 +2770,7 @@ private:
         const TypeId key = selector.type;
         if (key == types_.Float()) Fail(selector.token, "float is not allowed as a switch value because exact comparison is unreliable; use int or string");
         if (key != types_.Int() && key != types_.String())
-            Fail(selector.token, "switch requires an int or string value, not '" + types_.DisplayName(key) + "'");
+            Fail(selector.token, "switch requires an int or string value, not '" + types_.DiagnosticName(key) + "'");
         bool hasDefault = false;
         std::vector<ConstantValue> seen;
         int flow = 0;
@@ -2788,7 +2790,7 @@ private:
                 CheckExpr(*label);
                 if (!label->constant) Fail(label->token, "case value must be a compile-time constant");
                 if (label->type != key)
-                    Fail(label->token, "case value type '" + types_.DisplayName(label->type) + "' does not match switch value type '" + types_.DisplayName(key) + "'");
+                    Fail(label->token, "case value type '" + types_.DiagnosticName(label->type) + "' does not match switch value type '" + types_.DiagnosticName(key) + "'");
                 ResolveConstant(*label);
                 const ConstantValue& value = *label->evaluatedConstant;
                 for (const ConstantValue& previous : seen)
@@ -3434,6 +3436,16 @@ private:
                 receiver.erase(std::remove(receiver.begin(), receiver.end(), '\n'), receiver.end());
                 text = expression.hostWriteHelper + "(" + Lines(expression.begin, value.begin) + RenderExpr(value) + "," + receiver + Lines(value.end, expression.end) + ")";
             }
+            else if (expression.op == "=" && target.kind == ExprKind::Index &&
+                (types_.Get(target.children[0]->type).kind == TypeKind::List ||
+                 types_.Get(target.children[0]->type).kind == TypeKind::Map))
+            {
+                // 일반 컬렉션도 배열과 같이 우변, 저장소, 키 순서로 한 번씩 평가한다.
+                std::string receiver = WriteReceiverArguments(target);
+                receiver.erase(std::remove(receiver.begin(), receiver.end(), '\n'), receiver.end());
+                text = Intrinsic("cset", expression.token.line) + "(" + Lines(expression.begin, value.begin)
+                    + RenderExpr(value) + "," + receiver + Lines(value.end, expression.end) + ")";
+            }
             else if (IsVector(target.type) && expression.op == "=" &&
                 target.kind == ExprKind::Name && target.symbol->boxed)
             {
@@ -3795,7 +3807,8 @@ bool ExpandStaticDefines(const std::string& source, const std::vector<CompileDef
 
 bool CompileStaticSource(const std::string& source, StaticCompileResult& result, const HostSchema* hostSchema,
     const std::vector<CompileDefine>* defines, std::size_t diagnosticLimit,
-    const ScriptHostCompileConfig* scriptHost, const std::function<bool(int)>& implementationSource)
+    const ScriptHostCompileConfig* scriptHost, const std::function<bool(int)>& implementationSource,
+    const std::map<std::string, std::string>* diagnosticNames)
 {
     result = StaticCompileResult();
     Recovery recovery(result, diagnosticLimit);
@@ -3806,6 +3819,7 @@ bool CompileStaticSource(const std::string& source, StaticCompileResult& result,
             if (!hostSchema->Validate(result.errorMessage)) return false;
             result.types = hostSchema->Types();
         }
+        if (diagnosticNames) result.types.SetDiagnosticNames(*diagnosticNames);
         std::vector<StaticDefineReplacement> replacements;
         if (defines && !ExpandStaticDefines(source, *defines, replacements, result.errorMessage, result.errorLine, result.errorColumn))
             return false;

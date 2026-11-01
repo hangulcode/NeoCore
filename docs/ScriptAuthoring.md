@@ -129,6 +129,8 @@ decode text with `system.jsonDecode<T>(text)`. For example,
 `system.jsonDecodeOr<T>(text, fallback)` returns the fallback on failure and
 `system.jsonError()` tells why; `system.jsonDecodeLenient<T>(text)` fills missing
 struct fields from their declared defaults and ignores unknown fields.
+`system.jsonEncodeOrNull(value, sortKeys = false)` returns null on encoding failure
+and records its reason in `system.jsonError()`; successful encoding clears the error.
 Structs use named JSON object fields. Invalid text or a schema mismatch is a
 runtime error; missing and extra struct fields are rejected. See [JSON.md](JSON.md).
 

@@ -12,10 +12,10 @@ static TypeId Underlying(const TypeRegistry& types, TypeId type)
 
 std::string Scalar::typeName() const
 {
-    if (bound_) return bound_->types->DisplayName(bound_->type);
+    if (bound_) return bound_->types->DiagnosticName(bound_->type);
     if (kind_ == Kind::Object) return objectType();
     TypeRegistry types;
-    return types.DisplayName(ScalarType(types, kind_));
+    return types.DiagnosticName(ScalarType(types, kind_));
 }
 
 bool BoundaryAccess::Accepts(const TypeRegistry& types, TypeId type, const Scalar& value)
@@ -23,7 +23,7 @@ bool BoundaryAccess::Accepts(const TypeRegistry& types, TypeId type, const Scala
     if (value.kind() == Scalar::Kind::Void) return type == types.Void();
     if (value.kind() == Scalar::Kind::Null) return types.AllowsNull(type);
     type = Underlying(types, type);
-    if (value.bound_) return value.typeName() == types.DisplayName(type);
+    if (value.bound_) return value.bound_->types->DisplayName(value.bound_->type) == types.DisplayName(type);
     if (value.kind() == Scalar::Kind::Object)
         return types.Get(type).kind == TypeKind::Native && value.objectType() == types.Get(type).name;
     return types.CanAssign(type, ScalarType(types, value.kind()));
@@ -122,7 +122,7 @@ NeoCoreBackend::ValuePtr BoundaryAccess::Copy(NeoScript::IRuntime& runtime,
     const TypeRegistry& types, TypeId type, const std::shared_ptr<void>& lifetime, const Scalar& value)
 {
     using NeoCoreBackend::ValueKind;
-    if (!Accepts(types,type,value)) throw std::invalid_argument("value requires " + types.DisplayName(type));
+    if (!Accepts(types,type,value)) throw std::invalid_argument("value requires " + types.DiagnosticName(type));
     type = Underlying(types,type);
     if (value.bound_)
     {
@@ -212,7 +212,7 @@ Scalar BoundaryAccess::Wrap(NeoScript::IRuntime& runtime, const TypeRegistry& ty
         break;
     default: break;
     }
-    if (result.kind_==Scalar::Kind::Void) throw std::runtime_error("backend value disagrees with " + types.DisplayName(type));
+    if (result.kind_==Scalar::Kind::Void) throw std::runtime_error("backend value disagrees with " + types.DiagnosticName(type));
     result.bound_.reset(new Scalar::BoundValue());
     result.bound_->runtime=&runtime;
     result.bound_->types=&types;
@@ -378,7 +378,7 @@ static NeoCoreBackend::ValuePtr ConvertJsonValue(NeoScript::IRuntime& runtime, c
     if(data.kind==ValueKind::Null)
     {
         if(!types.AllowsNull(type))
-            throw fail("null is not allowed for "+types.DisplayName(type));
+            throw fail("null is not allowed for "+types.DiagnosticName(type));
         return value;
     }
     type=Underlying(types,type);
@@ -401,7 +401,7 @@ static NeoCoreBackend::ValuePtr ConvertJsonValue(NeoScript::IRuntime& runtime, c
         if(decoding)
         {
             if(data.kind!=ValueKind::List || ValueSize(value)!=count)
-                throw fail("expected an array of "+std::to_string(count)+" numbers for "+types.DisplayName(type));
+                throw fail("expected an array of "+std::to_string(count)+" numbers for "+types.DiagnosticName(type));
             ValueData vector;
             vector.kind=count==2?ValueKind::Vector2:count==3?ValueKind::Vector3:ValueKind::Vector4;
             for(std::size_t i=0;i<count;++i)
@@ -429,7 +429,7 @@ static NeoCoreBackend::ValuePtr ConvertJsonValue(NeoScript::IRuntime& runtime, c
     case TypeKind::List:
     case TypeKind::Set:
     {
-        if(decoding && data.kind!=ValueKind::List) throw fail("expected an array for "+types.DisplayName(type));
+        if(decoding && data.kind!=ValueKind::List) throw fail("expected an array for "+types.DiagnosticName(type));
         const auto result=decoding?NewCollection(runtime,types,type,lifetime):MakeCollection(runtime,ValueKind::List,ArrayStorage::Int64,lifetime);
         const std::size_t count=ValueSize(value);
         if(!ValueReserve(result,count)) throw fail("could not reserve JSON collection");
@@ -455,7 +455,7 @@ static NeoCoreBackend::ValuePtr ConvertJsonValue(NeoScript::IRuntime& runtime, c
     case TypeKind::Map:
     {
         if(desc.key!=types.String()) throw fail("JSON objects require map<string, T>");
-        if(data.kind!=ValueKind::Map) throw fail("expected an object for "+types.DisplayName(type));
+        if(data.kind!=ValueKind::Map) throw fail("expected an object for "+types.DiagnosticName(type));
         const auto result=MakeCollection(runtime,ValueKind::Map,ArrayStorage::Int64,lifetime);
         std::vector<std::pair<ValuePtr,ValuePtr>> entries;
         if(!SnapshotMap(value,entries)) throw fail("could not enumerate JSON object");
@@ -472,7 +472,7 @@ static NeoCoreBackend::ValuePtr ConvertJsonValue(NeoScript::IRuntime& runtime, c
     }
     case TypeKind::Struct:
     {
-        if(decoding && data.kind!=ValueKind::Map) throw fail("expected an object for struct "+types.DisplayName(type));
+        if(decoding && data.kind!=ValueKind::Map) throw fail("expected an object for struct "+types.DiagnosticName(type));
         const auto result=decoding?NewCollection(runtime,types,type,lifetime):MakeCollection(runtime,ValueKind::Map,ArrayStorage::Int64,lifetime);
         for(std::size_t i=0;i<desc.fields.size();++i)
         {
@@ -508,9 +508,9 @@ static NeoCoreBackend::ValuePtr ConvertJsonValue(NeoScript::IRuntime& runtime, c
         }
         return result;
     }
-    default: throw fail("JSON does not support this declared type: "+types.DisplayName(type));
+    default: throw fail("JSON does not support this declared type: "+types.DiagnosticName(type));
     }
-    throw fail("expected "+types.DisplayName(type));
+    throw fail("expected "+types.DiagnosticName(type));
 }
 
 // JSON은 호출자의 타입 표와 할당 영역에서 변환한다. 기본 인스턴스로 우회하지 않는다.
@@ -519,7 +519,7 @@ static NeoCoreBackend::ValuePtr DecodeTypedJson(NeoScript::IRuntime& runtime, Ne
     const std::string& text, bool strictIntegers, bool lenient, std::string& error)
 {
     if (!types.IsJsonType(type))
-        throw std::invalid_argument("JSON does not support this declared type: " + types.DisplayName(type));
+        throw std::invalid_argument("JSON does not support this declared type: " + types.DiagnosticName(type));
     std::vector<std::string> warnings;
     const auto raw = NeoCoreBackend::DecodeJson(runtime, instance, text, strictIntegers, false, lifetime, error, warnings);
     if (!raw) return NeoCoreBackend::ValuePtr();
@@ -549,13 +549,15 @@ bool BoundaryAccess::EncodeJson(Instance& owner, const NeoScript::CallContext& c
     {
         const auto& types = owner.impl_->checked.types;
         if (!types.IsJsonType(type))
-            throw std::invalid_argument("JSON does not support this declared type: " + types.DisplayName(type));
+            throw std::invalid_argument("JSON does not support this declared type: " + types.DiagnosticName(type));
         const auto raw = NeoCoreBackend::CaptureArgument(context, index, owner.impl_->module);
         const auto normalized = ConvertJsonValue(*owner.impl_->runtime, types, type, owner.impl_->module, raw, false, false, "$", 0);
         std::vector<std::string> warnings;
-        return NeoCoreBackend::EncodeJson(normalized, sortKeys, text, error, warnings);
+        const bool success = NeoCoreBackend::EncodeJson(normalized, sortKeys, text, error, warnings);
+        owner.impl_->jsonError = success ? std::string() : error;
+        return success;
     }
-    catch (const std::exception& failure) { error = failure.what(); return false; }
+    catch (const std::exception& failure) { error = failure.what(); owner.impl_->jsonError = error; return false; }
 }
 
 bool BoundaryAccess::DecodeJson(Instance& owner, NeoScript::CallContext& context, TypeId type,

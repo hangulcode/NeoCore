@@ -125,6 +125,7 @@ After `import system;`:
 | --- | --- |
 | `time()` / `time_ms()` | Unix seconds / milliseconds as int64 |
 | `utc_date(format, seconds)` | UTC formatted string |
+| `date(format, seconds)` | Device-local formatted string, including DST at that timestamp |
 | `utc_time_ms(year, month, day, hour, minute, second, millisecond)` | UTC Unix milliseconds |
 | `utc_parts(milliseconds)` | `map<string,int>` components |
 | `utc_format_ms(milliseconds)` / `utc_parse_ms(text)` | UTC text round trip |
@@ -137,6 +138,14 @@ After `import system;`:
 `subtract` and `compare`. `Stopwatch` exposes `elapsed`, `elapsed_ms`, `elapsed_us`,
 `elapsed_seconds`, `start`, `stop`, `reset`, `restart` and `is_running`.
 See [time.nc](../Samples/neocore/scripts/time.nc) for complete units and usage.
+
+`date` and `utc_date` take Unix seconds, not milliseconds. `date` follows the
+host's configured local timezone; it does not change process locale or timezone.
+Local timestamp range depends on the platform CRT (Windows: 1970 through 3000;
+POSIX: representable `time_t` within years 1900 through 9999). Unsupported
+timestamps and invalid formats raise runtime errors. Both formatters limit output
+to 79 UTF-8 bytes. Use `utc_date` for portable UTC formatting, including pre-epoch
+timestamps on Windows.
 
 ## HTTP and asynchronous requests
 

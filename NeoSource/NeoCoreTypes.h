@@ -91,6 +91,9 @@ public:
     const std::map<std::string, TypeId>& NamedTypes() const { return names_; }
     const TypeDesc& Get(TypeId id) const { return id < types_.size() ? types_[id] : types_.front(); }
     std::string DisplayName(TypeId id) const;
+    // 타입 식별에 쓰는 이름과 모듈 원본을 보여 주는 이름을 분리한다.
+    std::string DiagnosticName(TypeId id) const;
+    void SetDiagnosticNames(const std::map<std::string, std::string>& names) { diagnosticNames_ = names; }
 
     bool IsNumeric(TypeId id) const;
     // JSON 경계에서 표현 가능한 타입인지 중첩 필드와 원소까지 검사한다.
@@ -137,7 +140,9 @@ private:
     std::deque<TypeDesc> types_;
     std::map<Key, TypeId> interned_;
     std::map<std::string, TypeId> names_;
+    std::map<std::string, std::string> diagnosticNames_;
 
+    std::string FormatName(TypeId id, bool diagnostic) const;
     TypeId Intern(TypeKind kind, const std::vector<TypeId>& arguments, const std::string& name);
     TypeId Unary(TypeKind kind, TypeId element);
     TypeId DeclareNominal(TypeKind kind, const std::string& qualifiedName);

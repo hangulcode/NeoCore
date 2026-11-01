@@ -169,7 +169,7 @@ struct Unit
     std::map<std::string, bool> symbols;
     std::set<std::size_t> fieldNames, strippedExports;
     std::map<std::size_t, std::string> replacements;
-    std::string prefix;
+    std::string prefix, diagnosticName;
     bool visiting = false, visited = false, emitted = false;
 };
 
@@ -473,6 +473,14 @@ public:
             for (const Token& token : units_[i]->tokens)
                 if (token.identifier && !preserved_.count(token.text))
                     output.symbolNames[units_[i]->prefix + token.text] = token.text;
+        // 구조체 표시 이름은 첫 import의 모듈 이름으로 고정한다. 별칭과 내부 타입 정체성은 바꾸지 않는다.
+        for (std::size_t i = 1; i < units_.size(); ++i)
+            for (std::size_t token = 0; token + 1 < units_[i]->tokens.size(); ++token)
+                if (At(units_[i]->tokens, token, "struct") && units_[i]->tokens[token + 1].identifier)
+                {
+                    const std::string& name = units_[i]->tokens[token + 1].text;
+                    output.symbolNames[units_[i]->prefix + name] = units_[i]->diagnosticName + "." + name;
+                }
         for (std::size_t i = 0; i < units_.size(); ++i) Rewrite(i);
         Writer writer(output);
         Emit(0, writer);
@@ -521,6 +529,7 @@ private:
                 }
                 if (units_.size() >= 1024) Fail(unit.input.sourceName, token, "module count exceeds compiler limit");
                 std::unique_ptr<Unit> loaded(new Unit);
+                loaded->diagnosticName = import.name;
                 loaded->input = std::move(input);
                 Analyze(*loaded, defines_);
                 if (!loaded->tokens.empty() && loaded->tokens.back().text != ";" && loaded->tokens.back().text != "}")

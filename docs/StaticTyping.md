@@ -344,9 +344,11 @@ print(total);
 
 The end is exclusive; the optional third expression is the step. This is not a
 C-style three-clause `for`. Ordinary expression operands and call arguments retain
-left-to-right evaluation. Assignments retain the backend's ordering rules, including
-evaluation of the right-hand side before resolving a nested target path once such
-targets are supported. Type checks and conversions must not reorder side effects.
+left-to-right evaluation. Assignments finish the right-hand side before resolving
+the target. Indexed writes evaluate the collection and then its index exactly once
+after the RHS, for lists, maps, ordinary arrays and compact arrays alike. This
+replaces the inherited left-target-first order of plain list/map assignment.
+Type checks and conversions must not reorder side effects.
 
 `switch` keeps the inherited table-dispatch form: the VM evaluates the selector
 once and jumps through a per-switch table, so matching does not grow into a
@@ -690,13 +692,17 @@ compound assignment, and increments/decrements. Numeric compound writes and
 increments/decrements lower through checked `ci64write`/`cf64write` intrinsics.
 They emit element reads, typed arithmetic, and ordinary writes without generic
 compound-arithmetic instructions or runtime numeric type dispatch. Receiver, index,
-and RHS evaluation retain their existing order, including prefix/postfix results.
+and RHS evaluation follow the same RHS-first rule as array writes, including
+prefix/postfix results. Plain list/map assignment also follows this rule and
+preserves its stored value when used as an expression.
 
 Maps accept `{}` or typed key/value literals, and gain entries through `m[key] = value`. Direct
 `m[key]` reads have type `V`. An absent key always raises a runtime error
 ("map key not found"), including reference-valued maps. A present key may hold null
 when V permits null; this is distinct from absence. Use `m.contains(key)` before an
-optional read. It tests key existence without copying the value. `map.get` and its
+optional read. The inherited `m[key] = null` behavior still removes that entry;
+JSON and host insertion can preserve a present null value. `contains` tests key
+existence without copying the value. `map.get` and its
 fallback argument have been removed. Reads and contains lower to dedicated typed
 VM operations selected by the key type; no generated script helper or native
 collection-method call is needed. Receiver and key are each evaluated once, in
@@ -829,7 +835,12 @@ script worker when completions are processed. Backend reentry, suspension, and
 error-unwinding rules still apply.
 
 `system.jsonEncode(value, sortKeys = false)` produces a string from the expression's
-static type. `system.jsonDecode<T>(text)` requires an explicit supported target
+static type. `system.jsonEncodeOrNull(value, sortKeys = false)` instead returns null
+on an encoding failure and records the reason in `system.jsonError()`; successful
+encoding clears it. An encoded null reference is the string `"null"`, not failure.
+Imported struct diagnostics use the original qualified module/type name, including
+after an image round trip; internal nominal names still determine type identity.
+`system.jsonDecode<T>(text)` requires an explicit supported target
 type and returns exactly that type; nested collection arguments are supported.
 Both require `import system;`. Structs use JSON objects with their declared field
 names, and all fields/elements are checked during conversion. Functions, native

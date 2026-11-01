@@ -222,12 +222,76 @@ static void CheckRejections(bool debug)
     }
 }
 
+static void CheckAssignmentOrder(bool debug)
+{
+    const char* source = R"NC(
+int trace=0;
+int F(){trace=trace*10+1;return 0;}
+int G(){trace=trace*10+2;return 10;}
+export int List(){trace=0;list<int> x=[10];x[F()]=x[F()]+G();return trace*100+x[0];}
+export int Array(){trace=0;array<int> x=array<int>(1,10);x[F()]=x[F()]+G();return trace*100+x[0];}
+export int Compact(){trace=0;array32<int> x=array32<int>(1,10);x[F()]=x[F()]+G();return trace*100+x[0];}
+export int Map(){trace=0;map<int,int> x={0:10};x[F()]=x[F()]+G();return trace*100+x[0];}
+list<int> values=[1];
+list<int> previous=values;
+int Replace(){values=[9];return 4;}
+export int Rebind(){values[0]=Replace();return values[0]*10+previous[0];}
+int value=7;
+int Key(){value=11;return 0;}
+export int Snapshot(){list<int> x=[1];int result=(x[Key()]=value);return result*100+x[0]*10+value;}
+export int Results(){list<int> x=[1];int sum=(x[0]=2)+(x[0]=3);return sum*10+x[0];}
+export int Nested(){trace=0;list<list<int>> x=[[1]];x[F()][F()]=G();return trace*10+x[0][0];}
+export int StringMap(){trace=0;map<string,string> x={};x[tostring(F())]=tostring(G());return trace*10+x["0"].len();}
+int Named(){return 7;}
+export int Functions(){list<fn()->int> a=[null];map<string,fn()->int> m={};a[0]=Named;m["f"]=Named;return a[0]()*10+m["f"]();}
+struct Copy {int n;};
+export int StructCopy(){Copy value=Copy(1);list<Copy> a=[Copy(0)];Copy result=(a[0]=value);value.n=2;result.n=3;return a[0].n;}
+export int NullValues(){list<string> a=["old"];map<string,string> m={"null":"old"};string result=(a[0]=null);m["null"]=null;if(result==null&&a[0]==null&&!m.contains("null"))return 1;return 0;}
+)NC";
+    NeoCore::Error error;
+    auto program=NeoCore::Program::Compile(source,error,"collection-order.nc",debug);
+    Check(bool(program),"assignment order compile: "+error.message);
+    if(!program) return;
+    std::vector<std::uint8_t> image;
+    Check(program->SaveImage(image,error),"assignment order image: "+error.message);
+    for(int pass=0;pass<2;++pass)
+    {
+        if(pass) program=NeoCore::Program::LoadImage(image,error);
+        Check(bool(program),"assignment order load: "+error.message);
+        if(!program) return;
+        const struct Case { const char* name; std::int64_t expected; } cases[]={
+            {"List",12120},{"Array",12120},{"Compact",12120},{"Map",12120},
+            {"Rebind",41},{"Snapshot",781},{"Results",53},{"Nested",2120},{"StringMap",212},
+            {"Functions",77},{"StructCopy",1},{"NullValues",1}
+        };
+        for(const auto& test:cases)
+        {
+            const auto result=program->Call(test.name);
+            Check(result.ok() && result.value.kind()==NeoCore::Scalar::Kind::Int && result.value.asInt()==test.expected,
+                std::string("assignment order ")+test.name+": "+result.error.message);
+        }
+    }
+    const auto failing=NeoCore::Program::Compile(
+        "int calls=0;int Key(){calls+=1;return 0;}export int Probe(){list<int> x=[1];\nx[Key()]=1/0;return 0;}"
+        "export int State(){return calls;}",error,"collection-write-error.nc",debug);
+    Check(bool(failing),"failing assignment compile: "+error.message);
+    if(failing)
+    {
+        const auto failure=failing->Call("Probe");
+        Check(!failure.ok() && failure.error.message.find("integer division by zero")!=std::string::npos &&
+            (!debug || failure.error.line==2),"RHS error precedes index and retains source line");
+        const auto state=failing->Call("State");
+        Check(state.ok() && state.value.asInt()==0,"failed RHS does not evaluate target index");
+    }
+}
+
 int main()
 {
     for (int mode = 0; mode < 2; ++mode)
     {
         const bool debug = mode != 0;
         CheckLists(debug);
+        CheckAssignmentOrder(debug);
         CheckMaps(debug);
         CheckStrings(debug);
         CheckRejections(debug);

@@ -8,6 +8,7 @@ void PrintParts(map<string, int> parts)
 print("Unix seconds: " .. tostring(system.time()));
 print("Unix milliseconds: " .. tostring(system.time_ms()));
 print("UTC: " .. system.utc_date("%Y-%m-%dT%H:%M:%SZ", system.time()));
+print("Local: " .. system.date("%Y-%m-%d %H:%M:%S %z", system.time()));
 print("Before epoch: " .. system.utc_date("%Y-%m-%d %H:%M:%S %Z", -1));
 int eventMs = system.utc_time_ms(2026, 10, 26, 12, 30, 0, 125);
 string eventText = system.utc_format_ms(eventMs);

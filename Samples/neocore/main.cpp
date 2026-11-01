@@ -335,7 +335,7 @@ static int Execute(const std::string& mode, const std::string& argument,
                 options.scriptHost->allowsSource(bundle.lines[static_cast<std::size_t>(line - 1)].sourceName);
         };
         if (!NeoCore::CompileStaticSource(bundle.source, result, consoleHost ? &consoleHost->Schema() : nullptr,
-            nullptr, options.diagnosticLimit, options.scriptHost.get(), implementationSource))
+            nullptr, options.diagnosticLimit, options.scriptHost.get(), implementationSource, &bundle.symbolNames))
         {
             error.sourceName = path; error.message = result.errorMessage;
             error.line = result.errorLine; error.column = result.errorColumn;

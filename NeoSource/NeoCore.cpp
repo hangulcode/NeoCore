@@ -364,7 +364,7 @@ std::unique_ptr<Program> Program::CompileImpl(const std::string& source, Error& 
             options.scriptHost->allowsSource(impl->bundle.lines[static_cast<std::size_t>(line - 1)].sourceName);
     };
     if (!CompileStaticSource(impl->bundle.source, impl->checked, impl->host ? &impl->host->Schema() : nullptr,
-        nullptr, options.diagnosticLimit, options.scriptHost.get(), implementationSource))
+        nullptr, options.diagnosticLimit, options.scriptHost.get(), implementationSource, &impl->bundle.symbolNames))
     {
         error.message = impl->checked.errorMessage;
         error.sourceName = sourceName;
@@ -645,8 +645,9 @@ static bool DispatchJsonEncode(NeoScript::CallContext& context, NeoScript::Strin
     try
     {
         BackendInstanceContext* instance = static_cast<BackendInstanceContext*>(context.instanceUserData());
-        if (!instance || !instance->owner || context.argCount() != 3 ||
-            context.argType(0) != NeoScript::ValueType::Int || context.argType(2) != NeoScript::ValueType::Bool)
+        if (!instance || !instance->owner || (context.argCount() != 3 && context.argCount() != 4) ||
+            context.argType(0) != NeoScript::ValueType::Int || context.argType(2) != NeoScript::ValueType::Bool ||
+            (context.argCount() == 4 && context.argType(3) != NeoScript::ValueType::Bool))
         {
             context.fail(0, "invalid internal JSON encode arguments");
             return false;
@@ -661,6 +662,11 @@ static bool DispatchJsonEncode(NeoScript::CallContext& context, NeoScript::Strin
         if (!BoundaryAccess::EncodeJson(*instance->owner, context, 1, static_cast<TypeId>(type),
             NeoCoreBackend::ReadBool(context, 2), text, error))
         {
+            if (context.argCount() == 4 && NeoCoreBackend::ReadBool(context, 3))
+            {
+                context.retNull();
+                return true;
+            }
             context.fail(0, error);
             return false;
         }
@@ -749,8 +755,17 @@ static bool RegisterJsonFunctions(NeoScript::IRuntime& runtime, std::string& err
 
 static TypeId BoundaryTypeByName(const TypeRegistry& types, const std::string& name)
 {
+    TypeId displayed = InvalidType;
     for(TypeId type=1; types.Get(type).kind!=TypeKind::Invalid; ++type)
+    {
         if(types.DisplayName(type)==name) return type;
+        if(types.DiagnosticName(type)==name)
+        {
+            if(displayed!=InvalidType) throw std::invalid_argument("ambiguous module type name: " + name);
+            displayed=type;
+        }
+    }
+    if(displayed!=InvalidType) return displayed;
     throw std::invalid_argument("type is not declared by this program: " + name);
 }
 

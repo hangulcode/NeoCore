@@ -189,16 +189,81 @@ void ImportedTypes(bool debug)
             "public string Encode(){\n"
             "    list<Record> values=system.jsonDecode<list<Record>>(\"[{\\\"value\\\":17}]\");\n"
             "    return system.jsonEncode(values[0],true);\n"
-            "}\n";
+            "}\n"
+            "public string Error(){list<Record> v=system.jsonDecodeOr<list<Record>>(\"1\",[]);return system.jsonError();}\n"
+            "public int Fail(){Record v=system.jsonDecode<Record>(\"null\");return v.value;}\n";
         return true;
     };
     Error error;
-    auto program = Program::Compile("import data;export string Read(){return data.Encode();}",
+    auto program = Program::Compile("import data as alias;export string Read(){return alias.Encode();}"
+        "export string Error(){return alias.Error();}export int Fail(){return alias.Fail();}",
         error, "json-import.nc", debug, options);
     Check(program && error.ok(), "module-local JSON target: " + error.message);
     const Result result = program->Call("Read");
     Completed(result, "module JSON roundtrip");
     Check(result.value.asString() == "{\"value\":17}", "module rewriting preserves struct JSON field names");
+    std::vector<std::uint8_t> image;
+    Check(program->SaveImage(image,error),"save module diagnostic names");
+    for(int pass=0;pass<2;++pass)
+    {
+        if(pass) program=Program::LoadImage(image,error);
+        Check(bool(program),"load module diagnostic names: "+error.message);
+        const auto failure=program->Call("Error");
+        Completed(failure,"module JSON diagnostic value");
+        Check(failure.value.asString()=="$: expected an array for list<data.Record>","JSON uses original qualified type name");
+        const auto strict=program->Call("Fail");
+        Check(!strict.ok() && strict.error.message.find("null is not allowed for data.Record")!=std::string::npos &&
+            strict.error.message.substr(0,strict.error.message.find('\n')).find("__ncmodule_")==std::string::npos,
+            "strict module JSON errors hide internal type names");
+        Scalar record=program->CreateValue("data.Record",error);
+        Check(error.ok() && record.typeName()=="data.Record","host values use qualified display names without changing type identity");
+    }
+}
+
+void EncodeVariants(bool debug)
+{
+    Error error;
+    auto program=Program::Compile(R"NC(import system;
+struct Reading { list<float> values; };
+export string Try(float number){return system.jsonEncodeOrNull(Reading([1.0,number]),true);}
+export string Strict(float number){return system.jsonEncode(number);}
+export string Error(){return system.jsonError();}
+export string Null(){string value=null;return system.jsonEncodeOrNull(value);}
+export string Sorted(){map<string,int> value={"z":2,"a":1};return system.jsonEncodeOrNull(value,true);}
+)NC",error,"json-encode-variants.nc",debug);
+    Check(bool(program),"compile encode variants: "+error.message);
+    std::vector<std::uint8_t> image;
+    Check(program->SaveImage(image,error),"save encode variant image");
+    for(int pass=0;pass<2;++pass)
+    {
+        if(pass) program=Program::LoadImage(image,error);
+        Check(bool(program),"load encode variant image: "+error.message);
+        auto other=program->CreateInstance(error);
+        for(double number:{std::numeric_limits<double>::quiet_NaN(),std::numeric_limits<double>::infinity(),-std::numeric_limits<double>::infinity()})
+        {
+            const auto value=program->Call("Try",{Scalar::Float(number)});
+            Completed(value,"nonfinite encode failure is a value");
+            Check(value.value.kind()==Scalar::Kind::Null,"failed encode returns actual null");
+            const auto reason=program->Call("Error");
+            Completed(reason,"encode error text");
+            Check(reason.value.asString().find("$.values[1]:")==0,"encode failure retains its JSON path");
+            const auto isolated=other->Call("Error");
+            Check(isolated.ok() && isolated.value.asString().empty(),"JSON error state belongs to the caller instance");
+        }
+        const auto good=program->Call("Try",{Scalar::Float(2.0)});
+        Completed(good,"successful encode after failure");
+        Check(good.value.asString().find("values")!=std::string::npos,"encode resumes without a partial result");
+        Check(program->Call("Error").value.asString().empty(),"successful encode clears jsonError");
+        const auto null=program->Call("Null");
+        Check(null.ok() && null.value.kind()==Scalar::Kind::String && null.value.asString()=="null","encoded JSON null differs from failed encode");
+        const auto sorted=program->Call("Sorted");
+        Check(sorted.ok() && sorted.value.asString()=="{\"a\":1,\"z\":2}","OrNull accepts sortKeys");
+        const auto strict=program->Call("Strict",{Scalar::Float(std::numeric_limits<double>::infinity())});
+        Check(!strict.ok(),"strict jsonEncode remains a runtime error");
+    }
+    for(const char* source:{"system.jsonEncodeOrNull(1);","import system;system.jsonEncodeOrNull();",
+        "import system;system.jsonEncodeOrNull(1,1);","import system;system.jsonEncodeOrNull(fn()->int{return 1;});"})
+        Check(!Program::Compile(source,error),"invalid encode variant remains a compile error");
 }
 
 void Failures(bool debug)
@@ -420,7 +485,7 @@ int main()
     const struct Test { const char* name; void (*run)(bool); } tests[] = {
         {"roundtrip", &RoundTrips}, {"program isolation", &ProgramIsolation},
         {"module types", &ImportedTypes}, {"runtime errors", &Failures}, {"host decode", &HostDecode},
-        {"decode variants", &DecodeVariants}
+        {"decode variants", &DecodeVariants}, {"encode variants", &EncodeVariants}
     };
     for (bool debug : {false, true})
         for (const Test& test : tests)

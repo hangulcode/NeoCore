@@ -5,9 +5,11 @@
 #include <cmath>
 #include <cstdint>
 #include <cstring>
+#include <ctime>
 #include <cwchar>
 #include <iomanip>
 #include <locale>
+#include <limits>
 #include <new>
 #include <sstream>
 #include <stdexcept>
@@ -1988,6 +1990,43 @@ struct neo_libs
 		worker->ReturnValue(result.c_str());
 		return true;
 	}
+	static bool sys_date(CNeoVMWorker* worker, VarInfo*, short args)
+	{
+		if (args != 2 || worker->GetStack(1)->GetType() != VAR_STRING ||
+			worker->GetStack(2)->GetType() != VAR_INT) return false;
+		const NS_INT seconds = worker->GetStack(2)->_int;
+		std::tm calendar = std::tm();
+		bool valid = false;
+#ifdef _WIN32
+		// CRT가 지원하지 않는 시각은 변환 전에 거부한다. 로컬 달력은 해당 시각의 서머타임을 따른다.
+		if (seconds >= 0 && seconds <= 32503679999LL)
+		{
+			const __time64_t timestamp = static_cast<__time64_t>(seconds);
+			valid = _localtime64_s(&calendar, &timestamp) == 0;
+		}
+#else
+		if (seconds >= -2208988800LL && seconds <= 253402300799LL &&
+			seconds >= (std::numeric_limits<std::time_t>::min)() &&
+			seconds <= (std::numeric_limits<std::time_t>::max)())
+		{
+			const std::time_t timestamp = static_cast<std::time_t>(seconds);
+			valid = localtime_r(&timestamp, &calendar) != nullptr;
+		}
+#endif
+		if (!valid || calendar.tm_year < 0 || calendar.tm_year > 8099)
+		{
+			worker->SetError("system.date timestamp is outside the host local calendar range");
+			return false;
+		}
+		std::string result;
+		if (!DateFormat(worker->GetStack(1)->_str->_str, calendar, result))
+		{
+			worker->SetError("invalid system.date format or output exceeds 79 bytes");
+			return false;
+		}
+		worker->ReturnValue(result.c_str());
+		return true;
+	}
 	static bool sys_clock(CNeoVMWorker* pN, VarInfo* pVar, short args)
 	{
 		if (args != 0) return false;
@@ -2541,6 +2580,7 @@ static void AddGlobalLibFun()
 	// 기존 네이티브 함수의 인덱스 순서를 유지하도록 새 함수는 등록부 끝에 추가한다.
 	g_sCurrentSystem = "system";
 	AddSystemFun("time_ms", &TimeLibrary::TimeMilliseconds, "int");
+	AddSystemFun("date", &neo_libs::sys_date, "string", "string format", "int time");
 	AddSystemFun("utc_date", &neo_libs::sys_utc_date, "string", "string format", "int time");
 	AddSystemFun("time_span", &TimeLibrary::TimeSpan, "time_span", "int days", "int hours", "int minutes", "int seconds", "int milliseconds");
 	AddSystemFun("time_span_ms", &TimeLibrary::TimeSpanMilliseconds, "time_span", "int milliseconds");

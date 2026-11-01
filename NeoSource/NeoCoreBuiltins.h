@@ -151,6 +151,7 @@ inline const BuiltinSignature* GetBuiltinSignatures(std::size_t& count)
         {"system", "clock", 'f', 0, 0, ""},
         {"system", "time", 'i', 0, 0, ""},
         {"system", "time_ms", 'i', 0, 0, ""},
+        {"system", "date", 's', 2, 2, "si"},
         {"system", "utc_date", 's', 2, 2, "si"},
         {"system", "utc_time_ms", 'i', 7, 7, "iiiiiii"},
         {"system", "utc_parts", 'm', 1, 1, "i"},

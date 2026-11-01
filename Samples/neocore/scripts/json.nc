@@ -1,4 +1,5 @@
 import system;
+import math;
 
 struct SaveData
 {
@@ -25,8 +26,13 @@ print(coins[2]);
 string absent = system.jsonDecode<string>("null");
 print(system.jsonEncode(absent));
 
+string invalid = system.jsonEncodeOrNull(math.sqrt(-1.0));
+if (invalid == null) print("Encode failed: " .. system.jsonError());
+string recovered = system.jsonEncodeOrNull(saved, true);
+
 export bool CheckPassed()
 {
     return loaded.version == 1 && loaded.name == "player" && loaded.position.z == 3.0
-        && loaded.inventory[1] == 9 && coins[2] == 5 && absent == null;
+        && loaded.inventory[1] == 9 && coins[2] == 5 && absent == null
+        && invalid == null && recovered == text && system.jsonError() == "";
 }
