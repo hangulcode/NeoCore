@@ -60,14 +60,14 @@ void Log(Services self,string message){print(message);}
 UserData Data(Services self){return data;}
 Resource Resources(Services self){return resource;}
 void SetInt(UserData self,string key,int value){store[key]=value;Services.Log("saved");}
-int GetInt(UserData self,string key,int fallback){return store.get(key,fallback);}
+int GetInt(UserData self,string key,int fallback){if(store.contains(key))return store[key];return fallback;}
 string LoadText(Resource self,string path){return Headless.ReadText(path);}
 int Id(GameObject self){return Headless.Id_GameObject(self);}
-Vector3 Position(GameObject self){return positions.get(Headless.Id_GameObject(self),Vector3());}
+Vector3 Position(GameObject self){int id=Headless.Id_GameObject(self);if(positions.contains(id))return positions[id];return Vector3();}
 void SetPosition(GameObject self,Vector3 value){positions[Headless.Id_GameObject(self)]=value;}
 GameObject Find(GameObject self,string rid){return node;}
 void Register(GameObject self,string event,fn(int)->void callback){callbacks[Headless.Id_GameObject(self)]=callback;}
-public void Fire(GameObject self,int value){fn(int)->void callback=callbacks.get(Headless.Id_GameObject(self),null);if(callback!=null)callback(value);}
+public void Fire(GameObject self,int value){int id=Headless.Id_GameObject(self);if(callbacks.contains(id)){fn(int)->void callback=callbacks[id];if(callback!=null)callback(value);}}
 public GameObject MakeNode(){return Headless.New_GameObject();}
 public void Destroy(GameObject value){Headless.Destroy_GameObject(value);}
 public HeadlessApi Api(){return Headless;}

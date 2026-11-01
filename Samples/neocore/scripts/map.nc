@@ -47,12 +47,12 @@ map<int, map<string, string>> people = {};
 people[0] = james;
 people[1] = alice;
 people[2] = donald;
-people.sort(fn(map<string, string> a, map<string, string> b)->bool { return a.get("name", "") < b.get("name", ""); });
+people.sort(fn(map<string, string> a, map<string, string> b)->bool { return a["name"] < b["name"]; });
 print("By name:");
-foreach (map<string, string> person in people.values()) print(person.get("name", ""));
-people.sort(fn(map<string, string> a, map<string, string> b)->bool { return a.get("nationality", "") < b.get("nationality", ""); });
+foreach (map<string, string> person in people.values()) print(person["name"]);
+people.sort(fn(map<string, string> a, map<string, string> b)->bool { return a["nationality"] < b["nationality"]; });
 print("By nationality:");
-foreach (map<string, string> person in people.values()) print(person.get("nationality", ""));
+foreach (map<string, string> person in people.values()) print(person["nationality"]);
 
 map<int, int> many = {};
 for (int i in 1, 10001) many[i] = i;

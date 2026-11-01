@@ -81,7 +81,8 @@ void SetInt(UserDataService self, string key, int value) {
 int GetInt(UserDataService self, string key, int fallback) {
     int id = Headless.Id_UserDataService(self);
     if (!stores.contains(id)) return fallback;
-    return stores[id].get(key, fallback);
+    if (!stores[id].contains(key)) return fallback;
+    return stores[id][key];
 }
 
 Headless.Bind("Services.UserData", GetUserData);

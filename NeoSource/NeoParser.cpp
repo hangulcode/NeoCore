@@ -2922,7 +2922,9 @@ static bool ParseCoreTypedIntrinsic(SOperand& result, const std::string& name,
         int laterEffects = scanned ? 0 : EXPR_EFFECT_ALL;
         for (size_t later = static_cast<size_t>(i) + 1; later < effects.size(); ++later)
             laterEffects |= effects[later];
-        if (aggregate || !writeFamily.empty() || NeedsSnapshot(arguments[i], laterEffects)) SnapshotValue(arguments[i], ar, funs);
+        const bool mapRead = aggregate && (aggregate->op == NOP_MAP_I64_READ || aggregate->op == NOP_MAP_STRING_READ ||
+            aggregate->op == NOP_MAP_I64_CONTAINS || aggregate->op == NOP_MAP_STRING_CONTAINS);
+        if ((aggregate && !mapRead) || !writeFamily.empty() || NeedsSnapshot(arguments[i], laterEffects)) SnapshotValue(arguments[i], ar, funs);
     }
     if (!writeFamily.empty())
     {

@@ -676,8 +676,9 @@ values[2] = 3;
 
 map<string, int> counts = {};
 counts["alpha"] = 2;
-int present = counts.get("alpha", 0);
-int missing = counts.get("missing", 0);
+int present = counts["alpha"];
+int optional = 0;
+if (counts.contains("missing")) optional = counts["missing"];
 ```
 
 List literals check every element and materialize numeric widening. Indices are
@@ -692,12 +693,14 @@ compound-arithmetic instructions or runtime numeric type dispatch. Receiver, ind
 and RHS evaluation retain their existing order, including prefix/postfix results.
 
 Maps accept `{}` or typed key/value literals, and gain entries through `m[key] = value`. Direct
-`m[key]` reads have type `V`. When `V` is a reference type an absent key reads as
-null; when `V` is a value type such as `int` an absent key is a runtime error
-("map key not found"), so prefer `m.get(key, fallback)` or `m.contains(key)` for
-reads that may miss. `m.get(key, fallback)` returns `V` and requires an explicit
-compatible fallback. The receiver, key, and fallback are evaluated left to right
-before lookup; fallback evaluation is eager, even for a present key. Compound
+`m[key]` reads have type `V`. An absent key always raises a runtime error
+("map key not found"), including reference-valued maps. A present key may hold null
+when V permits null; this is distinct from absence. Use `m.contains(key)` before an
+optional read. It tests key existence without copying the value. `map.get` and its
+fallback argument have been removed. Reads and contains lower to dedicated typed
+VM operations selected by the key type; no generated script helper or native
+collection-method call is needed. Receiver and key are each evaluated once, in
+that order, before lookup. Compound
 assignment and increments on a map element (`m[key] += 1`) are rejected; read, compute
 and assign instead. `m.remove(key)` explicitly removes an entry and returns whether
 it existed.
@@ -705,10 +708,14 @@ it existed.
 Lists support `len`, `resize`, `reserve`, `append(value[, index])`,
 `insert(index, value)`, `remove(index)`, `remove_swap(index)`, `pop`, `find`,
 `contains`, `clear`, `clone`, and `sort`. Removal and pop return the removed value;
-an invalid index or empty pop fails at runtime. Maps support `len`, `get`,
+an invalid index or empty pop fails at runtime. Maps support `len`,
 `contains`, `remove`, `reserve`, `keys`, `values`, `clear`, `clone`, and `sort`.
-Keys and values produce typed lists. A stored key such as `"get"` or `"len"`
+Keys and values produce typed lists. A stored key such as `"contains"` or `"len"`
 does not shadow these statically resolved methods.
+
+This change requires backend image version 0152. Rebuild host libraries and
+recompile previously cached program images. Existing `map.get` calls must be
+replaced with checked indexing or an explicit `contains` guard.
 
 `sort` takes `fn(T,T)->bool`, where T is the list element or map value type.
 Map sorting rearranges values among the existing keys, retaining inherited behavior.
@@ -857,8 +864,8 @@ the root script.
 [Samples/bench/check.nc](../Samples/bench/check.nc) runs the eight benchmark algorithms
 with small inputs and checks expected results without timers. The full
 [Samples/bench/bench.nc](../Samples/bench/bench.nc) retains the original workloads and
-iteration counts, using explicit types, `tostring`, and `map.get(key, 0)`. All queried
-map keys are present, so the explicit fallback does not change the checksum.
+iteration counts, using explicit types, `tostring`, and checked `map[key]` reads.
+All queried map keys are present; missing keys raise runtime errors.
 
 These adaptations preserve the intended work and results, not identical bytecode or
 instructions. The backend combines dedicated numeric instructions with generic VM
@@ -871,7 +878,7 @@ describe their measured snapshots, not the current NeoCore build.
 
 `int32` and `float32` are not public scalar types. Compact storage belongs to
 `array32<int>`, `array32<float>` and vector components. Mutable collection types
-are invariant. Missing map values read as null for reference types and fail for value
+are invariant. Missing map keys fail for both reference and value
 types; removal is explicit. Heterogeneous
 collections and implicit dynamic fallback remain excluded. Script JSON decoding
 uses `jsonDecode<T>` and host decoding uses an explicit registered target rather

@@ -19,7 +19,7 @@ print(loaded.position.z);
 print(loaded.inventory[1]);
 
 map<string, list<int>> groups = system.jsonDecode<map<string, list<int>>>("{\"coins\":[2,3,5]}");
-list<int> coins = groups.get("coins", []);
+list<int> coins = groups["coins"];
 print(coins[2]);
 
 string absent = system.jsonDecode<string>("null");

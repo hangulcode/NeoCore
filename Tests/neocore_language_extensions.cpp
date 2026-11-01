@@ -55,7 +55,7 @@ int main()
         Expect("struct Inner{int x;};struct Outer{Inner value;};export int Probe(){Outer original=Outer(Inner(3));fn()->int f=fn()->int{original.value.x+=1;return original.value.x;};original.value.x=9;return f()*100+f()*10+original.value.x;}", 459, "nested struct capture copies", debug);
         Expect("export int Probe(){Vector3 v=Vector3(1,2,3);fn()->float f=fn()->float{v.x+=1;return v.x;};v.x=8;return int(f()+f()+v.x);}", 13, "boxed vector capture copies", debug);
         Expect("struct S{int x;};export int Probe(){S original=S(3);fn(S)->S f=fn(S item)->S{item.x+=4;return item;};S result=f(original);return original.x*10+result.x;}", 37, "indirect struct argument return copies", debug);
-        Expect("int F(int x){return x+1;}export int Probe(){map<string,fn(int)->int> m={\"x\":F};return m.get(\"x\",F)(7);}", 8, "function map and result call", debug);
+        Expect("int F(int x){return x+1;}export int Probe(){map<string,fn(int)->int> m={\"x\":F};return m[\"x\"](7);}", 8, "function map and result call", debug);
         Expect("struct Box{fn(int)->int callback;};export int Probe(){Box box=Box(fn(int x)->int{return x*2;});return box.callback(7);}", 14, "function-valued struct field", debug);
         Expect("int Twice(int x){return x*2;}int Apply(fn(int)->int f,int v){return f(v);}export int Probe(){return Apply(Twice,4);}", 8, "named function as call argument", debug);
         Expect("int Add(int a,int b){return a+b;}int Apply(fn(int,int)->int f,int v){return f(v,1);}export int Probe(){return Apply(Add,1+2)*10+Apply(Add,5);}", 46, "named function argument mixed with typed arguments", debug);
@@ -67,13 +67,13 @@ int main()
         Reject("export int Probe(){public struct S{int x;};return 1;}", "public struct inside a function rejected");
         Expect("export int Probe(){list<list<int>> m=[[1,2],[3]];m.append([4,5]);int sum=0;foreach(list<int> row in m)foreach(int x in row)sum+=x;return sum;}", 15, "nested lists and foreach", debug);
         Expect("export int Probe(){map<string,list<int>> m={\"a\":[1,2]};list<int> a=m[\"a\"];if(a!=null)return a[1];return 0;}", 2, "collection map read without a nullable type", debug);
-        Expect("export int Probe(){map<string,list<int>> m={};list<int> a=m[\"missing\"];if(a==null)return 7;return 0;}", 7, "missing collection map read is null", debug);
+        Expect("export int Probe(){map<string,list<int>> m={};if(!m.contains(\"missing\"))return 7;return m[\"missing\"][0];}", 7, "contains guards a missing collection map key", debug);
         Expect("export int Probe(){list<int> a=[1,2,3];int total=0;if(a!=null)foreach(int value in a)total+=value;return total;}", 6, "null comparison on a collection", debug);
         Expect(u8"export int Probe(){int count=0;foreach(string c in \"A한글\"){count+=c.len();}return count;}", 3, "foreach characters are strings", debug);
         Expect("struct S{int x;};export int Probe(){list<S> values=[S(3)];foreach(S item in values)item.x=7;S original=values[0];return original.x;}", 3, "foreach struct values copy", debug);
         Expect("struct S{int x;};export int Probe(){list<S> a=[S(3)];list<S> b=a.clone();b[0].x=9;list<S> c=a+b;c[0].x=8;return a[0].x*100+b[0].x*10+c[0].x;}", 398, "struct list clone and concatenation copy", debug);
         Expect("struct S{int x;};export int Probe(){list<S> a=[];S fill=S(2);a.resize(2,fill);a[0].x=9;return fill.x*100+a[0].x*10+a[1].x;}", 292, "struct resize fill copies each element", debug);
-        Expect("struct S{int x;};export int Probe(){map<string,S> a={\"x\":S(3)};map<string,S> b=a.clone();list<S> c=a.values();c[0].x=9;S x=b.get(\"x\",S(0));return x.x*10+c[0].x;}", 39, "struct map materialization copies", debug);
+        Expect("struct S{int x;};export int Probe(){map<string,S> a={\"x\":S(3)};map<string,S> b=a.clone();list<S> c=a.values();c[0].x=9;S x=b[\"x\"];return x.x*10+c[0].x;}", 39, "struct map materialization copies", debug);
         Expect("import system;export int Probe(){set<int> a=set<int>([1,2]);set<int> b=set<int>([2,3]);set<int> c=a|b;set<int> d=a&b;set<int> e=a-b;return c.len()*100+d.len()*10+e.len();}", 311, "set algebra and typed constructors", debug);
         Expect("import system;export int Probe(){set<string> names=set<string>([\"a\",\"b\",\"a\"]);names.add(\"c\");return names.len();}", 3, "string set elements", debug);
         Reject("import system;export int Probe(){set<float> s=set<float>();return s.len();}", "float set elements rejected");
@@ -106,7 +106,7 @@ int main()
             "map key not found", "a user variable cannot hide an internal failure", debug);
         Expect("int count=0;void __neocore_fail(string text){count+=1;}export int Probe(){__neocore_fail(\"user\");return count;}",
             1, "double underscore names remain valid user declarations", debug);
-        Expect("export int Probe(){map<string,int> m={\"a\":1};m[\"b\"]=2;return m[\"a\"]*10+m[\"b\"]+m.get(\"c\",100);}", 112, "value map reads writes and get fallback", debug);
+        Expect("export int Probe(){map<string,int> m={\"a\":1};m[\"b\"]=2;int c=100;if(m.contains(\"c\"))c=m[\"c\"];return m[\"a\"]*10+m[\"b\"]+c;}", 112, "value map reads writes and explicit contains guard", debug);
     }
     Reject("string? s=null;", "nullable marker on a reference type");
     Reject("int? x=null;", "nullable marker on a value type");

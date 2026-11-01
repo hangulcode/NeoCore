@@ -47,7 +47,8 @@ copy.x = 3.0;
 list<int> values = [1, 2, 3];
 array<float> samples = array<float>(64);
 map<string, int> scores = {"alpha": 10};
-int score = scores.get("missing", 0);
+int score = 0;
+if (scores.contains("missing")) score = scores["missing"];
 
 for (int i in 0, values.len()) values[i] += 1;
 foreach (int value in values) print(value);
@@ -56,8 +57,9 @@ foreach (int value in values) print(value);
 Structs and vectors copy by value. Collections share storage: assigning a list
 or map does not deep-copy it. Element/key/value types are fixed; heterogeneous
 collections do not gain an implicit dynamic fallback. A map read of a missing key
-returns null for reference values and fails at runtime for value types, so use
-`get(key, fallback)` or `contains(key)` when a key may be missing. Removal is explicit.
+always fails at runtime, including reference-valued maps. Guard optional reads with
+`contains(key)`. A present null value is allowed for reference types and still has
+`contains(key) == true`. The fallback method `map.get` has been removed. Removal is explicit.
 An ordinary `array<float>` stores binary64 and `array<int>` stores int64.
 Compact storage remains a separate array type; it does not introduce public
 32-bit scalar declarations.

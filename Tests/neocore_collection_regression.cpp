@@ -101,59 +101,66 @@ static void CheckLists(bool debug)
 
 static void CheckMaps(bool debug)
 {
-    ExpectInt("export int Probe(){map<string,int> m={};return m.get(\"missing\",7);}", 7,
-        "missing map key uses explicit fallback", debug);
-    ExpectInt("export int Probe(){map<string,int> m={};m[\"x\"]=2;m[\"x\"]=3;return m.get(\"x\",9);}", 3,
+    ExpectInt("export int Probe(){map<string,int> m={};m[\"x\"]=2;m[\"x\"]=3;return m[\"x\"];}", 3,
         "map indexed insert and overwrite", debug);
-    ExpectInt("export int Probe(){map<string,int> m={};m[\"x\"]=2;m[\"x\"]=3;m[\"y\"]=4;return m.len();}", 2,
+    ExpectInt("export int Probe(){map<string,int> m={};m[\"x\"]=2;m[\"y\"]=4;return m.len();}", 2,
         "map length counts distinct keys", debug);
-    ExpectInt("export int Probe(){map<int,int> m={};m[1]=2;m[-3]=4;return m.get(1,0)*10+m.get(-3,0);}", 24,
+    ExpectInt("export int Probe(){map<int,int> m={1:2,-3:4};return m[1]*10+m[-3];}", 24,
         "integer map keys", debug);
-    ExpectFloat("export float Probe(){map<string,float> m={};m[\"x\"]=2;return m.get(\"x\",0);}", 2.0,
+    ExpectFloat("export float Probe(){map<string,float> m={};m[\"x\"]=2;return m[\"x\"];}", 2.0,
         "map float values promote on write", debug);
-    ExpectFloat("export float Probe(){map<string,float> m={};return m.get(\"missing\",3);}", 3.0,
-        "map float fallback promotes integer", debug);
-    ExpectInt("export int Probe(){map<int,bool> m={};m[1]=false;if(m.get(1,true))return 99;if(m.get(2,true))return 1;return 0;}", 1,
-        "false map value is not treated as a missing key", debug);
-    ExpectString("export string Probe(){map<string,string> m={};m[\"x\"]=\"\";return m.get(\"x\",\"bad\")..m.get(\"missing\",\"ok\");}", "ok",
-        "empty string map value is not a missing key", debug);
-    ExpectInt("export int Probe(){map<string,int> m={};m[\"x\"]=4;int present=m[\"x\"];if(present==4&&!m.contains(\"absent\"))return 1;return 0;}", 1,
-        "raw map reads produce the value type", debug);
-    ExpectInt("export int Probe(){map<string,string> m={};m[\"x\"]=\"v\";string present=m[\"x\"];string missing=m[\"absent\"];if(present==\"v\"&&missing==null)return 1;return 0;}", 1,
-        "missing reference map reads are null", debug);
+    ExpectInt("export int Probe(){map<int,bool> m={1:false};if(m[1])return 99;if(m.contains(1)&&!m.contains(2))return 1;return 0;}", 1,
+        "false map value is present", debug);
+    ExpectString("export string Probe(){map<string,string> m={\"x\":\"\"};if(m.contains(\"x\"))return m[\"x\"];return \"bad\";}", "",
+        "empty string map value is present", debug);
+    ExpectInt("import system;export int Probe(){map<string,string> m=system.jsonDecode<map<string,string>>(\"{\\\"x\\\":null}\");if(m.contains(\"x\")&&m[\"x\"]==null&&!m.contains(\"absent\"))return 1;return 0;}", 1,
+        "present null differs from an absent key", debug);
+    ExpectInt("export int Probe(){map<string,int> a={\"x\":1};map<string,int> b=a;b[\"x\"]=9;return a[\"x\"];}", 9,
+        "map assignment aliases storage", debug);
+    ExpectInt("void Change(map<string,int> m){m[\"x\"]=6;}export int Probe(){map<string,int> m={\"x\":1};Change(m);return m[\"x\"];}", 6,
+        "map parameter aliases caller storage", debug);
+    ExpectInt("int calls=0;string Key(){calls++;return \"x\";}export int Probe(){map<string,int> m={\"x\":2};int value=m[Key()];return value*10+calls;}", 21,
+        "map read evaluates key once", debug);
+    ExpectInt("map<string,int> m={\"x\":2};string Replace(){m={\"x\":9};return \"x\";}export int Probe(){return m[Replace()];}", 2,
+        "map receiver is captured before key rebinds it", debug);
+    ExpectInt("map<string,int> m={\"x\":2};string Replace(){m={};return \"x\";}export int Probe(){if(m.contains(Replace()))return 1;return 0;}", 1,
+        "contains captures receiver before key rebinds it", debug);
+    ExpectInt("map<string,int> m={\"x\":2};string Change(){m[\"x\"]=9;return \"x\";}export int Probe(){return m[Change()];}", 9,
+        "map key effects happen before lookup", debug);
+    ExpectInt("int calls=0;string Key(){calls++;return \"x\";}export int Probe(){map<string,int> m={\"x\":2};if(m.contains(Key()))return calls;return 0;}", 1,
+        "contains evaluates key once", debug);
+    ExpectInt("export int Probe(){map<string,int> m={\"get\":5,\"len\":7};return m[\"get\"]*10+m[\"len\"];}", 57,
+        "method-like keys remain readable", debug);
+    ExpectInt("export int Probe(){map<string,int> m={\"contains\":99};if(m.contains(\"contains\"))return m.len();return 0;}", 1,
+        "stored method key does not shadow typed contains", debug);
+    ExpectInt("export int Probe(){map<string,int> m={\"x\":2};string key=null;if(!m.contains(key))return 1;return 0;}", 1,
+        "contains null string key is false", debug);
+    ExpectInt("struct Item{int x;};export int Probe(){map<string,Item> m={\"x\":Item(3)};Item v=m[\"x\"];v.x=9;return m[\"x\"].x;}", 3,
+        "map struct reads preserve value copies", debug);
+    for (const char* source : {
+        "export int Probe(){map<string,int> m={};return m[\"absent\"];}",
+        "export string Probe(){map<string,string> m={};return m[\"absent\"];}",
+        "export list<int> Probe(){map<int,list<int>> m={};return m[7];}"
+    })
     {
         NeoCore::Error error;
-        std::unique_ptr<NeoCore::Program> program = NeoCore::Program::Compile(
-            "export int Probe(){map<string,int> m={};return m[\"missing\"];}", error, "missing raw map result", debug);
-        Check(program != nullptr, "missing raw map result compile: " + error.message);
-        const NeoCore::Result missing = program ? program->Call("Probe") : NeoCore::Result();
-        Check(program && !missing.ok() && missing.error.message.find("map key not found") != std::string::npos,
-            "missing value-typed map read fails at runtime: " + missing.error.message);
+        auto program=NeoCore::Program::Compile(source,error,"strict map read",debug);
+        Check(program!=nullptr,"strict map read compiles: "+error.message);
+        const NeoCore::Result result=program?program->Call("Probe"):NeoCore::Result();
+        Check(program && !result.ok() && result.error.message.find("map key not found")!=std::string::npos,
+            "absent key fails for every value type: "+result.error.message);
     }
-    const NeoCore::Result present = Invoke("export int Probe(){map<string,int> m={};m[\"x\"]=8;return m[\"x\"];}",
-        "present raw map result", debug);
-    Check(present.ok() && present.value.kind() == NeoCore::Scalar::Kind::Int && present.value.asInt() == 8,
-        "present raw map value retains scalar storage");
-    ExpectInt("export int Probe(){map<string,int> a={};a[\"x\"]=1;map<string,int> b=a;b[\"x\"]=9;return a.get(\"x\",0);}", 9,
-        "map assignment aliases storage", debug);
-    ExpectInt("void Change(map<string,int> m){m[\"x\"]=6;}export int Probe(){map<string,int> m={};Change(m);return m.get(\"x\",0);}", 6,
-        "map parameter aliases caller storage", debug);
-
-    // get의 인자는 왼쪽부터 한 번씩 평가하고, 기본값도 조회 성공 여부와 무관하게 평가한다.
-    ExpectInt("int calls=0;int Fallback(){calls++;return 9;}export int Probe(){map<string,int> m={};m[\"x\"]=2;int value=m.get(\"x\",Fallback());return value*10+calls;}", 21,
-        "map fallback evaluates eagerly", debug);
-    ExpectInt("int calls=0;string Key(){calls++;return \"x\";}export int Probe(){map<string,int> m={};m[\"x\"]=2;int value=m.get(Key(),9);return value*10+calls;}", 21,
-        "map get evaluates key once", debug);
-    ExpectInt("map<string,int> m={};int Change(){m[\"x\"]=9;return 0;}export int Probe(){m[\"x\"]=2;return m.get(\"x\",Change());}", 9,
-        "map lookup occurs after eager fallback side effect", debug);
-    ExpectInt("map<string,int> m={};int Insert(){m[\"x\"]=9;return 1;}export int Probe(){return m.get(\"x\",Insert());}", 9,
-        "eager fallback can insert a previously missing key", debug);
-    ExpectInt("map<string,int> m={};int Replace(){m={};m[\"x\"]=9;return 0;}export int Probe(){m[\"x\"]=2;return m.get(\"x\",Replace());}", 2,
-        "map receiver is captured before fallback rebinds it", debug);
-    ExpectInt("export int Probe(){map<string,int> m={};m[\"get\"]=5;m[\"len\"]=7;return m.get(\"get\",0)*10+m.get(\"len\",0);}", 57,
-        "stored method-like keys do not shadow typed get", debug);
-    ExpectInt("export int Probe(){map<string,int> m={};m[\"len\"]=99;return m.len();}", 1,
-        "stored len key does not shadow typed length", debug);
+    for (const char* source : {
+        "export int Probe(){map<string,int> m=null;return m[\"x\"];}",
+        "export bool Probe(){map<int,int> m=null;return m.contains(1);}"
+    })
+    {
+        NeoCore::Error error;
+        auto program=NeoCore::Program::Compile(source,error,"null map",debug);
+        const NeoCore::Result result=program?program->Call("Probe"):NeoCore::Result();
+        Check(program && !result.ok() && result.error.message.find("null map")!=std::string::npos,
+            "null map receiver fails: "+result.error.message);
+    }
 }
 
 static void CheckStrings(bool debug)
@@ -194,11 +201,12 @@ static void CheckRejections(bool debug)
         {"map<int,int> m={};m[\"x\"]=2;", "integer map key does not accept string"},
         {"map<string,int> m={};m[\"x\"]=2.5;", "map write narrowing"},
         {"map<string,int> m={};m[\"x\"]=null;", "nonnull map value cannot be null"},
-        {"map<string,int> m={};int n=m.get(1,0);", "get key type"},
-        {"map<string,int> m={};int n=m.get(\"x\",1.5);", "get fallback narrowing"},
-        {"map<string,int> m={};int n=m.get(\"x\",null);", "get requires nonnull fallback"},
-        {"map<string,int> m={};int n=m.get(\"x\");", "get requires explicit fallback"},
-        {"map<string,int> m={};int n=m.get(\"x\",0,1);", "get rejects extra argument"},
+        {"map<string,int> m={};int n=m.get(\"x\",0);", "removed map.get fallback"},
+        {"map<string,int> m={};int n=m.get(\"x\");", "removed map.get"},
+        {"map<string,int> m={};int n=m[1];", "map read key type"},
+        {"map<string,int> m={};bool found=m.contains(1);", "contains key type"},
+        {"map<string,int> m={};bool found=m.contains();", "contains requires a key"},
+        {"map<string,int> m={};bool found=m.contains(\"x\",\"y\");", "contains rejects extra arguments"},
         {"map<string,int> m={};map<string,float> other=m;", "maps are invariant"},
         {"map<string,int?> m={};", "nullable marker on map values"},
         {"map<float,int> m={};", "floating map keys are deferred"},

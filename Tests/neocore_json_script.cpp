@@ -59,7 +59,7 @@ export string Encode() {
 }
 export bool RoundTrip() {
     Payload value = system.jsonDecode<Payload>(Encode());
-    list<int> group = value.groups.get("a", []);
+    list<int> group = value.groups["a"];
     return value.meta.id == 9007199254740993 && value.meta.label == "roundtrip"
         && value.scores[1] == 2 && value.missing == null && value.weights[0] == 1.25
         && value.point.z == 3.0 && value.rotation.w == 1.0
@@ -67,7 +67,7 @@ export bool RoundTrip() {
 }
 export int Nested() {
     map<string, list<array<int>>> data = system.jsonDecode<map<string, list<array<int>>>>("{\"values\":[[1,2],[3]]}");
-    list<array<int>> values = data.get("values", []);
+    list<array<int>> values = data["values"];
     return values[0][1] + values[1][0];
 }
 export bool Storage() {

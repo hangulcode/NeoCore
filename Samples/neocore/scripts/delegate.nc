@@ -9,7 +9,7 @@ action = Second;
 action();
 map<string, fn()->void> handlers = {};
 handlers["action"] = First;
-handlers.get("action", Second)();
+if (handlers.contains("action")) handlers["action"](); else Second();
 
 fn()->int MakeCounter(int initial)
 {

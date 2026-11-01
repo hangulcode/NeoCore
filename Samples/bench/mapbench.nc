@@ -33,7 +33,7 @@ int LookupInt(int n, int reps)
     int s = 0;
     for (int r in 0, reps, 1)
     {
-        for (int i in 0, n, 1) s = (s + m.get(i, 0)) & 1048575;
+        for (int i in 0, n, 1) s = (s + m[i]) & 1048575;
     }
     return s;
 }

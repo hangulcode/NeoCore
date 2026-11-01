@@ -1182,7 +1182,6 @@ static void TypedBuiltins(std::vector<BuiltinInfo>& builtins)
     AddBuiltin(builtins, "list", "remove_swap", "T", {"int index"});
     AddBuiltin(builtins, "list", "pop", "T", {});
     for (const char* owner : {"list", "map"}) AddBuiltin(builtins, owner, "sort", "void", {"fn(T, T) -> bool comparator"});
-    AddBuiltin(builtins, "map", "get", "V", {"K key", "V fallback"});
     AddBuiltin(builtins, "map", "remove", "bool", {"K key"});
     AddBuiltin(builtins, "map", "keys", "list<K>", {});
     AddBuiltin(builtins, "map", "values", "list<V>", {});

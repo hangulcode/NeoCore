@@ -92,8 +92,10 @@ examples in [math.nc](../Samples/neocore/scripts/math.nc).
 Their supported operations include size/membership queries, typed mutation,
 removal, copies and iteration. Lists provide append/insert/pop/remove/remove_swap,
 resize/reserve and sorting where supported by their comparator contract.
-Maps provide `contains`, `get(key, fallback)`, `remove`, `clear` and typed keys/
-values. Sets provide membership changes and union/intersection/difference.
+Maps provide `contains(key)`, `remove`, `clear` and typed keys/
+values. Reading `map[key]` always fails if the key is absent; a present null value
+remains valid for reference-valued maps. `map.get` and its fallback were removed.
+Sets provide membership changes and union/intersection/difference.
 Map keys and set elements must be `int` or `string`; `array` and `array32` keep
 their fixed element rules, and `list<T>` accepts any element type.
 The compiler checks operation names, argument counts and element types.

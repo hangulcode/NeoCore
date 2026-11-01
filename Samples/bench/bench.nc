@@ -96,8 +96,7 @@ int ArrayRW(int size, int reps)
 }
 
 // ------------------------------------------------------- 6. 해시맵(문자열 키) 조회
-// 정적 맵의 직접 읽기는 nullable이므로 get(key, 0)으로 누락 시 값을 명시한다.
-// 모든 조회 키를 위에서 채우므로 이 기본값은 체크섬에 영향을 주지 않는다.
+// 모든 조회 키를 위에서 채운다. 없는 키를 읽으면 실행 오류가 난다.
 int MapStr(int outer, int inner)
 {
     map<string,int> m = {};
@@ -115,10 +114,10 @@ int MapStr(int outer, int inner)
         int sum = 0;
         for (int i in 0, inner, 1)
         {
-            sum += m.get("alpha", 0);
-            sum += m.get("hotel", 0);
-            sum += m.get("charlie", 0);
-            sum += m.get("foxtrot", 0);
+            sum += m["alpha"];
+            sum += m["hotel"];
+            sum += m["charlie"];
+            sum += m["foxtrot"];
         }
         last = sum;
     }

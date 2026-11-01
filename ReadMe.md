@@ -239,9 +239,10 @@ Run timed benchmarks without `--debug`.
 
 [Samples/bench/check.nc](Samples/bench/check.nc) checks small-input results for all
 eight benchmark algorithms without timers. [Samples/bench/bench.nc](Samples/bench/bench.nc)
-contains the full workloads with explicit conversions and `map.get(key, 0)` for
-reads that may miss. These preserve checksums, not identical bytecode. Current VM and
-helper costs remain part of the measurement; static typing alone is not a speed claim.
+contains the full workloads with explicit conversions and checked `map[key]` reads.
+All queried keys are populated before lookup. Checksums are preserved, while
+bytecode can change. Current VM and helper costs remain part of the measurement;
+static typing alone is not a speed claim.
 
 The [first NeoCore benchmark snapshot](docs/FirstNcBenchmark.md) records seven
 rotated serial rounds against NeoScript, Lua, and C++, with all eight checksums

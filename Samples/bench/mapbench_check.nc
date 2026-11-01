@@ -24,7 +24,7 @@ int LookupInt(int n, int reps)
     int s = 0;
     for (int r in 0, reps, 1)
     {
-        for (int i in 0, n, 1) s = (s + m.get(i, 0)) & 1048575;
+        for (int i in 0, n, 1) s = (s + m[i]) & 1048575;
     }
     return s;
 }
@@ -80,7 +80,7 @@ int SparseIteration()
     {
         weighted += key * value;
         count += 1;
-        if (m.get(key, -1) != value) return -1;
+        if (m[key] != value) return -1;
     }
     if (count != 3) return -2;
     return weighted;
@@ -97,7 +97,7 @@ int Removal()
     if (!m.remove(7)) return -4;
     if (m.len() != 0) return -5;
     m[2] = 30;
-    if (m.len() != 1 || m.get(2, -1) != 30) return -6;
+    if (m.len() != 1 || m[2] != 30) return -6;
     return 1;
 }
 

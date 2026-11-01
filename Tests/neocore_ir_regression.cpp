@@ -765,7 +765,7 @@ void CallTransfers(IRuntime& runtime, bool debug)
             "export int Probe(){list<string> a=Make();list<string> b=Relay(a);b.resize(2,\"tail\");if(a[0]==\"new\"&&a[1]==\"tail\")return a.len();return 0;}",
             2, "returned list lifetime and shared identity survive local release"},
         {"map<string,int> Make(){map<string,int> value={};value[\"x\"]=3;return value;}map<string,int> Relay(map<string,int> value){value[\"x\"]=7;return value;}"
-            "export int Probe(){map<string,int> a=Make();map<string,int> b=Relay(a);b[\"y\"]=9;return a.get(\"x\",0)*10+a.get(\"y\",0);}",
+            "export int Probe(){map<string,int> a=Make();map<string,int> b=Relay(a);b[\"y\"]=9;return a[\"x\"]*10+a[\"y\"];}",
             79, "returned map lifetime and shared identity survive local release"},
         {"array<Vector4> Make(){return array<Vector4>(1,Vector4(1,2,3,4));}array<Vector4> Relay(array<Vector4> value){value[0].w=7;return value;}"
             "export int Probe(){array<Vector4> a=Make();array<Vector4> b=Relay(a);b[0].w=9;return int(a[0].w);}",

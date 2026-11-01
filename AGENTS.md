@@ -43,7 +43,7 @@ ctest --test-dir Build/neocore -C Release --output-on-failure
 ```
 
 - Check accepted/rejected typed programs, lowering semantics, and `NeoCore.h`. The backend carries no dynamic arithmetic opcodes; this checkout no longer builds the dynamic NeoScript test/console targets.
-- `docs/SampleMigration.md` maps converted samples; `Samples/bench/check.nc` checks the eight workloads without timers; `bench.nc` is the timed suite. Its explicit map fallback and string conversions preserve results, not identical bytecode.
+- `docs/SampleMigration.md` maps converted samples; `Samples/bench/check.nc` checks the eight workloads without timers; `bench.nc` is the timed suite. Its checked map reads and string conversions preserve results, not identical bytecode.
 - The CLI defaults to non-debug execution. Use `neocore --debug --file source.nc` for runtime source locations; keep timed benchmarks in non-debug mode.
 - Native Windows NeoCore: open root `NeoCore.sln` (also available through `Samples/console/console.sln`). For the library alone, open `Windows/NeoCore.sln`. The `.nc` runner is `Build/Windows/bin/x64/Release/neocore.exe`; `Windows/NeoCore.vcxproj` builds `NeoCore32/64[-d].lib`.
 - Console functional checks: `--smoke`, `--debug-smoke`, `--compiler-error-regression`, `--bench-check`, and `--pooltrim-check`. Report observed results rather than assuming historical counts.

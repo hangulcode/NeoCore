@@ -97,7 +97,7 @@ void CheckExecution(bool debug)
         "public Target Make(int id,float x){return Target(id,x);}public list<Target> targets=[];public Hidden MakeHidden(){return Hidden(1);}";
     ExpectInt(modules, "import shape;shape.Target t=shape.Make(1,2.5);list<shape.Target> items=[t];items.append(shape.Target(4,0.5));"
         "shape.targets.append(items[1]);map<string,shape.Target> named={\"a\":t};int Sum(shape.Target v){return v.id;}"
-        "export int Probe(){return Sum(items[0])*1000+items[1].id*100+shape.targets[0].id*10+named.get(\"a\",items[1]).id+toint(t.x);}",
+        "export int Probe(){return Sum(items[0])*1000+items[1].id*100+shape.targets[0].id*10+named[\"a\"].id+toint(t.x);}",
         1443, "public struct types across modules", debug);
     modules["holder"] = "import shape;public shape.Target current=shape.Make(7,1.0);public list<shape.Target> all=[current];"
         "public int Id(shape.Target v){return v.id;}public fn(shape.Target)->int picker=fn(shape.Target v)->int{return v.id*2;};";

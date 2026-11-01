@@ -67,7 +67,11 @@
     NEOCORE_ARRAY_OPS(X, F32, "f32", 0) \
     X(NOP_ARRAY_LEN, "ARRAY_LEN", "alen", 1, Unary, 0, 0) \
     X(NOP_ARRAY_RESIZE, "ARRAY_RESIZE", "aresize", 2, Binary, 0, 0) \
-    X(NOP_ARRAY_RESERVE, "ARRAY_RESERVE", "areserve", 2, Binary, 0, 0)
+    X(NOP_ARRAY_RESERVE, "ARRAY_RESERVE", "areserve", 2, Binary, 0, 0) \
+    X(NOP_MAP_I64_READ, "MAP_I64_READ", "miread", 2, Binary, 0, 0) \
+    X(NOP_MAP_STRING_READ, "MAP_STRING_READ", "msread", 2, Binary, 0, 0) \
+    X(NOP_MAP_I64_CONTAINS, "MAP_I64_CONTAINS", "micontains", 2, Binary, 0, 0) \
+    X(NOP_MAP_STRING_CONTAINS, "MAP_STRING_CONTAINS", "mscontains", 2, Binary, 0, 0)
 
 namespace NeoScript
 {

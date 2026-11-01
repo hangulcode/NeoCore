@@ -2,6 +2,35 @@
 
 // 정적 프런트엔드가 입력 저장형을 확정한다. 실행 중에는 타입을 다시 고르지 않고
 // 알려진 페이로드를 읽으며, 결과 슬롯의 기존 참조와 배열 범위 검사는 유지한다.
+template<bool StringKey, bool Contains>
+NEOS_FORCEINLINE void TypedMapRead(const SVMOperation& op)
+{
+    VarInfo* receiver = GetVarPtr2(op);
+    VarInfo* key = GetVarPtr3(op);
+    if (receiver->GetType() != VAR_MAP)
+    {
+        SetError("cannot access a null map");
+        return;
+    }
+    // 키 종류는 컴파일 때 확정된다. 문자열 키의 null과 키 존재 여부만 실행 중 검사한다.
+    VarInfo* found = StringKey
+        ? (key->GetType() == VAR_NONE ? nullptr : receiver->_tbl->FindString(key->_str))
+        : receiver->_tbl->FindInt(key->_int);
+    if (Contains)
+        StoreNumberBool(GetVarPtrF1(op), found != nullptr);
+    else if (!found)
+        SetErrorFormat("map key not found: %s", ToString(key).c_str());
+    else
+    {
+        // 결과 슬롯이 원본 맵을 해제하더라도 찾은 참조 값의 소유권을 먼저 확보한다.
+        VarInfo value = *found;
+        Var_AddRef(&value);
+        VarInfo* result = GetVarPtrF1(op);
+        Var_Release(result);
+        *result = value;
+    }
+}
+
 template<int Dimension>
 static NEOS_FORCEINLINE void ReadTypedVector(const VarInfo* value, float* components)
 {

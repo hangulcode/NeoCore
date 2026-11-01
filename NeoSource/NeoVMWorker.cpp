@@ -2234,6 +2234,10 @@ bool	CNeoVMWorker::RunInternal(int iBreakingCallStack)
             break;
 		case NOP_ARRAY_RESIZE: TypedArrayResize(OP); break;
 		case NOP_ARRAY_RESERVE: TypedArrayReserve(OP); break;
+		case NOP_MAP_I64_READ: TypedMapRead<false, false>(OP); break;
+		case NOP_MAP_STRING_READ: TypedMapRead<true, false>(OP); break;
+		case NOP_MAP_I64_CONTAINS: TypedMapRead<false, true>(OP); break;
+		case NOP_MAP_STRING_CONTAINS: TypedMapRead<true, true>(OP); break;
 		case NOP_NONE:          handle_NONE(OP); break;
 		case NOP_ERROR:
 			handle_ERROR(OP);

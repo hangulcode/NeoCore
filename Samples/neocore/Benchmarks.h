@@ -121,10 +121,10 @@ export float MapStringRead(int n)
     float sum = 0.0;
     for (int i in 0, n, 1)
     {
-        sum = sum + m.get("alpha", 0);
-        sum = sum + m.get("hotel", 0);
-        sum = sum + m.get("charlie", 0);
-        sum = sum + m.get("foxtrot", 0);
+        sum = sum + m["alpha"];
+        sum = sum + m["hotel"];
+        sum = sum + m["charlie"];
+        sum = sum + m["foxtrot"];
     }
     return sum;
 }
@@ -158,10 +158,10 @@ export int Read4Only(int n)
     int t = 0;
     for (int i in 0, n, 1)
     {
-        t = m.get("alpha", 0);
-        t = m.get("hotel", 0);
-        t = m.get("charlie", 0);
-        t = m.get("foxtrot", 0);
+        t = m["alpha"];
+        t = m["hotel"];
+        t = m["charlie"];
+        t = m["foxtrot"];
     }
     return t;
 }

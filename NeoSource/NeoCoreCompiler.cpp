@@ -1278,7 +1278,7 @@ private:
     int switchDepth_ = 0;
     bool checkingConstant_ = false;
     const std::string internalPrefix_ = InternalSymbolPrefix();
-    bool resizeHelper_ = false, getHelper_ = false, mapReadHelper_ = false;
+    bool resizeHelper_ = false;
     bool concatHelper_ = false, unionHelper_ = false, intersectionHelper_ = false, differenceHelper_ = false;
     std::set<TypeId> structListClones_, structMapClones_, structMapValues_, structListResizes_, structListConcats_;
     int functionDepth_ = 0;
@@ -1812,6 +1812,8 @@ private:
         const std::size_t count = expression.children.size() - 1;
         expression.receiverArgument = true;
         const TypeDesc& type = types_.Get(receiver.type);
+        if (type.kind == TypeKind::Map && member.op == "get")
+            Fail(member.token, "map.get was removed; use map[key] and contains(key)");
         if (type.kind == TypeKind::Struct)
         {
             const StructField* field = types_.FindStructField(receiver.type, member.op, &member.fieldIndex);
@@ -1836,8 +1838,6 @@ private:
         {
             if (type.kind == TypeKind::List && ((member.op == "append" && i == 1) || (member.op == "insert" && i == 2) || (member.op == "resize" && i == 2)))
                 Contextualize(*expression.children[i], type.element);
-            if (type.kind == TypeKind::Map && member.op == "get" && i == 2)
-                Contextualize(*expression.children[i], type.value);
             CheckExpr(*expression.children[i]);
         }
         if (IsNativeValue(receiver.type))
@@ -1921,14 +1921,12 @@ private:
             expression.type = types_.Void();
             return;
         }
-        if (member.op == "get" && type.kind == TypeKind::Map)
+        if (member.op == "contains" && type.kind == TypeKind::Map)
         {
-            if (count != 2) Fail(member.token, "map.get requires a key and a fallback value");
+            if (count != 1) Fail(member.token, "map.contains requires exactly one key");
             Require(*expression.children[1], type.key, "map key");
-            Convert(*expression.children[2], type.value);
-            expression.callName = internalPrefix_ + "get";
-            expression.type = type.value;
-            getHelper_ = true;
+            expression.callName = Intrinsic(type.key == types_.Int() ? "micontains" : "mscontains", member.token.line);
+            expression.type = types_.Bool();
             return;
         }
         const BuiltinSignature* builtin = FindBuiltinSignature(type.name, member.op);
@@ -2544,9 +2542,8 @@ private:
             {
                 Require(key, type.key, "map key");
                 expression.type = type.value;
-                // 값이 null 을 담을 수 없는 맵은 없는 키를 null 로 돌려줄 수 없으므로 읽기 헬퍼가 런타임 오류를 낸다.
-                expression.checkedMapRead = !expression.writeTarget && !expression.assignmentTarget && !types_.AllowsNull(type.value);
-                if (expression.checkedMapRead) mapReadHelper_ = true;
+                // 값의 종류와 무관하게 없는 키는 오류다. 존재하는 키의 null 값은 그대로 반환한다.
+                expression.checkedMapRead = !expression.writeTarget && !expression.assignmentTarget;
             }
             else Fail(expression.token, "indexing requires a typed array, list, or map");
             return;
@@ -3499,7 +3496,8 @@ private:
                     + Lines(expression.begin, owner.begin) + RenderExpr(owner) + Lines(owner.end, expression.token.begin) + ","
                     + Lines(expression.token.end, key.begin) + RenderExpr(key) + Lines(key.end, expression.end) + ")";
             else if (expression.checkedMapRead)
-                text = internalPrefix_ + "mapread(" + Lines(expression.begin, owner.begin) + RenderExpr(owner) + Lines(owner.end, expression.token.begin) + ","
+                text = Intrinsic(types_.Get(owner.type).key == types_.Int() ? "miread" : "msread", expression.token.line)
+                    + "(" + Lines(expression.begin, owner.begin) + RenderExpr(owner) + Lines(owner.end, expression.token.begin) + ","
                     + Lines(expression.token.end, key.begin) + RenderExpr(key) + Lines(key.end, expression.end) + ")";
             else text = Lines(expression.begin, owner.begin) + RenderExpr(owner) + Lines(owner.end, expression.token.begin) + "["
                     + Lines(expression.token.end, key.begin) + RenderExpr(key) + Lines(key.end, expression.end) + "]";
@@ -3676,9 +3674,6 @@ private:
             // 증가 중 오류가 나도 새 원소가 null인 중간 상태를 남기지 않는다.
             result += "\nfun " + internalPrefix_ + "resize(var a,var n,var fill){if(n<0)n=0;var old=tosize(a);a.reserve(n);if(n<old){a.resize(n);}else{for(var i in old,n){a.append(fill);}}}";
         }
-        if (getHelper_) result += "\nfun " + internalPrefix_ + "get(var m,var k,var fallback){var v=m[k];if(v==null)return fallback;return v;}";
-        // 값 타입이 null 을 담을 수 없는 맵의 색인 읽기. 없는 키는 조용히 null 이 되는 대신 런타임 오류를 낸다.
-        if (mapReadHelper_) result += "\nfun " + internalPrefix_ + "mapread(var m,var k){var v=m[k];if(v==null)" + internalPrefix_ + "fail(\"map key not found: \"..tostring(k));return v;}";
         if (concatHelper_) result += "\nfun " + internalPrefix_ + "concat(var a,var b){var r=a.clone();foreach(var v in b)r.append(v);return r;}";
         if (unionHelper_) result += "\nfun " + internalPrefix_ + "union(var a,var b){var r=a.clone();foreach(var v in b)r.add(v);return r;}";
         if (intersectionHelper_) result += "\nfun " + internalPrefix_ + "intersection(var a,var b){var r=a.clone();foreach(var v in a)if(!b.contains(v))r.remove(v);return r;}";
