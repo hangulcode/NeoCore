@@ -130,7 +130,11 @@ sum of eight case medians versus its paired generic-op control; see the historic
 case medians 75.1% above the archived NeoScript baseline in the same session. The
 [three-way snapshot](docs/ThreeWayBenchmark.md) of commit `91d6d58` measured a sum
 14.3% above Lua, faster than Lua in five of eight cases and slower in `loop_sum`,
-`array_rw` and `map_str`. The typed path has not been measured against the
+`array_rw` and `map_str`. The [second three-way snapshot](docs/ThreeWayBenchmark2.md)
+of commit `dca2d64` measured a sum 26.6% above Lua, and a paired run in the same
+session found that build 7.3% slower than a rebuild of `91d6d58` with identical
+bytecode, which it attributes to build layout rather than to any one commit until a
+layout-controlled pair is measured. The typed path has not been measured against the
 inherited VM since `fd0e229`.
 The typed host boundary also supports collections, structs and retained function
 values. VS Code uses the same frontend for diagnostics and debugging. The
@@ -248,7 +252,9 @@ and C++. The [typed IR snapshot](docs/TypedIrBenchmark.md) measures commit `fd0e
 the first build with generic arithmetic compiled out, against the same NeoScript,
 Lua, and C++ binaries; its NeoCore sum of case medians is 75.1% above NeoScript
 without a paired generic-op control. The [three-way snapshot](docs/ThreeWayBenchmark.md)
-measures commit `91d6d58` against Lua and C++ only. Each report identifies its
+measures commit `91d6d58` against Lua and C++ only, and the
+[second three-way snapshot](docs/ThreeWayBenchmark2.md) measures commit `dca2d64`
+the same way with a paired run against `91d6d58`. Each report identifies its
 measured snapshot; none of them reports a later build.
 
 For embedding, `NeoSource/NeoCore.h` is the static entry point in namespace

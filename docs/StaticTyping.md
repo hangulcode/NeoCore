@@ -919,7 +919,11 @@ That snapshot predates the current IR and aggregate instructions. The later
 case medians at 75.1% above the archived NeoScript baseline, with `loop_sum` at
 1.92× and `map_str` at 7.44×, without a paired generic-op control. The
 [three-way snapshot](ThreeWayBenchmark.md) of commit `91d6d58` measured 1.14× the
-Lua sum, with `loop_sum` at 1.79× and `map_str` at 6.10× Lua. Local operand
+Lua sum, with `loop_sum` at 1.79× and `map_str` at 6.10× Lua. The
+[second three-way snapshot](ThreeWayBenchmark2.md) of commit `dca2d64` measured
+1.27× the Lua sum and, in a paired run, 1.07× the rebuilt `91d6d58` executable
+with byte-identical bytecode, so the difference is attributed to the executables'
+layout until a layout-controlled pair says otherwise. Local operand
 handling, constant localization, and numeric conversion costs require fresh paired
 measurements before claiming an improvement or attributing that difference.
 Performance claims require paired baseline/trial runs with matching results; inherited NeoScript benchmark
