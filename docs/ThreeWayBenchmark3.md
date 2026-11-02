@@ -197,6 +197,72 @@ What the pair does and does not show:
   the value operand before `CLT_MOV`), which is where the earlier `particles`
   movement from 47 to 51 ms came from. That is independent of this change.
 
+## Build configuration unification (commit `96b5672`, working tree CMake change)
+
+Every snapshot above measured the CMake Release build, which compiled with
+`/O2 /Ob2 /MD` and linked without link-time code generation. The native `.vcxproj`
+Release build of the same sources, and the archived NeoScript console used as the
+dynamic baseline, compile with `/GL` and link with `/LTCG`; the native NeoCore build
+also uses the static CRT (`/MT`). The CMake project now enables both through
+`NEOCORE_ENABLE_IPO` and `NEOCORE_STATIC_CRT` (see the ReadMe), so the three builds
+share their optimization and runtime settings. The bytecode of `bench.nc` is identical
+in all three executables; only the VM binary differs.
+
+Paired sessions on the same commit, seven measured rounds each, all checksums matching:
+
+| Case | CMake `/O2 /MD` | Native `/GL /LTCG /MT` | CMake unified | Unified / old CMake | Unified / native |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| loop_sum | 200.999 | 187.999 | 187.000 | 0.93× | 0.99× |
+| float_math | 266.000 | 229.999 | 223.000 | 0.84× | 0.96× |
+| func_call | 144.000 | 135.000 | 137.999 | 0.96× | 1.01× |
+| fib_recursive | 89.999 | 90.999 | 86.999 | 0.97× | 0.95× |
+| array_rw | 51.000 | 49.999 | 48.999 | 0.96× | 0.98× |
+| map_str | 62.999 | 59.000 | 60.999 | 0.97× | 1.02× |
+| string_ops | 65.000 | 60.000 | 67.000 | 1.03× | 1.12× |
+| particles | 51.999 | 51.000 | 46.000 | 0.88× | 0.90× |
+| Sum of case medians | 931.996 | 863.996 | 857.996 | 0.92× | 0.99× |
+
+The old-CMake and native columns come from the pair each was measured in (12:50:52 to 12:52:05 UTC and 12:49:41 to 12:50:51 UTC);
+the unified column shows the values from the old-CMake pair, and the last ratio uses the
+unified values from the native pair. An earlier pair of the old CMake build against the
+native build (12:25:05 to 12:26:19 UTC, `Build/nc-3way-benchmark-9/paired/measurements.json`) gave a sum ratio of 0.93×.
+
+Three-way session with the unified CMake build (12:52:05 to 12:53:29 UTC):
+
+| Case | NeoCore | Lua | C++ | NeoCore / Lua |
+| --- | ---: | ---: | ---: | ---: |
+| loop_sum | 187.999 | 191.999 | 12.577 | 0.98× |
+| float_math | 223.000 | 308.000 | 58.357 | 0.72× |
+| func_call | 137.000 | 157.000 | 4.238 | 0.87× |
+| fib_recursive | 86.999 | 89.999 | 6.851 | 0.97× |
+| array_rw | 49.000 | 46.999 | 2.452 | 1.04× |
+| map_str | 60.000 | 40.999 | 62.660 | 1.46× |
+| string_ops | 66.999 | 145.000 | 13.533 | 0.46× |
+| particles | 46.000 | 48.999 | 3.434 | 0.94× |
+| Sum of case medians | 856.997 | 1028.995 | 164.102 | 0.83× |
+
+What this does and does not show:
+
+- The unified build is within 1% of the native build in the sum, so the two build
+  systems now measure the same VM. `string_ops` (1.12×) and `particles` (0.90×) still
+  separate between them; the native project additionally uses `/EHa`, `/GR-` and `/Gy`,
+  which the CMake build does not adopt, and the rest is code layout.
+- Relative to the earlier snapshots, roughly 8% of the NeoCore sum was build
+  configuration rather than VM or lowering behaviour. Their NeoCore columns are
+  therefore pessimistic by about that much; the Lua and C++ columns are unaffected.
+- Against the archived NeoScript console (also `/GL /LTCG`, `/MD`, no PGO), `loop_sum`
+  on the native NeoCore build measured 192–195 ms against 182–183 ms in alternated
+  single runs, while per-instruction micro-benchmarks with identical loop shapes
+  (`opmicro.nc`/`opmicro.ns` in the session scratch directory) ran faster on NeoCore for
+  independent and dependent typed adds and for comparisons. The remaining `loop_sum`
+  difference is NeoScript's two-operand in-place `ADD2_L` for `sum += t`, which writes
+  no type tag, against NeoCore's three-operand `I64_ADD` with destination equal to the
+  left operand.
+
+Executable SHA-256: unified CMake `745d78df99443920c5772b40344dec17686b7860a5725172f70aae4dd5a86b78`, native `2433f73fea2c2935beadaf35aa582dadd3a918fbebb0011148e439d466642859`, old CMake `0fa351f3cbe1a9413cb1da8bb48ea1c7663f744a0a83d0a3844fad191376a61b`.
+Records: `Build/nc-3way-benchmark-10/pair_o2_vs_final`, `pair_native_vs_final` and
+`threeway_cmake_final` (each `measurements.json`).
+
 ## What this comparison includes
 
 - `Samples/bench/bench.nc` changed in `cb522bb`: the four `m.get("key", 0)`

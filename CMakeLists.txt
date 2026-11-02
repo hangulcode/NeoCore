@@ -30,6 +30,35 @@ endif()
 option(NEOCORE_BUILD_TESTS "Build NeoCore compiler, runtime and sample regressions" ${NEOCORE_DESKTOP_DEFAULT})
 option(NEOCORE_BUILD_EXAMPLES "Build the typed game-host example" ${NEOCORE_DESKTOP_DEFAULT})
 option(NEOCORE_BUILD_UNITY_BRIDGE "Build the typed NeoCore C ABI and Unity plugin" OFF)
+# 최적화 구성은 전체 프로그램 최적화(MSVC /GL + /LTCG, GCC/Clang -flto)를 켠다.
+# 네이티브 vcxproj Release 빌드와 같은 설정이며, VM 디스패치 루프의 코드 배치가 달라
+# 두 빌드의 측정값이 서로 달랐다. 지원하지 않는 툴체인은 메시지만 남기고 일반 최적화로 빌드한다.
+option(NEOCORE_ENABLE_IPO "Enable interprocedural (whole-program) optimization for optimized builds" ON)
+if(NEOCORE_ENABLE_IPO)
+    include(CheckIPOSupported)
+    check_ipo_supported(RESULT NEOCORE_IPO_SUPPORTED OUTPUT NEOCORE_IPO_MESSAGE LANGUAGES C CXX)
+    if(NEOCORE_IPO_SUPPORTED)
+        set(CMAKE_INTERPROCEDURAL_OPTIMIZATION_RELEASE ON)
+        set(CMAKE_INTERPROCEDURAL_OPTIMIZATION_RELWITHDEBINFO ON)
+        set(CMAKE_INTERPROCEDURAL_OPTIMIZATION_MINSIZEREL ON)
+    else()
+        message(STATUS "NeoCore: interprocedural optimization is not available: ${NEOCORE_IPO_MESSAGE}")
+    endif()
+endif()
+# MSVC 런타임도 네이티브 vcxproj 와 같은 정적 CRT(/MT, /MTd)를 기본으로 한다. 할당이 많은 경로의
+# 측정값이 DLL CRT 와 달랐다. 호스트가 add_subdirectory 로 포함하면 호스트의 CRT 선택을 따르도록
+# 기본값을 끄고, CMAKE_MSVC_RUNTIME_LIBRARY 를 직접 지정한 경우에는 그 값을 유지한다.
+if(MSVC)
+    if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
+        set(NEOCORE_STATIC_CRT_DEFAULT ON)
+    else()
+        set(NEOCORE_STATIC_CRT_DEFAULT OFF)
+    endif()
+    option(NEOCORE_STATIC_CRT "Link the static MSVC C runtime (/MT, /MTd) like the native .vcxproj builds" ${NEOCORE_STATIC_CRT_DEFAULT})
+    if(NEOCORE_STATIC_CRT AND NOT DEFINED CMAKE_MSVC_RUNTIME_LIBRARY)
+        set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+    endif()
+endif()
 
 set(NEOCORE_BACKEND_SOURCES
     NeoSource/NeoExport.cpp
