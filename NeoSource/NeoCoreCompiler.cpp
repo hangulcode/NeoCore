@@ -3277,6 +3277,13 @@ private:
                 node.inputs.push_back(value);
             }
         }
+        else if (expression.checkedMapRead && types_.IsNumeric(expression.type))
+        {
+            // 숫자 맵 읽기는 수신 맵·키·결과의 정적 타입과 원래 평가 순서를 IR에 남긴다.
+            node.op = IROp::MapRead;
+            node.inputs.push_back(BuildValueIR(*expression.children[0]));
+            node.inputs.push_back(BuildValueIR(*expression.children[1]));
+        }
         else if (NumericIROp(expression, node.op))
         {
             const std::size_t first = expression.kind == ExprKind::Call ? 1 : 0;
@@ -3298,6 +3305,15 @@ private:
             node.integer = expression.integerValue;
             node.number = expression.floatValue;
             node.boolean = expression.op == "true";
+        }
+        else if ((expression.kind == ExprKind::Literal && expression.token.kind == TokenKind::String) ||
+            (expression.kind == ExprKind::Name && expression.symbol && expression.symbol->constantValue &&
+                expression.symbol->constantValue->kind == ConstantValue::String))
+        {
+            // 문자열 상수를 부작용이 불명확한 이전 식으로 남기면 맵 수신자를 불필요하게 복사한다.
+            node.op = IROp::StringLiteral;
+            node.text = expression.kind == ExprKind::Literal ? DecodeStringLiteral(expression.token)
+                : expression.symbol->constantValue->text;
         }
         else if (expression.kind == ExprKind::Name && expression.symbol && !expression.symbol->constant &&
             !expression.symbol->hostGlobal && !expression.symbol->boxed)

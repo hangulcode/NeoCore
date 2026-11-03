@@ -122,6 +122,20 @@ carry their owner function, value and source location; the emitter verifies thei
 types and reuses the existing call/return instructions. Void fallthrough and
 generated helper bodies still use the transitional statement compiler.
 
+Numeric map reads used by typed expressions retain their checked receiver, key and
+result types in IR. In non-debug builds, a discarded plain-variable compound
+assignment such as `sum += counts[key]` combines lookup and arithmetic in one
+instruction. Integer/string keys and int/float values have dedicated `+`, `-`, `*`
+and `/` forms. Receiver and key evaluation still finish before reading the old
+destination; null/missing-key and integer-division failures leave it unchanged.
+The destination already contains a checked numeric value, so the combined instruction
+updates its payload without repeating reference cleanup or resetting its type tag.
+Error formatting is kept outside the inline lookup/arithmetic path.
+No host callback runs inside the combined instruction. Widening, struct-field
+targets, consumed assignment results and debug-info builds retain separate
+instructions. Ordinary map reads fast-copy non-owning values and preserve
+ownership before releasing a reference-valued destination.
+
 Arrays, vectors, and generated helpers retain private compile-only intrinsics in
 the textual skeleton. Their metadata carries types and source lines, and each
 intrinsic emits instructions without a runtime helper call frame. Declarations,
@@ -160,7 +174,7 @@ revalidate the saved receiver ID. Bool/string conversions remain checked generic
 conversions. Numeric expressions now emit from structured IR; the remaining
 compile-only intrinsics and compatibility leaves are explicit migration boundaries,
 not a complete typed-AST-to-bytecode backend replacement.
-NeoCore bytecode images use version `0151` and must be regenerated; the NeoCore
+NeoCore bytecode images use version `0154` and must be regenerated; the NeoCore
 image container that carries the static type table is at version 4. Regenerate older
 images: generated-code source mappings now mark shared helpers so their failures
 report the user callsite. The five generic `NOP_TABLE_*` arithmetic-write
@@ -748,7 +762,7 @@ an invalid index or empty pop fails at runtime. Maps support `len`,
 Keys and values produce typed lists. A stored key such as `"contains"` or `"len"`
 does not shadow these statically resolved methods.
 
-The current collection operations require backend image version 0153. Rebuild host libraries and
+The current collection operations require backend image version 0154. Rebuild host libraries and
 recompile previously cached program images. Existing `map.get` calls must be
 replaced with checked indexing or an explicit `contains` guard.
 

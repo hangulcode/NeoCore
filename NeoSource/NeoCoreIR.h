@@ -22,7 +22,7 @@ enum class IROp
     LoadStorage, Assign, AddAssign, SubtractAssign, MultiplyAssign, DivideAssign,
     RemainderAssign, BitAndAssign, BitOrAssign, BitXorAssign, ShiftLeftAssign, ShiftRightAssign,
     PreIncrement, PreDecrement, PostIncrement, PostDecrement,
-    ScriptCall, NullableConvert, CopyStruct
+    ScriptCall, NullableConvert, CopyStruct, MapRead, StringLiteral
 };
 
 enum class IRStorageKind { Invalid, Variable, Cell };
@@ -52,6 +52,7 @@ struct IRNode
     std::int64_t integer = 0;
     double number = 0;
     bool boolean = false;
+    std::string text;
     std::size_t symbolId = 0;
     std::string backendName;
     // 아직 이전 컴파일 경로를 쓰는 잎은 평가 순서에 도달했을 때만 해석한다.

@@ -318,6 +318,29 @@ void InvalidMetadata(IRuntime& runtime, bool debug)
         }
 }
 
+void MapMetadata(IRuntime& runtime, bool debug)
+{
+    NeoCore::StaticCompileResult valid;
+    Check(NeoCore::CompileStaticSource("export int Probe(map<string,int> m){int x=1;x+=m[\"key\"];return x;}", valid),
+        "numeric map IR frontend");
+    if (!valid.success) return;
+    const std::size_t read = FindOp(valid.typedIR, NeoCore::IROp::MapRead);
+    const std::size_t key = FindOp(valid.typedIR, NeoCore::IROp::StringLiteral);
+    Check(read < valid.typedIR.nodes.size() && key < valid.typedIR.nodes.size(), "map and constant key retain semantic IR");
+    if (read == valid.typedIR.nodes.size() || key == valid.typedIR.nodes.size()) return;
+    Check(valid.typedIR.nodes[key].text == "key", "literal key has no unknown legacy-expression effects");
+    for (int change = 0; change < 4; ++change)
+    {
+        NeoCore::StaticCompileResult altered = valid;
+        NeoCore::IRNode& node = altered.typedIR.nodes[read];
+        if (change == 0) node.inputs.pop_back();
+        else if (change == 1) node.inputs[0] = key;
+        else if (change == 2) node.inputs[1] = node.inputs[0];
+        else { node.type = NeoCore::IRValueType::Float; node.typeId = altered.types.Float(); }
+        RejectIR(runtime, altered, debug, "map read type contract " + std::to_string(change));
+    }
+}
+
 void StorageStructure()
 {
     NeoCore::StaticCompileResult checked;
@@ -1037,6 +1060,7 @@ int main()
         InternalNameBoundary(*runtime, debug);
         MutationAndLifetime(*runtime, debug);
         InvalidMetadata(*runtime, debug);
+        MapMetadata(*runtime, debug);
         InvalidStorageMetadata(*runtime, debug);
         InvalidCallMetadata(*runtime, debug);
         EvaluationOrder(*runtime, debug);

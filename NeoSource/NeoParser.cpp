@@ -2723,7 +2723,7 @@ static const AggregateOpInfo* FindCoreAggregate(const std::string& suffix)
     for (int op = 0; op < NOP_MAX; ++op)
     {
         const AggregateOpInfo* info = GetAggregateOpInfo(static_cast<eNOperation>(op));
-        if (info && suffix == info->suffix) return info;
+        if (info && info->suffix[0] && suffix == info->suffix) return info;
     }
     return nullptr;
 }
@@ -3054,6 +3054,8 @@ class CoreIRValidator
             if (node.functionIndex >= ir_.functions.size()) return Fail(index, "function index is out of range");
             arity = ir_.functions[node.functionIndex].parameterTypes.size(); break;
         case IROp::NullableConvert: case IROp::CopyStruct: arity = 1; break;
+        case IROp::MapRead: arity = 2; break;
+        case IROp::StringLiteral: arity = 0; break;
         default: return Fail(index, "unknown operation");
         }
         if (node.op != IROp::ScriptCall && node.functionIndex != static_cast<std::size_t>(-1))
@@ -3089,7 +3091,8 @@ class CoreIRValidator
         const IRValueType input = arity ? ir_.nodes[node.inputs[0]].type : IRValueType::Invalid;
         const NeoCore::TypeId inputType = arity ? ir_.nodes[node.inputs[0]].typeId : NeoCore::InvalidType;
         const bool numeric = input == IRValueType::Int || input == IRValueType::Float;
-        if (arity == 2 && node.op != IROp::ScriptCall && inputType != ir_.nodes[node.inputs[1]].typeId)
+        if (arity == 2 && node.op != IROp::ScriptCall && node.op != IROp::MapRead &&
+            inputType != ir_.nodes[node.inputs[1]].typeId)
             return Fail(index, "operand types differ");
         bool valid = false;
         switch (node.op)
@@ -3138,6 +3141,17 @@ class CoreIRValidator
         case IROp::CopyStruct:
             valid = ir_.types.Get(node.typeId).kind == NeoCore::TypeKind::Struct &&
                 node.typeId == inputType && AbleBackendName(ar_, node.backendName); break;
+        case IROp::MapRead:
+        {
+            const NeoCore::TypeDesc& map = ir_.types.Get(inputType);
+            valid = map.kind == NeoCore::TypeKind::Map && map.value == node.typeId &&
+                (node.type == IRValueType::Int || node.type == IRValueType::Float) &&
+                (map.key == ir_.types.Int() || map.key == ir_.types.String()) &&
+                map.key == ir_.nodes[node.inputs[1]].typeId;
+            break;
+        }
+        case IROp::StringLiteral:
+            valid = node.type == IRValueType::String && node.text.find('\0') == std::string::npos; break;
         default: break;
         }
         if (!valid) return Fail(index, "operation type contract does not match");
@@ -3280,6 +3294,38 @@ static SOperand ReadCoreIRStorage(const NeoCore::IRNode& node, const SOperand& t
 static bool EmitCoreIRNode(std::size_t index, SOperand& result,
     CArchiveRdWC& ar, SFunctions& funs, SVars& vars, int destination = INVALID_ERROR_PARSEJOB);
 
+static bool EmitCoreIRMapInputs(const NeoCore::IRNode& node, SOperand (&arguments)[2],
+    CArchiveRdWC& ar, SFunctions& funs, SVars& vars)
+{
+    if (!EmitCoreIRNode(node.inputs[0], arguments[0], ar, funs, vars)) return false;
+    MaterializeValue(arguments[0], ar, funs);
+    // 키 계산이 맵 변수를 바꾸더라도 처음 읽은 수신 맵에 접근한다.
+    if (NeedsSnapshot(arguments[0], (*ar.m_coreIREffects)[node.inputs[1]]))
+        SnapshotValue(arguments[0], ar, funs);
+    if (!EmitCoreIRNode(node.inputs[1], arguments[1], ar, funs, vars)) return false;
+    MaterializeValue(arguments[1], ar, funs);
+    return true;
+}
+
+static eNOperation CoreIRMapCompoundOp(eNOperation arithmetic, bool stringKey)
+{
+    switch (arithmetic)
+    {
+#define NEOCORE_MAP_COMPOUND_SELECT(TYPE, OP) \
+    case NOP_##TYPE##_##OP: return stringKey ? NOP_MAP_STRING_##TYPE##_##OP : NOP_MAP_I64_##TYPE##_##OP;
+        NEOCORE_MAP_COMPOUND_SELECT(I64, ADD)
+        NEOCORE_MAP_COMPOUND_SELECT(I64, SUB)
+        NEOCORE_MAP_COMPOUND_SELECT(I64, MUL)
+        NEOCORE_MAP_COMPOUND_SELECT(I64, DIV)
+        NEOCORE_MAP_COMPOUND_SELECT(F64, ADD)
+        NEOCORE_MAP_COMPOUND_SELECT(F64, SUB)
+        NEOCORE_MAP_COMPOUND_SELECT(F64, MUL)
+        NEOCORE_MAP_COMPOUND_SELECT(F64, DIV)
+#undef NEOCORE_MAP_COMPOUND_SELECT
+    default: return NOP_NONE;
+    }
+}
+
 // 호출 인자는 순서대로 평가한 뒤 한꺼번에 인자 창으로 옮긴다. 중첩 호출이 같은 창을 재사용한다.
 static bool EmitCoreIRCall(const NeoCore::IRNode& node, const std::string& name, SOperand& result,
     CArchiveRdWC& ar, SFunctions& funs, SVars& vars, int destination = INVALID_ERROR_PARSEJOB)
@@ -3344,6 +3390,24 @@ static bool EmitCoreIRStorage(const NeoCore::IRNode& node, SOperand& result,
     // 일반 변수의 슬롯 조회는 코드나 부작용을 만들지 않는다. 필드·셀의 실행 경로는 여전히 우변 뒤에 찾는다.
     if (plainVariable && !ResolveCoreIRStorage(node, target, ar, funs, vars)) return false;
     const int destination = plainVariable && node.discardResult ? target._iVar : INVALID_ERROR_PARSEJOB;
+    if (!ar._debug && destination != INVALID_ERROR_PARSEJOB && node.inputs.size() == 1)
+    {
+        const NeoCore::IRNode& rhs = ar.m_coreTypedIR->nodes[node.inputs[0]];
+        if (rhs.op == IROp::MapRead && rhs.typeId == node.typeId)
+        {
+            const bool stringKey = ar.m_coreTypedIR->nodes[rhs.inputs[1]].type == NeoCore::IRValueType::String;
+            const eNOperation combined = CoreIRMapCompoundOp(CoreIRWriteOp(node.op, node.type), stringKey);
+            if (combined != NOP_NONE)
+            {
+                // 버리는 변수 대입만 합친다. 호스트 호출·키 부작용은 모두 이 명령 전에 끝난다.
+                SOperand arguments[2];
+                if (!EmitCoreIRMapInputs(rhs, arguments, ar, funs, vars)) return false;
+                funs._cur->Push_OP(ar, combined, destination, arguments[0]._iVar, arguments[1]._iVar, node.source.line);
+                result = target;
+                return true;
+            }
+        }
+    }
     SOperand value;
     if (!node.inputs.empty())
     {
@@ -3472,6 +3536,16 @@ static bool EmitCoreIRNode(std::size_t index, SOperand& result,
         return EmitCoreIRNode(node.inputs[0], result, ar, funs, vars);
     case IROp::CopyStruct:
         return EmitCoreIRCall(node, node.backendName, result, ar, funs, vars);
+    case IROp::MapRead:
+    {
+        SOperand arguments[2];
+        if (!EmitCoreIRMapInputs(node, arguments, ar, funs, vars)) return false;
+        const bool stringKey = ar.m_coreTypedIR->nodes[node.inputs[1]].type == NeoCore::IRValueType::String;
+        result = EmitCoreAggregate(stringKey ? "msread" : "miread", arguments, 0, ar, funs, node.source.line);
+        return true;
+    }
+    case IROp::StringLiteral:
+        result = SOperand(funs.AddStaticString(node.text)); return true;
     default: break;
     }
 

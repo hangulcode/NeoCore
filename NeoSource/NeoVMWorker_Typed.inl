@@ -2,6 +2,15 @@
 
 // 정적 프런트엔드가 입력 저장형을 확정한다. 실행 중에는 타입을 다시 고르지 않고
 // 알려진 페이로드를 읽으며, 결과 슬롯의 기존 참조와 배열 범위 검사는 유지한다.
+NEOS_NOINLINE void StoreMapReference(VarInfo* result, const VarInfo* found)
+{
+    // 목적지를 해제하면서 원본 맵까지 사라질 수 있으므로 값과 소유권을 먼저 보존한다.
+    VarInfo value = *found;
+    Var_AddRef(&value);
+    Var_Release(result);
+    *result = value;
+}
+
 template<bool StringKey, bool Contains>
 NEOS_FORCEINLINE void TypedMapRead(const SVMOperation& op)
 {
@@ -22,13 +31,53 @@ NEOS_FORCEINLINE void TypedMapRead(const SVMOperation& op)
         SetErrorFormat("map key not found: %s", ToString(key).c_str());
     else
     {
-        // 결과 슬롯이 원본 맵을 해제하더라도 찾은 참조 값의 소유권을 먼저 확보한다.
-        VarInfo value = *found;
-        Var_AddRef(&value);
         VarInfo* result = GetVarPtrF1(op);
-        Var_Release(result);
-        *result = value;
+        // 두 값 모두 비참조형이면 소유권 분기·해제·태그 초기화 없이 슬롯만 복사한다.
+        if (!found->IsAllocType() && !result->IsAllocType()) *result = *found;
+        else StoreMapReference(result, found);
     }
+}
+
+NEOS_NOINLINE void MapCompoundReadError(const VarInfo* receiver, VarInfo* key)
+{
+    // 문자열 생성과 오류 정리는 각 숫자 명령의 빠른 경로 밖에서 공유한다.
+    if (receiver->GetType() != VAR_MAP) SetError("cannot access a null map");
+    else SetErrorFormat("map key not found: %s", ToString(key).c_str());
+}
+
+template<bool StringKey, eNOperation Arithmetic>
+NEOS_FORCEINLINE void TypedMapCompound(const SVMOperation& op)
+{
+    VarInfo* receiver = GetVarPtr2(op);
+    VarInfo* key = GetVarPtr3(op);
+    if (receiver->GetType() != VAR_MAP)
+    {
+        MapCompoundReadError(receiver, key);
+        return;
+    }
+    VarInfo* found = StringKey
+        ? (key->GetType() == VAR_NONE ? nullptr : receiver->_tbl->FindString(key->_str))
+        : receiver->_tbl->FindInt(key->_int);
+    if (!found)
+    {
+        MapCompoundReadError(receiver, key);
+        return;
+    }
+    // 기존 숫자를 읽고 같은 타입으로 덮어쓰므로 목적지의 소유권·타입 태그는 바뀌지 않는다.
+    // 값 타입은 IR이 보증한다. 조회·계산 실패 전에는 목적지에 쓰지 않는다.
+    VarInfo* result = GetVarPtrF1(op);
+    if (Arithmetic == NOP_I64_ADD) result->_int = NeoIntAdd(result->_int, found->_int);
+    else if (Arithmetic == NOP_I64_SUB) result->_int = NeoIntSub(result->_int, found->_int);
+    else if (Arithmetic == NOP_I64_MUL) result->_int = NeoIntMul(result->_int, found->_int);
+    else if (Arithmetic == NOP_I64_DIV)
+    {
+        const NS_INT dividend = result->_int, divisor = found->_int;
+        if (CheckIntegerDivision(dividend, divisor)) result->_int = dividend / divisor;
+    }
+    else if (Arithmetic == NOP_F64_ADD) result->_float += found->_float;
+    else if (Arithmetic == NOP_F64_SUB) result->_float -= found->_float;
+    else if (Arithmetic == NOP_F64_MUL) result->_float *= found->_float;
+    else if (Arithmetic == NOP_F64_DIV) result->_float /= found->_float;
 }
 
 template<bool StringKey, int Operation>

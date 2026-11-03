@@ -411,6 +411,70 @@ void ListWrites(IRuntime& runtime, bool debug)
     }
 }
 
+void MapCompounds(IRuntime& runtime, bool debug)
+{
+    const char* operators[] = {"+=", "-=", "*=", "/="};
+    const int answers[] = {16, 8, 48, 3};
+    const eNOperation ops[][4] = {
+        {NOP_MAP_I64_I64_ADD, NOP_MAP_I64_I64_SUB, NOP_MAP_I64_I64_MUL, NOP_MAP_I64_I64_DIV},
+        {NOP_MAP_I64_F64_ADD, NOP_MAP_I64_F64_SUB, NOP_MAP_I64_F64_MUL, NOP_MAP_I64_F64_DIV},
+        {NOP_MAP_STRING_I64_ADD, NOP_MAP_STRING_I64_SUB, NOP_MAP_STRING_I64_MUL, NOP_MAP_STRING_I64_DIV},
+        {NOP_MAP_STRING_F64_ADD, NOP_MAP_STRING_F64_SUB, NOP_MAP_STRING_F64_MUL, NOP_MAP_STRING_F64_DIV}
+    };
+    for (int kind = 0; kind < 4; ++kind)
+    {
+        const bool stringKey = kind >= 2, floating = (kind & 1) != 0;
+        const std::string type = floating ? "float" : "int";
+        const std::string key = stringKey ? "\"value\"" : "7";
+        const std::string mapType = "map<" + std::string(stringKey ? "string" : "int") + "," + type + ">";
+        for (int operation = 0; operation < 4; ++operation)
+        {
+            const std::string update = "x" + std::string(operators[operation]) + "m[" + key + "];";
+            const std::string shape = "export " + type + " Probe(" + mapType + " m){" + type + " x=12;" + update + "return x;}";
+            CheckShape(runtime, shape.c_str(), {debug ? (stringKey ? NOP_MAP_STRING_READ : NOP_MAP_I64_READ) : ops[kind][operation]},
+                debug, "map compound instruction shape");
+            const std::string source = "export " + type + " Probe(){" + mapType + " m={" + key + ":4};" + type + " x=12;" + update + "return x;}";
+            Compare(runtime, source.c_str(), floating ? Float(answers[operation]) : Int(answers[operation]), debug, "typed map compound result");
+        }
+    }
+
+    const char* separate[] = {
+        "export int Probe(map<string,int> m){int x=12;return x+=m[\"a\"];}",
+        "export float Probe(map<string,int> m){float x=12;x+=m[\"a\"];return x;}",
+        "struct S{int x;};export int Probe(map<string,int> m){S s=S(12);s.x+=m[\"a\"];return s.x;}",
+        "export int Probe(map<string,int> m){int x=12;x=x+m[\"a\"];return x;}"
+    };
+    for (const char* source : separate)
+    {
+        std::vector<uint8_t> bytes;
+        NeoCore::StaticCompileResult checked;
+        if (!CompileImage(runtime, source, debug, bytes, checked)) continue;
+        for (const auto& op : Operations(bytes))
+        {
+            const AggregateOpInfo* info = GetAggregateOpInfo(op.op);
+            Check(!info || info->shape != AggregateOpShape::Compound, "consumed, widened, field or binary expression stays separate");
+        }
+    }
+    Compare(runtime, "int x=1;map<string,int> m={\"a\":2};string Key(){x=10;return \"a\";}export int Probe(){x+=m[Key()];return x;}", Int(12), debug, "target read follows key effects");
+    Compare(runtime, "const string key=\"\\u0061\\n\";map<string,int> m={\"a\\n\":2};export int Probe(){int x=1;x+=m[key];x+=m[\"\\u0061\\n\"];return x;}", Int(5), debug, "decoded literal and constant keys agree");
+    Compare(runtime, "int x=7;map<int,int> m={7:4};export int Probe(){x+=m[x];int y=x;return x*100+y;}", Int(1111), debug, "key aliases destination and later copy keeps destination");
+    Compare(runtime, "int order=0;map<int,int> m={0:4};map<int,int> Owner(){order=order*10+1;return m;}int Key(){order=order*10+2;m={0:9};return 0;}export int Probe(){int x=3;x+=Owner()[Key()];return order*100+x;}", Int(1207), debug, "receiver captured before key replaces map");
+    Compare(runtime, "map<string,int> m={\"a\":4};export int Probe(){int x=12;return (x+=m[\"a\"])+(x=1);}", Int(17), debug, "consumed compound result survives later write");
+    Compare(runtime, "map<int,int> m={0:1};export int Probe(){int x=9223372036854775807;x+=m[0];return x;}", Int((std::numeric_limits<std::int64_t>::min)()), debug, "fused addition wraps int64");
+    Compare(runtime, "map<string,float> m={\"a\":0.0};export float Probe(){float x=-0.0;x*=m[\"a\"];return x;}", Float(-0.0), debug, "fused float preserves signed zero");
+    Compare(runtime, "map<int,float> m={0:0.0};export float Probe(){float x=1.0;x/=m[0];return x;}", Float((std::numeric_limits<double>::infinity)()), debug, "fused float division preserves infinity");
+
+    Compare(runtime, "int x=29;map<string,int> m;\nexport int Probe(){\nx+=m[\"a\"];return x;}", Outcome(), debug, "null map preserves destination", 3, "x");
+    Compare(runtime, "int x=29;map<string,int> m={};\nexport int Probe(){\nx+=m[\"missing\"];return x;}", Outcome(), debug, "missing map key preserves destination", 3, "x");
+    Compare(runtime, "int x=29;map<string,int> m={};\nexport int Probe(){string key;\nx-=m[key];return x;}", Outcome(), debug, "null string key fails before write", 3, "x");
+    Compare(runtime, "int x=29;map<int,int> m={0:0};\nexport int Probe(){\nx/=m[0];return x;}", Outcome(), debug, "map division by zero preserves destination", 3, "x");
+    Compare(runtime, "int x=-9223372036854775808;map<int,int> m={0:-1};\nexport int Probe(){\nx/=m[0];return x;}", Outcome(), debug, "map integer division overflow preserves destination", 3, "(x+9223372036854775807)+30");
+
+    // 숫자 경로 이외에도 원본 맵의 마지막 소유권·벡터 COW·임시 슬롯 재사용을 검사한다.
+    Compare(runtime, "map<string,map<string,int>> m={\"a\":{\"v\":7}};export int Probe(){map<string,int> child=m[\"a\"];m=null;return child[\"v\"];}", Int(7), debug, "map read keeps nested ownership");
+    Compare(runtime, "map<int,Vector4> m={0:Vector4(1,2,3,4)};export float Probe(){Vector4 v=m[0];v.w=9;return v.w*10+m[0].w;}", Float(94), debug, "reference map read preserves vector value semantics");
+}
+
 void Order(IRuntime& runtime, bool debug)
 {
     Compare(runtime, "int order=0;int Size(){order=order*10+1;return 2;}int Fill(){order=order*10+2;return 7;}export int Probe(){array<int> a=array<int>(Size(),Fill());return order*10+a.len();}", Int(122), debug, "constructor argument order");
@@ -490,6 +554,7 @@ int main()
         Order(*runtime, debug);
         ListWrites(*runtime, debug);
         Sets(*runtime, debug);
+        MapCompounds(*runtime, debug);
         Errors(*runtime, debug);
         Cleanup(*runtime, debug);
     }

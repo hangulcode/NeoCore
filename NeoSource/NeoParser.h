@@ -352,8 +352,9 @@ struct SFunctionInfo
 	{
 		const TypedOpInfo* typed = GetTypedOpInfo(op);
 		if (typed != nullptr) return !typed->jump;
-		// 집합 명령도 항상 n1에 결과를 쓴다. 입력은 핸들러가 결과 저장 전에 확보한다.
-		if (GetAggregateOpInfo(op) != nullptr) return true;
+		// 복합 명령은 n1의 옛 값도 읽으므로 목적지만 바꾸면 의미가 달라진다.
+		const AggregateOpInfo* aggregate = GetAggregateOpInfo(op);
+		if (aggregate != nullptr) return aggregate->shape != AggregateOpShape::Compound;
 		switch (op)
 		{
 		case NOP_MOV:

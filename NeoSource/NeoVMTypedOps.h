@@ -64,6 +64,19 @@
     NEOCORE_SET_OPS(X, I64, "i") \
     NEOCORE_SET_OPS(X, STRING, "s")
 
+// n1은 기존 값을 읽은 뒤 덮어쓴다. 숫자 종류와 키 종류는 명령 자체로 확정한다.
+#define NEOCORE_MAP_COMPOUND_FOR(X, KEY, VALUE) \
+    X(NOP_MAP_##KEY##_##VALUE##_ADD, "MAP_" #KEY "_" #VALUE "_ADD", "", 2, Compound, 0, 0) \
+    X(NOP_MAP_##KEY##_##VALUE##_SUB, "MAP_" #KEY "_" #VALUE "_SUB", "", 2, Compound, 0, 0) \
+    X(NOP_MAP_##KEY##_##VALUE##_MUL, "MAP_" #KEY "_" #VALUE "_MUL", "", 2, Compound, 0, 0) \
+    X(NOP_MAP_##KEY##_##VALUE##_DIV, "MAP_" #KEY "_" #VALUE "_DIV", "", 2, Compound, 0, 0)
+
+#define NEOCORE_MAP_COMPOUND_OPS(X) \
+    NEOCORE_MAP_COMPOUND_FOR(X, I64, I64) \
+    NEOCORE_MAP_COMPOUND_FOR(X, I64, F64) \
+    NEOCORE_MAP_COMPOUND_FOR(X, STRING, I64) \
+    NEOCORE_MAP_COMPOUND_FOR(X, STRING, F64)
+
 #define NEOCORE_AGGREGATE_OPS(X) \
     NEOCORE_VECTOR_OPS(X, 2, Binary) \
     NEOCORE_VECTOR_OPS(X, 3, Window) \
@@ -82,7 +95,8 @@
     X(NOP_ARRAY_LEN, "ARRAY_LEN", "alen", 1, Unary, 0, 0) \
     X(NOP_ARRAY_RESIZE, "ARRAY_RESIZE", "aresize", 2, Binary, 0, 0) \
     X(NOP_ARRAY_RESERVE, "ARRAY_RESERVE", "areserve", 2, Binary, 0, 0) \
-    NEOCORE_IDENTITY_OPS(X)
+    NEOCORE_IDENTITY_OPS(X) \
+    NEOCORE_MAP_COMPOUND_OPS(X)
 
 namespace NeoScript
 {
@@ -103,7 +117,7 @@ struct TypedOpInfo
 
 inline const TypedOpInfo* GetTypedOpInfo(eNOperation op);
 
-enum class AggregateOpShape : unsigned char { Unary, Binary, Window };
+enum class AggregateOpShape : unsigned char { Unary, Binary, Window, Compound };
 
 struct AggregateOpInfo
 {
@@ -114,6 +128,9 @@ struct AggregateOpInfo
     AggregateOpShape shape;
     unsigned char dimension;
     unsigned char controlMax;
+
+    unsigned Slots() const
+    { return shape == AggregateOpShape::Binary || shape == AggregateOpShape::Compound ? 7 : 3; }
 };
 
 inline const AggregateOpInfo* GetAggregateOpInfo(eNOperation op);

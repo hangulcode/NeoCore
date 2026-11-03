@@ -2244,6 +2244,16 @@ bool	CNeoVMWorker::RunInternal(int iBreakingCallStack)
 		case NOP_SET_STRING_CONTAINS: TypedSetOperation<true, 0>(OP); break;
 		case NOP_SET_STRING_ADD: TypedSetOperation<true, 1>(OP); break;
 		case NOP_SET_STRING_REMOVE: TypedSetOperation<true, 2>(OP); break;
+#define NEOCORE_MAP_COMPOUND_DISPATCH(KEY, STRING_KEY, VALUE) \
+		case NOP_MAP_##KEY##_##VALUE##_ADD: TypedMapCompound<STRING_KEY, NOP_##VALUE##_ADD>(OP); break; \
+		case NOP_MAP_##KEY##_##VALUE##_SUB: TypedMapCompound<STRING_KEY, NOP_##VALUE##_SUB>(OP); break; \
+		case NOP_MAP_##KEY##_##VALUE##_MUL: TypedMapCompound<STRING_KEY, NOP_##VALUE##_MUL>(OP); break; \
+		case NOP_MAP_##KEY##_##VALUE##_DIV: TypedMapCompound<STRING_KEY, NOP_##VALUE##_DIV>(OP); break;
+		NEOCORE_MAP_COMPOUND_DISPATCH(I64, false, I64)
+		NEOCORE_MAP_COMPOUND_DISPATCH(I64, false, F64)
+		NEOCORE_MAP_COMPOUND_DISPATCH(STRING, true, I64)
+		NEOCORE_MAP_COMPOUND_DISPATCH(STRING, true, F64)
+#undef NEOCORE_MAP_COMPOUND_DISPATCH
 		case NOP_NONE:          handle_NONE(OP); break;
 		case NOP_ERROR:
 			handle_ERROR(OP);

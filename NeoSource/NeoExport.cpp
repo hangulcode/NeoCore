@@ -405,7 +405,7 @@ void WriteFun(CArchiveRdWC& arText, CNArchive& ar, SFunctions& funs, SFunctionIn
 			const AggregateOpInfo* aggregate = GetAggregateOpInfo(v.op);
 			if (typed != nullptr || aggregate != nullptr)
 			{
-				const unsigned slots = typed ? typed->slots : aggregate->shape == AggregateOpShape::Binary ? 7 : 3;
+				const unsigned slots = typed ? typed->slots : aggregate->Slots();
 				for (unsigned n = 0; n < 3; ++n)
 					if (slots & (1u << n))
 						argFlag |= ChangeIndex(staticCount, localCount, curFunStatkSize, v, static_cast<int>(n + 1));

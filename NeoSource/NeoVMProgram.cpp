@@ -755,13 +755,13 @@ bool CNeoVMProgram::VerifyCode(const std::vector<int>& owners, std::string* err)
             const TypedOpInfo* typed = GetTypedOpInfo(op.op);
             const AggregateOpInfo* aggregate = GetAggregateOpInfo(op.op);
             if (typed == nullptr && aggregate == nullptr) return reject("Invalid saved instruction opcode");
-            slots = typed ? typed->slots : aggregate->shape == AggregateOpShape::Binary ? 7 : 3;
+            slots = typed ? typed->slots : aggregate->Slots();
             writes = typed ? typed->writes : 1;
             jump = typed && typed->jump;
             const u8 allowedFlags = static_cast<u8>(((slots & 1) ? L1 : 0) | ((slots & 2) ? L2 : 0) | ((slots & 4) ? L3 : 0)
                 | (typed && typed->comparison ? NEOS_OP_COMPARE_INVERT : 0));
             if (op.argFlag & ~allowedFlags) return reject("Invalid typed instruction flags");
-            if (aggregate && aggregate->shape != AggregateOpShape::Binary)
+            if (aggregate && aggregate->Slots() != 7)
             {
                 if (op.n3 < 0 || op.n3 > aggregate->controlMax) return reject("Invalid typed aggregate control");
                 if (aggregate->shape == AggregateOpShape::Window &&
@@ -1283,6 +1283,8 @@ bool FormatDebugOperation(const DebugInstructionFormatContext& context, std::str
 			byteCount = static_cast<int>(sizeof(SVMOperation));
 			if (aggregate->shape == AggregateOpShape::Binary)
 				outAssembly = FormatAsm("%s %s = %s, %s", aggregate->name, context.operand(1).c_str(), context.operand(2).c_str(), context.operand(3).c_str());
+			else if (aggregate->shape == AggregateOpShape::Compound)
+				outAssembly = FormatAsm("%s %s, %s[%s]", aggregate->name, context.operand(1).c_str(), context.operand(2).c_str(), context.operand(3).c_str());
 			else if (aggregate->shape == AggregateOpShape::Window)
 				outAssembly = FormatAsm("%s %s = window(%s, %d), control(%d)", aggregate->name, context.operand(1).c_str(), context.operand(2).c_str(), aggregate->arity, v.n3);
 			else if (aggregate->controlMax)
