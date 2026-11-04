@@ -33,7 +33,7 @@
     <IntDir>$(ProjectDir)..\..\Build\Windows\obj\Console\$(Platform)\$(Configuration)\</IntDir>
     <TargetName>neocore</TargetName>
     <LinkIncremental>false</LinkIncremental>
-    <LocalDebuggerCommandArguments>--debug</LocalDebuggerCommandArguments>
+    <LocalDebuggerCommandArguments>--debug --sample-dir "$(ProjectDir)scripts"</LocalDebuggerCommandArguments>
     <LocalDebuggerWorkingDirectory>$(ProjectDir)..\..\</LocalDebuggerWorkingDirectory>
     <DebuggerFlavor>WindowsLocalDebugger</DebuggerFlavor>
   </PropertyGroup>

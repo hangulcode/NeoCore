@@ -1,6 +1,7 @@
 import argparse
 from pathlib import Path
 import re
+import shutil
 import subprocess
 import tempfile
 
@@ -11,12 +12,13 @@ def main():
     options = parser.parse_args()
     console = Path(options.console).resolve()
     root = Path(__file__).resolve().parents[1]
-    sample_names = {path.stem for path in (root / "Samples/neocore/scripts").glob("*.nc")}
+    sample_directory = root / "Samples/neocore/scripts"
+    sample_names = {path.stem for path in sample_directory.glob("*.nc")}
     automatic_names = sample_names - {"performance", "https"}
     checks = 0
 
-    def run(arguments=(), commands="", cwd=root, timeout=30, expected_success=True):
-        result = subprocess.run([str(console)] + list(arguments), input=commands, cwd=cwd,
+    def run(arguments=(), commands="", cwd=root, timeout=30, expected_success=True, executable=console):
+        result = subprocess.run([str(executable)] + list(arguments), input=commands, cwd=cwd,
                                 capture_output=True, text=True, encoding="utf-8",
                                 errors="replace", timeout=timeout)
         assert (result.returncode == 0) == expected_success, (
@@ -65,14 +67,14 @@ def main():
         assert not passed(result), result.stdout
         checks += 1
 
-    result = run(["--run", "hello"], cwd=console.parent)
+    result = run(["--sample-dir", str(sample_directory), "--run", "hello"], cwd=console.parent)
     assert passed(result) == ["hello"], result.stdout + result.stderr
     checks += 1
 
     for sample, bindings in (("hello", set()),
                              ("callback", {"b1", "g0"}),
                              ("map_callback", {"b1", "b2", "g0"})):
-        result = run(["--debug", "--asm", "--run", sample], cwd=console.parent)
+        result = run(["--debug", "--asm", "--run", sample, "--sample-dir", str(sample_directory)], cwd=console.parent)
         assert passed(result) == [sample], result.stdout + result.stderr
         registered = re.findall(r"(?m)^Global E \[-?\d+\] (\S+)", result.stdout)
         assert set(registered) == {"$neocore_host_" + name for name in bindings}, result.stdout
@@ -80,7 +82,7 @@ def main():
         checks += 1
 
     for flag in ("--run-all", "--smoke", "--debug-smoke"):
-        result = run([flag], cwd=console.parent, timeout=90)
+        result = run([flag, "--sample-dir", str(sample_directory)], cwd=console.parent, timeout=90)
         check_all(result)
         if flag == "--debug-smoke":
             assert "Debug source-location check passed." in result.stdout, result.stdout
@@ -137,6 +139,14 @@ def main():
         assert not passed(result), result.stdout
         checks += 1
 
+    result = run(["--help"])
+    assert "--sample-dir <directory>" in result.stdout, result.stdout
+    checks += 1
+    for arguments in (("--sample-dir",), ("--sample-dir", ""), ("--sample-dir", "--run", "hello")):
+        result = run(arguments, expected_success=False)
+        assert result.returncode == 2 and "--sample-dir needs a directory" in result.stderr, result.stderr
+        checks += 1
+
     with tempfile.TemporaryDirectory(prefix="neocore-menu-") as temporary:
         temporary_root = Path(temporary).resolve()
         assert temporary_root.parent == Path(tempfile.gettempdir()).resolve()
@@ -150,6 +160,50 @@ def main():
             assert "sample host result mismatch: " + sample in result.stderr, result.stderr
             assert not passed(result), result.stdout
             checks += 1
+
+        chosen = temporary_root / "chosen samples \uac80\uc99d"
+        chosen.mkdir()
+        (chosen / "hello.nc").write_text('print("explicit sample directory");', encoding="utf-8-sig")
+        for arguments in (("--sample-dir", str(chosen), "--run", "0"),
+                          ("--run", "hello", "--sample-dir", chosen.name + "/")):
+            result = run(arguments, cwd=temporary_root)
+            assert passed(result) == ["hello"] and "explicit sample directory" in result.stdout, result.stdout
+            assert "test sample discovery" not in result.stdout, result.stdout
+            checks += 1
+        result = run(("--sample-dir", str(chosen)), "hello\nr\nq\n", cwd=temporary_root)
+        assert passed(result) == ["hello", "hello"], result.stdout + result.stderr
+        assert result.stdout.count("explicit sample directory") == 2, result.stdout
+        checks += 1
+        missing = temporary_root / "missing"
+        for directory, name in ((missing, "hello"), (chosen, "math")):
+            result = run(("--sample-dir", str(directory), "--run", name), expected_success=False)
+            assert "cannot read file:" in result.stderr and name + ".nc" in result.stderr, result.stderr
+            assert not passed(result), result.stdout
+            checks += 1
+        result = run(("--sample-dir", str(missing), "--file", source), cwd=temporary_root)
+        assert re.search(r"(?m)\b55\s*$", result.stdout), result.stdout + result.stderr
+        checks += 1
+
+    with tempfile.TemporaryDirectory(prefix="neocore-relocated-") as temporary:
+        temporary_root = Path(temporary).resolve()
+        assert temporary_root.parent == Path(tempfile.gettempdir()).resolve()
+        binary_directory = temporary_root / "bin"
+        binary_directory.mkdir()
+        relocated = binary_directory / console.name
+        shutil.copy2(console, relocated)
+        result = run(("--run", "hello"), cwd=temporary_root, executable=relocated, expected_success=False)
+        assert "cannot locate sample scripts; pass --sample-dir" in result.stderr, result.stderr
+        checks += 1
+        result = run(("--sample-dir", str(sample_directory), "--run", "hello"),
+                     cwd=temporary_root, executable=relocated)
+        assert passed(result) == ["hello"], result.stdout + result.stderr
+        checks += 1
+        deployed = binary_directory / "scripts"
+        deployed.mkdir()
+        (deployed / "hello.nc").write_text('print("deployed sample directory");', encoding="utf-8-sig")
+        result = run(("--run", "hello"), cwd=temporary_root, executable=relocated)
+        assert passed(result) == ["hello"] and "deployed sample directory" in result.stdout, result.stdout
+        checks += 1
 
     print("NeoCore menu CLI regression: " + str(checks) + " checks passed")
 

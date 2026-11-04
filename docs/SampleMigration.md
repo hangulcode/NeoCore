@@ -23,8 +23,9 @@ imports but its output still needs the frontend's typed IR metadata.
 ## Console menu and command-line modes
 
 Starting `neocore` without arguments, or with only `--debug`, opens the interactive
-menu. The native Visual Studio console project's default F5 arguments are `--debug`,
-so sample runs include runtime source locations. A sample can be selected by name
+menu. The native Visual Studio console project's F5 arguments enable `--debug`
+and pass its script directory through `--sample-dir`, so sample runs include runtime
+source locations. A sample can be selected by name
 or number and another sample can be run without restarting the console. Invalid
 input returns to the prompt; end-of-input exits normally.
 
@@ -38,10 +39,24 @@ Use `r` to repeat the last sample, `list` to display the menu again, and `q`, `q
 or `exit` to leave. Because `list` is a menu command, select the list sample by its
 number (`6`) or run `neocore --run list`.
 
-Sample lookup searches ancestors of the current working directory and executable
-directory. CMake builds also retain a configured source-directory fallback, so an
-out-of-tree build can find the checkout's samples. These paths do not bundle the
-sample sources into the executable; a copied executable still needs access to them.
+Use `--sample-dir <directory>` to select the directory containing the `.nc` sample
+files. The option applies to the menu, `--run`, `--smoke`, `--run-all`, and
+`--debug-smoke`, and may appear before or after the command. Relative paths use the
+current working directory. An explicit path takes precedence over automatic
+discovery; a missing sample produces a file-read error without falling back to a
+different directory. `--file` and `--check` continue to use their own file paths.
+
+Without `--sample-dir`, lookup searches ancestors of the current working directory
+and executable directory. The executable embeds no source-checkout sample path.
+For an out-of-tree build or copied executable, pass the path at runtime or deploy
+the samples in a nearby `scripts` directory. Visual Studio launch settings pass
+the source sample directory as an argument; they do not compile it into the binary.
+
+```powershell
+neocore --sample-dir "path/to/scripts"
+neocore --sample-dir "path/to/scripts" --smoke
+neocore --run hello --sample-dir "path/to/scripts"
+```
 
 | Command-line mode | Menu command | Behavior |
 | --- | --- | --- |

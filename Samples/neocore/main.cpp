@@ -218,14 +218,6 @@ static std::string FindSamples(const std::string& executable)
             directory = parent;
         }
     }
-#ifdef NEOCORE_SAMPLE_DIR
-    FILE* file = Open(NEOCORE_SAMPLE_DIR "/hello.nc");
-    if (file)
-    {
-        std::fclose(file);
-        return Directory(Canonical(NEOCORE_SAMPLE_DIR "/hello.nc"));
-    }
-#endif
     return std::string();
 }
 
@@ -274,7 +266,7 @@ static int Execute(const std::string& mode, const std::string& argument,
         if (argument.find_first_of("/\\.") != std::string::npos)
         { std::fprintf(stderr, "sample name must be a simple name\n"); return 1; }
         if (sampleDirectory.empty())
-        { std::fprintf(stderr, "cannot locate sample scripts; run from the repository or its build directory\n"); return 1; }
+        { std::fprintf(stderr, "cannot locate sample scripts; pass --sample-dir <directory> or run from the repository\n"); return 1; }
         path = sampleDirectory + "/" + argument + ".nc";
     }
     path = Canonical(path);
@@ -450,6 +442,7 @@ static int Usage(int status = 2)
     std::puts("       neocore --pooltrim-check                Untimed memory-pool checks");
     std::puts("       neocore --file|--check|--emit-backend <file.nc>");
     std::puts("Options: --debug, --asm, --stats (before or after the command)");
+    std::puts("         --sample-dir <directory> (named samples and menu; relative to working directory)");
     std::puts("         --host <schema.json> --host-impl <implementation.nc> --resource-root <directory>");
     std::puts("         --max-errors <count> (default 100); host implementations are console-only");
     std::puts("       neocore --dap | --lsp                    Typed editor protocols (stdio)");
@@ -492,6 +485,7 @@ static int RunMenu(const ConsoleSettings& settings, const std::string& sampleDir
 static int ConsoleMain(const std::vector<std::string>& arguments)
 {
     ConsoleSettings settings;
+    std::string sampleDirectory;
     std::vector<std::string> positional;
     for (std::size_t i = 1; i < arguments.size(); ++i)
     {
@@ -499,6 +493,12 @@ static int ConsoleMain(const std::vector<std::string>& arguments)
         if (argument == "--debug") settings.debug = true;
         else if (argument == "--asm") settings.emitAsm = true;
         else if (argument == "--stats") settings.stats = true;
+        else if (argument == "--sample-dir")
+        {
+            if (i + 1 == arguments.size() || arguments[i + 1].empty() || arguments[i + 1].compare(0, 2, "--") == 0)
+            { std::fprintf(stderr, "--sample-dir needs a directory\n"); return 2; }
+            sampleDirectory = arguments[++i];
+        }
         else if (argument == "--host" || argument == "--host-impl" || argument == "--resource-root" || argument == "--max-errors")
         {
             if (i + 1 == arguments.size()) { std::fprintf(stderr, "%s needs a value\n", argument.c_str()); return 2; }
@@ -520,7 +520,8 @@ static int ConsoleMain(const std::vector<std::string>& arguments)
     }
     if (!settings.hostImplementation.empty() && settings.hostSchema.empty())
     { std::fprintf(stderr, "--host-impl requires --host\n"); return 2; }
-    const std::string sampleDirectory = FindSamples(arguments[0]);
+    // 명시한 경로가 잘못되어도 자동 탐색으로 다른 샘플을 실행하지 않는다.
+    if (sampleDirectory.empty()) sampleDirectory = FindSamples(arguments[0]);
     if (positional.empty()) return RunMenu(settings, sampleDirectory);
     const std::string& mode = positional[0];
     if (positional.size() == 1)

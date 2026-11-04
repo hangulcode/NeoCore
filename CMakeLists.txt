@@ -98,7 +98,8 @@ add_library(neocore_runtime STATIC NeoSource/NeoCore.cpp NeoSource/NeoCoreHost.c
 target_link_libraries(neocore_runtime PUBLIC neocore_frontend PRIVATE neocore_backend Threads::Threads)
 add_library(NeoCore::Runtime ALIAS neocore_runtime)
 add_executable(neocore Samples/neocore/main.cpp Samples/neocore/SampleHost.cpp Samples/neocore/ConsoleHost.cpp Samples/neocore/ConsoleTooling.cpp)
-target_compile_definitions(neocore PRIVATE NEOCORE_SAMPLE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/Samples/neocore/scripts")
+set_target_properties(neocore PROPERTIES
+    VS_DEBUGGER_COMMAND_ARGUMENTS "--sample-dir \"${CMAKE_CURRENT_SOURCE_DIR}/Samples/neocore/scripts\"")
 option(NEOCORE_CONSOLE_HTTP "Link the .nc console with libcurl HTTPS transport" OFF)
 if(NEOCORE_CONSOLE_HTTP)
     find_package(CURL REQUIRED)

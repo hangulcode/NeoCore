@@ -207,6 +207,9 @@ F5 opens the interactive sample menu. Select a sample by number or name, enter
 when `neocore` has no command-line arguments. See the
 [console feature matrix](docs/SampleMigration.md) for smoke tests, diagnostics,
 manual benchmarks, and the remaining NeoCore tooling limitations.
+Use `neocore --sample-dir "path/to/scripts" --run hello` to choose the sample
+directory explicitly, or omit `--run hello` to open the menu with that directory.
+The path is a runtime argument; builds do not embed the checkout's sample path.
 From a Visual Studio developer prompt, run these commands at the root:
 
 ```bat
