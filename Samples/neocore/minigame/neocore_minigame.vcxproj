@@ -32,10 +32,8 @@
     <OutDir>$(ProjectDir)..\..\..\Build\Windows\bin\$(Platform)\$(Configuration)\</OutDir>
     <IntDir>$(ProjectDir)..\..\..\Build\Windows\obj\NeoCoreMiniGame\$(Platform)\$(Configuration)\</IntDir>
     <TargetName>neocore_minigame</TargetName>
-    <NeoCoreSampleScript>$([System.String]::Copy('$(ProjectDir)').Replace('\', '/'))scripts/mover.nc</NeoCoreSampleScript>
-    <NeoCoreReplayScript>$([System.String]::Copy('$(ProjectDir)').Replace('\', '/'))scripts/replay.nc</NeoCoreReplayScript>
     <LinkIncremental>false</LinkIncremental>
-    <LocalDebuggerCommandArguments>--verify</LocalDebuggerCommandArguments>
+    <LocalDebuggerCommandArguments>--verify --file "$(ProjectDir)scripts\mover.nc"</LocalDebuggerCommandArguments>
     <LocalDebuggerWorkingDirectory>$(ProjectDir)..\..\..\</LocalDebuggerWorkingDirectory>
     <DebuggerFlavor>WindowsLocalDebugger</DebuggerFlavor>
   </PropertyGroup>
@@ -50,7 +48,7 @@
       <DebugInformationFormat>ProgramDatabase</DebugInformationFormat>
       <AdditionalOptions>/utf-8 %(AdditionalOptions)</AdditionalOptions>
       <AdditionalIncludeDirectories>$(ProjectDir)..\..\..\NeoSource;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
-      <PreprocessorDefinitions>NEOCORE_MINIGAME_SCRIPT=&quot;$(NeoCoreSampleScript)&quot;;NEOCORE_REPLAY_SCRIPT=&quot;$(NeoCoreReplayScript)&quot;;WIN_PRJ;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <PreprocessorDefinitions>WIN_PRJ;%(PreprocessorDefinitions)</PreprocessorDefinitions>
     </ClCompile>
     <Link>
       <SubSystem>Console</SubSystem>
@@ -81,6 +79,7 @@
   <ItemGroup>
     <ClCompile Include="main.cpp" />
     <ClCompile Include="replay.cpp" />
+    <ClInclude Include="sample_io.h" />
     <None Include="scripts\mover.nc" />
     <None Include="scripts\replay.nc" />
     <None Include="viewer.html" />

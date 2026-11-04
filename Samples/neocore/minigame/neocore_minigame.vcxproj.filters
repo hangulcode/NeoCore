@@ -2,6 +2,7 @@
 <Project ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
   <ItemGroup><Filter Include="Scripts" /></ItemGroup>
   <ItemGroup><ClCompile Include="main.cpp" /><ClCompile Include="replay.cpp" /></ItemGroup>
+  <ItemGroup><ClInclude Include="sample_io.h" /></ItemGroup>
   <ItemGroup>
     <None Include="scripts\mover.nc"><Filter>Scripts</Filter></None>
     <None Include="scripts\replay.nc"><Filter>Scripts</Filter></None>

@@ -1,9 +1,8 @@
 ﻿#include "NeoCore.h"
 #include "NeoCoreHost.h"
+#include "sample_io.h"
 
 #include <cstdio>
-#include <fstream>
-#include <iterator>
 #include <map>
 #include <memory>
 #include <stdexcept>
@@ -208,9 +207,7 @@ void Frame(World& world, const std::vector<std::uint64_t>& ids,
 
 void Verify(const std::string& filename)
 {
-    std::ifstream input(filename.c_str(), std::ios::binary);
-    Require(bool(input), "could not open " + filename);
-    const std::string source((std::istreambuf_iterator<char>(input)), std::istreambuf_iterator<char>());
+    const std::string source = ReadSampleScript(filename);
     World world;
     const std::size_t count = 3;
     std::vector<std::uint64_t> ids;
@@ -307,23 +304,38 @@ void Verify(const std::string& filename)
 }
 }
 
-int RunMotion(int argc, char** argv);
+int RunMotion(const std::vector<std::string>& args);
 
 int main(int argc, char** argv)
 {
     try
     {
-        for (int i = 1; i < argc; ++i)
-            if (std::string(argv[i]) == "--motion" || std::string(argv[i]) == "--record")
-                return RunMotion(argc, argv);
-        std::string filename = NEOCORE_MINIGAME_SCRIPT;
-        for (int i = 1; i < argc; ++i)
+        const std::vector<std::string> args = SampleArguments(argc, argv);
+        for (std::size_t i = 1; i < args.size(); ++i)
         {
-            const std::string option = argv[i];
-            if (option == "--verify") continue;
-            if (option == "--file" && i + 1 < argc) filename = argv[++i];
-            else throw std::runtime_error("usage: neocore_minigame [--verify] [--file mover.nc]");
+            if (args[i] == "--motion" || args[i] == "--record") return RunMotion(args);
+            if ((args[i] == "--file" || args[i] == "--script") && i + 1 < args.size()) ++i;
         }
+        std::string filename;
+        for (std::size_t i = 1; i < args.size(); ++i)
+        {
+            const std::string& option = args[i];
+            if (option == "--verify") continue;
+            if (option == "--file")
+            {
+                Require(i + 1 < args.size() && !args[i + 1].empty() && args[i + 1].compare(0, 2, "--") != 0,
+                    "--file needs a path");
+                filename = args[++i];
+            }
+            else if (option == "--help")
+            {
+                std::puts("Usage: neocore_minigame --file mover.nc [--verify]\n"
+                    "       neocore_minigame --motion --file replay.nc [--verify] [--record scene-data.js]");
+                return 0;
+            }
+            else throw std::runtime_error("unknown minigame argument: " + option);
+        }
+        Require(!filename.empty(), "minigame requires --file <script.nc>");
         Verify(filename);
         return 0;
     }

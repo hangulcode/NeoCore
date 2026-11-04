@@ -1,5 +1,6 @@
 ﻿#include "NeoCore.h"
 #include "NeoCoreHost.h"
+#include "sample_io.h"
 
 #include <array>
 #include <cmath>
@@ -307,10 +308,19 @@ void Print(const Scene& scene, int frame)
 
 }
 
-int RunMotion(int argc, char** argv)
+std::vector<std::string> SampleArguments(int argc, char** argv)
 {
-    const std::vector<std::string> args = Arguments(argc, argv);
-    std::string script = NEOCORE_REPLAY_SCRIPT;
+    return Arguments(argc, argv);
+}
+
+std::string ReadSampleScript(const std::string& path)
+{
+    return Read(path);
+}
+
+int RunMotion(const std::vector<std::string>& args)
+{
+    std::string script;
     std::string recording;
     bool verify = false;
     for (std::size_t i = 1; i < args.size(); ++i)
@@ -318,20 +328,23 @@ int RunMotion(int argc, char** argv)
         const std::string& argument = args[i];
         if (argument == "--motion") continue;
         if (argument == "--verify") verify = true;
-        else if ((argument == "--file" || argument == "--script" || argument == "--record") && i + 1 < args.size())
+        else if (argument == "--file" || argument == "--script" || argument == "--record")
         {
+            Require(i + 1 < args.size() && !args[i + 1].empty() && args[i + 1].compare(0, 2, "--") != 0,
+                argument + " needs a path");
             const std::string value = args[++i];
             if (argument == "--record") recording = value;
             else script = value;
         }
         else if (argument == "--help")
         {
-            std::cout << "Usage: neocore_minigame --motion [--verify] [--file replay.nc] [--record scene-data.js]\n"
+            std::cout << "Usage: neocore_minigame --motion --file replay.nc [--verify] [--record scene-data.js]\n"
                 << "Runs 120 fixed 1/60-second simulation ticks without timers.\n";
             return 0;
         }
         else throw std::runtime_error("unknown or incomplete motion argument: " + argument);
     }
+    Require(!script.empty(), "motion mode requires --file <script.nc>");
     Scene scene;
     scene.Load(script);
     std::ostringstream frames;

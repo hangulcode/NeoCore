@@ -18,7 +18,7 @@ The sample is included when `NEOCORE_BUILD_TESTS` or `NEOCORE_BUILD_EXAMPLES`
 is enabled. With the Visual Studio CMake generator, run:
 
 ```powershell
-Build/neocore/bin/Release/neocore_minigame.exe --verify
+Build/neocore/bin/Release/neocore_minigame.exe --verify --file Samples/neocore/minigame/scripts/mover.nc
 ```
 
 For the checked-in Windows projects, open
@@ -31,17 +31,19 @@ library is rebuilt when needed. Command-line MSBuild can also build the project 
 
 ```bat
 MSBuild Samples\neocore\minigame\neocore_minigame.vcxproj /p:Configuration=Release /p:Platform=x64 /m
-Build\Windows\bin\x64\Release\neocore_minigame.exe --verify
+Build\Windows\bin\x64\Release\neocore_minigame.exe --verify --file Samples\neocore\minigame\scripts\mover.nc
 ```
 
 The native project references `Windows/NeoCore.vcxproj`; it does not compile a
 second copy of the VM. Debug/Release and x86/x64 use the same CRT and library rules
 as the NeoCore console.
 
-The build defines `NEOCORE_MINIGAME_SCRIPT` as the absolute source path to
-[scripts/mover.nc](scripts/mover.nc), so launching from another working directory
-still finds it. To use another script with the same events and exported queries, pass
-`--file path/to/mover.nc`. `--verify` is optional; both forms run the checks.
+Pass the script path at runtime with `--file path/to/mover.nc`. Both modes require
+an explicit path; builds do not embed source-checkout paths. Relative paths use
+the current working directory, and paths containing spaces must be quoted.
+Windows paths support Unicode. F5 and CTest pass the source script path as an
+argument. A missing path or unreadable file reports an error without selecting
+another script. `--verify` is optional in the basic mode; both forms run the checks.
 
 Successful execution prints:
 
@@ -57,7 +59,7 @@ steps without timers. Red and Blue share one checked program and keep separate
 origins, elapsed time, speeds, update counters, and function values.
 
 ```powershell
-Build/neocore/bin/Release/neocore_minigame.exe --motion --verify --record Build/neocore/bin/Release/scene-data.js
+Build/neocore/bin/Release/neocore_minigame.exe --motion --verify --file Samples/neocore/minigame/scripts/replay.nc --record Build/neocore/bin/Release/scene-data.js
 ```
 
 Open `Build/neocore/bin/Release/viewer.html` to play, pause, or scrub the 121

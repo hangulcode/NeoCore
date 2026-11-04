@@ -19,8 +19,8 @@
 <p>Native C++ objects, independent script state, and a host-driven update callback.</p>
 <canvas id="scene" width="960" height="480" aria-label="Recorded 3D positions of Red and Blue"></canvas>
 <p><button id="play" type="button">Pause</button> <input id="time" aria-label="Frame" type="range" min="0" max="120" value="0"> <span id="frame"></span></p>
-<p id="status">To record a run, execute <code>neocore_minigame --motion --record scene-data.js</code>
-in this folder, then reopen this page. Windows: <code>.\neocore_minigame.exe --motion --record scene-data.js</code>.</p>
+<p id="status">To record a run, execute <code>neocore_minigame --motion --file "path/to/replay.nc" --record scene-data.js</code>
+in this folder, then reopen this page. Windows: <code>.\neocore_minigame.exe --motion --file "path\to\replay.nc" --record scene-data.js</code>.</p>
 <p>This page replays positions recorded by the C++ host. NeoCore executes in the native sample.</p>
 <script src="scene-data.js"></script>
 <script>
