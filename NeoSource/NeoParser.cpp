@@ -385,6 +385,27 @@ static void ElideImmediateSnapshot(SOperand& operand, CArchiveRdWC& ar, SFunctio
 	operand = SOperand(source);
 }
 
+// 연결 명령이 바로 소비하는 문자열 변환은 연결 안에서 수행한다. 중간에 명령이나 분기 합류점이
+// 없을 때만 적용하므로 인자의 값·변환 시점이 같고, 디버그의 중단 위치도 그대로 남긴다.
+static void ElideConcatConversion(SOperand& left, SOperand& right, CArchiveRdWC& ar, SFunctions& funs)
+{
+    SFunctionInfo& fun = *funs._cur;
+    const int offset = fun._iLastOPOffset;
+    const int end = fun._code->GetBufferOffset();
+    if (ar._debug || offset < 0 || offset + static_cast<int>(sizeof(SVMOperation)) != end ||
+        fun.GetLastOP() != NOP_TOSTRING || fun._jumpTargetOffsets.count(end) != 0)
+        return;
+    const SVMOperation conversion = *fun.GetOPPointer(offset);
+    if (conversion.argFlag != 0 || !IsTempVar(conversion.n1)) return;
+    const bool replaceLeft = !left.IsArray() && !left.IsFun() && left._iVar == conversion.n1;
+    const bool replaceRight = !right.IsArray() && !right.IsFun() && right._iVar == conversion.n1;
+    if (!replaceLeft && !replaceRight) return;
+    fun._code->SetBufferOffset(offset);
+    fun.ClearLastOP();
+    if (replaceLeft) left = SOperand(conversion.n2);
+    if (replaceRight) right = SOperand(conversion.n2);
+}
+
 // 바로 앞의 스크립트 호출이나 벡터 생성 결과를 단순 변수에 직접 쓴다. 인자 평가는 이미 끝났으며,
 // 임시 결과를 공유하는 MOV와 불필요한 참조 수 변경을 없앤다.
 // 호출 인자 슬롯과 컨테이너/속성 대입은 제외하고, 분기 합류점도 넘지 않는다.
@@ -4291,6 +4312,7 @@ TK_TYPE ParseJob(bool bReqReturn, SOperand& sResultStack, std::vector<SJumpValue
 			MaterializeValue(a, ar, funs);
 			MaterializeValue(b, ar, funs);
 			ElideImmediateSnapshot(a, ar, funs);
+			if (op == NOP_STR_ADD) ElideConcatConversion(a, b, ar, funs);
 			const int iTempOffset2 = funs._cur->AllocLocalTempVar();
 			funs._cur->Push_OP(ar, op, iTempOffset2, a._iVar, b._iVar, a.IsShort(), b.IsShort());
 			operands[iFindOffset] = iTempOffset2;

@@ -136,6 +136,15 @@ targets, consumed assignment results and debug-info builds retain separate
 instructions. Ordinary map reads fast-copy non-owning values and preserve
 ownership before releasing a reference-valued destination.
 
+String concatenation writes directly into the final string buffer and retains
+both input values until the result is complete. Null spelling, byte-length limits,
+and UTF-8 character counts are unchanged. In non-debug compilation, an adjacent
+`tostring` that produces only a temporary for concatenation is performed by the
+existing concatenation instruction, avoiding an intermediate VM string. Stored
+conversion results, intervening instructions, control-flow joins, and debug-info
+programs retain the separate conversion. This does not relax source type checking
+or add an opcode.
+
 Arrays, vectors, and generated helpers retain private compile-only intrinsics in
 the textual skeleton. Their metadata carries types and source lines, and each
 intrinsic emits instructions without a runtime helper call frame. Declarations,

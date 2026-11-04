@@ -1,6 +1,8 @@
 ﻿#include "NeoCore.h"
 #include "NeoCoreCompiler.h"
+#include "NeoScript.h"
 #include <cstdio>
+#include <limits>
 #include <string>
 #include <vector>
 
@@ -102,6 +104,112 @@ static void CheckExecution(bool debug)
         valueString.value.asString() == "new", "string return owns updated value");
 }
 
+static void CheckStringConcatenation(bool debug)
+{
+    using namespace NeoCore;
+    NeoScript::AllocStats before;
+    NeoScript::GetAllocStats(before);
+    Error error;
+    auto program = Program::Compile(
+        "string saved;\n"
+        "export string Pair(string a,string b){return a..b;}\n"
+        "export string ReplaceLeft(string a,string b){string alias=a;a=a..b;return alias..\"|\"..a;}\n"
+        "export string ReplaceRight(string a,string b){string alias=b;b=a..b;return alias..\"|\"..b;}\n"
+        "export string Double(string a){string alias=a;a=a..a;return alias..\"|\"..a;}\n"
+        "export string Global(string a,string b){saved=a;saved=saved..b;return saved;}\n"
+        "export int Length(string a,string b){string s=a..b;return s.len();}\n"
+        "export int Key(string a,string b){string key=a..b;map<string,int> m={key:7};return m[a..b];}\n"
+        "string Change(){saved=\"changed\";return \"right\";}\n"
+        "export string Order(){saved=\"left\";return saved..Change()..\"|\"..saved;}\n"
+        "export string Right(int x){return \"v\"..tostring(x);}\n"
+        "export string Left(int x){return tostring(x)..\"v\";}\n"
+        "export string Both(int x,int y){return tostring(x)..tostring(y);}\n"
+        "export string Retained(int x){string text=tostring(x);string joined=text..\"x\";return text..\"|\"..joined;}\n"
+        "export string PlainFloat(float x){return tostring(x);}\n"
+        "export string JoinFloat(float x){return \"v\"..tostring(x);}\n"
+        "export string JoinBool(bool x){return tostring(x)..\"v\";}\n"
+        "export string JoinNull(string x){return \"v\"..tostring(x);}\n"
+        "int number;string Bump(){number=7;return \"R\";}\n"
+        "export string ScalarOrder(){number=1;return tostring(number)..Bump();}\n",
+        error, "string-concat.nc", debug);
+    Check(bool(program), "string concatenation compile: " + error.message);
+    if (!program) return;
+    std::vector<std::uint8_t> image;
+    Check(program->SaveImage(image, error), "save string concatenation image");
+    const std::string values[] = {
+        "", "item", std::string(15, 'x'), std::string(16, 'y'), std::string(4096, 'z'),
+        u8"한글🙂", std::string("a\0b", 3), std::string("\xe2", 1), std::string("\x82\xac", 2)
+    };
+    for (int loaded = 0; loaded != 2; ++loaded)
+    {
+        if (loaded) program = Program::LoadImage(image, error);
+        Check(bool(program), "load string concatenation image: " + error.message);
+        if (!program) return;
+        for (const auto& a : values) for (const auto& b : values)
+        {
+            const std::vector<Scalar> arguments = {Scalar::String(a), Scalar::String(b)};
+            const char* functions[] = {"Pair", "ReplaceLeft", "ReplaceRight", "Global"};
+            const std::string expected[] = {a + b, a + "|" + a + b, b + "|" + a + b, a + b};
+            for (int i = 0; i != 4; ++i)
+            {
+                const Result result = program->Call(functions[i], arguments);
+                Check(result.ok() && result.value.kind() == Scalar::Kind::String &&
+                    result.value.asString() == expected[i], std::string(functions[i]) + " bytes and alias ownership");
+            }
+            const Result key = program->Call("Key", arguments);
+            Check(key.ok() && key.value.asInt() == 7, "concatenation hash survives pool reuse");
+        }
+        for (const auto& a : values)
+        {
+            const Result doubled = program->Call("Double", {Scalar::String(a)});
+            Check(doubled.ok() && doubled.value.asString() == a + "|" + a + a, "self concatenation preserves alias");
+        }
+        // 끝에서 잘린 UTF-8 두 조각은 연결 뒤 완전한 한 글자가 될 수 있다.
+        const Result length = program->Call("Length", {Scalar::String(std::string("\xe2", 1)), Scalar::String(std::string("\x82\xac", 2))});
+        Check(length.ok() && length.value.asInt() == 1, "joined UTF-8 length is recomputed");
+        const Result unicode = program->Call("Length", {Scalar::String(u8"한글"), Scalar::String(u8"🙂")});
+        Check(unicode.ok() && unicode.value.asInt() == 3, "Unicode length counts code points");
+        const Result nullLeft = program->Call("Pair", {Scalar::Null(), Scalar::String("x")});
+        const Result nullRight = program->Call("Pair", {Scalar::String("x"), Scalar::Null()});
+        const Result bothNull = program->Call("Pair", {Scalar::Null(), Scalar::Null()});
+        Check(nullLeft.ok() && nullLeft.value.asString() == "nullx" &&
+            nullRight.ok() && nullRight.value.asString() == "xnull" &&
+            bothNull.ok() && bothNull.value.asString() == "nullnull", "null concatenation preserves spelling");
+        const Result order = program->Call("Order");
+        Check(order.ok() && order.value.asString() == "leftright|changed", "concatenation preserves evaluation order");
+        const std::int64_t integers[] = {0, 1, -1, INT64_MIN, INT64_MAX};
+        for (const auto n : integers)
+        {
+            const std::string digits = std::to_string(n);
+            const Result left = program->Call("Left", {Scalar::Int(n)});
+            const Result right = program->Call("Right", {Scalar::Int(n)});
+            const Result both = program->Call("Both", {Scalar::Int(n), Scalar::Int(n)});
+            const Result retained = program->Call("Retained", {Scalar::Int(n)});
+            Check(left.ok() && left.value.asString() == digits + "v" && right.ok() &&
+                right.value.asString() == "v" + digits && both.ok() && both.value.asString() == digits + digits &&
+                retained.ok() && retained.value.asString() == digits + "|" + digits + "x", "integer conversion and retained result");
+        }
+        for (const double n : {0.0, -0.0, 0.1, 1.0e100,
+            std::numeric_limits<double>::infinity(), -std::numeric_limits<double>::infinity(),
+            std::numeric_limits<double>::quiet_NaN()})
+        {
+            const Result plain = program->Call("PlainFloat", {Scalar::Float(n)});
+            const Result joined = program->Call("JoinFloat", {Scalar::Float(n)});
+            Check(plain.ok() && joined.ok() && joined.value.asString() == "v" + plain.value.asString(), "float conversion preserves formatting");
+        }
+        const Result boolean = program->Call("JoinBool", {Scalar::Bool(true)});
+        const Result convertedNull = program->Call("JoinNull", {Scalar::Null()});
+        const Result scalarOrder = program->Call("ScalarOrder");
+        Check(boolean.ok() && boolean.value.asString() == "truev" && convertedNull.ok() &&
+            convertedNull.value.asString() == "vnull", "bool and null conversion");
+        Check(scalarOrder.ok() && scalarOrder.value.asString() == "1R", "conversion cannot cross a mutating call");
+    }
+    program.reset();
+    NeoScript::AllocStats after;
+    NeoScript::GetAllocStats(after);
+    Check(before.strings == after.strings, "concatenation releases all owned strings");
+}
+
 int main()
 {
     const struct { const char* source; const char* label; } invalid[] = {
@@ -159,6 +267,8 @@ int main()
     for (const auto& item : invalid) Reject(item.source, item.label);
     CheckExecution(false);
     CheckExecution(true);
+    CheckStringConcatenation(false);
+    CheckStringConcatenation(true);
 
     NeoCore::Error error;
     auto program = NeoCore::Program::Compile("int n=0;n+=1;int Private(){return 0;} export int Count(){return n;} export float Add(float x){return x+0.5;}", error);

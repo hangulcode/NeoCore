@@ -835,6 +835,7 @@ public:
 	void GetAllocStats(SNeoVMAllocStats& outStats);
 	void Var_SetString(VarInfo *d, const char* str);
 	void Var_SetStringA(VarInfo *d, const std::string& str);
+	void Var_SetStringConcat(VarInfo* d, const std::string& left, const std::string& right);
 	void Var_SetTable(VarInfo *d, MapInfo* p);
 
 

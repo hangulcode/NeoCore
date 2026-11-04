@@ -758,6 +758,41 @@ static void ReferenceCleanup(IRuntime* runtime, bool debug)
     }
 }
 
+static void StringConversionShapes(IRuntime* runtime, bool debug)
+{
+    struct Shape { const char* source; int optimizedConversions; };
+    const Shape cases[] = {
+        {"export string Probe(int x){return \"v\"..tostring(x);}", 0},
+        {"export string Probe(int x){return tostring(x)..\"v\";}", 0},
+        {"export string Probe(int x){string s=tostring(x);return s..\"v\";}", 1},
+        {"int x=1;string Change(){x=7;return \"v\";}export string Probe(){return tostring(x)..Change();}", 1},
+        {"export string Probe(int x,bool test){string s=\"before\";if(test)s=tostring(x);return s..\"v\";}", 1}
+    };
+    for (const auto& item : cases)
+    {
+        NeoCore::StaticCompileResult checked;
+        Check(NeoCore::CompileStaticSource(item.source, checked), "string conversion shape frontend");
+        if (!checked.success) continue;
+        CompileDesc desc;
+        desc.source = checked.loweredSource;
+        desc.sourceName = "string-conversion.nc";
+        desc.includeDebugInfo = debug;
+        desc.coreIntrinsicPrefix = checked.backendIntrinsicPrefix;
+        desc.coreTypedIR = &checked.typedIR;
+        std::vector<uint8_t> image;
+        const Error error = runtime->CompileToBytecode(desc, image);
+        Check(error.ok(), "string conversion shape image");
+        int conversions = 0, concatenations = 0;
+        for (const auto& operation : Operations(image))
+        {
+            if (operation.op == NOP_TOSTRING) ++conversions;
+            if (operation.op == NOP_STR_ADD || operation.op == NOP_STR_ADD_L) ++concatenations;
+        }
+        Check(conversions == (debug ? 1 : item.optimizedConversions) && concatenations == 1,
+            std::string(item.source) + " only immediate temporary conversion is folded");
+    }
+}
+
 static void StaticProfile(IRuntime* runtime)
 {
     CompileDesc dynamic;
@@ -803,6 +838,7 @@ int main()
         Shapes(runtime, debug);
         ComparisonShapes(runtime, debug);
         ReferenceCleanup(runtime, debug);
+        StringConversionShapes(runtime, debug);
     }
     DestroyRuntime(runtime);
     std::printf("NeoCore typed-op regression: %d/%d passed\n", checks - failures, checks);

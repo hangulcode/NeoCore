@@ -5,27 +5,26 @@
 // --- Instruction Handlers ---
 // Return 'true' to exit the RunInternal loop, 'false' to continue.
 
-NEOS_NOINLINE bool handle_STR_ADD(const SVMOperation& OP) {
-    VarInfo* first = GetVarPtr2(OP);
-    VarInfo* second = GetVarPtr3(OP);
+NEOS_FORCEINLINE void ConcatenateStrings(VarInfo* result, VarInfo* first, VarInfo* second) {
     if (first->GetType() == VAR_STRING && second->GetType() == VAR_STRING)
-        CheckRuntimeStringGrowth(first->_str->_str.size(), second->_str->_str.size());
-    std::string left = ToString(first), right = ToString(second);
-    CheckRuntimeStringGrowth(left.size(), right.size());
-    left += right;
-    Var_SetStringA(GetVarPtrF1(OP), left);
+        _pVM->Var_SetStringConcat(result, first->_str->_str, second->_str->_str);
+    else
+    {
+        // null 문자열과 내부 변환 경로는 기존 표기를 유지한다.
+        std::string leftStorage, rightStorage;
+        const std::string& left = first->GetType() == VAR_STRING ? first->_str->_str : (leftStorage = ToString(first));
+        const std::string& right = second->GetType() == VAR_STRING ? second->_str->_str : (rightStorage = ToString(second));
+        _pVM->Var_SetStringConcat(result, left, right);
+    }
+}
+
+NEOS_NOINLINE bool handle_STR_ADD(const SVMOperation& OP) {
+    ConcatenateStrings(GetVarPtrF1(OP), GetVarPtr2(OP), GetVarPtr3(OP));
     return false;
 }
 
 NEOS_NOINLINE bool handle_STR_ADD_L(const SVMOperation& OP) {
-    VarInfo* first = GetVarPtr_L(OP.n2);
-    VarInfo* second = GetVarPtr_L(OP.n3);
-    if (first->GetType() == VAR_STRING && second->GetType() == VAR_STRING)
-        CheckRuntimeStringGrowth(first->_str->_str.size(), second->_str->_str.size());
-    std::string left = ToString(first), right = ToString(second);
-    CheckRuntimeStringGrowth(left.size(), right.size());
-    left += right;
-    Var_SetStringA(GetVarPtr_L(OP.n1), left);
+    ConcatenateStrings(GetVarPtr_L(OP.n1), GetVarPtr_L(OP.n2), GetVarPtr_L(OP.n3));
     return false;
 }
 

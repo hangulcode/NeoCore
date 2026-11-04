@@ -590,6 +590,35 @@ void CNeoVM::Var_SetStringA(VarInfo *d, const std::string& str)
 	d->SetType(VAR_STRING);
 	d->_str = value;
 }
+void CNeoVM::Var_SetStringConcat(VarInfo* d, const std::string& left, const std::string& right)
+{
+	CheckRuntimeStringGrowth(left.size(), right.size());
+	// 입력을 복사한 임시 문자열 없이 최종 저장소를 채운다. 목적지는 완성 뒤에 해제하여
+	// 자기 자신과의 연결 및 할당 실패에서도 원래 값과 입력의 수명을 보존한다.
+	StringInfo* value = m_sPool_String.Receive();
+	value->_hash = 0;
+	value->_interned = false;
+	value->_refCount = 1;
+	try
+	{
+		value->_str.reserve(left.size() + right.size());
+		value->_str.assign(left);
+		value->_str.append(right);
+	}
+	catch (...)
+	{
+		// 큰 버퍼가 준비된 뒤 다음 할당이 실패해도 유휴 풀에 그 버퍼를 남기지 않는다.
+		std::string().swap(value->_str);
+		m_sPool_String.Confer(value);
+		throw;
+	}
+	// 입력 끝의 불완전한 UTF-8이 연결 뒤 한 글자가 될 수 있으므로 길이를 단순히 더하지 않는다.
+	value->_StringLen = utf_string::UTF8_LENGTH(value->_str);
+	++m_sAllocStats.strings;
+	if (d->IsAllocType()) Var_Release(d);
+	d->SetType(VAR_STRING);
+	d->_str = value;
+}
 void CNeoVM::Var_SetTable(VarInfo *d, MapInfo* p)
 {
 	if (d->IsAllocType())
