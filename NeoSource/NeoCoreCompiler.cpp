@@ -433,7 +433,7 @@ struct ConstantValue
         return value;
     }
 };
-enum class ExprKind { Literal, Name, Unary, Binary, Assignment, Call, Member, Index, List, Map, Lambda };
+enum class ExprKind { Literal, Name, Unary, Binary, Assignment, Call, Member, Index, List, Map, Lambda, Conditional };
 struct Expr
 {
     ExprKind kind;
@@ -920,17 +920,17 @@ private:
     static int Precedence(const std::string& op)
     {
         if (op == "=" || op == "+=" || op == "-=" || op == "*=" || op == "/=" || op == "%=" || op == "&=" || op == "|=" || op == "^=" || op == "<<=" || op == ">>=") return 1;
-        if (op == "||") return 2;
-        if (op == "&&") return 3;
-        if (op == "|") return 4;
-        if (op == "^") return 5;
-        if (op == "&") return 6;
-        if (op == "==" || op == "!=") return 7;
-        if (op == "<" || op == "<=" || op == ">" || op == ">=") return 8;
-        if (op == "<<" || op == ">>") return 9;
-        if (op == "..") return 10;
-        if (op == "+" || op == "-") return 11;
-        if (op == "*" || op == "/" || op == "%") return 12;
+        if (op == "||") return 3;
+        if (op == "&&") return 4;
+        if (op == "|") return 5;
+        if (op == "^") return 6;
+        if (op == "&") return 7;
+        if (op == "==" || op == "!=") return 8;
+        if (op == "<" || op == "<=" || op == ">" || op == ">=") return 9;
+        if (op == "<<" || op == ">>") return 10;
+        if (op == "..") return 11;
+        if (op == "+" || op == "-") return 12;
+        if (op == "*" || op == "/" || op == "%") return 13;
         return 0;
     }
 
@@ -947,6 +947,20 @@ private:
         std::unique_ptr<Expr> left = ParseUnary();
         for (;;)
         {
+            // 삼항식은 논리 OR보다 약하고 대입보다 강하다. 거짓 가지는 오른쪽으로 결합한다.
+            if (At("?") && minimum <= 2)
+            {
+                std::unique_ptr<Expr> node(new Expr(ExprKind::Conditional, Take()));
+                node->begin = left->begin;
+                node->children.push_back(std::move(left));
+                node->children.push_back(ParseExpression());
+                Expect(":");
+                node->children.push_back(ParseExpression(2));
+                node->end = node->children[2]->end;
+                CheckTreeDepth(*node);
+                left = std::move(node);
+                continue;
+            }
             const int precedence = Precedence(Peek().text);
             if (precedence < minimum) return left;
             const Token op = Take();
@@ -1715,6 +1729,11 @@ private:
 
     void Contextualize(Expr& expression, TypeId expected)
     {
+        if (expression.kind == ExprKind::Conditional)
+        {
+            Contextualize(*expression.children[1], expected);
+            Contextualize(*expression.children[2], expected);
+        }
         if ((expression.kind == ExprKind::List && types_.Get(expected).kind == TypeKind::List)
             || (expression.kind == ExprKind::Map && types_.Get(expected).kind == TypeKind::Map)) expression.type = expected;
     }
@@ -2418,6 +2437,27 @@ private:
             switchDepth_ = savedSwitch;
             return;
         }
+        case ExprKind::Conditional:
+        {
+            Expr& condition = *expression.children[0];
+            Expr& yes = *expression.children[1];
+            Expr& no = *expression.children[2];
+            CheckExpr(condition);
+            Require(condition, types_.Bool(), "conditional expression condition");
+            CheckExpr(yes); CheckExpr(no);
+            TypeId common = types_.CommonNumericType(yes.type, no.type);
+            if (yes.type == no.type && yes.type != types_.Void()) common = yes.type;
+            else if (yes.type == types_.Null() && types_.AllowsNull(no.type)) common = no.type;
+            else if (no.type == types_.Null() && types_.AllowsNull(yes.type)) common = yes.type;
+            if (common == InvalidType)
+                Fail(expression.token, "conditional branches require compatible value types, got '"
+                    + types_.DiagnosticName(yes.type) + "' and '" + types_.DiagnosticName(no.type) + "'");
+            expression.type = common;
+            // 구조체 복사는 삼항식의 소비 위치에서 한 번 적용한다. 가지에는 숫자 승격만 붙인다.
+            if (common == types_.Float()) { Convert(yes, common); Convert(no, common); }
+            expression.constant = condition.constant && yes.constant && no.constant;
+            return;
+        }
         case ExprKind::Unary:
         {
             Expr& value = *expression.children[0];
@@ -2670,6 +2710,14 @@ private:
                 }
                 else return false;
             }
+            break;
+        }
+        case ExprKind::Conditional:
+        {
+            ConstantValue condition;
+            if (!EvaluateConstant(*expression.children[0], condition, depth + 1) || condition.kind != ConstantValue::Bool)
+                return false;
+            if (!EvaluateConstant(*expression.children[condition.boolean ? 1 : 2], out, depth + 1)) return false;
             break;
         }
         case ExprKind::Call:
@@ -3252,7 +3300,18 @@ private:
         node.source.end = expression.end;
         node.source.line = expression.token.line;
         node.source.column = expression.token.column;
-        if (expression.functionIndex != static_cast<std::size_t>(-1))
+        if (expression.kind == ExprKind::Conditional)
+        {
+            node.op = IROp::Conditional;
+            node.inputs.push_back(BuildValueIR(*expression.children[0]));
+            for (std::size_t i = 1; i < 3; ++i)
+            {
+                const std::size_t input = BuildValueIR(*expression.children[i]);
+                const IRSourceSpan origin = result_.typedIR.nodes[input].source;
+                node.inputs.push_back(ConvertIR(input, expression.type, origin));
+            }
+        }
+        else if (expression.functionIndex != static_cast<std::size_t>(-1))
         {
             node.op = IROp::ScriptCall;
             node.functionIndex = expression.functionIndex;
@@ -3367,6 +3426,7 @@ private:
         IROp operation;
         if (allowIR && !expression.constantInitializer &&
             (NumericIROp(expression, operation) || ScalarMutationIROp(expression, operation)
+                || expression.kind == ExprKind::Conditional
                 || expression.functionIndex != static_cast<std::size_t>(-1)
                 || (expression.widen && !expression.constantWiden)))
         {
@@ -3441,6 +3501,10 @@ private:
                 + " " + expression.op + " " + Lines(expression.token.end, right.begin) + RenderExpr(right) + Lines(right.end, expression.end) + (directCondition ? "" : ")");
             break;
         }
+        case ExprKind::Conditional:
+            // 삼항식은 분기 IR에서만 방출한다. 이전 식 잎에서 재진입해도 두 가지를 먼저 계산하지 않는다.
+            text = result_.typedIR.prefix + std::to_string(BuildValueIR(expression)) + "()" + Lines(expression.begin, expression.end);
+            return text;
         case ExprKind::Assignment:
         {
             const Expr& target = *expression.children[0];
@@ -3795,6 +3859,95 @@ private:
     std::string Lower() const { return ApplyEdits(0, source_.size()); }
 };
 
+// 타입 검사가 끝난 원본 트리만 읽는다. 상수 접기와 코드 생성에는 관여하지 않는다.
+class UnusedDeclarations
+{
+public:
+    UnusedDeclarations(const std::vector<std::unique_ptr<Statement>>& program,
+        const std::map<std::string, std::string>* names) : program_(program), names_(names)
+    {
+        for (const auto& node : program_)
+        {
+            if (node->kind != StatementKind::Declaration && node->kind != StatementKind::Function) continue;
+            uses_.insert(std::make_pair(node.get(), Use()));
+            if (node->kind == StatementKind::Function) functions_[node->name.text] = node.get();
+        }
+    }
+
+    void Collect(std::vector<CompileDiagnostic>& warnings)
+    {
+        for (const auto& node : program_) Visit(*node, nullptr);
+        for (const auto& node : program_)
+        {
+            const auto found = uses_.find(node.get());
+            if (found == uses_.end() || node->isExported || found->second.read) continue;
+            const auto name = names_ ? names_->find(node->name.text) : std::map<std::string, std::string>::const_iterator();
+            const std::string display = names_ && name != names_->end() ? name->second : node->name.text;
+            CompileDiagnostic warning;
+            warning.line = node->name.line; warning.column = node->name.column;
+            if (node->kind == StatementKind::Function) warning.message = "unused function '" + display + "'";
+            else if (node->isConst) warning.message = "unused constant '" + display + "'";
+            else if (found->second.written) warning.message = "global variable '" + display + "' is written but never read";
+            else warning.message = "unused global variable '" + display + "'";
+            warnings.push_back(std::move(warning));
+        }
+    }
+
+private:
+    struct Use { bool read = false, written = false; };
+    const std::vector<std::unique_ptr<Statement>>& program_;
+    const std::map<std::string, std::string>* names_;
+    std::map<const Statement*, Use> uses_;
+    std::map<std::string, const Statement*> functions_;
+
+    void FunctionUse(const std::string& name, const Statement* owner)
+    {
+        const auto found = functions_.find(name);
+        // 자기 호출만 있는 함수도 외부 참조가 없으면 미사용으로 보고한다.
+        if (found != functions_.end() && found->second != owner) uses_[found->second].read = true;
+    }
+
+    void Visit(const Statement& node, const Statement* owner)
+    {
+        if (node.kind == StatementKind::Function && uses_.count(&node)) owner = &node;
+        for (const auto& expression : node.expressions) Visit(*expression, owner, false);
+        // 구조체 필드 기본값과 case 레이블의 상수 참조도 원본 트리에 남아 있다.
+        for (const Parameter& parameter : node.parameters)
+            if (parameter.initializer) Visit(*parameter.initializer, owner, false);
+        for (const auto& child : node.children) Visit(*child, owner);
+    }
+
+    void Visit(const Expr& expression, const Statement* owner, bool writeOnly)
+    {
+        if (expression.kind == ExprKind::Name)
+        {
+            const Symbol* symbol = expression.symbol;
+            if (symbol && symbol->fileGlobal && symbol->declaration)
+            {
+                const auto found = uses_.find(symbol->declaration);
+                if (found != uses_.end())
+                {
+                    if (writeOnly) found->second.written = true;
+                    else found->second.read = true;
+                }
+            }
+            else if (!symbol) FunctionUse(expression.callName, owner);
+            return;
+        }
+        if (expression.kind == ExprKind::Assignment)
+        {
+            Visit(*expression.children[0], owner, expression.op == "=");
+            Visit(*expression.children[1], owner, false);
+            return;
+        }
+        if (expression.kind == ExprKind::Call && !expression.indirectCall)
+            FunctionUse(expression.callName, owner);
+        // 멤버·원소 쓰기도 소유 값과 첨자를 읽는다. 이름이 같은 지역변수는 별도 Symbol이다.
+        for (const auto& child : expression.children) Visit(*child, owner, false);
+        if (expression.lambda) Visit(*expression.lambda, owner);
+    }
+};
+
 }
 
 bool ExpandStaticDefines(const std::string& source, const std::vector<CompileDefine>& defines,
@@ -3834,8 +3987,9 @@ bool ExpandStaticDefines(const std::string& source, const std::vector<CompileDef
 bool CompileStaticSource(const std::string& source, StaticCompileResult& result, const HostSchema* hostSchema,
     const std::vector<CompileDefine>* defines, std::size_t diagnosticLimit,
     const ScriptHostCompileConfig* scriptHost, const std::function<bool(int)>& implementationSource,
-    const std::map<std::string, std::string>* diagnosticNames)
+    const std::map<std::string, std::string>* diagnosticNames, std::vector<CompileDiagnostic>* unusedWarnings)
 {
+    if (unusedWarnings) unusedWarnings->clear();
     result = StaticCompileResult();
     Recovery recovery(result, diagnosticLimit);
     try
@@ -3852,9 +4006,15 @@ bool CompileStaticSource(const std::string& source, StaticCompileResult& result,
         std::vector<Token> tokens = Lexer(source).Read();
         ApplyDefineTokens(tokens, replacements);
         std::vector<std::unique_ptr<Statement>> program = Parser(tokens, result.types, &recovery).Read();
-        Checker(source, result, hostSchema, &recovery, scriptHost, implementationSource).Check(program, replacements);
+        Checker checker(source, result, hostSchema, &recovery, scriptHost, implementationSource);
+        checker.Check(program, replacements);
         result.success = result.diagnostics.empty();
-        if (result.success) return true;
+        if (result.success)
+        {
+            // 옵션을 켠 호출만 별도로 순회한다. 일반 타입 검사 중에는 사용 횟수를 기록하지 않는다.
+            if (unusedWarnings) UnusedDeclarations(program, diagnosticNames).Collect(*unusedWarnings);
+            return true;
+        }
     }
     catch (const Diagnostic& diagnostic)
     {

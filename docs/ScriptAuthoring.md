@@ -68,6 +68,27 @@ Conditions require bools. Strings concatenate with `..`; use `tostring` for
 explicit conversion. Numeric conversions, division and shift counts keep their
 documented runtime boundary behavior even after static checking.
 
+Use a conditional expression to choose an initial value, argument or return value:
+
+```nc
+string key = enabled ? "b" : "a";
+int selected = count == 0 ? 10 : count;
+int nested = (count == selected ? count : selected) == 10 ? 1 : 2;
+```
+
+The condition must be `bool`; numeric, string and object conditions are compile
+errors. Only the selected result expression executes, and the condition executes
+once. Both result expressions must pass compile-time checking. Their types must
+match, except that `int` can widen to `float` and null can join a nullable reference
+type. The result is a value and cannot be an assignment target. Void branches are
+not supported. Nested conditionals associate to the right; parentheses can make
+the intended grouping explicit. Conditional expressions also work in constant
+initializers, case labels and field defaults under their existing constant rules.
+
+Do not mechanically replace `string k = A(); if (c) k = B();` with
+`string k = c ? B() : A();`: the first form always calls `A()`, while the second
+calls it only when `c` is false.
+
 ## Functions as values and execution control
 
 ```cpp

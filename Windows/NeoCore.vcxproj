@@ -99,6 +99,7 @@
     <ClInclude Include="..\NeoSource\NeoCore.h" />
     <ClInclude Include="..\NeoSource\NeoCoreOptions.h" />
     <ClInclude Include="..\NeoSource\NeoCoreModules.h" />
+    <ClInclude Include="..\NeoSource\NeoCoreConsoleAccess.h" />
     <ClInclude Include="..\NeoSource\NeoCoreBuiltins.h" />
     <ClInclude Include="..\NeoSource\NeoCoreCompiler.h" />
     <ClInclude Include="..\NeoSource\NeoCoreImage.h" />

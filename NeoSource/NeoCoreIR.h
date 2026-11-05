@@ -22,7 +22,7 @@ enum class IROp
     LoadStorage, Assign, AddAssign, SubtractAssign, MultiplyAssign, DivideAssign,
     RemainderAssign, BitAndAssign, BitOrAssign, BitXorAssign, ShiftLeftAssign, ShiftRightAssign,
     PreIncrement, PreDecrement, PostIncrement, PostDecrement,
-    ScriptCall, NullableConvert, CopyStruct, MapRead, StringLiteral
+    ScriptCall, NullableConvert, CopyStruct, MapRead, StringLiteral, Conditional
 };
 
 enum class IRStorageKind { Invalid, Variable, Cell };

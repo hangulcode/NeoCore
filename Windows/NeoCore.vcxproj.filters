@@ -39,6 +39,7 @@
   <ItemGroup>
     <ClInclude Include="..\NeoSource\NeoCoreOptions.h"><Filter>NeoCore</Filter></ClInclude>
     <ClInclude Include="..\NeoSource\NeoCoreModules.h"><Filter>NeoCore</Filter></ClInclude>
+    <ClInclude Include="..\NeoSource\NeoCoreConsoleAccess.h"><Filter>NeoCore</Filter></ClInclude>
     <ClInclude Include="..\NeoSource\NeoCoreBuiltins.h"><Filter>NeoCore</Filter></ClInclude>
     <ClInclude Include="..\NeoSource\NeoCore.h"><Filter>NeoCore</Filter></ClInclude>
     <ClInclude Include="..\NeoSource\NeoCoreCompiler.h"><Filter>NeoCore</Filter></ClInclude>

@@ -1,6 +1,7 @@
 ﻿#include "NeoCore.h"
 #include "NeoCoreCompiler.h"
 #include "NeoCoreModules.h"
+#include "NeoCoreConsoleAccess.h"
 #include "SampleHost.h"
 #include "ConsoleHost.h"
 #include "CompilerErrors.h"
@@ -242,6 +243,8 @@ struct ConsoleSettings
     bool debug;
     bool emitAsm;
     bool stats;
+    bool entryPrivateAccess = false;
+    bool warnUnused = false;
     std::string hostSchema, hostImplementation, resourceRoot;
     std::size_t diagnosticLimit = 100;
     ConsoleSettings() : debug(false), emitAsm(false), stats(false) {}
@@ -270,6 +273,7 @@ static int Execute(const std::string& mode, const std::string& argument,
         path = sampleDirectory + "/" + argument + ".nc";
     }
     path = Canonical(path);
+    const std::string entrySource = path;
     std::string source;
     if (!Read(path, source)) { std::fprintf(stderr, "cannot read file: %s\n", path.c_str()); return 1; }
     NeoCore::Error error;
@@ -347,9 +351,20 @@ static int Execute(const std::string& mode, const std::string& argument,
         return 0;
     }
     const NeoCore::HostBindings* bindings = consoleHost ? &consoleHost->Bindings() : host.Bindings();
-    std::unique_ptr<NeoCore::Program> program = bindings
-        ? NeoCore::Program::Compile(source, *bindings, error, path, settings.debug, options)
-        : NeoCore::Program::Compile(source, error, path, settings.debug, options);
+    std::unique_ptr<NeoCore::Program> program;
+    if (settings.warnUnused)
+    {
+        std::vector<NeoCore::CompileDiagnostic> warnings;
+        program = NeoCore::ConsoleCompileAccess::Check(source, bindings, error, path, settings.debug, options,
+            settings.entryPrivateAccess ? &entrySource : nullptr, warnings);
+        for (const auto& warning : warnings)
+            std::fprintf(stderr, "%s:%d:%d: warning: %s\n", warning.sourceName.c_str(), warning.line, warning.column, warning.message.c_str());
+    }
+    else if (settings.entryPrivateAccess)
+        program = NeoCore::ConsoleCompileAccess::Compile(source, bindings, error, path, settings.debug, options, entrySource);
+    else if (bindings)
+        program = NeoCore::Program::Compile(source, *bindings, error, path, settings.debug, options);
+    else program = NeoCore::Program::Compile(source, error, path, settings.debug, options);
     if (!program) { PrintError(error); return 1; }
     if (mode == "--check") { std::puts("Type check and backend compilation passed."); return 0; }
     NeoCore::Result result = program->Run();
@@ -443,6 +458,8 @@ static int Usage(int status = 2)
     std::puts("       neocore --file|--check|--emit-backend <file.nc>");
     std::puts("Options: --debug, --asm, --stats (before or after the command)");
     std::puts("         --sample-dir <directory> (named samples and menu; relative to working directory)");
+    std::puts("         --entry-private-access (only --file/--check; private module access for the entry source)");
+    std::puts("         --warn-unused (only --check; unused file constants, globals and functions)");
     std::puts("         --host <schema.json> --host-impl <implementation.nc> --resource-root <directory>");
     std::puts("         --max-errors <count> (default 100); host implementations are console-only");
     std::puts("       neocore --dap | --lsp                    Typed editor protocols (stdio)");
@@ -493,6 +510,8 @@ static int ConsoleMain(const std::vector<std::string>& arguments)
         if (argument == "--debug") settings.debug = true;
         else if (argument == "--asm") settings.emitAsm = true;
         else if (argument == "--stats") settings.stats = true;
+        else if (argument == "--entry-private-access") settings.entryPrivateAccess = true;
+        else if (argument == "--warn-unused") settings.warnUnused = true;
         else if (argument == "--sample-dir")
         {
             if (i + 1 == arguments.size() || arguments[i + 1].empty() || arguments[i + 1].compare(0, 2, "--") == 0)
@@ -520,6 +539,11 @@ static int ConsoleMain(const std::vector<std::string>& arguments)
     }
     if (!settings.hostImplementation.empty() && settings.hostSchema.empty())
     { std::fprintf(stderr, "--host-impl requires --host\n"); return 2; }
+    if (settings.entryPrivateAccess && (positional.size() != 2 ||
+        (positional[0] != "--file" && positional[0] != "--check")))
+    { std::fprintf(stderr, "--entry-private-access requires --file <file.nc> or --check <file.nc>\n"); return 2; }
+    if (settings.warnUnused && (positional.size() != 2 || positional[0] != "--check"))
+    { std::fprintf(stderr, "--warn-unused requires --check <file.nc>\n"); return 2; }
     // 명시한 경로가 잘못되어도 자동 탐색으로 다른 샘플을 실행하지 않는다.
     if (sampleDirectory.empty()) sampleDirectory = FindSamples(arguments[0]);
     if (positional.empty()) return RunMenu(settings, sampleDirectory);

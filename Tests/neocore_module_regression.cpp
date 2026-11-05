@@ -1,6 +1,7 @@
 ﻿#include "NeoCore.h"
 #include "NeoCoreModules.h"
 #include "NeoCoreHost.h"
+#include "NeoCoreConsoleAccess.h"
 
 #include <cstdio>
 #include <map>
@@ -241,6 +242,46 @@ static void CheckNativeModuleNames()
     }
 }
 
+void CheckConsoleAccess(bool debug)
+{
+    Sources sources;
+    sources["private"] = "int hidden=3;const int LIMIT=4;struct Hidden{int value;};"
+        "int Read(){return hidden;}public int PublicRead(){return hidden;}";
+    NeoCore::CompileOptions options;
+    options.moduleLoader = Loader(sources);
+    NeoCore::Error error;
+    const char* entry = "import private as p;export int Probe(){p.Hidden h=p.Hidden(p.LIMIT);p.hidden+=1;return p.Read()+h.value;}";
+    auto allowed = NeoCore::ConsoleCompileAccess::Compile(entry, nullptr, error, "entry.nc", debug, options, "entry.nc");
+    Check(bool(allowed), "console internal entry accepts private symbols: " + error.message);
+    if (allowed)
+    {
+        const auto result = allowed->Call("Probe");
+        Check(result.ok() && result.value.asInt() == 8, "console entry private state and type identity");
+    }
+    for (const std::string& name : {std::string("entry.nc"), std::string()})
+    {
+        auto regular = NeoCore::Program::Compile(entry, error, name, debug, options);
+        Check(!regular && error.message.find("not public") != std::string::npos,
+            "Program::Compile retains normal visibility after a console compile");
+        auto runtime = NeoCore::Runtime::Create(error);
+        Check(bool(runtime), "normal embedding runtime");
+        if (!runtime) continue;
+        regular = runtime->Compile(entry, error, name, debug, options);
+        Check(!regular && error.message.find("not public") != std::string::npos,
+            "Runtime::Compile cannot enable console private access");
+        regular = runtime->Compile("import private;export int Probe(){return private.PublicRead();}", error, name, debug, options);
+        Check(bool(regular), "public access remains valid after private access rejection");
+    }
+    sources["intruder"] = "import private;public int Leak(){return private.hidden;}";
+    allowed = NeoCore::ConsoleCompileAccess::Compile("import intruder;print(intruder.Leak());", nullptr,
+        error, "entry.nc", debug, options, "entry.nc");
+    Check(!allowed && error.sourceName == "intruder.nc" && error.message.find("not public") != std::string::npos,
+        "console entry does not grant imported modules private access");
+    allowed = NeoCore::ConsoleCompileAccess::Compile("print(1);", nullptr, error, "entry.nc", debug, options, "");
+    Check(!allowed && error.message.find("requires an entry source name") != std::string::npos,
+        "console exception requires an explicit entry identity");
+}
+
 int main()
 {
     CheckExecution(false);
@@ -248,6 +289,8 @@ int main()
     CheckRejections();
     CheckLocations();
     CheckNativeModuleNames();
+    CheckConsoleAccess(false);
+    CheckConsoleAccess(true);
     std::printf("NeoCore module regression: %d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;
 }

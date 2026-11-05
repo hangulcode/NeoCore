@@ -342,6 +342,16 @@ void CheckPropertyOrder(bool debug)
         "export int Probe(){return Object.EchoInt(Object.Mark(1)+Object.Mark(2));}", "method argument order", debug),
         3, "method arguments preserve left to right evaluation");
     Check(fixture.trace == "12", "method argument side effects run in source order");
+    fixture.trace.clear();
+    ExpectInt(Invoke(fixture,
+        "export int Probe(){return Object.Enabled?Object.Mark(1):Object.Mark(2);}", "conditional host calls", debug),
+        2, "conditional host property selects one callback");
+    Check(fixture.trace == "G2", "conditional getter runs once and unselected host call is skipped");
+    fixture.trace.clear();
+    ExpectInt(Invoke(fixture,
+        "export int Probe(){return (true?Object:Maybe).Value;}", "conditional host object", debug),
+        6, "conditional native handle preserves its static object type");
+    Check(fixture.trace == "G", "unselected null host object is not accessed");
     const NeoCore::Result floating = Invoke(fixture,
         "export float Probe(){Object.Amount=2;Object.Amount+=3;Object.Amount*=2;return Object.Amount;}",
         "floating property compound widening", debug);

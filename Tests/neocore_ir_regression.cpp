@@ -318,6 +318,27 @@ void InvalidMetadata(IRuntime& runtime, bool debug)
         }
 }
 
+void ConditionalMetadata(IRuntime& runtime, bool debug)
+{
+    NeoCore::StaticCompileResult valid;
+    Check(NeoCore::CompileStaticSource("export int Probe(bool c,int a,int b){return c?a:b;}", valid),
+        "conditional IR frontend");
+    if (!valid.success) return;
+    const std::size_t index = FindOp(valid.typedIR, NeoCore::IROp::Conditional);
+    Check(index < valid.typedIR.nodes.size(), "conditional keeps a branch IR node");
+    if (index == valid.typedIR.nodes.size()) return;
+    for (int change = 0; change < 4; ++change)
+    {
+        NeoCore::StaticCompileResult altered = valid;
+        NeoCore::IRNode& node = altered.typedIR.nodes[index];
+        if (change == 0) node.inputs.pop_back();
+        else if (change == 1) node.inputs[0] = node.inputs[1];
+        else if (change == 2) node.inputs[1] = node.inputs[0];
+        else node.inputs[2] = index;
+        RejectIR(runtime, altered, debug, "conditional malformed metadata " + std::to_string(change));
+    }
+}
+
 void MapMetadata(IRuntime& runtime, bool debug)
 {
     NeoCore::StaticCompileResult valid;
@@ -1060,6 +1081,7 @@ int main()
         InternalNameBoundary(*runtime, debug);
         MutationAndLifetime(*runtime, debug);
         InvalidMetadata(*runtime, debug);
+        ConditionalMetadata(*runtime, debug);
         MapMetadata(*runtime, debug);
         InvalidStorageMetadata(*runtime, debug);
         InvalidCallMetadata(*runtime, debug);

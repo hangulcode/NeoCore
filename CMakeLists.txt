@@ -94,7 +94,7 @@ target_include_directories(neocore_type_model PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}
 target_compile_features(neocore_type_model PUBLIC cxx_std_11)
 add_library(neocore_frontend STATIC NeoSource/NeoCoreCompiler.cpp)
 target_link_libraries(neocore_frontend PUBLIC neocore_type_model)
-add_library(neocore_runtime STATIC NeoSource/NeoCore.cpp NeoSource/NeoCoreHost.cpp NeoSource/NeoCoreHostSchemaIO.cpp NeoSource/NeoCoreModules.cpp NeoSource/NeoCoreImage.cpp)
+add_library(neocore_runtime STATIC NeoSource/NeoCore.cpp NeoSource/NeoCoreHost.cpp NeoSource/NeoCoreHostSchemaIO.cpp NeoSource/NeoCoreModules.cpp NeoSource/NeoCoreImage.cpp NeoSource/NeoCoreConsoleAccess.h)
 target_link_libraries(neocore_runtime PUBLIC neocore_frontend PRIVATE neocore_backend Threads::Threads)
 add_library(NeoCore::Runtime ALIAS neocore_runtime)
 add_executable(neocore Samples/neocore/main.cpp Samples/neocore/SampleHost.cpp Samples/neocore/ConsoleHost.cpp Samples/neocore/ConsoleTooling.cpp)
@@ -123,7 +123,7 @@ if(NEOCORE_BUILD_TESTS)
     find_package(Threads REQUIRED)
 
     add_executable(neocore_types Tests/neocore_types.cpp)
-    foreach(library_test math json_script constants error_locations host_schema_io diagnostics time)
+    foreach(library_test math json_script constants conditionals unused error_locations host_schema_io diagnostics time)
         add_executable(neocore_${library_test} Tests/neocore_${library_test}.cpp)
         target_link_libraries(neocore_${library_test} PRIVATE NeoCore::Runtime)
         add_test(NAME neocore_${library_test} COMMAND neocore_${library_test})
@@ -216,6 +216,9 @@ if(NEOCORE_BUILD_TESTS)
         add_test(NAME neocore_module_cli_regression COMMAND ${Python3_EXECUTABLE}
             ${CMAKE_CURRENT_SOURCE_DIR}/Tests/neocore_module_cli_regression.py --console $<TARGET_FILE:neocore>)
         set_tests_properties(neocore_module_cli_regression PROPERTIES TIMEOUT 60)
+        add_test(NAME neocore_unused_cli_regression COMMAND ${Python3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/Tests/neocore_unused_cli_regression.py --console $<TARGET_FILE:neocore>)
+        set_tests_properties(neocore_unused_cli_regression PROPERTIES TIMEOUT 60)
         add_test(NAME neocore_menu_cli_regression COMMAND ${Python3_EXECUTABLE}
             ${CMAKE_CURRENT_SOURCE_DIR}/Tests/neocore_menu_cli_regression.py --console $<TARGET_FILE:neocore>)
         set_tests_properties(neocore_menu_cli_regression PROPERTIES TIMEOUT 240)

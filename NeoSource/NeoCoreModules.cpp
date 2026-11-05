@@ -427,8 +427,10 @@ private:
 class Bundler
 {
 public:
-    Bundler(const ModuleLoader& loader, const std::vector<std::string>& externalNames, const std::vector<CompileDefine>* defines, std::size_t diagnosticLimit)
-        : loader_(loader), defines_(defines), diagnosticLimit_(std::max<std::size_t>(1, diagnosticLimit))
+    Bundler(const ModuleLoader& loader, const std::vector<std::string>& externalNames, const std::vector<CompileDefine>* defines,
+        std::size_t diagnosticLimit, const std::string* privateEntrySource)
+        : loader_(loader), defines_(defines), diagnosticLimit_(std::max<std::size_t>(1, diagnosticLimit)),
+          privateEntrySource_(privateEntrySource ? *privateEntrySource : std::string())
     {
         static const char* const words[] = {
             "var", "fun", "int", "float", "bool", "string", "void", "int32", "float32", "any",
@@ -451,6 +453,8 @@ public:
         identities_[sourceName] = 0;
         units_.push_back(std::move(root));
         Visit(0, 0);
+        if (diagnostics_.empty() && !privateEntrySource_.empty() && !identities_.count(privateEntrySource_))
+            Fail(sourceName, Token(), "entry private access source is not in the module bundle");
         if (!diagnostics_.empty())
         {
             Diagnostic failure;
@@ -495,6 +499,7 @@ private:
     std::set<std::string> preserved_;
     std::vector<CompileDiagnostic> diagnostics_;
     std::size_t diagnosticLimit_;
+    std::string privateEntrySource_;
 
     void Visit(std::size_t index, unsigned depth)
     {
@@ -552,6 +557,8 @@ private:
     void Rewrite(std::size_t index)
     {
         Unit& unit = *units_[index];
+        // 호스트 구현을 합친 실행용 루트가 아니라 원래 지정한 시험 파일 하나에만 적용한다.
+        const bool entryAccess = !privateEntrySource_.empty() && unit.input.sourceName == privateEntrySource_;
         std::map<std::string, const Import*> aliases;
         std::set<std::size_t> importTokens;
         for (const Import& import : unit.imports)
@@ -582,7 +589,7 @@ private:
                 const Token& member = unit.tokens[i + 2];
                 const std::map<std::string, bool>::const_iterator symbol = target.symbols.find(member.text);
                 if (symbol == target.symbols.end()) Fail(unit.input.sourceName, member, "module has no member: " + member.text);
-                if (!symbol->second) Fail(unit.input.sourceName, member, "module member is not public: " + member.text);
+                if (!symbol->second && !entryAccess) Fail(unit.input.sourceName, member, "module member is not public: " + member.text);
                 unit.replacements[i] = target.prefix + member.text;
                 unit.replacements[i + 1] = "";
                 unit.replacements[i + 2] = "";
@@ -671,13 +678,14 @@ void ModuleBundle::Translate(Error& error) const
 
 bool BundleModules(const std::string& source, const std::string& sourceName,
     const ModuleLoader& loader, ModuleBundle& result, Error& error,
-    const std::vector<std::string>& externalNames, const std::vector<CompileDefine>* defines, std::size_t diagnosticLimit)
+    const std::vector<std::string>& externalNames, const std::vector<CompileDefine>* defines, std::size_t diagnosticLimit,
+    const std::string* privateEntrySource)
 {
     result = ModuleBundle();
     error = Error();
     try
     {
-        Bundler bundler(loader, externalNames, defines, diagnosticLimit);
+        Bundler bundler(loader, externalNames, defines, diagnosticLimit, privateEntrySource);
         bundler.Build(source, sourceName, result);
         return true;
     }

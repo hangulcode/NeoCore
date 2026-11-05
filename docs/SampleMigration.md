@@ -176,7 +176,21 @@ For CMake, install a compatible libcurl and configure
 without it the live HTTPS example reports an unconfigured transport. TLS checks
 remain enabled. Live network availability is not an automated regression assertion.
 
+## Optional cleanup diagnostics
+
+Use `neocore --check file.nc --warn-unused` to report unreferenced file-scope
+constants, globals and functions across the import bundle. It does not inspect
+locals or parameters, remove code, or turn warnings into compilation errors.
+Without the flag, the additional analysis is skipped. See
+[the warning rules](HeadlessHost.md#optional-unused-declaration-warnings) for callback,
+export and multiple-entry limitations.
+
 ## Modules and execution limits
+
+For white-box tests, `--entry-private-access` permits only the file passed to
+`--file` or `--check` to access private declarations through imported module aliases.
+Imported modules and host implementations retain normal visibility. The flag is
+console-only; see [the entry-access rules](HeadlessHost.md#entry-only-private-access-for-tests).
 
 `CompileOptions::moduleLoader` resolves module names to `.nc` source and a canonical
 source name. The compiler checks the complete bundle, respects `public` visibility,

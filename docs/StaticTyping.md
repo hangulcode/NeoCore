@@ -379,6 +379,46 @@ unchecked native operations simply because source types are known.
 
 ## Control flow
 
+Conditional expressions use `condition ? whenTrue : whenFalse`. The condition is
+strictly `bool`, including a comparison such as `a == b`; all other condition
+types are compile errors. The condition is evaluated once, followed by exactly
+one result expression. Both result expressions are statically checked even when
+the condition is a literal.
+
+Matching value types are accepted, including vectors, structs, collections,
+function values and host objects. Numeric `int`/`float` branches join as `float`;
+null joins only with a type that already allows null. No dynamic union type or
+collection-element widening is introduced. Both branches must produce values:
+`void` branches are rejected. The result is not an lvalue. Existing struct/vector
+copy and collection identity rules still apply when storing or passing the result.
+Typed list and map literals in branches receive the surrounding declaration,
+argument or return context under the existing literal rules.
+
+The operator binds less tightly than logical OR and more tightly than assignment,
+and associates to the right. The middle expression may contain an assignment;
+parenthesize an assignment in the final expression. For example:
+
+```nc
+string key = enabled ? "b" : "a";
+k = (a == b ? a : b) == d ? e : f;
+int chosen = first ? 1 : second ? 2 : 3;
+```
+
+Constant conditional expressions follow the current constant-expression rules:
+the condition and both result expressions must be constant-compatible, and the
+shared evaluator computes only the selected branch. Existing restrictions on
+logical/comparison expressions and calls in constant contexts still apply.
+Thus `true ? 7 : 1 / 0` can be a constant, but an unknown name or incompatible
+branch type remains a compile error even when unselected.
+
+The frontend records one `Conditional` IR node with a bool condition and two
+explicitly converted values. The backend uses existing conditional jumps and
+moves into one temporary result slot. It preserves control-flow joins so return,
+producer-retargeting and adjacent-instruction optimizations cannot rewrite a
+branch-only instruction as if it executed on every path. No new VM opcode or
+image format is required; debug positions, errors and suspension retain the
+selected branch's normal execution path.
+
 Control-flow forms are blocks, `if`/`else`, `switch`, `while`, range `for`, `foreach`,
 `break`, `continue`, `return`, and `yield`. Range iteration uses an explicit integer declaration:
 

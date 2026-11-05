@@ -85,6 +85,7 @@ bool CompileStaticSource(const std::string& source, StaticCompileResult& result,
     const std::vector<CompileDefine>* defines = nullptr, std::size_t diagnosticLimit = 100,
     const ScriptHostCompileConfig* scriptHost = nullptr,
     const std::function<bool(int)>& implementationSource = std::function<bool(int)>(),
-    const std::map<std::string, std::string>* diagnosticNames = nullptr);
+    const std::map<std::string, std::string>* diagnosticNames = nullptr,
+    std::vector<CompileDiagnostic>* unusedWarnings = nullptr);
 
 }

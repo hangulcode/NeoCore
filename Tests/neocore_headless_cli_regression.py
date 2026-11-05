@@ -126,6 +126,10 @@ with tempfile.TemporaryDirectory(prefix="neocore-host-") as temporary:
     for debug in ([], ["--debug"]):
         result = run(*base, *debug, "--file", app)
         require(result.returncode == 0 and "HEADLESS_OK" in result.stdout, "run typed script host: " + result.stdout + result.stderr)
+    result = run(*base, "--warn-unused", "--check", app)
+    require(result.returncode == 0 and "HEADLESS_OK" not in result.stdout, "unused check accepts wrapped host app without running it: " + result.stdout + result.stderr)
+    require("unused function 'Log'" not in result.stderr and "unused function 'Register'" not in result.stderr,
+            "host implementation bindings count as function-value uses: " + result.stderr)
     result = run(*base, "--emit-backend", app)
     require(result.returncode == 0 and "$neocore_mock_" in result.stdout, "emit direct mock wrappers: " + result.stderr)
     plain = root / "check.nc"
@@ -176,5 +180,22 @@ with tempfile.TemporaryDirectory(prefix="neocore-host-") as temporary:
     diagnostics_with_impl = lsp(schema, plain, 'print(1);', broken)
     require(diagnostics_with_impl and any("must be synchronous" in item["message"] for item in diagnostics_with_impl), "LSP reports errors in the implementation module: " + repr(diagnostics_with_impl))
     require(len(diagnostics) == 2, "LSP publishes multiple host type errors: " + repr(diagnostics))
+
+    (root / "private_state.nc").write_text(
+        "int value=2;const int LIMIT=5;struct Hidden{int n;};int Read(){return value;}", encoding="utf-8-sig")
+    private_app = root / "private_app.nc"
+    private_app.write_text('import private_state as s;\ns.Hidden h=s.Hidden(s.LIMIT);s.value=8;'
+                           'if(s.Read()!=8||h.n!=5){int z=0;print(1/z);}Services.Log("ENTRY_PRIVATE_OK");', encoding="utf-8-sig")
+    for mode in ("--file", "--check"):
+        result = run(*base, mode, private_app)
+        require(result.returncode == 1 and "module member is not public: Hidden" in result.stderr,
+                "wrapped application defaults to private: " + result.stdout + result.stderr)
+        result = run(*base, mode, private_app, "--entry-private-access")
+        require(result.returncode == 0 and (mode == "--check" or "ENTRY_PRIVATE_OK" in result.stdout),
+                "original entry retains private permission under host implementation launcher: " + result.stdout + result.stderr)
+    impl.write_text(implementation + '\nimport private_state as s;\nint Leak(){return s.value;}', encoding="utf-8-sig")
+    result = run(*base, "--entry-private-access", "--check", private_app)
+    require(result.returncode == 1 and "not public: value" in result.stderr and "fake.nc:" in result.stderr,
+            "fake host module has no entry privilege: " + result.stdout + result.stderr)
 
 print(f"NeoCore headless CLI: {checks} checks passed")

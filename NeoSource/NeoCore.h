@@ -145,6 +145,7 @@ private:
     friend class Program;
     friend class Instance;
     friend class Debugger;
+    friend struct ConsoleCompileAccess;
     struct Impl;
     explicit Runtime(std::shared_ptr<Impl> impl);
     static std::unique_ptr<Runtime> CreateImpl(const HostBindings* bindings, Error& error,
@@ -204,9 +205,11 @@ private:
     friend class Instance;
     friend class Debugger;
     friend struct DebugAccess;
+    friend struct ConsoleCompileAccess;
     struct Impl;
     static std::unique_ptr<Program> CompileImpl(const std::string& source, Error& error,
-        const std::string& sourceName, bool debug, const std::shared_ptr<Runtime::Impl>& runtime, const CompileOptions& options);
+        const std::string& sourceName, bool debug, const std::shared_ptr<Runtime::Impl>& runtime, const CompileOptions& options,
+        const std::string* privateEntrySource = nullptr, std::vector<CompileDiagnostic>* unusedWarnings = nullptr);
     static std::unique_ptr<Program> LoadImageImpl(const std::vector<std::uint8_t>& image,
         Error& error, const std::shared_ptr<Runtime::Impl>& runtime, const CompileOptions& options);
     explicit Program(std::shared_ptr<Impl> impl);

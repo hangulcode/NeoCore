@@ -3077,6 +3077,7 @@ class CoreIRValidator
         case IROp::NullableConvert: case IROp::CopyStruct: arity = 1; break;
         case IROp::MapRead: arity = 2; break;
         case IROp::StringLiteral: arity = 0; break;
+        case IROp::Conditional: arity = 3; break;
         default: return Fail(index, "unknown operation");
         }
         if (node.op != IROp::ScriptCall && node.functionIndex != static_cast<std::size_t>(-1))
@@ -3173,6 +3174,10 @@ class CoreIRValidator
         }
         case IROp::StringLiteral:
             valid = node.type == IRValueType::String && node.text.find('\0') == std::string::npos; break;
+        case IROp::Conditional:
+            valid = input == IRValueType::Bool && node.type != IRValueType::Void &&
+                ir_.nodes[node.inputs[1]].typeId == node.typeId && ir_.nodes[node.inputs[2]].typeId == node.typeId;
+            break;
         default: break;
         }
         if (!valid) return Fail(index, "operation type contract does not match");
@@ -3567,6 +3572,39 @@ static bool EmitCoreIRNode(std::size_t index, SOperand& result,
     }
     case IROp::StringLiteral:
         result = SOperand(funs.AddStaticString(node.text)); return true;
+    case IROp::Conditional:
+    {
+        SOperand condition;
+        if (!EmitCoreIRNode(node.inputs[0], condition, ar, funs, vars)) return false;
+        MaterializeValue(condition, ar, funs);
+        funs._cur->Push_JMPFalse(ar, condition._iVar, 0);
+        const int falseBase = funs._cur->_code->GetBufferOffset();
+        const SJumpValue falseJump(falseBase - static_cast<int>(sizeof(short) * 3), falseBase);
+        // 공통 결과는 새 임시 슬롯에 둔다. 가지의 부작용보다 먼저 대입 대상을 변경하지 않는다.
+        const int selected = funs._cur->AllocLocalTempVar();
+        SJumpValue endJump;
+        for (std::size_t branch = 1; branch < 3; ++branch)
+        {
+            funs._cur->ClearLastOP();
+            SOperand value;
+            if (!EmitCoreIRNode(node.inputs[branch], value, ar, funs, vars)) return false;
+            MaterializeValue(value, ar, funs);
+            if (!TryPushImmediate(ar, funs, selected, value, node.source.line))
+                funs._cur->Push_OP2(ar, NOP_MOV, selected, value._iVar, value.IsShort(), node.source.line);
+            if (branch == 1)
+            {
+                funs._cur->Push_JMP(ar, 0);
+                const int endBase = funs._cur->_code->GetBufferOffset();
+                endJump.Set(endBase - static_cast<int>(sizeof(short) * 3), endBase);
+                funs._cur->Set_JumpOffet(falseJump, endBase);
+            }
+        }
+        funs._cur->Set_JumpOffet(endJump, funs._cur->_code->GetBufferOffset());
+        result = SOperand(selected);
+        // 마지막 이동은 거짓 가지 전용이다. 합류 뒤의 반환·목적지 접기를 금지한다.
+        funs._cur->ClearLastOP();
+        return true;
+    }
     default: break;
     }
 

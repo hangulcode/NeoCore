@@ -1,5 +1,6 @@
 ﻿#include "NeoCore.h"
 #include "NeoCoreModules.h"
+#include "NeoCoreConsoleAccess.h"
 #include "NeoCoreCompiler.h"
 #include "NeoCoreScriptHost.h"
 #include "NeoCoreImage.h"
@@ -337,8 +338,38 @@ std::unique_ptr<Program> Program::Compile(const std::string& source, const HostB
     return runtime ? runtime->Compile(source, error, sourceName, debug, options) : std::unique_ptr<Program>();
 }
 
+std::unique_ptr<Program> ConsoleCompileAccess::Compile(const std::string& source, const HostBindings* bindings,
+    Error& error, const std::string& sourceName, bool debug, const CompileOptions& options,
+    const std::string& entrySourceName)
+{
+    error = Error();
+    if (entrySourceName.empty())
+    {
+        error.sourceName = sourceName;
+        error.message = "entry private access requires an entry source name";
+        return std::unique_ptr<Program>();
+    }
+    // 예외는 이번 프로그램의 모듈 묶음에만 전달한다. 런타임이나 공개 옵션에는 저장하지 않는다.
+    std::unique_ptr<Runtime> runtime = bindings ? Runtime::Create(*bindings, error, options) : Runtime::Create(error, options);
+    return runtime ? Program::CompileImpl(source, error, sourceName, debug, runtime->impl_, options, &entrySourceName)
+        : std::unique_ptr<Program>();
+}
+
+std::unique_ptr<Program> ConsoleCompileAccess::Check(const std::string& source, const HostBindings* bindings,
+    Error& error, const std::string& sourceName, bool debug, const CompileOptions& options,
+    const std::string* privateEntrySource, std::vector<CompileDiagnostic>& unusedWarnings)
+{
+    error = Error(); unusedWarnings.clear();
+    std::unique_ptr<Runtime> runtime = bindings ? Runtime::Create(*bindings, error, options) : Runtime::Create(error, options);
+    std::unique_ptr<Program> program = runtime ? Program::CompileImpl(source, error, sourceName, debug, runtime->impl_,
+        options, privateEntrySource, &unusedWarnings) : std::unique_ptr<Program>();
+    if (!program) unusedWarnings.clear();
+    return program;
+}
+
 std::unique_ptr<Program> Program::CompileImpl(const std::string& source, Error& error,
-    const std::string& sourceName, bool debug, const std::shared_ptr<Runtime::Impl>& runtime, const CompileOptions& options)
+    const std::string& sourceName, bool debug, const std::shared_ptr<Runtime::Impl>& runtime, const CompileOptions& options,
+    const std::string* privateEntrySource, std::vector<CompileDiagnostic>* unusedWarnings)
 {
     error = Error();
     std::shared_ptr<Impl> impl(new Impl());
@@ -356,7 +387,8 @@ std::unique_ptr<Program> Program::CompileImpl(const std::string& source, Error& 
         for (const auto& type : schema.Types().NamedTypes())
             if (schema.Types().Get(type.second).kind == TypeKind::Native || schema.Types().Get(type.second).kind == TypeKind::Struct) externalNames.push_back(type.first);
     }
-    if (!BundleModules(source, sourceName, options.moduleLoader, impl->bundle, error, externalNames, &options.defines, options.diagnosticLimit))
+    if (!BundleModules(source, sourceName, options.moduleLoader, impl->bundle, error, externalNames, &options.defines,
+        options.diagnosticLimit, privateEntrySource))
         return std::unique_ptr<Program>();
     const auto implementationSource = [&](int line) {
         return options.scriptHost && options.scriptHost->allowsSource && line > 0 &&
@@ -364,7 +396,7 @@ std::unique_ptr<Program> Program::CompileImpl(const std::string& source, Error& 
             options.scriptHost->allowsSource(impl->bundle.lines[static_cast<std::size_t>(line - 1)].sourceName);
     };
     if (!CompileStaticSource(impl->bundle.source, impl->checked, impl->host ? &impl->host->Schema() : nullptr,
-        nullptr, options.diagnosticLimit, options.scriptHost.get(), implementationSource, &impl->bundle.symbolNames))
+        nullptr, options.diagnosticLimit, options.scriptHost.get(), implementationSource, &impl->bundle.symbolNames, unusedWarnings))
     {
         error.message = impl->checked.errorMessage;
         error.sourceName = sourceName;
@@ -405,6 +437,19 @@ std::unique_ptr<Program> Program::CompileImpl(const std::string& source, Error& 
     std::unique_ptr<Program> result(new Program(std::move(impl)));
     result->defaultInstance_ = result->CreateInstance(error);
     if (!result->defaultInstance_) return std::unique_ptr<Program>();
+    if (unusedWarnings)
+    {
+        for (CompileDiagnostic& warning : *unusedWarnings)
+        {
+            Error location; location.sourceName = sourceName; location.line = warning.line; location.column = warning.column;
+            result->impl_->bundle.Translate(location);
+            warning.sourceName = location.sourceName; warning.line = location.line; warning.column = location.column;
+        }
+        std::stable_sort(unusedWarnings->begin(), unusedWarnings->end(), [](const CompileDiagnostic& a, const CompileDiagnostic& b) {
+            if (a.sourceName != b.sourceName) return a.sourceName < b.sourceName;
+            return a.line != b.line ? a.line < b.line : a.column < b.column;
+        });
+    }
     return result;
 }
 
