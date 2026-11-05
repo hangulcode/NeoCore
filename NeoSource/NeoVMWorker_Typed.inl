@@ -16,7 +16,8 @@ NEOS_FORCEINLINE void TypedMapRead(const SVMOperation& op)
 {
     VarInfo* receiver = GetVarPtr2(op);
     VarInfo* key = GetVarPtr3(op);
-    if (receiver->GetType() != VAR_MAP)
+    assert(receiver->GetType() == VAR_MAP || receiver->GetType() == VAR_NONE);
+    if (receiver->GetType() == VAR_NONE)
     {
         SetError("cannot access a null map");
         return;
@@ -41,7 +42,8 @@ NEOS_FORCEINLINE void TypedMapRead(const SVMOperation& op)
 NEOS_NOINLINE void MapCompoundReadError(const VarInfo* receiver, VarInfo* key)
 {
     // 문자열 생성과 오류 정리는 각 숫자 명령의 빠른 경로 밖에서 공유한다.
-    if (receiver->GetType() != VAR_MAP) SetError("cannot access a null map");
+    assert(receiver->GetType() == VAR_MAP || receiver->GetType() == VAR_NONE);
+    if (receiver->GetType() == VAR_NONE) SetError("cannot access a null map");
     else SetErrorFormat("map key not found: %s", ToString(key).c_str());
 }
 
@@ -50,7 +52,8 @@ NEOS_FORCEINLINE void TypedMapCompound(const SVMOperation& op)
 {
     VarInfo* receiver = GetVarPtr2(op);
     VarInfo* key = GetVarPtr3(op);
-    if (receiver->GetType() != VAR_MAP)
+    assert(receiver->GetType() == VAR_MAP || receiver->GetType() == VAR_NONE);
+    if (receiver->GetType() == VAR_NONE)
     {
         MapCompoundReadError(receiver, key);
         return;
@@ -85,7 +88,8 @@ NEOS_FORCEINLINE void TypedSetOperation(const SVMOperation& op)
 {
     VarInfo* receiver = GetVarPtr2(op);
     VarInfo* key = GetVarPtr3(op);
-    if (receiver->GetType() != VAR_SET)
+    assert(receiver->GetType() == VAR_SET || receiver->GetType() == VAR_NONE);
+    if (receiver->GetType() == VAR_NONE)
     {
         SetError("cannot access a null set");
         return;
@@ -272,6 +276,7 @@ NEOS_FORCEINLINE bool CheckTypedArrayValue(const VarInfo* value)
 NEOS_FORCEINLINE bool CheckTypedArrayReceiver(const VarInfo* value)
 {
     // 참조 타입은 null일 수 있다. ClearType 뒤 남은 이전 포인터 페이로드를 읽기 전에 태그로 검사한다.
+    assert(value->GetType() == VAR_ARRAY || value->GetType() == VAR_NONE);
     if (value->GetType() != VAR_NONE) return true;
     SetError("cannot access a null array");
     return false;

@@ -131,7 +131,7 @@ NEOS_FORCEINLINE void CNeoVMWorker::CltInsert(VarInfo* pClt, VarInfo* pKey, VarI
 	else if (pClt->IsVector())
 	{
 		// v[i] = x. 인라인 성분은 직접 쓰고 공유 중인 4성분 저장소만 복제한다.
-		if (pKey->GetType() == VAR_INT && pValue->IsNumber())
+		assert(pKey->GetType() == VAR_INT && pValue->IsNumber());
 		{
 			NS_UINT idx = (NS_UINT)pKey->_int;
 			if (idx < (unsigned)pClt->VectorComponentCount())
@@ -144,11 +144,7 @@ NEOS_FORCEINLINE void CNeoVMWorker::CltInsert(VarInfo* pClt, VarInfo* pKey, VarI
 	}
 	else if (t == VAR_ARRAY)
 	{
-		if (pKey->GetType() != VAR_INT)
-		{
-			SetError(RTE_ARRAY_INDEX_TYPE);
-			return;
-		}
+		assert(pKey->GetType() == VAR_INT);
 		ArrayInfo* array = pClt->_array;
 		const NS_INT index = pKey->_int;
 		if (array->IsValidIndex(index) == false)
@@ -179,7 +175,7 @@ NEOS_NOINLINE void CNeoVMWorker::CltInsertRare(VarInfo* pClt, VarInfo* pKey, Var
 	case VAR_VEC:
 	case VAR_VEC4:
 		// 가변 성분 쓰기: 인라인 값은 직접 수정하고 4성분 벡터만 COW로 분리한다.
-		if (pKey->GetType() == VAR_INT && pValue->IsNumber())
+		assert(pKey->GetType() == VAR_INT && pValue->IsNumber());
 		{
 			NS_UINT idx = (NS_UINT)pKey->_int;
 			if (idx < (unsigned)pClt->VectorComponentCount())
@@ -192,22 +188,14 @@ NEOS_NOINLINE void CNeoVMWorker::CltInsertRare(VarInfo* pClt, VarInfo* pKey, Var
 		return;
 	case VAR_FP_NATIVE:
 	{
-		if (pKey->GetType() != VAR_STRING)
-		{
-			SetError(RTE_NATIVE_PROPERTY_KEY);
-			return;
-		}
+		assert(pKey->GetType() == VAR_STRING);
 		FunctionPropertyInfo* fp = pClt->_fpNative;
 		PropertyNative(fp->_fun, fp->_pUserData, pKey->_str, pValue, false);
 		return;
 	}
 	case VAR_ARRAY:
 	{
-		if (pKey->GetType() != VAR_INT)
-		{
-			SetError(RTE_ARRAY_INDEX_TYPE);
-			return;
-		}
+		assert(pKey->GetType() == VAR_INT);
 		ArrayInfo* array = pClt->_array;
 		const NS_INT index = pKey->_int;
 		if (array->IsValidIndex(index) == false)
@@ -373,8 +361,8 @@ NEOS_FORCEINLINE void CNeoVMWorker::CltRead(VarInfo* pClt, VarInfo* pKey, VarInf
 	}
 	else if (pClt->IsVector())
 	{
-		// v[i] 읽기. 범위 밖이거나 정수 인덱스가 아니면 그대로 떨어뜨려 rare 가 에러를 낸다.
-		if (pKey->GetType() == VAR_INT)
+		// 벡터 첨자 타입은 정적 계약이고, 실제 범위는 실행 중 검사한다.
+		assert(pKey->GetType() == VAR_INT);
 		{
 			NS_UINT idx = (NS_UINT)pKey->_int;
 			if (idx < (unsigned)pClt->VectorComponentCount())
@@ -386,11 +374,7 @@ NEOS_FORCEINLINE void CNeoVMWorker::CltRead(VarInfo* pClt, VarInfo* pKey, VarInf
 	}
 	else if (t == VAR_ARRAY)
 	{
-		if (pKey->GetType() != VAR_INT)
-		{
-			SetError(RTE_ARRAY_INDEX_TYPE);
-			return;
-		}
+		assert(pKey->GetType() == VAR_INT);
 		ArrayInfo* array = pClt->_array;
 		const NS_INT index = pKey->_int;
 		if (array->IsValidIndex(index) == false)
@@ -418,7 +402,7 @@ NEOS_NOINLINE void CNeoVMWorker::CltReadRare(VarInfo* pClt, VarInfo* pKey, VarIn
 	{
 	case VAR_VEC:
 	case VAR_VEC4:
-		if (pKey->GetType() == VAR_INT)
+		assert(pKey->GetType() == VAR_INT);
 		{
 			NS_UINT idx = (NS_UINT)pKey->_int;
 			if (idx < (unsigned)pClt->VectorComponentCount())
@@ -431,22 +415,14 @@ NEOS_NOINLINE void CNeoVMWorker::CltReadRare(VarInfo* pClt, VarInfo* pKey, VarIn
 		return;
 	case VAR_FP_NATIVE:
 		{
-			if (pKey->GetType() != VAR_STRING)
-			{
-				SetError(RTE_NATIVE_PROPERTY_KEY);
-				return;
-			}
+			assert(pKey->GetType() == VAR_STRING);
 			FunctionPropertyInfo* fp = pClt->_fpNative;
 			PropertyNative(fp->_fun, fp->_pUserData, pKey->_str, pValue, true);
 			return;
 		}
 	case VAR_ARRAY:
 	{
-		if (pKey->GetType() != VAR_INT)
-		{
-			SetError(RTE_ARRAY_INDEX_TYPE);
-			return;
-		}
+		assert(pKey->GetType() == VAR_INT);
 		ArrayInfo* array = pClt->_array;
 		const NS_INT index = pKey->_int;
 		if (array->IsValidIndex(index) == false)
@@ -814,7 +790,8 @@ NEOS_NOINLINE bool CNeoVMWorker::ForEachRare(VarInfo* pClt, VarInfo* pKey, bool 
 		}
 		else
 		{
-			if (pMutationVersion->GetType() != VAR_INT || (u32)pMutationVersion->_int != set->_mutationVersion)
+			assert(pMutationVersion->GetType() == VAR_INT);
+			if ((u32)pMutationVersion->_int != set->_mutationVersion)
 			{
 				pIterator->ClearType();
 				SetError(RTE_FOREACH_MODIFIED);
@@ -877,7 +854,8 @@ NEOS_FORCEINLINE bool CNeoVMWorker::ForEach(VarInfo* pClt, VarInfo* pKey, bool b
 		}
 		else
 		{
-			if (pMutationVersion->GetType() != VAR_INT || (u32)pMutationVersion->_int != array->_mutationVersion)
+			assert(pMutationVersion->GetType() == VAR_INT);
+			if ((u32)pMutationVersion->_int != array->_mutationVersion)
 			{
 				pIterator->ClearType();
 				SetError(RTE_FOREACH_MODIFIED);
@@ -911,7 +889,8 @@ NEOS_FORCEINLINE bool CNeoVMWorker::ForEach(VarInfo* pClt, VarInfo* pKey, bool b
 		}
 		else
 		{
-			if (pMutationVersion->GetType() != VAR_INT || (u32)pMutationVersion->_int != tbl->_mutationVersion)
+			assert(pMutationVersion->GetType() == VAR_INT);
+			if ((u32)pMutationVersion->_int != tbl->_mutationVersion)
 			{
 				pIterator->ClearType();
 				SetError(RTE_FOREACH_MODIFIED);
@@ -958,7 +937,8 @@ NEOS_FORCEINLINE bool CNeoVMWorker::ForEach(VarInfo* pClt, VarInfo* pKey, bool b
 		}
 		else
 		{
-			if (pMutationVersion->GetType() != VAR_INT || (u32)pMutationVersion->_int != lst->_mutationVersion)
+			assert(pMutationVersion->GetType() == VAR_INT);
+			if ((u32)pMutationVersion->_int != lst->_mutationVersion)
 			{
 				pIterator->ClearType();
 				SetError(RTE_FOREACH_MODIFIED);

@@ -1,5 +1,7 @@
 ﻿#pragma once
 
+#include <cassert>
+
 #include "NeoConfig.h"
 #include "NeoHttp.h"
 #include "NeoNumeric.h"
@@ -404,6 +406,8 @@ public:
 	}
 	NEOS_FORCEINLINE float VectorComponent(int index) const;
 	NEOS_FORCEINLINE void CopyVectorComponents(float* out) const;
+	// 컴파일 때 차원이 확정된 내부 경로는 런타임 성분 수로 복사 길이를 고르지 않는다.
+	template<int Dimension> NEOS_FORCEINLINE void CopyVectorComponents(float* out) const;
 	NEOS_FORCEINLINE NS_FLOAT GetFloatNumber()
 	{
 		if (VAR_INT == _type) return (NS_FLOAT)_int;

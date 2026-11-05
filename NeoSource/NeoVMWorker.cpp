@@ -2103,8 +2103,20 @@ bool	CNeoVMWorker::RunInternal(int iBreakingCallStack)
 		case NOP_EQUAL2:        handle_EQUAL2_cold(OP); break;
 		case NOP_NEQUAL:        handle_NEQUAL_cold(OP); break;
 		case NOP_JMP:           SetCodeIncPtr(OP.n1); break;
-		case NOP_JMP_FALSE:     if (false == GetVarPtr2(OP)->IsTrue()) SetCodeIncPtr(OP.n1); break;
-		case NOP_JMP_TRUE:      if (true == GetVarPtr2(OP)->IsTrue()) SetCodeIncPtr(OP.n1); break;
+		case NOP_JMP_FALSE:
+        {
+            const VarInfo* condition = GetVarPtr2(OP);
+            assert(condition->GetType() == VAR_BOOL);
+            if (!condition->_bl) SetCodeIncPtr(OP.n1);
+            break;
+        }
+		case NOP_JMP_TRUE:
+        {
+            const VarInfo* condition = GetVarPtr2(OP);
+            assert(condition->GetType() == VAR_BOOL);
+            if (condition->_bl) SetCodeIncPtr(OP.n1);
+            break;
+        }
 		case NOP_JMP_GREAT:     if (((OP.argFlag & NEOS_OP_COMPARE_INVERT) == 0) == CompareGR(GetVarPtr2(OP), GetVarPtr3(OP))) SetComparisonJump(OP.n1); break;
 		case NOP_JMP_GREAT_L:   if (((OP.argFlag & NEOS_OP_COMPARE_INVERT) == 0) == CompareGR(GetVarPtr_L(OP.n2), GetVarPtr_L(OP.n3))) SetComparisonJump(OP.n1); break;
 		case NOP_JMP_GREAT_EQ:  if (((OP.argFlag & NEOS_OP_COMPARE_INVERT) == 0) == CompareGE(GetVarPtr2(OP), GetVarPtr3(OP))) SetComparisonJump(OP.n1); break;
@@ -2762,14 +2774,15 @@ bool CNeoVMWorker::CallDefaultNativeByIndex(int nativeIndex, int n3, VarInfo* pR
 {
 	if (!EnsureStackRange(_iSP_VarsMax, n3))
 		return false;
-    // 인자 슬롯 검증은 유지한다. 등록된 순수 함수의 숫자 인자만 별도 프레임 없이 계산한다.
-    // 잘못된 타입과 인자 수는 기존 호출 경로에서 같은 오류를 낸다.
+    // 스택 범위 검사는 유지한다. 등록된 숫자 함수의 인자 계약은 컴파일러가 보증한다.
+    // 정수와 실수 모두 허용하는 내부 명령이므로 두 숫자 표현의 선택은 남긴다.
     if (n3 == 1)
     {
         CNeoVM::ScalarNativeFunction scalar = CNeoVM::GetDefaultNativeScalar(nativeIndex);
         VarInfo* argument = m_pVarStack_Base->data() + _iSP_VarsMax + 1;
-        if (scalar && argument->IsNumber())
+        if (scalar)
         {
+            assert(argument->IsNumber());
             const NS_FLOAT value = scalar(argument->GetFloatNumber());
             if (pRet) StoreNumberFloat(pRet, value);
             return true;

@@ -1,4 +1,5 @@
-﻿#include "NeoTime.h"
+﻿#include <cassert>
+#include "NeoTime.h"
 #include "NeoVMInternal.h"
 #include "NeoVMWorker.h"
 #include <chrono>
@@ -81,8 +82,8 @@ bool ReturnSpan(CNeoVMWorker* worker, NS_INT milliseconds)
 
 const Span* ReadSpan(VarInfo* value)
 {
-    if (value->GetType() != VAR_FP_NATIVE || value->_fpNative->_identityType != &spanType)
-        return nullptr;
+    if (value->GetType() == VAR_NONE) return nullptr;
+    assert(value->GetType() == VAR_FP_NATIVE && value->_fpNative->_identityType == &spanType);
     return static_cast<const Span*>(value->_fpNative->_pUserData);
 }
 
@@ -140,19 +141,22 @@ bool SpanMethod(INeoVMWorker* base, void* data, const VMString* name, short args
     // 반환 슬롯을 교체하면서 마지막 별칭이 해제될 수 있으므로 값을 먼저 복사한다.
     const NS_INT value = static_cast<const Span*>(data)->milliseconds;
     const std::string& method = name->_str;
-    if (method == "total_milliseconds" && args == 0)
+    if (method == "total_milliseconds")
     {
+        assert(args == 0);
         worker->ReturnValue(value);
         return true;
     }
-    if (method == "total_seconds" && args == 0)
+    if (method == "total_seconds")
     {
+        assert(args == 0);
         worker->ReturnValue(static_cast<NS_FLOAT>(static_cast<double>(value) / 1000.0));
         return true;
     }
-    if (method == "parts" && args == 0) return ReturnParts(worker, value);
-    if (method == "format" && args == 0)
+    if (method == "parts") { assert(args == 0); return ReturnParts(worker, value); }
+    if (method == "format")
     {
+        assert(args == 0);
         const Parts parts(value);
         std::ostringstream text;
         text.imbue(std::locale::classic());
@@ -163,8 +167,9 @@ bool SpanMethod(INeoVMWorker* base, void* data, const VMString* name, short args
         worker->ReturnValue(text.str().c_str());
         return true;
     }
-    if ((method == "add" || method == "subtract" || method == "compare") && args == 1)
+    if (method == "add" || method == "subtract" || method == "compare")
     {
+        assert(args == 1);
         const Span* other = ReadSpan(worker->GetStack(1));
         if (!other) return Error(worker, "time_span operation expects a time_span");
         const NS_INT operand = other->milliseconds;
@@ -183,7 +188,7 @@ bool SpanMethod(INeoVMWorker* base, void* data, const VMString* name, short args
 
 bool WatchMethod(INeoVMWorker* base, void* data, const VMString* name, short args)
 {
-    if (args != 0) return false;
+    assert(args == 0);
     CNeoVMWorker* worker = static_cast<CNeoVMWorker*>(base);
     Watch* watch = static_cast<Watch*>(data);
     const std::string& method = name->_str;
@@ -261,7 +266,7 @@ bool MakeUtc(const NS_INT* p, NS_INT& result)
 
 bool ReadUtc(CNeoVMWorker* worker, short args, std::tm& calendar, int& milliseconds)
 {
-    if (args != 1 || worker->GetStack(1)->GetType() != VAR_INT) return false;
+    assert(args == 1 && worker->GetStack(1)->GetType() == VAR_INT);
     const NS_INT value = worker->GetStack(1)->_int;
     if (value < utcMinMs || value > utcMaxMs) return Error(worker, "UTC milliseconds outside years 1900..9999");
     NS_INT seconds = value / 1000;
@@ -286,7 +291,7 @@ int Digits(const std::string& text, size_t offset, size_t count)
 
 bool TimeMilliseconds(CNeoVMWorker* worker, VarInfo*, short args)
 {
-    if (args != 0) return false;
+    assert(args == 0);
     const auto now = std::chrono::system_clock::now().time_since_epoch();
     worker->ReturnValue(static_cast<NS_INT>(std::chrono::duration_cast<std::chrono::milliseconds>(now).count()));
     return true;
@@ -294,7 +299,7 @@ bool TimeMilliseconds(CNeoVMWorker* worker, VarInfo*, short args)
 
 bool TimeSpanSeconds(CNeoVMWorker* worker, VarInfo*, short args)
 {
-    if (args != 1 || !worker->GetStack(1)->IsNumber()) return false;
+    assert(args == 1 && worker->GetStack(1)->IsNumber());
     const VarInfo* value = worker->GetStack(1);
     if (value->GetType() == VAR_INT)
     {
@@ -312,12 +317,12 @@ bool TimeSpanSeconds(CNeoVMWorker* worker, VarInfo*, short args)
 
 bool UtcTimeMilliseconds(CNeoVMWorker* worker, VarInfo*, short args)
 {
-    if (args != 7) return false;
+    assert(args == 7);
     NS_INT parts[7];
     for (int i = 0; i < 7; ++i)
     {
         const VarInfo* value = worker->GetStack(i + 1);
-        if (value->GetType() != VAR_INT) return false;
+        assert(value->GetType() == VAR_INT);
         parts[i] = value->_int;
     }
     NS_INT value;
@@ -349,7 +354,9 @@ bool UtcFormatMilliseconds(CNeoVMWorker* worker, VarInfo*, short args)
 
 bool UtcParseMilliseconds(CNeoVMWorker* worker, VarInfo*, short args)
 {
-    if (args != 1 || worker->GetStack(1)->GetType() != VAR_STRING) return false;
+    assert(args == 1);
+    assert(worker->GetStack(1)->GetType() == VAR_STRING || worker->GetStack(1)->GetType() == VAR_NONE);
+    if (worker->GetStack(1)->GetType() == VAR_NONE) return false;
     const std::string& text = worker->GetStack(1)->_str->_str;
     // 고정 UTC 형식만 받으며 공백, 오프셋, 윤초, 밀리초보다 긴 소수부는 거부한다.
     const size_t size = text.size();
@@ -373,19 +380,19 @@ bool UtcParseMilliseconds(CNeoVMWorker* worker, VarInfo*, short args)
 
 bool TimeSpanMilliseconds(CNeoVMWorker* worker, VarInfo*, short args)
 {
-    if (args != 1 || worker->GetStack(1)->GetType() != VAR_INT) return false;
+    assert(args == 1 && worker->GetStack(1)->GetType() == VAR_INT);
     return ReturnSpan(worker, worker->GetStack(1)->_int);
 }
 
 bool TimeSpan(CNeoVMWorker* worker, VarInfo*, short args)
 {
-    if (args != 5) return false;
+    assert(args == 5);
     const NS_INT multipliers[] = {86400000, 3600000, 60000, 1000, 1};
     NS_INT total = 0;
     for (int i = 0; i < 5; ++i)
     {
         VarInfo* value = worker->GetStack(i + 1);
-        if (value->GetType() != VAR_INT) return false;
+        assert(value->GetType() == VAR_INT);
         const NS_INT scale = multipliers[i];
         if (value->_int < intMin / scale || value->_int > intMax / scale ||
             !Add(total, value->_int * scale, total))
@@ -396,7 +403,7 @@ bool TimeSpan(CNeoVMWorker* worker, VarInfo*, short args)
 
 bool Stopwatch(CNeoVMWorker* worker, VarInfo*, short args)
 {
-    if (args != 0) return false;
+    assert(args == 0);
     return ReturnObject(worker, std::make_shared<Watch>(), &watchType, WatchMethod);
 }
 

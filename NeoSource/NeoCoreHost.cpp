@@ -1,4 +1,5 @@
-﻿#include "NeoCoreHostRuntime.h"
+﻿#include <cassert>
+#include "NeoCoreHostRuntime.h"
 #include "NeoCoreHostBridge.h"
 #include "NeoCoreInstanceContext.h"
 #include "NeoCoreValueBoundary.h"
@@ -379,11 +380,8 @@ bool HostRuntimeAccess::Dispatch(NeoScript::CallContext& ctx, NeoScript::StringV
             if (object) ctx.retInt(HandleBits(object)); else ctx.retNull();
             return true;
         }
-        if (ctx.argCount() != entry.arguments.size() + 1)
-        {
-            ctx.fail(0, "invalid internal host argument count");
-            return false;
-        }
+        // 이 비공개 래퍼의 인자 수는 프런트엔드가 확정한다. 외부 호스트 진입의 검사는 별도다.
+        assert(ctx.argCount() == entry.arguments.size() + 1);
         // 호스트 객체 값은 null 일 수 있다. null 수신자의 슬롯은 ID 로 읽을 수 없으므로 먼저 거부한다.
         if (NeoCoreBackend::IsNull(ctx, 0))
         {

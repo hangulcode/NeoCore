@@ -12,6 +12,10 @@ and DAP debugging; see [the extension guide](../Tools/vscode-neocore/README.md).
 
 ## Implementation boundary
 
+Internal checks follow [the runtime contract rules](RuntimeContracts.md): compile-time
+contracts use debug assertions, while nullable values, external boundaries and
+value-dependent failures retain runtime checks.
+
 The frontend tokenizes source, builds typed expressions and statements,
 collects function signatures, and checks types before producing typed IR and a
 transitional backend statement skeleton. The checked program then runs on the

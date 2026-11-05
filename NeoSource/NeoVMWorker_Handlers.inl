@@ -460,10 +460,7 @@ NEOS_NOINLINE void handle_CLT_WRITE_REF(const SVMOperation& OP) {
     }
     else if (owner->GetType() == VAR_ARRAY && owner->_array->VectorDimension()) {
         // 배열도 리스트와 같이 원소 VarInfo를 직접 빌려 원자적으로 성분을 수정한다.
-        if (key->GetType() != VAR_INT) {
-            SetError(RTE_ARRAY_INDEX_TYPE);
-            return;
-        }
+        assert(key->GetType() == VAR_INT);
         if (!owner->_array->IsValidIndex(key->_int)) {
             SetError(RTE_ARRAY_INDEX_WRITE);
             return;
@@ -522,7 +519,10 @@ NEOS_NOINLINE bool handle_IDLE(const SVMOperation& OP) {
     AsyncResumeInfo resumeInfo = m_pCur->m_sAsyncResumeCodePtrs.back();
     m_pCur->m_sAsyncResumeCodePtrs.pop_back();
     if (resumeInfo.pReturnValue != nullptr)
-        resumeInfo.returnValue = resumeInfo.pReturnValue->IsTrue();
+    {
+        assert(resumeInfo.pReturnValue->GetType() == VAR_BOOL);
+        resumeInfo.returnValue = resumeInfo.pReturnValue->_bl;
+    }
     SetCodePtr(resumeInfo.codePtr);
     while (true)
     {
@@ -562,25 +562,23 @@ NEOS_NOINLINE bool handle_IDLE(const SVMOperation& OP) {
 
 // 벡터 생성 intrinsic (LoadVM 에서 PTRCALL2(#Vector*) 패치). native 호출 프레임 없이
 // 인자 슬롯(_iSP_VarsMax+1..N)을 직접 읽어 값타입 세팅. n3=결과 슬롯.
-// 벡터 저장과 타입 검사를 이 핸들러에서 처리하므로 디스패치 루프에 전개되면 그만큼
+// 벡터 저장을 이 핸들러에서 처리하므로 디스패치 루프에 전개되면 그만큼
 // 루프가 커진다. 생성은 성분 쓰기·산술만큼 자주 돌지 않으므로 루프 밖에 둔다.
 NEOS_NOINLINE bool handle_VEC_MAKE(const SVMOperation& OP) {
     // n2 = 인자 수 = 성분 수. Vector2/3/4/Quaternion 이 모두 이 op 으로 패치되며,
     // 무엇으로 해석할지는(예: wxyz 쿼터니언) 사용자 규약이지 VM 의 타입이 아니다.
     const int n = OP.n2;
+    // 저수준 바이트코드 경로도 공유하므로 버퍼 크기를 정하는 명령 형식은 검증한다.
     if (n < 2 || n > 4) {
         SetError(RTE_CALL_INVALID);
         return false;
     }
     // 함수 진입에서 인자 영역까지 스택 범위와 해제 상한을 확정한다.
-    // 새 벡터를 완성한 뒤 대상에 연결해 인자 오류가 기존 값을 바꾸지 않게 한다.
+    // 인자와 목적지가 겹쳐도 값을 보존하도록 새 벡터를 완성한 뒤 대상에 연결한다.
     VarInfo* args = GetStackFromBase(_iSP_VarsMax + 1);
     float tmp[4] = {};   // n 개만 쓰고 n 개만 복사한다
     for (int i = 0; i < n; ++i) {
-        if (!args[i].IsNumber()) {
-            SetError(RTE_CALL_INVALID);   // 대상은 아직 건드리지 않았다
-            return false;
-        }
+        assert(args[i].IsNumber());
         tmp[i] = NeoNarrowFloat32(args[i].GetFloatNumber());
     }
     if (OP.argFlag & NEOS_OP_CALL_NORESULT) return false;

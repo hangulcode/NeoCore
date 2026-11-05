@@ -25,6 +25,18 @@ NEOS_FORCEINLINE float VarInfo::VectorComponent(int index) const
 	}
 	return _vec->v[index];
 }
+template<int Dimension>
+NEOS_FORCEINLINE void VarInfo::CopyVectorComponents(float* out) const
+{
+    static_assert(Dimension >= 2 && Dimension <= 4, "vector dimension must be 2..4");
+    assert(VectorComponentCount() == Dimension);
+    if (Dimension < 4)
+    {
+        const unsigned char* bytes = reinterpret_cast<const unsigned char*>(this);
+        std::memcpy(out, bytes + sizeof(_type) + sizeof(_vecCount) + sizeof(_unused), sizeof(float) * Dimension);
+    }
+    else std::memmove(out, _vec->v, sizeof(float) * Dimension);
+}
 NEOS_FORCEINLINE void VarInfo::CopyVectorComponents(float* out) const
 {
 	// 호출자가 요청한 유효 성분만 쓴다. 남는 출력 레인은 보존한다.

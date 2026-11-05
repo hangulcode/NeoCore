@@ -1,5 +1,7 @@
 ﻿#pragma once
 
+#include <cassert>
+
 #include <chrono>
 
 #include "NeoVMInternal.h"
