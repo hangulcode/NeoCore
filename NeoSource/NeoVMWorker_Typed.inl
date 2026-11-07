@@ -511,6 +511,101 @@ NEOS_FORCEINLINE void StoreArithmeticInt(VarInfo* target, NS_INT value) { target
 template<bool Fixed>
 NEOS_FORCEINLINE void StoreArithmeticFloat(VarInfo* target, NS_FLOAT value) { target->_float = value; }
 
+// 숫자 산술의 한 단계. 세부 연산이 템플릿 인자라 분기가 접힌다. 검사에 실패하면 오류를 올리고 false.
+// 디스패치 루프의 런타임 opcode 핸들러와 퓨전 실행기가 같은 본문을 쓴다.
+template<ArithmeticOp Sub>
+NEOS_FORCEINLINE bool IntegerStep(VarInfo* value, NS_INT a, NS_INT b)
+{
+    switch (Sub)
+    {
+    case ArithmeticOp::Add: value->_int = NeoIntAdd(a, b); return true;
+    case ArithmeticOp::Sub: value->_int = NeoIntSub(a, b); return true;
+    case ArithmeticOp::Mul: value->_int = NeoIntMul(a, b); return true;
+    case ArithmeticOp::Div: if (!CheckIntegerDivision(a, b)) return false; value->_int = a / b; return true;
+    case ArithmeticOp::Mod: if (!CheckIntegerDivision(a, b)) return false; value->_int = a % b; return true;
+    case ArithmeticOp::BitAnd: value->_int = a & b; return true;
+    case ArithmeticOp::BitOr: value->_int = a | b; return true;
+    case ArithmeticOp::BitXor: value->_int = a ^ b; return true;
+    case ArithmeticOp::ShiftLeft: if (!CheckShiftCount(b)) return false; value->_int = NeoShiftLeft(a, b); return true;
+    case ArithmeticOp::ShiftRight: if (!CheckShiftCount(b)) return false; value->_int = NeoShiftRight(a, b); return true;
+    case ArithmeticOp::Neg: value->_int = NeoIntNeg(a); return true;
+    }
+    SetError(RTE_UNKNOWN_OP);
+    return false;
+}
+template<ArithmeticOp Sub>
+NEOS_FORCEINLINE bool FloatStep(VarInfo* value, NS_FLOAT a, NS_FLOAT b)
+{
+    switch (Sub)
+    {
+    case ArithmeticOp::Add: value->_float = a + b; return true;
+    case ArithmeticOp::Sub: value->_float = a - b; return true;
+    case ArithmeticOp::Mul: value->_float = a * b; return true;
+    case ArithmeticOp::Div: value->_float = a / b; return true;
+    case ArithmeticOp::Neg: value->_float = -a; return true;
+    default: break;
+    }
+    SetError(RTE_UNKNOWN_OP);
+    return false;
+}
+template<ComparisonOp Sub, typename Number>
+NEOS_FORCEINLINE static bool CompareStep(Number a, Number b)
+{
+    switch (Sub)
+    {
+    case ComparisonOp::Equal: return a == b;
+    case ComparisonOp::Less: return a < b;
+    case ComparisonOp::LessEqual: return a <= b;
+    case ComparisonOp::NotEqual: return a != b;
+    case ComparisonOp::Greater: return a > b;
+    case ComparisonOp::GreaterEqual: return a >= b;
+    }
+    return false;
+}
+NEOS_FORCEINLINE static bool IntegerStepCanFail(ArithmeticOp sub)
+{
+    return sub == ArithmeticOp::Div || sub == ArithmeticOp::Mod ||
+        sub == ArithmeticOp::ShiftLeft || sub == ArithmeticOp::ShiftRight;
+}
+
+// 런타임 opcode 핸들러. 피연산자를 읽어 한 단계를 실행한다. 제자리 형식은 n1이 왼쪽 입력이고 n2가 오른쪽이다.
+template<ArithmeticOp Sub, bool Update>
+NEOS_FORCEINLINE void I64ArithmeticRT(const SVMOperation& OP)
+{
+    VarInfo* value = GetVarRawF1(OP);
+    const NS_INT a = Update ? value->_int : GetVarRaw2(OP)->_int;
+    const NS_INT b = Sub == ArithmeticOp::Neg ? 0 : (Update ? GetVarRaw2(OP)->_int : GetVarRaw3(OP)->_int);
+    IntegerStep<Sub>(value, a, b);
+}
+template<ArithmeticOp Sub, bool Update>
+NEOS_FORCEINLINE void F64ArithmeticRT(const SVMOperation& OP)
+{
+    VarInfo* value = GetVarRawF1(OP);
+    const NS_FLOAT a = Update ? value->_float : GetVarRaw2(OP)->_float;
+    const NS_FLOAT b = Sub == ArithmeticOp::Neg ? 0 : (Update ? GetVarRaw2(OP)->_float : GetVarRaw3(OP)->_float);
+    FloatStep<Sub>(value, a, b);
+}
+template<ComparisonOp Sub>
+NEOS_FORCEINLINE void I64CompareRT(const SVMOperation& OP)
+{
+    StoreNumberBool(GetVarRawF1(OP), ((OP.argFlag & NEOS_OP_COMPARE_INVERT) == 0) == CompareStep<Sub>(GetVarRaw2(OP)->_int, GetVarRaw3(OP)->_int));
+}
+template<ComparisonOp Sub>
+NEOS_FORCEINLINE void F64CompareRT(const SVMOperation& OP)
+{
+    StoreNumberBool(GetVarRawF1(OP), ((OP.argFlag & NEOS_OP_COMPARE_INVERT) == 0) == CompareStep<Sub>(GetVarRaw2(OP)->_float, GetVarRaw3(OP)->_float));
+}
+template<ComparisonOp Sub>
+NEOS_FORCEINLINE void I64JumpCompareRT(const SVMOperation& OP)
+{
+    if (((OP.argFlag & NEOS_OP_COMPARE_INVERT) == 0) == CompareStep<Sub>(GetVarRaw2(OP)->_int, GetVarRaw3(OP)->_int)) SetComparisonJump(OP.n1);
+}
+template<ComparisonOp Sub>
+NEOS_FORCEINLINE void F64JumpCompareRT(const SVMOperation& OP)
+{
+    if (((OP.argFlag & NEOS_OP_COMPARE_INVERT) == 0) == CompareStep<Sub>(GetVarRaw2(OP)->_float, GetVarRaw3(OP)->_float)) SetComparisonJump(OP.n1);
+}
+
 template<bool Fixed>
 inline void handle_I64_ARITH(const SVMOperation& OP)
 {

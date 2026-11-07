@@ -89,16 +89,8 @@ std::vector<SVMOperation> Operations(const std::vector<uint8_t>& bytes, bool exp
         static_cast<std::size_t>(header._iCodeSize) > bytes.size() - sizeof(header)) return result;
     result.resize(static_cast<std::size_t>(header._iCodeSize) / sizeof(SVMOperation));
     if (!result.empty()) std::memcpy(result.data(), bytes.data() + sizeof(header), header._iCodeSize);
-    if (expand)
-    {
-        CNeoVMProgram* program = CNeoVMProgram::Create(bytes.data(), static_cast<int>(bytes.size()));
-        if (program)
-        {
-            for (const auto& plan : program->fusions)
-                for (unsigned i = 0; i < plan.count; ++i) result[plan.start + i] = plan.operations[i];
-            program->Release();
-        }
-    }
+    // 퓨전이 제거되어 이미지의 명령이 곧 실행 명령이다. 확장할 묶음이 없다.
+    (void)expand;
     return result;
 }
 

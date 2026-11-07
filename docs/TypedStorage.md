@@ -150,7 +150,10 @@ constants and other instances' globals are not part of instance cleanup.
 
 The eight-byte payload, compiler-owned frame/call layouts, the owned-slot prefix,
 policy-carrying copy instructions and frame-walk cleanup are implemented. The
-opcode-family, general fusion and in-place arithmetic changes are retained.
+opcode-family and in-place arithmetic changes are retained; the loader expands
+the numeric families into one-byte runtime opcodes so the dispatch loop selects
+each operation with one switch. The general fusion pass was removed on
+2026-11-08 because it was slower than plain dispatch.
 List/map/set entry storage and some generic bridge operations remain transitional,
 as described above. Property hosts no longer sweep their scratch window; a host
 getter or setter must not leave owned values in VM stack slots. No performance

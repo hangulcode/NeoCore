@@ -244,25 +244,6 @@ struct ProgramRangeJump
 };
 
 // 융합 계획은 명령·슬롯 번호만 보관한다. 워커의 값이나 포인터는 공유하지 않는다.
-struct ProgramFusion
-{
-    static const unsigned MaxSteps = 8;
-    typedef void (*Executor)(CNeoVMWorker*, const ProgramFusion&);
-    Executor execute = nullptr;
-    int start = 0;
-    u8 count = 0;
-    u8 elide = 0;
-    u8 update = 0; // 숫자 저장형이 고정되었거나 제자리 쓰기로 보존되는 목적지.
-    SVMOperation operations[MaxSteps];
-    signed char inputs[MaxSteps][3];
-    struct Address { short slot; u8 base; };
-    Address addresses[MaxSteps][4];
-    u8 results[MaxSteps];
-    u8 reads[MaxSteps], writes[MaxSteps];
-};
-
-void PrepareFusionExecution(ProgramFusion& plan);
-
 // 컴파일된 스크립트 이미지.
 // Create() 에서 1회 파싱 + 1회 코드 패치되고 이후 완전 불변이다.
 // 여러 CNeoVMWorker / 여러 CNeoVM / 여러 스레드가 refcount 로 공유한다.
@@ -299,7 +280,6 @@ public:
 	std::map<std::string, int>	exportVariables;   // 전역 변수명 → 전역 슬롯 인덱스
 	std::vector<SStaticConst>	staticValues;
 	std::vector<ProgramSwitchTable>	switchTables;      // NOP_SWITCH.n1 이 이 배열의 인덱스
-	std::vector<ProgramFusion> fusions;
 	std::vector<ProgramRangeJump>	rangeJumps;          // NOP_JMP_RANGE_*.n3 이 이 배열의 인덱스
 
 	// 디버그 정보 (IsDebugInfo() 일 때만 채워진다)

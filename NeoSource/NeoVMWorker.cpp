@@ -17,7 +17,6 @@ namespace NeoScript
 
 void	SetCompileError(const char*	lpszString, ...);
 
-void PrepareFusionExecution(ProgramFusion& plan) { CNeoVMWorker::ConfigureFusion(plan); }
 
 // 네이티브가 보조 스크립트 프레임을 직접 실행할 때, 호출자 람다의 캡처를
 // 자식 RET가 동기화하거나 반납하지 못하게 한다. 이 포인터는 실행 보유 참조를
@@ -2405,6 +2404,24 @@ bool	CNeoVMWorker::RunInternal(int iBreakingCallStack)
 		case NOP_JMP_RANGE_OUTSIDE_L: if (IsRangeInside(OP, true) == false) SetComparisonJump(OP.n1); break;
 
 		case NOP_CLT_WRITE_REF: handle_CLT_WRITE_REF(OP); break;
+		// 로드가 펼친 런타임 opcode. 세부 연산이 템플릿 인자라 switch 한 번으로 끝난다.
+#define NEOCORE_RT_CASE_ARITH(T, N, S) \
+		case NOP_RT_##T##_##N: T##ArithmeticRT<ArithmeticOp::S, false>(OP); break; \
+		case NOP_RT_##T##_##N##2: T##ArithmeticRT<ArithmeticOp::S, true>(OP); break;
+		NEOCORE_RUNTIME_I64_ARITH(NEOCORE_RT_CASE_ARITH)
+		NEOCORE_RUNTIME_F64_ARITH(NEOCORE_RT_CASE_ARITH)
+#undef NEOCORE_RT_CASE_ARITH
+		case NOP_RT_I64_NEG: I64ArithmeticRT<ArithmeticOp::Neg, false>(OP); break;
+		case NOP_RT_F64_NEG: F64ArithmeticRT<ArithmeticOp::Neg, false>(OP); break;
+		case NOP_RT_I64_TO_F64: StoreNumberFloat(GetVarRawF1(OP), static_cast<NS_FLOAT>(GetVarRaw2(OP)->_int)); break;
+		case NOP_RT_F64_TO_I64: StoreNumberInt(GetVarRawF1(OP), NeoFloatToInt(GetVarRaw2(OP)->_float)); break;
+#define NEOCORE_RT_CASE_COMPARE(T, N, S) \
+		case NOP_RT_##T##_##N: T##CompareRT<ComparisonOp::S>(OP); break; \
+		case NOP_RT_JMP_##T##_##N: T##JumpCompareRT<ComparisonOp::S>(OP); break;
+		NEOCORE_RUNTIME_COMPARE(NEOCORE_RT_CASE_COMPARE, I64)
+		NEOCORE_RUNTIME_COMPARE(NEOCORE_RT_CASE_COMPARE, F64)
+#undef NEOCORE_RT_CASE_COMPARE
+		// 펼치지 못한 조합은 세부 연산을 실행 중 고르는 기존 경로로 간다.
 		case NOP_I64_ARITH: handle_I64_ARITH<false>(OP); break;
 		case NOP_F64_ARITH: handle_F64_ARITH<false>(OP); break;
 		case NOP_NUM_CONVERT: handle_NUM_CONVERT(OP); break;
@@ -2461,13 +2478,6 @@ bool	CNeoVMWorker::RunInternal(int iBreakingCallStack)
 		case NOP_V2_ARITH: handle_V2_ARITH(OP); break;
 		case NOP_V3_ARITH: handle_V3_ARITH(OP); break;
 		case NOP_V4_ARITH: handle_V4_ARITH(OP); break;
-        case NOP_FUSED:
-        {
-            const ProgramFusion& plan = _pProgram->fusions[static_cast<std::size_t>(OP.n23)];
-            plan.execute(this, plan);
-            break;
-        }
-        case NOP_EXTEND: SetError("cannot execute an extension slot"); break;
 		case NOP_PREPARE_CALL: SelectCallPlan(OP.n1); break;
 		case NOP_NONE:          handle_NONE(OP); break;
 		case NOP_ERROR:

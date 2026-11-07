@@ -1,7 +1,6 @@
 ﻿#include <limits.h>
 
 #include "NeoVMProgram.h"
-#include "NeoVMFusion.h"
 #include "NeoVMInternal.h"
 #include "NeoArchive.h"
 #include "NeoTextLoader.h"   // FormatAsm / FormatBytes
@@ -692,41 +691,6 @@ bool CNeoVMProgram::Load(CNArchive& ar, std::string* err)
                 }
             }
         }
-        else if (magic == 0x45535546)
-        {
-            u32 count = 0;
-            if (!fusions.empty() || !ReadCount(ar, count) || count > code.size() / 2)
-                throw ImageLoadError{"Invalid fusion descriptor count"};
-            RequireImageCount(ar, count, sizeof(int) + 3 + 2 * sizeof(SVMOperation), "Truncated fusion descriptors");
-            fusions.resize(count);
-            int previousEnd = 2;
-            for (u32 i = 0; i < count; ++i)
-            {
-                ProgramFusion& plan = fusions[i];
-                ReadRequired(ar, plan.start); ReadRequired(ar, plan.count); ReadRequired(ar, plan.elide); ReadRequired(ar, plan.update);
-                if (plan.count < 2 || plan.count > ProgramFusion::MaxSteps || plan.start < previousEnd ||
-                    static_cast<std::size_t>(plan.start) + plan.count > code.size() ||
-                    (plan.elide >> plan.count) != 0 || (plan.update >> plan.count) != 0)
-                    throw ImageLoadError{"Invalid fusion descriptor span"};
-                const SVMOperation& root = code[plan.start];
-                if (root.Code() != NOP_FUSED || root.argFlag != 0 || root.n1 != plan.count || root.n23 != static_cast<int>(i))
-                    throw ImageLoadError{"Invalid fusion root"};
-                for (unsigned n = 0; n < plan.count; ++n)
-                {
-                    if (codeOwners[plan.start + n] != codeOwners[plan.start] || codeOwners[plan.start] < 0 ||
-                        (n && (code[plan.start + n].Code() != NOP_EXTEND || code[plan.start + n].argFlag != 0 ||
-                            code[plan.start + n].n1 != 0 || code[plan.start + n].n23 != 0)))
-                        throw ImageLoadError{"Invalid fusion extension"};
-                    ReadRequired(ar, plan.operations[n]);
-                    const FusionIO io = FusionOperation(plan.operations[n]);
-                    if (!io.supported || (io.jump && n + 1 != plan.count) || ((plan.elide & (1u << n)) && io.writes != 1))
-                        throw ImageLoadError{"Invalid fused operation"};
-                }
-                // 원래 명령을 복원하여 일반 피연산자 검증을 그대로 공유한다.
-                for (unsigned n = 0; n < plan.count; ++n) code[plan.start + n] = plan.operations[n];
-                previousEnd = plan.start + plan.count;
-            }
-        }
 		else
 		{
 			ar.SetBufferOffset(oldOffset);
@@ -828,27 +792,6 @@ bool CNeoVMProgram::Load(CNArchive& ar, std::string* err)
 		}
 	}
     if (!VerifyCode(codeOwners, err)) return false;
-    if (!fusions.empty())
-    {
-        std::vector<std::vector<int>> targets;
-        for (const ProgramSwitchTable& table : switchTables)
-        {
-            targets.push_back(std::vector<int>(1, table.defaultOffset));
-            for (const ProgramSwitchEntry& item : table.entries) targets.back().push_back(item.jumpOffset);
-        }
-        // 저장된 제거 표시는 검증된 제어 흐름에서 다시 증명한다. 이미지가 임시 수명을 바꿀 수 없다.
-        const std::vector<ProgramFusion> expected = BuildTypedFusions(code, functions, targets);
-        if (expected.size() != fusions.size()) { SetLoadError(err, "Invalid fusion graph"); return false; }
-        for (std::size_t i = 0; i < fusions.size(); ++i)
-        {
-            if (fusions[i].start != expected[i].start || fusions[i].count != expected[i].count || fusions[i].elide != expected[i].elide ||
-                fusions[i].update != expected[i].update)
-            { SetLoadError(err, "Invalid fusion liveness"); return false; }
-            PrepareFusion(fusions[i]);
-            PrepareFusionExecution(fusions[i]);
-        }
-        InstallTypedFusions(code, fusions);
-    }
     return true;
 }
 
@@ -1205,7 +1148,12 @@ bool CNeoVMProgram::PatchLocalOps(std::string* err)
 		{
 			op.SetCode(to);
 			++patched;
+			continue;
 		}
+		// 숫자 계열은 (기본 opcode, 세부 연산, 제자리 여부)를 한 바이트 런타임 opcode로 펼친다.
+		// 디스패치 루프가 switch 한 번으로 고르고, 표기는 NormalizeRuntimeOp이 되돌린다.
+		const eNOperation runtime = RuntimeOpcode(ArithmeticMeaning(op.Code()), IsArithmeticUpdate(op));
+		if (runtime != NOP_NONE) op.op = runtime;
 	}
 	localOpCount = patched;
 	return true;
@@ -1270,6 +1218,8 @@ bool FormatDebugOperation(const DebugInstructionFormatContext& context, std::str
 	// 원본 switch 가 v 를 쓰고 있어 이름을 유지한다(치환 실수를 줄인다).
 	SVMOperation v = *context.operation;
 	bool isLocalVariant = false;
+	// 로드가 펼친 런타임 opcode는 이미지 형식으로 되돌려 같은 표기를 쓴다.
+	NormalizeRuntimeOp(v);
 	v.SetCode(NormalizeLocalOp((OperationCode)v.Code(), &isLocalVariant));
 	const bool fixedStore = IsFixedArithmetic(v);
 	// MOV·LOADK·CLR은 하위 4비트에 정책이나 즉값 종류를 싣는다. 표기 뒤에 정책 이름을 붙인다.
@@ -1485,10 +1435,6 @@ bool FormatDebugOperation(const DebugInstructionFormatContext& context, std::str
         byteCount = OpFlagByteChars + 2 * 3;
         outAssembly = FormatAsm("WREF %s.%s -> %s", context.operand(1).c_str(), context.operand(2).c_str(), context.operand(3).c_str());
         break;
-    case NOP_FUSED:
-        outAssembly = FormatAsm("FUSED plan[%d], %d slots", v.n23, v.n1); break;
-    case NOP_EXTEND:
-        outAssembly = "EXTEND (owned by FUSED)"; break;
     case NOP_PREPARE_CALL:
         byteCount = OpFlagByteChars + 2;
         outAssembly = FormatAsm("PREPARE_CALL plan[%d]", v.n1); break;

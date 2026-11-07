@@ -113,6 +113,19 @@
     NEOCORE_VECTOR_ARITHMETIC_OPS(X, 3) \
     NEOCORE_VECTOR_ARITHMETIC_OPS(X, 4)
 
+// 로드 시 (기본 opcode, 세부 연산, 제자리 여부)를 한 바이트 opcode로 펼치는 런타임 전용 명령 목록.
+// 이미지에는 나타나지 않는다. 디스패치 루프와 퓨전 실행기가 switch 한 번으로 고르고, 세부 연산은
+// 템플릿 인자로 고정되어 핸들러 안의 두 번째 분기가 사라진다. X(T, NAME, SUB)에서 T는 I64/F64,
+// SUB는 ArithmeticOp/ComparisonOp 멤버다. 산술은 3항 형식과 제자리 형식(이름 뒤 2)을 함께 만든다.
+#define NEOCORE_RUNTIME_I64_ARITH(X) \
+    X(I64, ADD, Add) X(I64, SUB, Sub) X(I64, MUL, Mul) X(I64, DIV, Div) X(I64, MOD, Mod) \
+    X(I64, AND, BitAnd) X(I64, OR, BitOr) X(I64, XOR, BitXor) X(I64, SHL, ShiftLeft) X(I64, SHR, ShiftRight)
+#define NEOCORE_RUNTIME_F64_ARITH(X) \
+    X(F64, ADD, Add) X(F64, SUB, Sub) X(F64, MUL, Mul) X(F64, DIV, Div)
+// 비교는 값 형식(NOP_RT_T_NAME)과 점프 형식(NOP_RT_JMP_T_NAME)을 만든다. 반전 비트는 argFlag에 남는다.
+#define NEOCORE_RUNTIME_COMPARE(X, T) \
+    X(T, EQ, Equal) X(T, LT, Less) X(T, LE, LessEqual) X(T, NE, NotEqual) X(T, GT, Greater) X(T, GE, GreaterEqual)
+
 namespace NeoScript
 {
 typedef unsigned short OperationCode;

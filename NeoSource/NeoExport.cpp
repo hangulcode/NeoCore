@@ -4,7 +4,6 @@
 #include "NeoCoreBuiltins.h"
 #include "NeoTextLoader.h"
 #include "NeoExport.h"
-#include "NeoVMFusion.h"
 #include "NeoVMProgram.h"   // DebugInstructionFormatContext / FormatDebugOperation
 
 namespace NeoScript
@@ -732,7 +731,7 @@ std::string JumpMark(std::map<int, int>& sJumpMark, int opIndex)
 }
 
 
-void WriteFunLog(CArchiveRdWC& arText, CNArchive& arw, SFunctions& funs, SFunctionInfo& fi, SVars& vars, STempDebug& td, const std::vector<ProgramFusion>& fusions)
+void WriteFunLog(CArchiveRdWC& arText, CNArchive& arw, SFunctions& funs, SFunctionInfo& fi, SVars& vars, STempDebug& td)
 {
 	OutAsm("\n");
 	OutAsm(ANSI_COLOR_YELLOW "Fun - %s [T:%d ID:%d] arg:%d var:%d varTemp:%d" ANSI_RESET_ALL "\n", fi.GetFullName().c_str(), fi._funType, fi._funID, (int)fi._args.size(), fi._localVarCount, fi._localTempMax);
@@ -741,23 +740,8 @@ void WriteFunLog(CArchiveRdWC& arText, CNArchive& arw, SFunctions& funs, SFuncti
 	//	return;
 
 	//CNArchive arRead((u8*)fi._code->GetData() + fi._iCode_Begin, fi._iCode_Size);
-    // ASM은 확장 슬롯의 실제 연산과 임시 저장 생략을 함께 보여준다.
     std::vector<SVMOperation> displayed(static_cast<std::size_t>(fi._iCode_Size) / sizeof(SVMOperation));
     std::memcpy(displayed.data(), static_cast<u8*>(arw.GetData()) + fi._iCode_Begin, fi._iCode_Size);
-    std::map<int, const ProgramFusion*> roots;
-    std::map<int, bool> inner;
-    const int functionBegin = (fi._iCode_Begin - sizeof(SNeoVMHeader)) / sizeof(SVMOperation);
-    for (const ProgramFusion& plan : fusions)
-        if (plan.start >= functionBegin && plan.start + plan.count <= functionBegin + static_cast<int>(displayed.size()))
-        {
-            const int first = plan.start - functionBegin;
-            roots[first] = &plan;
-            for (unsigned i = 0; i < plan.count; ++i)
-            {
-                displayed[first + i] = plan.operations[i];
-                inner[first + i] = (plan.elide & (1u << i)) != 0;
-            }
-        }
     CNArchive arRead(displayed.data(), fi._iCode_Size);
 	arRead.SetPointer(0, SEEK_SET);
 
@@ -838,13 +822,8 @@ void WriteFunLog(CArchiveRdWC& arText, CNArchive& arw, SFunctions& funs, SFuncti
 			SetCompileError(arText, g_sExportCompileErrors[ECE_INVALID_OPCODE], v.Code());
 
 		// NOP_ERROR 등 바이트를 안 찍던 op 는 byteCount 가 0 이라 빈 칸으로 나온다(기존과 동일).
-        const int position = off / sizeof(SVMOperation);
-        const auto root = roots.find(position);
-        if (root != roots.end()) OutAsm("FUSED (%u primitive operations, one VM dispatch)\n", root->second->count);
-        const auto step = inner.find(position);
-        if (step != inner.end()) OutAsm("  | ");
         OutBytes((const u8*)&v, byteCount, skipByteChars);
-        OutAsm("%s%s\n", asmText.c_str(), step != inner.end() && step->second ? " [temporary forwarded]" : "");
+        OutAsm("%s\n", asmText.c_str());
 	}
 //	OutAsm("Fun End [%s]", fi._name.c_str());
 }
@@ -1213,45 +1192,6 @@ bool Write(CArchiveRdWC& arText, CNArchive& ar, SFunctions& funs, SVars& vars)
         }
     }
 
-    // 타입을 잃지 않은 최종 명령 그래프에서 공통 융합을 고른다. 주소를 바꾸지 않아 점프·함수 오프셋은 유지된다.
-    if (!arText._debug && arText.m_coreTypedIR)
-    {
-        std::vector<SVMOperation> code(static_cast<std::size_t>(header._iCodeSize) / sizeof(SVMOperation));
-        std::memcpy(code.data(), static_cast<const u8*>(ar.GetData()) + sizeof(SNeoVMHeader), header._iCodeSize);
-        std::vector<SFunctionTable> functions;
-        for (const auto& item : funPos)
-        {
-            SFunctionTable function = {};
-            function._codePtr = item.second._codePtr;
-            function._argsCount = item.second._argsCount;
-            function._localTempMax = item.second._localTempMax;
-            function._localVarCount = item.second._localVarCount;
-            function._localAddCount = 1 + function._argsCount + function._localVarCount + function._localTempMax;
-            function._storage = item.second._storage;
-            function._slotInfo = item.second._slotInfo;
-            functions.push_back(function);
-        }
-        std::vector<std::vector<int>> targets;
-        for (const SSwitchTableCompile& table : funs._switchTables)
-        {
-            targets.push_back(std::vector<int>(1, table._defaultOffset));
-            for (const SSwitchCaseCompile& item : table._cases) targets.back().push_back(item._jumpOffset);
-        }
-        const std::vector<ProgramFusion> plans = BuildTypedFusions(code, functions, targets);
-        if (!plans.empty())
-        {
-            InstallTypedFusions(code, plans);
-            std::memcpy(static_cast<u8*>(ar.GetData()) + sizeof(SNeoVMHeader), code.data(), header._iCodeSize);
-            const u32 magic = 0x45535546; // FUSE
-            ar.Write(&magic, sizeof(magic)); ar.WriteCount(static_cast<u32>(plans.size()));
-            for (const ProgramFusion& plan : plans)
-            {
-                ar << plan.start << plan.count << plan.elide << plan.update;
-                ar.Write(plan.operations, sizeof(SVMOperation) * plan.count);
-            }
-        }
-    }
-
 	int iSaveOffset2 = ar.GetBufferOffset();
 	ar.SetPointer(iSaveOffset1, SEEK_SET);
 	ar << header;
@@ -1263,10 +1203,6 @@ bool Write(CArchiveRdWC& arText, CNArchive& ar, SFunctions& funs, SVars& vars)
 
 bool WriteLog(CArchiveRdWC& arText, CNArchive& arw, SFunctions& funs, SVars& vars)
 {
-    std::vector<ProgramFusion> fusions;
-    CNeoVMProgram* program = CNeoVMProgram::Create(arw.GetData(), arw.GetBufferOffset());
-    if (program) { fusions = program->fusions; program->Release(); }
-
 	SNeoVMHeader header;
 	memset(&header, 0, sizeof(header));
 
@@ -1346,7 +1282,7 @@ bool WriteLog(CArchiveRdWC& arText, CNArchive& arw, SFunctions& funs, SVars& var
 	for (auto it = funs._funSequence.begin(); it != funs._funSequence.end(); it++)
 	{
 		SFunctionInfo& fi = *(*it);
-		WriteFunLog(arText, arw, funs, fi, vars, td, fusions);
+		WriteFunLog(arText, arw, funs, fi, vars, td);
 	}
 
 	//// 함수 포인터 저장

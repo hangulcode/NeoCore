@@ -34,29 +34,25 @@ slot. This preserves snapshots and evaluation order. Disassembly uses names such
 as `I64_ADD2 [S.9] += [S.14]`. Instructions still occupy eight bytes.
 
 Standalone updates write only the numeric payload: their destination is also a
-checked numeric input. Fusion normalizes both operand layouts when building its
-immutable execution plan. The compiler stores the tag-preservation decision in
-the image; loading validates it without choosing a new optimization. Tag writes
-are skipped when the destination has a compiler-owned numeric storage contract,
-or when the actual destination still holds the checked numeric input. Fusion's
-local scratch values still use ordinary typed stores; an elided fixed frame slot
-keeps its established tag. See [TypedStorage.md](TypedStorage.md) for the current
-storage migration and its final untagged eight-byte target.
+checked numeric input. See [TypedStorage.md](TypedStorage.md) for the current
+storage migration and its untagged eight-byte representation.
 Integer overflow, division errors, shift validation, and floating-point behavior
 are unchanged. This is an encoding/execution change, not a measured speed claim.
 
 The old per-operand immediate flags are removed. MOVI and MOVF retain their
 opcode-defined immediate payloads, and LOADK retains its constant-pool index.
-Encoding, validation, fusion, disassembly and debugger stepping must interpret the
-same opcode/sub-operation pair. The VM switches on the primary opcode and calls
-a family handler, which switches on the low-bit sub-operation. Family handlers
-use ordinary inline definitions without forced inlining or outlining. Combined
-operation keys remain compiler and validation metadata, not the VM dispatch key.
-Invalid sub-operations are
-rejected when loading an image. Existing images must be regenerated for image version `0161`.
-This transition preserves evaluation order, value-dependent
-runtime failures and the current general-fusion implementation; it is not a
-performance claim.
+Encoding, validation, disassembly and debugger stepping must interpret the
+same opcode/sub-operation pair. When an image is loaded, the numeric families
+(integer and floating-point arithmetic, in-place arithmetic, conversions,
+comparisons and comparison branches) are expanded into one-byte runtime-only
+opcodes that never appear in an image, so the VM dispatch loop selects the exact
+operation with one switch and the handler body is fixed by a template argument.
+Combinations without a runtime opcode fall back to the family handler, which
+switches on the low-bit sub-operation. Disassembly maps runtime opcodes back to
+the image form. Combined operation keys remain compiler and validation metadata.
+Invalid sub-operations are rejected when loading an image. Existing images must
+be regenerated for image version `0163`. This transition preserves evaluation
+order and value-dependent runtime failures; it is not a performance claim.
 
 ## Implementation boundary
 
@@ -95,8 +91,8 @@ Generic comparisons use one value family and one branch family, with a local-onl
 branch variant. Vector2/3/4 arithmetic uses one family per dimension and the shared
 add/subtract/multiply/divide sub-operations. `NOP_JMP_FOR` and `NOP_JMP_FOREACH`
 remain separate primary opcodes and keep their dedicated loop handlers. The old
-map-only arithmetic opcodes are removed; scalar map accesses participate in the
-general fusion pass instead.
+map-only arithmetic opcodes are removed; scalar map accesses use the typed
+load/store primitives instead.
 
 An int/int comparison remains an exact signed 64-bit comparison. A mixed int/float
 comparison converts the integer to binary64, matching the existing generic comparison
@@ -181,39 +177,15 @@ generated helper bodies still use the transitional statement compiler.
 
 Scalar list, map, array and compact-array accesses retain the checked receiver,
 key, value and evaluation order in IR. They emit typed load/store primitives;
-scalar struct fields use the same storage primitives. A common final-bytecode pass
-fuses connected numeric operations, conversions, comparisons and scalar collection
-loads/stores, regardless of the source assignment spelling or storage category.
-For example, it can group `sum += a[i]`, `x = a[i] + b[j]`, and arithmetic followed
-by a scalar collection store. It never reassociates floating-point expressions.
-
-A group contains up to eight primitives represented by one `FUSED` root and its
-`EXTEND` slots. The original addresses remain stable. The image stores the typed
-primitives, and the loader validates operands, control flow and temporary liveness
-before preparing the execution plan. The VM executes the bounded group outside the
-main dispatch loop, without dynamic operand-type discovery. Temporary storage is
-omitted only when every following use is accounted for; prior reference cleanup
-still occurs at the original successful write. User-variable stores remain visible
-in their original order. Unknown uses conservatively retain the temporary.
-
-Two local integer or floating-point arithmetic operations use an executor selected
-at image load time. It forwards the primitive numeric result directly and does not
-prepare the generic eight-value scratch buffer. If a destination still owns a
-reference, the group uses the existing executor to preserve its release order.
-Other groups retain the general executor. Liveness analysis treats loop-bound integer normalization as both a read
-and a write of its operand; unrelated normalization no longer blocks temporary
-elision. Reference cleanup and failure locations remain unchanged.
-
-Calls, host properties, suspension points and unsupported operations end a group.
-Instruction budgets and timeouts are checked between groups, never inside one;
-a group can execute at most eight primitive operations. Value-dependent checks
-(null, bounds, missing keys, division, shifts and compact integer range) remain.
-An error keeps the failing primitive's instruction pointer and the normal error
-trap. Debug-info builds retain separate instructions and their existing stepping
-and breakpoint behavior. ASM output expands grouped primitives and identifies
-forwarded temporary results. Reference-valued and vector operations retain their
-existing paths. This is a general scalar fusion pass, not a claim that every
-possible expression or data type is fused.
+scalar struct fields use the same storage primitives. Each typed primitive is
+dispatched individually; there is no instruction-fusion pass. A general scalar
+fusion pass (`FUSED` roots with `EXTEND` slots executed outside the dispatch loop)
+existed between image versions `0160` and `0162` and was removed in version
+`0163`: paired measurements on 2026-11-08 showed that its execution plan cost
+more per primitive than the dispatch it saved, so plain dispatch through the
+load-time runtime opcodes was faster in every benchmark case. Instruction budgets
+and timeouts are therefore checked at every instruction, and debug stepping sees
+exactly the instructions in the image.
 
 String concatenation writes directly into the final string buffer and retains
 both input values until the result is complete. Null spelling, byte-length limits,

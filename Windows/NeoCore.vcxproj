@@ -155,8 +155,6 @@
     <None Include="..\NeoSource\NeoVMWorker.inl" />
     <None Include="..\NeoSource\NeoVMWorker_Handlers.inl" />
     <None Include="..\NeoSource\NeoVMWorker_Typed.inl" />
-    <None Include="..\NeoSource\NeoVMWorker_Fusion.inl" />
-    <None Include="..\NeoSource\NeoVMFusion.h" />
     <None Include="..\NeoSource\NeoVMWorker_Move.inl" />
     <None Include="..\NeoSource\NeoVMWorker_Var.inl" />
   </ItemGroup>

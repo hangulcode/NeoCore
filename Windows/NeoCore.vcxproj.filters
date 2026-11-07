@@ -257,12 +257,6 @@
     <None Include="..\NeoSource\NeoVMWorker_Typed.inl">
       <Filter>Implementation</Filter>
     </None>
-    <None Include="..\NeoSource\NeoVMWorker_Fusion.inl">
-      <Filter>Implementation</Filter>
-    </None>
-    <None Include="..\NeoSource\NeoVMFusion.h">
-      <Filter>Implementation</Filter>
-    </None>
     <None Include="..\NeoSource\NeoVMWorker_Move.inl">
       <Filter>Implementation</Filter>
     </None>

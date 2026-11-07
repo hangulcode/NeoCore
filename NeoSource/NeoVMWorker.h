@@ -10,7 +10,6 @@
 #include "NeoVMError.h"
 
 #include "NeoVMProgram.h"
-#include "NeoVMFusion.h"
 
 
 
@@ -683,7 +682,6 @@ public:
 
 #include "NeoVMWorker_Handlers.inl"
 #include "NeoVMWorker_Typed.inl"
-#include "NeoVMWorker_Fusion.inl"
 
 	// 파괴 재진입 방지와 순환 후보 intrusive FIFO 링크. 전역/실행 컨텍스트가
 	// 컨테이너를 들 수 있으므로 worker는 보수적으로 후보 가능으로 초기화한다.

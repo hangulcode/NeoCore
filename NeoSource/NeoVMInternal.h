@@ -250,16 +250,30 @@ enum eNOperation : OpType
     NOP_V3_ARITH,
     NOP_V4_ARITH,
 #undef NEOCORE_AGGREGATE_ENUM
-	// FUSED가 뒤의 EXTEND를 한 번에 소비한다. 확장 슬롯은 독립 실행할 수 없다.
-	NOP_FUSED,
-	NOP_EXTEND,
 	// 인자 평가가 끝난 뒤 호출 창의 고정 배치와 수명을 선택한다.
 	NOP_PREPARE_CALL,
 	NOP_NONE,
 	NOP_ERROR,
 
+	// 아래는 런타임 전용 opcode다. PatchLocalOps가 숫자 계열의 (기본 opcode, 세부 연산, 제자리 여부)를
+	// 펼쳐 만들며 이미지에는 없다. 표기와 검증은 NormalizeRuntimeOp으로 이미지 형식으로 되돌린다.
+	NOP_RT_BEGIN,
+#define NEOCORE_RT_ENUM_ARITH(T, N, S) NOP_RT_##T##_##N, NOP_RT_##T##_##N##2,
+	NEOCORE_RUNTIME_I64_ARITH(NEOCORE_RT_ENUM_ARITH)
+	NEOCORE_RUNTIME_F64_ARITH(NEOCORE_RT_ENUM_ARITH)
+#undef NEOCORE_RT_ENUM_ARITH
+	NOP_RT_I64_NEG,
+	NOP_RT_F64_NEG,
+	NOP_RT_I64_TO_F64,
+	NOP_RT_F64_TO_I64,
+#define NEOCORE_RT_ENUM_COMPARE(T, N, S) NOP_RT_##T##_##N, NOP_RT_JMP_##T##_##N,
+	NEOCORE_RUNTIME_COMPARE(NEOCORE_RT_ENUM_COMPARE, I64)
+	NEOCORE_RUNTIME_COMPARE(NEOCORE_RT_ENUM_COMPARE, F64)
+#undef NEOCORE_RT_ENUM_COMPARE
+
 	NOP_MAX,
 }; // Operation length
+static_assert(NOP_MAX <= 256, "Runtime opcodes must fit the one-byte instruction field");
 
 enum class ArithmeticOp : u8 { Add, Sub, Mul, Div, Mod, BitAnd, BitOr, BitXor, ShiftLeft, ShiftRight, Neg };
 enum class ComparisonOp : u8 { Equal, Less, LessEqual, NotEqual, Greater, GreaterEqual };
@@ -313,6 +327,31 @@ NEOCORE_VECTOR_ARITHMETIC_FAMILIES(NEOCORE_VECTOR_CODE)
     constexpr OperationCode op = MakeOperation(family, sub);
 NEOCORE_TYPED_OPS(NEOCORE_TYPED_CODE)
 #undef NEOCORE_TYPED_CODE
+
+// 숫자 계열 명령을 펼칠 런타임 opcode. 고정 저장형(FIXED)은 ArithmeticMeaning으로 먼저 정규화해서 넘긴다.
+// 펼칠 조합이 없으면 NOP_NONE을 돌려준다.
+inline eNOperation RuntimeOpcode(OperationCode meaning, bool update)
+{
+    switch (meaning)
+    {
+#define NEOCORE_RT_MAP_ARITH(T, N, S) case OP_##T##_##N: return update ? NOP_RT_##T##_##N##2 : NOP_RT_##T##_##N;
+    NEOCORE_RUNTIME_I64_ARITH(NEOCORE_RT_MAP_ARITH)
+    NEOCORE_RUNTIME_F64_ARITH(NEOCORE_RT_MAP_ARITH)
+#undef NEOCORE_RT_MAP_ARITH
+    case OP_I64_NEG: return NOP_RT_I64_NEG;
+    case OP_F64_NEG: return NOP_RT_F64_NEG;
+    case OP_I64_TO_F64: return NOP_RT_I64_TO_F64;
+    case OP_F64_TO_I64: return NOP_RT_F64_TO_I64;
+#define NEOCORE_RT_MAP_COMPARE(T, N, S) \
+    case OP_##T##_##N: return NOP_RT_##T##_##N; \
+    case OP_JMP_##T##_##N: return NOP_RT_JMP_##T##_##N;
+    NEOCORE_RUNTIME_COMPARE(NEOCORE_RT_MAP_COMPARE, I64)
+    NEOCORE_RUNTIME_COMPARE(NEOCORE_RT_MAP_COMPARE, F64)
+#undef NEOCORE_RT_MAP_COMPARE
+    default: return NOP_NONE;
+    }
+}
+inline bool IsRuntimeOpcode(eNOperation op) { return op > NOP_RT_BEGIN && op < NOP_MAX; }
 
 inline const TypedOpInfo* TypedOperations(unsigned& count)
 {
@@ -408,6 +447,38 @@ static_assert(sizeof(SVMOperation) == 8, "NeoScript instructions must remain eig
 
 inline bool IsFixedArithmetic(const SVMOperation& op)
 { return op.op == NOP_I64_FIXED || op.op == NOP_F64_FIXED; }
+// 런타임 opcode를 이미지 형식(기본 opcode, 하위 4비트 세부 연산, 산술의 제자리 플래그)으로 되돌린다.
+// 비교의 반전 비트는 argFlag에 그대로 남아 있다. 고정 저장형 표시는 복원하지 않는다.
+inline bool NormalizeRuntimeOp(SVMOperation& op)
+{
+    if (!IsRuntimeOpcode(op.op)) return false;
+    OperationCode meaning = NOP_NONE;
+    bool arithmetic = false, update = false;
+    switch (op.op)
+    {
+#define NEOCORE_RT_UNMAP_ARITH(T, N, S) \
+    case NOP_RT_##T##_##N: meaning = OP_##T##_##N; arithmetic = true; break; \
+    case NOP_RT_##T##_##N##2: meaning = OP_##T##_##N; arithmetic = true; update = true; break;
+    NEOCORE_RUNTIME_I64_ARITH(NEOCORE_RT_UNMAP_ARITH)
+    NEOCORE_RUNTIME_F64_ARITH(NEOCORE_RT_UNMAP_ARITH)
+#undef NEOCORE_RT_UNMAP_ARITH
+    case NOP_RT_I64_NEG: meaning = OP_I64_NEG; arithmetic = true; break;
+    case NOP_RT_F64_NEG: meaning = OP_F64_NEG; arithmetic = true; break;
+    case NOP_RT_I64_TO_F64: meaning = OP_I64_TO_F64; break;
+    case NOP_RT_F64_TO_I64: meaning = OP_F64_TO_I64; break;
+#define NEOCORE_RT_UNMAP_COMPARE(T, N, S) \
+    case NOP_RT_##T##_##N: meaning = OP_##T##_##N; break; \
+    case NOP_RT_JMP_##T##_##N: meaning = OP_JMP_##T##_##N; break;
+    NEOCORE_RUNTIME_COMPARE(NEOCORE_RT_UNMAP_COMPARE, I64)
+    NEOCORE_RUNTIME_COMPARE(NEOCORE_RT_UNMAP_COMPARE, F64)
+#undef NEOCORE_RT_UNMAP_COMPARE
+    default: return false;
+    }
+    op.SetCode(meaning);
+    if (arithmetic)
+        op.argFlag = static_cast<u8>((op.argFlag & ~NEOS_OP_ARITH_UPDATE) | (update ? NEOS_OP_ARITH_UPDATE : 0));
+    return true;
+}
 inline bool IsImmediateMove(const SVMOperation& op)
 {
     const unsigned sub = op.argFlag & NEOS_OP_SUB_MASK;
