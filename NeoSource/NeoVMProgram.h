@@ -161,8 +161,13 @@ struct CallStoragePlan
 {
     std::vector<VAR_TYPE> types; // [0] 반환값, [1..] 순서가 확정된 인자
     std::vector<u8> policies;    // types와 같은 순서의 복사·해제 정책
+    // PREPARE_CALL이 0으로 채우는 창 구간. 정책이 payload가 아닌 첫 슬롯부터 마지막 슬롯 다음까지다.
+    // 로드 시 계산하며, 숫자만 오가는 창은 빈 구간이다.
+    int zeroFirst = 0;
+    int zeroEnd = 0;
 };
 
+// 호출·반환이 읽는 멤버를 앞에 모은다. 벡터 뒤에 두면 캐시 라인을 하나 더 건드린다.
 struct SFunctionTable
 {
 	int					_codePtr;
@@ -172,6 +177,16 @@ struct SFunctionTable
 	int					_localAddCount; // No Save (로드 시 계산)
 	int					_stackSlotCount; // 로드 시 계산한 쓰기 범위. 다음 호출의 인자 슬롯까지 포함한다.
 	FUNCTION_TYPE		_funType;
+    VAR_TYPE _resultType = VAR_NONE;
+    // 소유 슬롯은 인자 뒤에 연속으로 놓인다. 반환 정리는 [_releaseFirst, _releaseCount)만 돈다.
+    // _releaseFirst는 그 구간에서 정책이 payload가 아닌 첫 슬롯이고, 없으면 _releaseCount와 같다.
+    int _ownedCount = 0;
+    int _releaseCount = 1;
+    int _releaseFirst = 1;
+    // 프레임 슬롯 [0, _stackSlotCount)의 선언 타입. 창 슬롯은 VAR_NONE이다.
+    std::vector<VAR_TYPE> _slotTypes;
+    // 프레임 슬롯 [0, _localAddCount)의 정책·임시 표시. 0번은 반환값 정책이다.
+    std::vector<u8> _slotInfo;
 	// 익명 함수 생성 시 부모 프레임에서 복사할 슬롯과, 호출 프레임에서
 	// 값을 받을 숨은 지역 슬롯. 캡처가 없으면 빈 벡터라 기존 함수 호출은
 	// 추가 비용이 없다.
@@ -179,14 +194,6 @@ struct SFunctionTable
     std::shared_ptr<const std::vector<VAR_TYPE>> _captureTypes;
     std::vector<SlotLayout> _storage;
     std::vector<CallStoragePlan> _calls;
-    // 프레임 슬롯 [0, _stackSlotCount)의 선언 타입. 창 슬롯은 VAR_NONE이다.
-    std::vector<VAR_TYPE> _slotTypes;
-    // 프레임 슬롯 [0, _localAddCount)의 정책·임시 표시. 0번은 반환값 정책이다.
-    std::vector<u8> _slotInfo;
-    // 소유 슬롯은 인자 뒤에 연속으로 놓인다. 반환 정리는 [1, _releaseCount)만 돈다.
-    int _ownedCount = 0;
-    int _releaseCount = 1;
-    VAR_TYPE _resultType = VAR_NONE;
     NEOS_FORCEINLINE StoragePolicy SlotPolicy(int slot) const { return SlotInfoPolicy(_slotInfo[slot]); }
     NEOS_FORCEINLINE bool IsTemporarySlot(int slot) const
     { return slot >= 0 && slot < static_cast<int>(_slotInfo.size()) && (_slotInfo[slot] & SLOT_INFO_TEMPORARY) != 0; }

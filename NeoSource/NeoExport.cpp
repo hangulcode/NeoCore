@@ -294,9 +294,11 @@ void WriteFun(CArchiveRdWC& arText, CNArchive& ar, SFunctions& funs, SFunctionIn
 	SVMOperation v;
 	memset(&v, 0, sizeof(v));
 
-	// 호출 창 슬롯의 종류는 PREPARE_CALL이 고른 호출 계획이 정한다. 다음 PREPARE_CALL까지 유지되므로
-	// 호출 뒤의 반환 슬롯 읽기도 같은 계획으로 해석한다.
+	// 호출 창 슬롯의 종류는 호출 계획이 정한다. 계획은 기록된 준비 위치에서 활성화되어 다음 계획까지
+	// 유지되므로 호출 뒤의 반환 슬롯 읽기도 같은 계획으로 해석한다. 숫자만 오가는 직접 호출은
+	// PREPARE_CALL 명령 없이 계획만 둔다.
 	const CompileCallStorage* activeCall = nullptr;
+	std::size_t nextCall = 0;
 	auto KindOf = [&](int n) -> SlotKind
 	{
 		if (n == -1) return SlotKind::Boxed;
@@ -339,6 +341,8 @@ void WriteFun(CArchiveRdWC& arText, CNArchive& ar, SFunctions& funs, SFunctionIn
 		}
 		arRead.Read(&v, sizeof(v));
 		u8 argFlag = v.argFlag;
+		const int opOffset = arRead.GetBufferOffset() - static_cast<int>(sizeof(v));
+		while (nextCall < fi._calls.size() && fi._calls[nextCall].prepareOffset <= opOffset) activeCall = &fi._calls[nextCall++];
 		// 종류는 명령 번호를 바꾸기 전의 컴파일 번호로 찾는다.
 		const bool immediateMove = IsImmediateMove(v);
 		const bool slotMove = v.op == NOP_MOV && !immediateMove;

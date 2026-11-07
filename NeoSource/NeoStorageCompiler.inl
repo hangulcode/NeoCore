@@ -64,7 +64,12 @@ class StorageCompiler
         SlotType& current = slots[slot];
         if (current.kind != SlotKind::Boxed && current.kind != type.kind)
         {
-            throw std::logic_error("conflicting compiler slot types");
+            // 어느 슬롯이 어떤 종류끼리 부딪혔는지 남긴다. 호출 창 슬롯이면 활성 계획 번호도 적는다.
+            char detail[160];
+            const int call = activeCall_ ? static_cast<int>(activeCall_ - function._calls.data()) : -1;
+            snprintf(detail, sizeof(detail), "conflicting compiler slot types (slot %d: kind %d vs %d, function %d, call %d)",
+                slot, static_cast<int>(current.kind), static_cast<int>(type.kind), function._funID, call);
+            throw std::logic_error(detail);
         }
         if (current.kind == SlotKind::Boxed || (current.kind == type.kind && current.typeId == 0 && type.typeId != 0))
         { current = type; changed_ = true; }
@@ -295,7 +300,15 @@ public:
                 activeFunction_ = function; activeCall_ = nullptr;
                 BindCalls(*function);
                 const SVMOperation* code = reinterpret_cast<const SVMOperation*>(static_cast<const u8*>(functions_._codeFinal.GetData()) + function->_iCode_Begin);
-                for (int i = 0; i < function->_iCode_Size / static_cast<int>(sizeof(SVMOperation)); ++i) Infer(*function, code[i]);
+                // 활성 계획은 기록된 준비 위치로 찾는다. PREPARE_CALL이 없는 직접 호출도 창 쓰기의 종류를 받는다.
+                std::size_t nextCall = 0;
+                for (int i = 0; i < function->_iCode_Size / static_cast<int>(sizeof(SVMOperation)); ++i)
+                {
+                    const int offset = i * static_cast<int>(sizeof(SVMOperation));
+                    while (nextCall < function->_calls.size() && function->_calls[nextCall].prepareOffset <= offset)
+                        activeCall_ = &function->_calls[nextCall++];
+                    Infer(*function, code[i]);
+                }
             }
         } while (changed_);
         if (!functions_._typedIR)

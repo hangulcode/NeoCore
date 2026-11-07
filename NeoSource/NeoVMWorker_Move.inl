@@ -74,7 +74,7 @@ NEOS_FORCEINLINE void CNeoVMWorker::Call(int n1, int n2, int returnValueIndex)
 	_iSP_Vars = _iSP_VarsMax;
 	SetStackPointer(_iSP_Vars);
 	// 인자는 호출자가 창에 넣었고 이제 피호출자 프레임의 것이다. 창 계획은 소비됐다.
-	EnterFrame(n1, _iSP_Vars);
+	EnterFrame(n1, fun, _iSP_Vars);
 	_activePlan = nullptr;
 	_iSP_VarsMax = _iSP_Vars + fun._localAddCount;
 	if (_iSP_Vars_Max2 < _iSP_Vars + fun._stackSlotCount)

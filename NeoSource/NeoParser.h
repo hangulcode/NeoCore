@@ -248,6 +248,9 @@ struct CompileCallStorage
     int function = -1;
     int receiver = -1, member = -1;
     SlotType returnType;
+    // 계획이 활성화되는 함수 내 코드 위치(바이트). PREPARE_CALL을 낸 경우 그 명령의 위치이고,
+    // 내지 않은 직접 호출이면 첫 창 쓰기의 위치다. 내보내기와 저장소 추론이 이 위치로 활성 계획을 찾는다.
+    int prepareOffset = 0;
 };
 
 struct SFunctionTableForWriter
@@ -560,11 +563,25 @@ struct SFunctionInfo
 
 		Push_Flag(OperationSubCode(op), r, a1, a2);
 	}
-    void PrepareCall(CArchiveRdWC& ar, const std::vector<int>& sources, int line = -1)
+    // 숫자 payload만 오가는 직접 스크립트 호출은 창을 비울 필요도, 실행 중에 계획을 고를 필요도 없다.
+    // 피호출자가 내장·익명 함수이거나 캡처가 있거나 인자·반환 종류가 payload가 아니면 PREPARE_CALL을 낸다.
+    static bool CallWindowNeedsPrepare(const SFunctionInfo* callee, std::size_t argumentCount)
+    {
+        if (callee == nullptr || callee->_funType == FUNT_BUILT_IN || callee->_funType == FUNT_ANONYMOUS) return true;
+        if (!callee->_captures.empty() || callee->_parameterStorage.size() != argumentCount) return true;
+        for (const SlotType& parameter : callee->_parameterStorage)
+            if (parameter.kind == SlotKind::Boxed || PolicyOf(parameter.kind) != StoragePolicy::Payload) return true;
+        const SlotType& result = callee->_returnStorage;
+        if (result.kind == SlotKind::Boxed) return result.typeId != static_cast<u32>(NeoCore::TypeKind::Void);
+        return PolicyOf(result.kind) != StoragePolicy::Payload;
+    }
+    // emit이 거짓이면 계획만 기록한다. 활성 계획은 prepareOffset으로 찾으므로 명령이 없어도 창 쓰기의 종류가 정해진다.
+    void PrepareCall(CArchiveRdWC& ar, const std::vector<int>& sources, int line = -1, bool emit = true)
     {
         CompileCallStorage plan; plan.sources = sources; plan.types.resize(sources.size());
+        plan.prepareOffset = _code->GetBufferOffset() - _iCode_Begin;
         _calls.push_back(plan);
-        Push_OP(ar, NOP_PREPARE_CALL, CompileShort("call storage plan", static_cast<int>(_calls.size()) - 1), 0, 0, line);
+        if (emit) Push_OP(ar, NOP_PREPARE_CALL, CompileShort("call storage plan", static_cast<int>(_calls.size()) - 1), 0, 0, line);
     }
 	void	Push_Call(CArchiveRdWC& ar, OperationCode op, int fun, int args, int res, int iDebugLine = -1)
 	{
@@ -630,12 +647,18 @@ struct SFunctionInfo
 				{
 					u8 *pre = (u8*)_code->GetData() + sizeof(OpType) + sizeof(ArgFlag) + _iLastOPOffset;
 					short* preDest = (short*)pre;
-					if (*preDest == s)
+					// 호출 창 슬롯으로는 고정 숫자 명령만 바로 쓴다(PREPARE_CALL을 내지 않은 호출의 마지막 인자).
+					// 복사·읽기 명령은 원본 종류가 이전 계획에 묶여 있어 창에 직접 쓰지 않는다.
+					const bool window = r >= COMPILE_CALLARG_VAR_BEGIN;
+					if (*preDest == s && (!window || (GetTypedOpInfo(GetLastOP()) != nullptr && !_calls.empty())))
 					{
                         // 생략한 임시의 고정 타입도 실제 목적지에 전달한다.
                         const auto sourceStorage = _storage.find(s);
-                        if (sourceStorage != _storage.end() && r >= 0 && r < COMPILE_CALLARG_VAR_BEGIN)
+                        if (sourceStorage != _storage.end() && r >= 0 && !window)
                             SetStorage(r, sourceStorage->second);
+                        // 창에 직접 쓰는 명령부터 이 호출의 계획이 창 슬롯의 종류를 정한다.
+                        if (window && _iLastOPOffset - _iCode_Begin < _calls.back().prepareOffset)
+                            _calls.back().prepareOffset = _iLastOPOffset - _iCode_Begin;
                         *preDest = CompileShort("destination operand", r);
 						return;
 					}

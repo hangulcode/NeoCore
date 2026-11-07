@@ -314,7 +314,10 @@ NEOS_FORCEINLINE void StoreReturnValue(VarInfo* destination, VarInfo* source, bo
 
 // 본문 공용. pSrc = 반환값 슬롯(NORESULT 면 nullptr). 결과를 먼저 옮긴 뒤 프레임의 소유 슬롯을 해제한다.
 NEOS_FORCEINLINE bool handle_RETURN_impl(VarInfo* pSrc, bool sourceLocal, int functionIndex) {
-    const SFunctionTable& fun = Functions()[functionIndex];
+    // 반환 명령의 함수 번호는 현재 프레임과 같다. 함수 표를 다시 찾지 않고 프레임 기록을 쓴다.
+    assert(functionIndex == _functionIndex);
+    (void)functionIndex;
+    const SFunctionTable& fun = *m_pFunction;
     const StoragePolicy resultPolicy = fun.SlotPolicy(0);
     if (m_iBreakingCallStack == (int)m_pCallStack->size())
     {

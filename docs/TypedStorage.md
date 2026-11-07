@@ -68,29 +68,39 @@ only the payload, including in fused operations. Numeric declaration values are
 not initialized again in the frame prologue. Reference locals start empty.
 Arguments retain the values installed by the caller.
 
-`PREPARE_CALL` selects the compiler-produced outgoing window after argument
-expressions have finished and zeroes its slots. Nested argument calls therefore
-cannot overwrite already evaluated arguments, and a stale numeric payload left by
-an earlier callee frame can never be mistaken for an owned pointer. The caller
-copies arguments into that window; script entry then clears only the callee's
-owned block and selects its fixed layout without clearing the arguments. The
-callee releases the arguments and its owned block when it returns, so the window
-is empty again except for a result the caller takes. Natives release their
-window by plan after returning; `coroutine.resume` leaves the parent's window in
-place until the parent runs again, which keeps a temporary coroutine alive while
-it executes. Async dispatch similarly selects its fixed `void(bool,string)`
-callback window before writing the completion values. Named and captured
-callbacks use the same argument contract. When the exporter folds a one-line
-global getter call into a policy copy, it also blanks that call's `PREPARE_CALL`
-so no plan stays selected, and a top-level return clears the selected plan
-before the host reads the result slot.
+The compiler records one call plan per call site after the argument expressions
+have finished, so nested argument calls cannot overwrite already evaluated
+arguments. `PREPARE_CALL` selects that plan at run time and zeroes the window
+slots whose policy is not payload (the loader computes this range), so a stale
+numeric payload left by an earlier callee frame can never be mistaken for an
+owned pointer; payload slots are simply overwritten by the argument copies. A
+direct call to a named script function whose parameters and result are all
+payload kinds (or void) emits no `PREPARE_CALL` at all: the plan still exists
+for the exporter, which activates it at the recorded code position, but nothing
+at run time needs it. Calls to natives, function values, anonymous functions and
+calls that pass or return owned values keep the instruction. The caller copies
+arguments into the window; a single computed argument may be produced directly
+in its window slot. Script entry then clears only the callee's owned block and
+selects its fixed layout without clearing the arguments. The callee releases the
+arguments and its owned block when it returns, so the window is empty again
+except for a result the caller takes. Natives release their window by plan after
+returning; `coroutine.resume` leaves the parent's window in place until the
+parent runs again, which keeps a temporary coroutine alive while it executes.
+Async dispatch similarly selects its fixed `void(bool,string)` callback window
+before writing the completion values. Named and captured callbacks use the same
+argument contract. When the exporter folds a one-line global getter call into a
+policy copy, it also blanks that call's `PREPARE_CALL` if one was emitted, and a
+top-level return clears the selected plan before the host reads the result slot.
 
-The runtime keeps no per-frame range table. The current function index and the
-program's slot tables are VM registers; each call-stack entry records the
-caller's function index. Cancellation, errors and context release enumerate the
-saved frames (call stack, frames recorded by active native calls, the current
-frame and any pending window) through the program's layouts to release owned
-slots, then zero the used stack range. There is no high-water sweep.
+The runtime keeps no per-frame range table. The current function index, a
+pointer to its function record and the program's slot type table are VM
+registers; each call-stack entry records the caller's function index. A return
+releases only the owned part of the frame, starting at the first owned slot the
+loader found, so a function with numeric arguments and locals releases nothing.
+Cancellation, errors and context release enumerate the saved frames (call
+stack, frames recorded by active native calls, the current frame and any
+pending window) through the program's layouts to release owned slots, then zero
+the used stack range. There is no high-water sweep.
 
 Copy/store instructions encode their storage policy at compilation. Owned copies
 retain the new pointer before releasing the old pointer. Host object IDs have a

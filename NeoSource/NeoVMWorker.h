@@ -254,25 +254,26 @@ private:
 	// 넘치면 에러를 낼 뿐 늘리지 않는다) 베이스가 바뀔 때만 갱신하면 된다.
 	int						m_iVarStackSize;
 	VarInfo*				m_pVarStack_Pointer;
-	// 현재 프레임 함수의 슬롯 타입·정책 표. SelectFunction이 _functionIndex와 함께 바꾼다.
-	// 종류가 필요한 범용 명령만 읽고, 타입별 명령은 payload만 다룬다.
+	// 현재 프레임 함수의 기록과 슬롯 타입 표. SelectFunction이 _functionIndex와 함께 바꾼다.
+	// 종류가 필요한 범용 명령만 타입 표를 읽고, 타입별 명령은 payload만 다룬다.
+	// 반환·호출 계획 선택은 함수 기록 포인터를 바로 읽어 함수 표 색인을 피한다.
+	const SFunctionTable*	m_pFunction = nullptr;
 	const VAR_TYPE*			m_pSlotTypes = nullptr;
-	const u8*				m_pSlotInfo = nullptr;
 	const VAR_TYPE*			m_pGlobalTypes = nullptr;
-	NEOS_FORCEINLINE void SelectFunction(int index)
+	NEOS_FORCEINLINE void SelectFunction(int index, const SFunctionTable& fun)
 	{
 		_functionIndex = index;
-		const SFunctionTable& fun = _pProgram->functions[index];
+		m_pFunction = &fun;
 		m_pSlotTypes = fun._slotTypes.data();
-		m_pSlotInfo = fun._slotInfo.data();
 	}
+	NEOS_FORCEINLINE void SelectFunction(int index) { SelectFunction(index, _pProgram->functions[index]); }
 	// 저장된 레지스터(_info)를 되살린 뒤 배치표를 함수 번호에 맞춘다.
 	NEOS_FORCEINLINE void RestoreFrameTables()
 	{
 		if (_functionIndex >= 0) SelectFunction(_functionIndex);
-		else { m_pSlotTypes = nullptr; m_pSlotInfo = nullptr; }
+		else { m_pFunction = nullptr; m_pSlotTypes = nullptr; }
 	}
-	NEOS_FORCEINLINE const SFunctionTable& CurrentFunction() const { return _pProgram->functions[_functionIndex]; }
+	NEOS_FORCEINLINE const SFunctionTable& CurrentFunction() const { return *m_pFunction; }
 
 	// 둘이 어긋나면 스택 범위 검사가 조용히 틀리므로 항상 함께 바꾼다.
 	NEOS_FORCEINLINE void SetVarStackBase(ValueStack* p)
@@ -301,32 +302,35 @@ private:
 	// 컨텍스트의 모든 프레임(콜스택 + 현재 프레임 + 대기 중인 호출 창)이 소유한 참조를 정책으로 해제하고
 	// 사용 구간을 0으로 채운다. 태그 없는 스택의 유일한 일괄 정리 경로다.
 	void    ReleaseContextFrames(CoroutineInfo* ctx);
-    // PREPARE_CALL: 호출 창 계획을 고르고 창을 비운다. 창에는 앞 호출(피호출자 프레임)의 숫자 payload가
-    // 남아 있을 수 있고, 소유 참조는 RET·네이티브 복귀가 이미 놓았다. 정책 복사는 비운 창에만 쓴다.
-    // 함수 진입의 스택 범위 검사가 이 함수의 모든 창까지 포함하므로 여기서는 다시 검사하지 않는다.
+    // PREPARE_CALL: 호출 창 계획을 고르고 정책 복사가 이전 값을 놓는 창 슬롯을 비운다. 창에는 앞 호출
+    // (피호출자 프레임)의 숫자 payload가 남아 있을 수 있고, 소유 참조는 RET·네이티브 복귀가 이미 놓았다.
+    // 숫자 슬롯은 payload 복사가 덮어쓰므로 비우지 않는다. 숫자만 오가는 직접 스크립트 호출은 컴파일러가
+    // 이 명령을 내지 않는다. 함수 진입의 스택 범위 검사가 이 함수의 모든 창까지 포함하므로 여기서는
+    // 다시 검사하지 않는다.
     NEOS_FORCEINLINE void SelectCallPlan(int plan)
     {
-        const CallStoragePlan& selected = CurrentFunction()._calls[plan];
+        const CallStoragePlan& selected = m_pFunction->_calls[plan];
         _activePlan = &selected;
         VarInfo* window = m_pVarStack_Base->data() + _iSP_VarsMax;
-        const std::size_t count = selected.types.size();
-        assert(_iSP_VarsMax + static_cast<int>(count) <= m_iVarStackSize);
-        for (std::size_t i = 0; i < count; ++i) window[i]._int = 0;
+        assert(_iSP_VarsMax + static_cast<int>(selected.types.size()) <= m_iVarStackSize);
+        for (int i = selected.zeroFirst; i < selected.zeroEnd; ++i) window[i]._int = 0;
     }
     // 프레임 진입: 소유 슬롯 구간을 0으로 채우고 함수 배치를 고른다. 숫자 슬롯은 선언이 초기화한다.
-    NEOS_FORCEINLINE void EnterFrame(int functionIndex, int base)
+    NEOS_FORCEINLINE void EnterFrame(int functionIndex, const SFunctionTable& fun, int base)
     {
-        const SFunctionTable& fun = _pProgram->functions[functionIndex];
         if (fun._ownedCount)
             memset(&(*m_pVarStack_Base)[base + 1 + fun._argsCount], 0, sizeof(VarInfo) * fun._ownedCount);
-        SelectFunction(functionIndex);
+        SelectFunction(functionIndex, fun);
     }
-    // 프레임 종료: 인자와 소유 슬롯 구간만 정책으로 해제한다. 숫자 슬롯은 보지 않는다.
+    NEOS_FORCEINLINE void EnterFrame(int functionIndex, int base)
+    { EnterFrame(functionIndex, _pProgram->functions[functionIndex], base); }
+    // 프레임 종료: 인자와 소유 슬롯 구간만 정책으로 해제한다. 숫자 슬롯은 보지 않고,
+    // 소유 슬롯이 없는 함수는 구간이 비어 있다.
     NEOS_FORCEINLINE void LeaveFrame(const SFunctionTable& fun, int base)
     {
         const u8* info = fun._slotInfo.data();
         VarInfo* slots = &(*m_pVarStack_Base)[base];
-        for (int i = 1; i < fun._releaseCount; ++i)
+        for (int i = fun._releaseFirst; i < fun._releaseCount; ++i)
         {
             const StoragePolicy policy = SlotInfoPolicy(info[i]);
             if (policy != StoragePolicy::Payload) ReleaseByPolicy(slots + i, policy);
@@ -435,7 +439,7 @@ private:
 	NEOS_FORCEINLINE VAR_TYPE SlotType1(const SVMOperation& OP) const { return (OP.argFlag & NEOS_ARG_N1_LOCAL) ? SlotType_L(OP.n1) : SlotType_G(OP.n1); }
 	NEOS_FORCEINLINE VAR_TYPE SlotType2(const SVMOperation& OP) const { return (OP.argFlag & NEOS_ARG_N2_LOCAL) ? SlotType_L(OP.n2) : SlotType_G(OP.n2); }
 	NEOS_FORCEINLINE VAR_TYPE SlotType3(const SVMOperation& OP) const { return (OP.argFlag & NEOS_ARG_N3_LOCAL) ? SlotType_L(OP.n3) : SlotType_G(OP.n3); }
-	NEOS_FORCEINLINE StoragePolicy SlotPolicy_L(short n) const { return SlotInfoPolicy(m_pSlotInfo[n]); }
+	NEOS_FORCEINLINE StoragePolicy SlotPolicy_L(short n) const { return m_pFunction->SlotPolicy(n); }
 	NEOS_FORCEINLINE StoragePolicy SlotPolicy_G(short n) const { return PolicyOfType(m_pGlobalTypes[n]); }
 	NEOS_FORCEINLINE StoragePolicy SlotPolicy1(const SVMOperation& OP) const { return (OP.argFlag & NEOS_ARG_N1_LOCAL) ? SlotPolicy_L(OP.n1) : SlotPolicy_G(OP.n1); }
 	NEOS_FORCEINLINE StoragePolicy SlotPolicy3(const SVMOperation& OP) const { return (OP.argFlag & NEOS_ARG_N3_LOCAL) ? SlotPolicy_L(OP.n3) : SlotPolicy_G(OP.n3); }

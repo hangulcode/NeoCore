@@ -466,7 +466,15 @@ static bool TryPushImmediate(CArchiveRdWC& ar, SFunctions& funs, int dest, const
 		return false;   // float32로 정확히 표현할 수 없는 double은 상수 풀에 남긴다.
 
 	if (canReclaim)
+	{
 		funs.PopLastStatic();
+		// 되돌린 상수를 호출 계획이 인자 원본으로 가리키면 그 색인은 다음 상수를 가리키게 된다.
+		// 원본을 지우면 저장소 추론은 피호출자 서명으로 종류를 정한다. PREPARE_CALL을 내지 않는 호출은
+		// 상수 뒤에 명령이 없어 되돌리기가 실제로 일어난다.
+		if (dest >= COMPILE_CALLARG_VAR_BEGIN && !funs._cur->_calls.empty())
+			for (int& slot : funs._cur->_calls.back().sources)
+				if (slot == source._iVar) slot = -1;
+	}
 	return true;
 }
 
@@ -2056,7 +2064,7 @@ bool ParseFunCall(SOperand& iResultStack, TK_TYPE tkTypePre, SFunctionInfo* pFun
         // 호출 창은 모든 인자 평가가 끝난 뒤에만 선택한다. 다른 호출의 참조와 겹치지 않는다.
         std::vector<int> callSources;
         for (SOperand& argument : argOperands) callSources.push_back(argument.IsFun() ? -1 : argument._iVar);
-        funs._cur->PrepareCall(ar, callSources, iCallLine);
+        funs._cur->PrepareCall(ar, callSources, iCallLine, SFunctionInfo::CallWindowNeedsPrepare(pFun, argOperands.size()));
         for (int i = 0; i < iParamCount; ++i)
         {
             SOperand& arg = argOperands[i];
@@ -3328,7 +3336,7 @@ static bool EmitCoreIRCall(const NeoCore::IRNode& node, const std::string& name,
     }
     std::vector<int> callSources;
     for (const SOperand& argument : arguments) callSources.push_back(argument._iVar);
-    funs._cur->PrepareCall(ar, callSources, node.source.line);
+    funs._cur->PrepareCall(ar, callSources, node.source.line, SFunctionInfo::CallWindowNeedsPrepare(function, arguments.size()));
     for (std::size_t i = 0; i < arguments.size(); ++i)
     {
         const int slot = COMPILE_CALLARG_VAR_BEGIN + 1 + static_cast<int>(i);
@@ -7173,7 +7181,10 @@ void FinalizeFuction(SFunctions& funs)
 		funs._cur->_pDebugData->resize(iSrcBeginDebugOff);
 	}
 	funs._cur->_iCode_Size += (int)prologue.size() * (int)sizeof(SVMOperation);
-	
+	// 호출 계획의 활성 위치도 프롤로그만큼 뒤로 민다.
+	for (CompileCallStorage& call : funs._cur->_calls)
+		call.prepareOffset += (int)prologue.size() * (int)sizeof(SVMOperation);
+
 	funs._funSequence.push_back(funs.FindFun(funs.GetCurFunName()));
 }
 

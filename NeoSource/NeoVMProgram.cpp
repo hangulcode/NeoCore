@@ -688,6 +688,14 @@ bool CNeoVMProgram::Load(CNArchive& ar, std::string* err)
                         call.types.push_back(StorageValueType(kind));
                         call.policies.push_back(static_cast<u8>(PolicyOf(kind)));
                     }
+                    // 숫자 payload 슬롯은 비울 필요가 없다. 정책 복사가 이전 값을 놓는 슬롯만 0으로 채운다.
+                    call.zeroFirst = call.zeroEnd = 0;
+                    for (std::size_t slot = 0; slot < call.policies.size(); ++slot)
+                    {
+                        if (static_cast<StoragePolicy>(call.policies[slot]) == StoragePolicy::Payload) continue;
+                        if (call.zeroEnd == 0) call.zeroFirst = static_cast<int>(slot);
+                        call.zeroEnd = static_cast<int>(slot) + 1;
+                    }
                 }
             }
         }
@@ -751,6 +759,14 @@ bool CNeoVMProgram::Load(CNArchive& ar, std::string* err)
             { SetLoadError(err, "Owned slot outside the owned range"); return false; }
         }
         function._releaseCount = ownedEnd;
+        // 숫자 인자만 있는 함수는 반환 정리가 슬롯을 하나도 보지 않는다.
+        function._releaseFirst = ownedEnd;
+        for (int i = 1; i < ownedEnd; ++i)
+        {
+            if (SlotInfoPolicy(function._slotInfo[i]) == StoragePolicy::Payload) continue;
+            function._releaseFirst = i;
+            break;
+        }
     }
 	// range jump은 descriptor를 반드시 참조해야 한다. descriptor의 local slot은 해당
 	// opcode를 소유한 함수 프레임 기준이고, global slot은 상수 0 기준 signed offset이다.
@@ -817,7 +833,8 @@ bool CNeoVMProgram::VerifyCode(const std::vector<int>& owners, std::string* err)
         const bool fixedCopy = op.op == NOP_MOV && !immediateMove;
         const OperationCode checkedCode = (op.op == NOP_MOV || op.op == NOP_LOADK || op.op == NOP_VAR_CLEAR)
             ? static_cast<OperationCode>(op.op) : op.Code();
-        if (IsFixedArithmetic(op))
+        // 창 슬롯(지역 배치 밖)은 호출 계획이 종류를 정한다. 고정 숫자 명령은 payload만 쓰므로 창 목적지를 받아들인다.
+        if (IsFixedArithmetic(op) && !((op.argFlag & L1) && op.n1 >= fun._localAddCount))
         {
             const SlotKind actual = FindSlotKind((op.argFlag & L1) ? fun._storage : globalStorage, op.n1);
             const SlotKind expected = op.op == NOP_F64_FIXED ? SlotKind::Float : SlotKind::Int;
