@@ -42,7 +42,7 @@ enum FUNCTION_TYPE : u8
 enum class SlotKind : u8
 {
     Boxed, Int, Float, Bool, String, Vector2, Vector3, Vector4,
-    Native, Array, Map, List, Set, Coroutine, Async, ObjectId, Function
+    Native, Array, Map, List, Set, Coroutine, Async, ObjectId, Function, Iterator
 };
 static_assert(static_cast<unsigned>(SlotKind::ObjectId) <= NEOS_OP_SUB_MASK, "Fixed copies must fit the sub-operation");
 struct SlotType
@@ -70,10 +70,25 @@ inline SlotKind FindSlotKind(const std::vector<SlotLayout>& layout, short slot)
     }
     return first < layout.size() && layout[first].slot == slot ? layout[first].kind : SlotKind::Boxed;
 }
+inline VAR_TYPE StorageValueType(SlotKind kind)
+{
+    static const VAR_TYPE types[] = { VAR_NONE, VAR_INT, VAR_FLOAT, VAR_BOOL, VAR_STRING,
+        VAR_VEC, VAR_VEC3, VAR_VEC4, VAR_FP_NATIVE, VAR_ARRAY, VAR_MAP, VAR_LIST,
+        VAR_SET, VAR_COROUTINE, VAR_ASYNC };
+    return kind == SlotKind::ObjectId ? ValueRef::ObjectIdStorageType() :
+        kind == SlotKind::Function ? ValueRef::CallableStorageType() :
+        kind == SlotKind::Iterator ? VAR_ITERATOR : types[static_cast<unsigned>(kind)];
+}
 struct SlotCleanup
 {
     short slot = 0;
     SlotKind kind = SlotKind::Boxed;
+};
+
+struct CallStoragePlan
+{
+    std::vector<VAR_TYPE> types; // 반환값과 순서가 확정된 인자
+    std::vector<VAR_TYPE> frameTypes; // 호출자 지역 배치 뒤에 인자 창을 붙인 불변 보기
 };
 
 struct SFunctionTable
@@ -89,11 +104,15 @@ struct SFunctionTable
 	// 값을 받을 숨은 지역 슬롯. 캡처가 없으면 빈 벡터라 기존 함수 호출은
 	// 추가 비용이 없다.
 	std::vector<std::pair<short, short>> _captures;
+    std::shared_ptr<const std::vector<VAR_TYPE>> _captureTypes;
     std::vector<SlotLayout> _storage;
     std::vector<SlotCleanup> _cleanup;
+    std::vector<CallStoragePlan> _calls;
+    std::vector<VAR_TYPE> _slotTypes;
+    VAR_TYPE _resultType = VAR_NONE;
 };
 
-// static(상수) 슬롯 1개. VarInfo 가 아니라 원시 값으로 들고 있는다.
+// static(상수) 슬롯 1개. BoundaryValue 가 아니라 원시 값으로 들고 있는다.
 // VAR_STRING 의 StringInfo 는 CNeoVM 별 풀에서 나오고 같은 풀로 반납되어야 하므로,
 // VM 경계를 넘어 공유되는 Program 이 소유하면 안 된다. 워커가 자기 VM 할당자로 실체화한다.
 struct SStaticConst
@@ -132,11 +151,11 @@ struct ProgramSwitchTable
 	int								defaultOffset = 0;
 
 	void Build();                             // entries 로부터 buckets 구성
-	int  Find(VarInfo* pKey) const;           // 매칭 실패/지원 외 타입이면 defaultOffset
+	int  Find(ValueRef pKey) const;           // 매칭 실패/지원 외 타입이면 defaultOffset
 };
 
 // NOP_JMP_RANGE_*의 lower/upper operand. Program은 여러 VM이 공유되므로
-// VarInfo/포인터가 아니라 슬롯 번호와 descriptor flag만 보관한다.
+// BoundaryValue/포인터가 아니라 슬롯 번호와 descriptor flag만 보관한다.
 struct ProgramRangeJump
 {
 	short	lower = 0;
@@ -195,6 +214,7 @@ public:
 	int							localOpCount = 0;  // PatchLocalOps 가 _L 로 바꾼 op 수(진단용)
 	std::vector<SFunctionTable>	functions;
     std::vector<SlotLayout> globalStorage;
+    std::vector<VAR_TYPE> globalTypes; // 전체 인스턴스가 공유하는 고정 전역·상수 배치
 	std::map<std::string, int>	exportFunctions;   // 함수명 → 함수 ID
 	std::map<std::string, int>	exportVariables;   // 전역 변수명 → 전역 슬롯 인덱스
 	std::vector<SStaticConst>	staticValues;

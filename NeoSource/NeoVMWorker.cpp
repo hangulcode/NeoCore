@@ -43,7 +43,7 @@ class CNeoVMWorker::NativeFrameScope
 {
 	CNeoVMWorker& _worker;
 	CoroutineInfo* const _context;
-	std::vector<VarInfo>* const _stack;
+	ValueStack* const _stack;
 	const int _sp;
 	const int _max;
 	const int _breaking;
@@ -81,26 +81,26 @@ void SVarWrapper::SetString(const char* str) { _vmw->Var_SetString(_var, str); }
 
 // 벡터 세터 (native 호출 내부에서만 쓰이므로 non-inline. NeoLib.cpp 에서 링크됨)
 //
-void INeoVMWorker::Var_SetVec2(VarInfo* d, float x, float y)
+void INeoVMWorker::Var_SetVec2(ValueRef d, float x, float y)
 {
 	StoreVector(d, 2, x, y, 0, 0);
 }
-void INeoVMWorker::Var_SetVec3(VarInfo* d, float x, float y, float z)
+void INeoVMWorker::Var_SetVec3(ValueRef d, float x, float y, float z)
 {
 	StoreVector(d, 3, x, y, z, 0);
 }
-void INeoVMWorker::Var_SetVec4(VarInfo* d, float x, float y, float z, float w)
+void INeoVMWorker::Var_SetVec4(ValueRef d, float x, float y, float z, float w)
 {
 	VecInfo* p = VecStoreFor(d, 4);
 	p->v[0] = x; p->v[1] = y; p->v[2] = z; p->v[3] = w;
 }
-void INeoVMWorker::Var_SetQuat(VarInfo* d, float w, float x, float y, float z)
+void INeoVMWorker::Var_SetQuat(ValueRef d, float w, float x, float y, float z)
 {
 	VecInfo* p = VecStoreFor(d, 4);
 	p->v[0] = w; p->v[1] = x; p->v[2] = y; p->v[3] = z;
 }
 
-int& GetModuleRefCount(VarInfo* p)
+int& GetModuleRefCount(ValueRef p)
 {
 	return ((CNeoVMWorker*)(p->_module))->_refCount;
 }
@@ -163,10 +163,10 @@ CNeoVMWorker::~CNeoVMWorker()
 //  0 : SlieceRun
 //  1 : Continue
 //  2 : Timeout - 
-int CNeoVMWorker::Sleep(int iTimeout, VarInfo* v1)
+int CNeoVMWorker::Sleep(int iTimeout, ValueRef v1)
 {
 	int iSleepTick;
-	switch (v1->GetType())
+	switch (v1.GetType())
 	{
 	case VAR_INT:
 		if (v1->_int > INT32_MAX) { SetError(RTE_SLEEP_VALUE); return -1; }
@@ -209,10 +209,10 @@ int CNeoVMWorker::Sleep(int iTimeout, VarInfo* v1)
 #endif
 
 
-std::string CNeoVMWorker::ToString(VarInfo* v1)
+std::string CNeoVMWorker::ToString(ValueRef v1)
 {
 	char ch[256];
-	switch (v1->GetType())
+	switch (v1.GetType())
 	{
 	case VAR_INT:
 	{
@@ -240,10 +240,10 @@ std::string CNeoVMWorker::ToString(VarInfo* v1)
 		return "function";
 	case VAR_VEC:
 	{
-		const int n = v1->VectorComponentCount();
-		if (n <= 2)      snprintf(ch, sizeof(ch), "(%g, %g)", v1->VectorComponent(0), v1->VectorComponent(1));
-		else if (n == 3) snprintf(ch, sizeof(ch), "(%g, %g, %g)", v1->VectorComponent(0), v1->VectorComponent(1), v1->VectorComponent(2));
-		else             snprintf(ch, sizeof(ch), "(%g, %g, %g, %g)", v1->VectorComponent(0), v1->VectorComponent(1), v1->VectorComponent(2), v1->VectorComponent(3));
+		const int n = v1.VectorComponentCount();
+		if (n <= 2)      snprintf(ch, sizeof(ch), "(%g, %g)", v1.VectorComponent(0), v1.VectorComponent(1));
+		else if (n == 3) snprintf(ch, sizeof(ch), "(%g, %g, %g)", v1.VectorComponent(0), v1.VectorComponent(1), v1.VectorComponent(2));
+		else             snprintf(ch, sizeof(ch), "(%g, %g, %g, %g)", v1.VectorComponent(0), v1.VectorComponent(1), v1.VectorComponent(2), v1.VectorComponent(3));
 		return ch;
 	}
 	case VAR_STRING:
@@ -251,10 +251,10 @@ std::string CNeoVMWorker::ToString(VarInfo* v1)
 	case VAR_VEC3:
 	case VAR_VEC4:
 	{
-		const int n = v1->VectorComponentCount();
-		if (n <= 2)      snprintf(ch, sizeof(ch), "(%g, %g)", v1->VectorComponent(0), v1->VectorComponent(1));
-		else if (n == 3) snprintf(ch, sizeof(ch), "(%g, %g, %g)", v1->VectorComponent(0), v1->VectorComponent(1), v1->VectorComponent(2));
-		else             snprintf(ch, sizeof(ch), "(%g, %g, %g, %g)", v1->VectorComponent(0), v1->VectorComponent(1), v1->VectorComponent(2), v1->VectorComponent(3));
+		const int n = v1.VectorComponentCount();
+		if (n <= 2)      snprintf(ch, sizeof(ch), "(%g, %g)", v1.VectorComponent(0), v1.VectorComponent(1));
+		else if (n == 3) snprintf(ch, sizeof(ch), "(%g, %g, %g)", v1.VectorComponent(0), v1.VectorComponent(1), v1.VectorComponent(2));
+		else             snprintf(ch, sizeof(ch), "(%g, %g, %g, %g)", v1.VectorComponent(0), v1.VectorComponent(1), v1.VectorComponent(2), v1.VectorComponent(3));
 		return ch;
 	}
 	case VAR_FP_NATIVE:
@@ -280,9 +280,9 @@ std::string CNeoVMWorker::ToString(VarInfo* v1)
 	}
 	return "null";
 }
-NS_INT CNeoVMWorker::ToInt(VarInfo* v1)
+NS_INT CNeoVMWorker::ToInt(ValueRef v1)
 {
-	switch (v1->GetType())
+	switch (v1.GetType())
 	{
 	case VAR_INT:
 		return v1->_int;
@@ -305,9 +305,9 @@ NS_INT CNeoVMWorker::ToInt(VarInfo* v1)
 	}
 	return -1;
 }
-NS_FLOAT CNeoVMWorker::ToFloat(VarInfo* v1)
+NS_FLOAT CNeoVMWorker::ToFloat(ValueRef v1)
 {
-	switch (v1->GetType())
+	switch (v1.GetType())
 	{
 	case VAR_INT:
 		return (NS_FLOAT)v1->_int;
@@ -330,9 +330,9 @@ NS_FLOAT CNeoVMWorker::ToFloat(VarInfo* v1)
 	}
 	return -1;
 }
-int CNeoVMWorker::ToSize(VarInfo* v1)
+int CNeoVMWorker::ToSize(ValueRef v1)
 {
-	switch (v1->GetType())
+	switch (v1.GetType())
 	{
 	case VAR_INT:
 		return 0;
@@ -345,12 +345,12 @@ int CNeoVMWorker::ToSize(VarInfo* v1)
 		SetError(RTE_LENGTH_NULL);
 		return 0;
 	case VAR_VEC:
-		return v1->VectorComponentCount();
+		return v1.VectorComponentCount();
 	case VAR_STRING: // UTF-8 문자 수(string.len()과 동일)
 		return v1->_str->_StringLen;
 	case VAR_VEC3:
 	case VAR_VEC4:
-		return v1->VectorComponentCount();
+		return v1.VectorComponentCount();
 	case VAR_FP_NATIVE:
 		return 0;
 	case VAR_ARRAY:
@@ -366,7 +366,7 @@ int CNeoVMWorker::ToSize(VarInfo* v1)
 	}
 	return 0;
 }
-void CNeoVMWorker::Call(FunctionPtr* fun, int n2, VarInfo* pReturnValue)
+void CNeoVMWorker::Call(FunctionPtr* fun, int n2, ValueRef pReturnValue)
 {
 	if (!EnsureStackRange(_iSP_VarsMax, n2))
 		return;
@@ -374,7 +374,7 @@ void CNeoVMWorker::Call(FunctionPtr* fun, int n2, VarInfo* pReturnValue)
 	if (_iSP_Vars_Max2 < _iSP_VarsMax + (1 + n2))
 		_iSP_Vars_Max2 = _iSP_VarsMax + (1 + n2);
 
-	if (fun->_func == NULL)
+	if (fun->_func == nullptr)
 	{	// Error
 		SetError(RTE_CALL_NULL);
 		return;
@@ -427,34 +427,34 @@ bool CNeoVMWorker::Init(const NeoLoadVMParam* vparam, CNeoVMProgram* pProgram, i
 	const int iMaxVar = pProgram->GetGlobalSlotCount();
 	m_sVarGlobal.clear();
 	m_sVarGlobal.resize(iMaxVar);
-	m_pVarGlobal_Pointer = m_sVarGlobal.data() + pProgram->ConstantBase();
+	m_pVarGlobal_Pointer = ValueRef(m_sVarGlobal.data() + pProgram->ConstantBase(), pProgram->globalTypes.data() + pProgram->ConstantBase());
 	for (const SlotLayout& item : pProgram->globalStorage)
 		if (item.IsNumber())
 		{
 			m_pVarGlobal_Pointer[item.slot].SetType(item.kind == SlotKind::Int ? VAR_INT :
 				item.kind == SlotKind::Float ? VAR_FLOAT : VAR_BOOL);
-			m_pVarGlobal_Pointer[item.slot]._int = 0;
+			m_pVarGlobal_Pointer[item.slot]->_int = 0;
 		}
 
 	for (int i = 0; i < staticCount; i++)
 	{
 		const SStaticConst& sc = pProgram->staticValues[i];
-		VarInfo& vi = m_pVarGlobal_Pointer[i];
+		ValueRef vi = m_pVarGlobal_Pointer[i];
 		vi.SetType(sc._type);
 		switch (sc._type)
 		{
 		case VAR_INT:
-			vi._int = sc._int;
+			vi->_int = sc._int;
 			break;
 		case VAR_FLOAT:
-			vi._float = sc._float;
+			vi->_float = sc._float;
 			break;
 		case VAR_BOOL:
-			vi._bl = sc._bl;
+			vi->_bl = sc._bl;
 			break;
 		case VAR_STRING:
-			vi._str = GetVM()->StringIntern(sc._str);
-			++vi._str->_refCount;
+			vi->_str = GetVM()->StringIntern(sc._str);
+			++vi->_str->_refCount;
 			break;
 		default:
 			vi.ClearType();
@@ -767,23 +767,23 @@ void CNeoVMWorker::SetErrorFormat(int error, ...)
 	SetError(buff);
 }
 // 연산자 에러 전용. 피연산자 타입까지 붙여 "invalid operator '+' for 'string' and 'map'" 형태로 만든다.
-void CNeoVMWorker::SetErrorOperator(const char* op, VarInfo* v1, VarInfo* v2)
+void CNeoVMWorker::SetErrorOperator(const char* op, ValueRef v1, ValueRef v2)
 {
 	char operands[256];
 	if (v2 == nullptr)
-		snprintf(operands, sizeof(operands), "'%s'", GetDataType(v1->GetType()).c_str());
+		snprintf(operands, sizeof(operands), "'%s'", GetDataType(v1.GetType()).c_str());
 	else
 		snprintf(operands, sizeof(operands), "'%s' and '%s'",
-			GetDataType(v1->GetType()).c_str(), GetDataType(v2->GetType()).c_str());
+			GetDataType(v1.GetType()).c_str(), GetDataType(v2.GetType()).c_str());
 	SetErrorFormat(RTE_INVALID_OPERATOR, op, operands);
 }
-void CNeoVMWorker::SetErrorUnsupport(const char* pErrMsg, VarInfo* p)
+void CNeoVMWorker::SetErrorUnsupport(const char* pErrMsg, ValueRef p)
 {
 	char buff[1024];
 #ifdef _WIN32
-	snprintf(buff, _countof(buff), pErrMsg, GetDataType(p->GetType()).c_str());
+	snprintf(buff, _countof(buff), pErrMsg, GetDataType(p.GetType()).c_str());
 #else
-	sprintf(buff, pErrMsg, GetDataType(p->GetType()).c_str());
+	sprintf(buff, pErrMsg, GetDataType(p.GetType()).c_str());
 #endif
 	SetError(buff);
 }
@@ -810,28 +810,28 @@ void CNeoVMWorker::BindContext(CoroutineInfo* ctx)
 	m_pVarStack_Pointer = &(*m_pVarStack_Base)[0];
 }
 
-// 반납 전, 사용된 스택 슬롯[0..usedMax)의 VarInfo 참조를 정리 (DeadCoroutine 과 동일 패턴).
+// 반납 전, 사용된 스택 슬롯[0..usedMax)의 BoundaryValue 참조를 정리 (DeadCoroutine 과 동일 패턴).
 void CNeoVMWorker::CleanupContextVars(CoroutineInfo* ctx, int usedMax)
 {
-	std::vector<VarInfo>& s = ctx->m_sVarStack;
+	ValueStack& s = ctx->m_sVarStack;
 	if (usedMax > (int)s.size()) usedMax = (int)s.size();
 	for (int i = 0; i < usedMax; i++)
 		Var_Release(&s[i]);
 }
 
 template <typename Container>
-static NEOS_FORCEINLINE void ReleaseStorageContainer(CNeoVM* vm, Container* pointer, VarInfo* value)
+static NEOS_FORCEINLINE void ReleaseStorageContainer(CNeoVM* vm, Container* pointer, ValueRef value)
 {
     if (--pointer->_refCount <= 0) vm->QueueContainerForDestroy(*value);
     else if (pointer->_cycleState._mayContainContainerChild) vm->QueueContainerForCycleCheck(*value);
 }
 
 template <VAR_TYPE Type>
-NEOS_FORCEINLINE void CNeoVMWorker::ReleaseKnownStorage(CNeoVM* vm, VarInfo* value)
+NEOS_FORCEINLINE void CNeoVMWorker::ReleaseKnownStorage(CNeoVM* vm, ValueRef value)
 {
     // null 여부는 값의 상태다. 해제 함수 선택은 컴파일러가 정한 타입으로 고정된다.
-    assert(value->GetType() == VAR_NONE || value->GetType() == Type);
-    if (value->GetType() == VAR_NONE) return;
+    assert(value.GetType() == VAR_NONE || value.GetType() == Type);
+    if (value.GetType() == VAR_NONE) return;
     if (Type == VAR_STRING) { if (--value->_str->_refCount <= 0) vm->FreeString(value); }
     else if (Type == VAR_VEC3 || Type == VAR_VEC4) { if (--value->_vec->_refCount <= 0) vm->FreeVec(value->_vec); }
     else if (Type == VAR_FP_NATIVE) { if (--value->_fpNative->_refCount <= 0) vm->FreeFunctionProperty(value->_fpNative); }
@@ -841,15 +841,15 @@ NEOS_FORCEINLINE void CNeoVMWorker::ReleaseKnownStorage(CNeoVM* vm, VarInfo* val
     else if (Type == VAR_SET) ReleaseStorageContainer(vm, value->_set, value);
     else if (Type == VAR_COROUTINE) ReleaseStorageContainer(vm, value->_cor, value);
     else if (Type == VAR_ASYNC) ReleaseStorageContainer(vm, value->_async, value);
-    value->ClearType();
+    value.ClearType();
 }
 
 template <VAR_TYPE Type>
-NEOS_FORCEINLINE void CNeoVMWorker::CopyKnownStorage(CNeoVM* vm, VarInfo* target, const VarInfo* source)
+NEOS_FORCEINLINE void CNeoVMWorker::CopyKnownStorage(CNeoVM* vm, ValueRef target, ValueRef source)
 {
-    assert(source->GetType() == VAR_NONE || source->GetType() == Type);
+    assert(source.GetType() == VAR_NONE || source.GetType() == Type);
     // 먼저 새 참조를 보관하므로 자기 대입과 같은 객체를 가리키는 별칭도 안전하다.
-    const VarInfo copy = *source;
+    const BoundaryValue copy = *source;
     if (copy.GetType() != VAR_NONE)
     {
         if (Type == VAR_STRING) ++copy._str->_refCount;
@@ -866,7 +866,7 @@ NEOS_FORCEINLINE void CNeoVMWorker::CopyKnownStorage(CNeoVM* vm, VarInfo* target
     *target = copy;
 }
 
-void CNeoVMWorker::ReleaseStorageValue(VarInfo* value, SlotKind kind)
+void CNeoVMWorker::ReleaseStorageValue(ValueRef value, SlotKind kind)
 {
     switch (kind)
     {
@@ -885,10 +885,11 @@ void CNeoVMWorker::ReleaseStorageValue(VarInfo* value, SlotKind kind)
     case SlotKind::Async: ReleaseKnownStorage<VAR_ASYNC>(GetVM(), value); break;
     case SlotKind::ObjectId: break;
     case SlotKind::Function: Var_Release(value); break;
+    case SlotKind::Iterator: break;
     }
 }
 
-NEOS_NOINLINE void CNeoVMWorker::CopyStorageReference(VarInfo* target, const VarInfo* source, SlotKind kind)
+NEOS_NOINLINE void CNeoVMWorker::CopyStorageReference(ValueRef target, ValueRef source, SlotKind kind)
 {
     switch (kind)
     {
@@ -905,39 +906,47 @@ NEOS_NOINLINE void CNeoVMWorker::CopyStorageReference(VarInfo* target, const Var
     case SlotKind::Async: CopyKnownStorage<VAR_ASYNC>(GetVM(), target, source); break;
     case SlotKind::ObjectId:
         // 엔진 객체는 소유 포인터가 아닌 ID다. 유효성 조회는 호스트 접근 때 수행한다.
-        assert((target->GetType() == VAR_NONE || target->GetType() == VAR_INT) &&
-            (source->GetType() == VAR_NONE || source->GetType() == VAR_INT));
+        assert((target.GetType() == VAR_NONE || target.GetType() == VAR_INT) &&
+            (source.GetType() == VAR_NONE || source.GetType() == VAR_INT));
         *target = *source;
         break;
     default: assert(false); break;
     }
 }
 
-void CNeoVMWorker::PrepareFunctionStorage(const SFunctionTable& function, int base)
+void CNeoVMWorker::PrepareCallStorage(int planIndex)
 {
-    VarInfo* slots = m_pVarStack_Base->data() + base;
-    // 인자는 호출자가 이미 보관했다. 나머지 소유 슬롯은 초기화가 생략되거나 실패해도 비어 있어야 한다.
+    const int owner = m_pVarStack_Base->Function(_iSP_Vars);
+    assert(owner >= 0);
+    const SFunctionTable& function = Functions()[owner];
+    const CallStoragePlan& plan = function._calls[planIndex];
+    // 앞 호출의 미소비 반환값만 남을 수 있다. 깊은 프레임까지 기존 배치로 먼저 정리한다.
+    for (int i = _iSP_VarsMax; i < _iSP_Vars_Max2; ++i) Var_Release(GetStackFromBase(i));
+    m_pVarStack_Base->Bind(_iSP_Vars, plan.frameTypes, owner);
+    SetStackPointer(_iSP_Vars);
+    for (std::size_t i = 0; i < plan.types.size(); ++i)
+        m_pVarStack_Base->values[_iSP_VarsMax + i]._int = 0;
+}
+
+void CNeoVMWorker::PrepareFunctionStorage(const SFunctionTable& function, int base, bool argumentsReady)
+{
+    // 인자 창은 호출자가 채웠다. 새 지역 프레임은 소유 슬롯만 비우고 숫자 값은 선언에서 쓴다.
+    for (int i = argumentsReady ? base + function._argsCount + 1 : base; i < _iSP_Vars_Max2; ++i) Var_Release(GetStackFromBase(i));
+    m_pVarStack_Base->Bind(base, function._slotTypes, static_cast<int>(&function - Functions().data()));
+    ValueRef slots = m_pVarStack_Base->At(base);
     for (const SlotCleanup& item : function._cleanup)
-        if (item.slot > function._argsCount) Var_Release(&slots[item.slot]);
-    for (const SlotLayout& item : function._storage)
-    {
-        if (item.slot <= function._argsCount || (!item.IsNumber() &&
-            item.kind != SlotKind::Vector2 && item.kind != SlotKind::ObjectId)) continue;
-        VarInfo* slot = &slots[item.slot];
-        // 공유 스택에 남은 네이티브 인자도 프레임 진입에서 한 번만 반납한다. 숫자 값은 선언이 쓴다.
-        if (slot->IsAllocType()) Var_ReleaseAlloc(slot);
-        if (item.IsNumber())
-            slot->SetType(item.kind == SlotKind::Int ? VAR_INT : item.kind == SlotKind::Float ? VAR_FLOAT : VAR_BOOL);
-        else if (item.kind == SlotKind::ObjectId) slot->ClearType();
-    }
+        if (item.slot > function._argsCount && item.slot < function._localAddCount)
+            slots[item.slot].ClearType();
+    SetStackPointer(base);
 }
 
 void CNeoVMWorker::ReleaseFunctionStorage(const SFunctionTable& function, int base)
 {
-    VarInfo* slots = m_pVarStack_Base->data() + base;
-    // 반환값(0번)은 호출자에게 남긴다. 소유권 목록에는 숫자·인라인 벡터가 들어 있지 않다.
     for (const SlotCleanup& item : function._cleanup)
-        ReleaseStorageValue(&slots[item.slot], item.kind);
+        if (item.slot < function._localAddCount)
+            ReleaseStorageValue(m_pVarStack_Base->At(base + item.slot), item.kind);
+    for (int i = base + function._localAddCount; i < _iSP_Vars_Max2; ++i)
+        Var_Release(GetStackFromBase(i));
 }
 
 void CNeoVMWorker::ReleaseDetachedClosureWithoutSync(ClosureInfo*& closure)
@@ -948,7 +957,7 @@ void CNeoVMWorker::ReleaseDetachedClosureWithoutSync(ClosureInfo*& closure)
 		m_pActiveClosure = nullptr;
 	if (m_pCur && m_pCur->_activeClosure == closure)
 		m_pCur->_activeClosure = nullptr;
-	VarInfo active(VAR_CLOSURE);
+	BoundaryValue active(VAR_CLOSURE);
 	active._closure = closure;
 	closure = nullptr;
 	Var_Release(&active);
@@ -963,7 +972,7 @@ void CNeoVMWorker::ReleaseCoroutineClosuresWithoutSync(CoroutineInfo* pCI)
 	// 각각 한 번 반납한다.
 	if (pCI->_activeClosure != nullptr)
 	{
-		VarInfo active(VAR_CLOSURE);
+		BoundaryValue active(VAR_CLOSURE);
 		active._closure = pCI->_activeClosure;
 		pCI->_activeClosure = nullptr;
 		Var_Release(&active);
@@ -973,7 +982,7 @@ void CNeoVMWorker::ReleaseCoroutineClosuresWithoutSync(CoroutineInfo* pCI)
 		SClosureCallState& state = pCI->m_sClosureCallStack[i];
 		if (state._closure == nullptr)
 			continue;
-		VarInfo active(VAR_CLOSURE);
+		BoundaryValue active(VAR_CLOSURE);
 		active._closure = state._closure;
 		state._closure = nullptr;
 		Var_Release(&active);
@@ -989,7 +998,7 @@ void CNeoVMWorker::UnwindActiveClosures()
 		SyncActiveClosure();
 		if (m_pCur && m_pCur->_activeClosure == m_pActiveClosure)
 			m_pCur->_activeClosure = nullptr;
-		VarInfo active(VAR_CLOSURE);
+		BoundaryValue active(VAR_CLOSURE);
 		active._closure = m_pActiveClosure;
 		m_pActiveClosure = nullptr;
 		Var_Release(&active);
@@ -1005,7 +1014,7 @@ void CNeoVMWorker::UnwindActiveClosures()
 			// Clear only that alias: a direct yield parks an independent active ref.
 			if (m_pCur && m_pCur->_activeClosure == state._closure)
 				m_pCur->_activeClosure = nullptr;
-			VarInfo active(VAR_CLOSURE);
+			BoundaryValue active(VAR_CLOSURE);
 			active._closure = state._closure;
 			Var_Release(&active);
 		}
@@ -1018,7 +1027,7 @@ void CNeoVMWorker::UnwindActiveClosures()
 }
 
 // 최상위 실행 종료: 메인 컨텍스트를 풀로 반납한다.
-// (코루틴 컨텍스트는 각자의 VarInfo 가 GC/스택 해제될 때 FreeCoroutine 으로 반납된다.)
+// (코루틴 컨텍스트는 각자의 BoundaryValue 가 GC/스택 해제될 때 FreeCoroutine 으로 반납된다.)
 void CNeoVMWorker::ReleaseExecution(bool discardParkedClosuresWithoutSync)
 {
     m_sDebugLineSkips.clear();
@@ -1079,12 +1088,12 @@ void CNeoVMWorker::ReleaseExecution(bool discardParkedClosuresWithoutSync)
 	}
 	if (activeCoroutine != nullptr)
 	{
-		VarInfo held(VAR_COROUTINE); held._cor = activeCoroutine; Var_Release(&held);
+		BoundaryValue held(VAR_COROUTINE); held._cor = activeCoroutine; Var_Release(&held);
 	}
 	for (CoroutineInfo* context : m_sCoroutines)
 	{
 		if (context == m_pMainCtx || context == activeCoroutine) continue;
-		VarInfo held(VAR_COROUTINE); held._cor = context; Var_Release(&held);
+		BoundaryValue held(VAR_COROUTINE); held._cor = context; Var_Release(&held);
 	}
 	m_pCur = nullptr;
 	m_pMainCtx = nullptr;
@@ -1126,7 +1135,7 @@ int CNeoVMWorker::RunSettle(bool retainCompletedResult)
 }
 
 // 최상위 실행: 풀에서 컨텍스트를 대여해 iFID 를 처음부터 실행.
-int CNeoVMWorker::ExecuteTop(int iFunctionID, std::vector<VarInfo>& _args)
+int CNeoVMWorker::ExecuteTop(int iFunctionID, std::vector<BoundaryValue>& _args)
 {
 	try
 	{
@@ -1324,7 +1333,7 @@ void CNeoVMWorker::EndNestedScriptCall()
 	--m_iNativeScriptCallDepth;
 }
 
-int CNeoVMWorker::RunHostCall(int iFunctionID, std::vector<VarInfo>& _args, VarInfo* closureValue)
+int CNeoVMWorker::RunHostCall(int iFunctionID, std::vector<BoundaryValue>& _args, ValueRef closureValue, ValueRef completedResult)
 {
 	// BeginHostCall이 실행 컨텍스트를 확보한 뒤에만 이 경로로 진입한다. ExecuteTop은
 	// 완료 시 컨텍스트를 즉시 반납하므로, 반환 슬롯을 읽어야 하는 Invocation에는 맞지 않는다.
@@ -1351,7 +1360,7 @@ int CNeoVMWorker::RunHostCall(int iFunctionID, std::vector<VarInfo>& _args, VarI
 		const int nativeMax = _iSP_VarsMax;
 		const int nativeHighWater = _iSP_Vars_Max2;
 		// Validate before detaching the parent or touching its stack frame.
-		if (closureValue != nullptr && (closureValue->GetType() != VAR_CLOSURE ||
+		if (closureValue != nullptr && (closureValue.GetType() != VAR_CLOSURE ||
 			closureValue->_closure == nullptr || closureValue->_closure->_funIndex != iFunctionID ||
 			closureValue->_closure->_ownerWorkerId != GetWorkerID() ||
 			iFunctionID < 0 || iFunctionID >= (int)Functions().size() ||
@@ -1379,7 +1388,7 @@ int CNeoVMWorker::RunHostCall(int iFunctionID, std::vector<VarInfo>& _args, VarI
 			ClosureInfo* closure = closureValue->_closure;
 			const SFunctionTable& fun = Functions()[iFunctionID];
 			for (size_t i = 0; i < fun._captures.size(); ++i)
-				Move(GetVarPtr_L(fun._captures[i].second), &closure->_captures[i]);
+				Move(GetVarPtr_L(fun._captures[i].second), closure->Capture(i));
 			++closure->_refCount; // 실행 프레임이 closure를 잡는다; RET/ERROR에서 반납.
 			m_pActiveClosure = closure;
 		}
@@ -1400,7 +1409,7 @@ int CNeoVMWorker::RunHostCall(int iFunctionID, std::vector<VarInfo>& _args, VarI
 		}
 		if (ok && isNestedScriptCall)
 		{
-			Move(GetStackFromBase(nativeBase), GetReturnVar());
+			if (completedResult) Move(completedResult, GetReturnVar());
 			for (int i = nativeHighWater; i < _iSP_Vars_Max2; ++i)
 				Var_Release(GetStackFromBase(i));
 			_iSP_Vars = nativeBase;
@@ -1447,7 +1456,7 @@ int CNeoVMWorker::RunHostCall(int iFunctionID, std::vector<VarInfo>& _args, VarI
 	}
 }
 
-bool	CNeoVMWorker::Setup(int iFunctionID, std::vector<VarInfo>& _args)
+bool	CNeoVMWorker::Setup(int iFunctionID, std::vector<BoundaryValue>& _args)
 {
 	if (m_bOutOfMemoryPoisoned)
 		return false;
@@ -1624,22 +1633,22 @@ struct NeoDebugSnapshotBudget
         return text;
     }
 };
-static void NeoDebugFormatValue(VarInfo* pVar, NeoDebugVariable& out, NeoDebugSnapshotBudget& budget, int collectionDepth = 0)
+static void NeoDebugFormatValue(ValueRef pVar, NeoDebugVariable& out, NeoDebugSnapshotBudget& budget, int collectionDepth = 0)
 {
     if (!pVar || budget.nodes <= 0) { out.type = "unavailable"; out.value = "snapshot limit"; return; }
     --budget.nodes;
     bool shared = false;
-    if (pVar->GetType() == VAR_LIST || pVar->GetType() == VAR_MAP ||
-        pVar->GetType() == VAR_ARRAY || pVar->GetType() == VAR_CLOSURE)
+    if (pVar.GetType() == VAR_LIST || pVar.GetType() == VAR_MAP ||
+        pVar.GetType() == VAR_ARRAY || pVar.GetType() == VAR_CLOSURE)
         {
-        const void* identity = pVar->GetType() == VAR_LIST ? static_cast<void*>(pVar->_lst) :
-            pVar->GetType() == VAR_MAP ? static_cast<void*>(pVar->_tbl) :
-            pVar->GetType() == VAR_ARRAY ? static_cast<void*>(pVar->_array) : static_cast<void*>(pVar->_closure);
+        const void* identity = pVar.GetType() == VAR_LIST ? static_cast<void*>(pVar->_lst) :
+            pVar.GetType() == VAR_MAP ? static_cast<void*>(pVar->_tbl) :
+            pVar.GetType() == VAR_ARRAY ? static_cast<void*>(pVar->_array) : static_cast<void*>(pVar->_closure);
         shared = !budget.visited.insert(identity).second;
     }
     const bool expand = !shared && budget.nodes > 0 && collectionDepth < NEO_DEBUG_MAX_COLLECTION_DEPTH;
 	char buf[128];
-	switch (pVar->GetType())
+	switch (pVar.GetType())
 	{
 	case VAR_INT:
 		out.type = "int";
@@ -1661,7 +1670,7 @@ static void NeoDebugFormatValue(VarInfo* pVar, NeoDebugVariable& out, NeoDebugSn
 		break;
 	case VAR_FUN:
 		out.type = "function";
-		snprintf(buf, sizeof(buf), "#%d", pVar->_fun_index);
+		snprintf(buf, sizeof(buf), "#%d", pVar.FunctionIndex());
 		out.value = buf;
 		break;
 	case VAR_ITERATOR:
@@ -1674,11 +1683,11 @@ static void NeoDebugFormatValue(VarInfo* pVar, NeoDebugVariable& out, NeoDebugSn
 		break;
 	case VAR_VEC:
 	{
-		const int n = pVar->VectorComponentCount();
+		const int n = pVar.VectorComponentCount();
 		out.type = (n <= 2) ? "Vector2" : (n == 3 ? "Vector3" : "Vector4");
-		if (n <= 2)      snprintf(buf, sizeof(buf), "(%g, %g)", pVar->VectorComponent(0), pVar->VectorComponent(1));
-		else if (n == 3) snprintf(buf, sizeof(buf), "(%g, %g, %g)", pVar->VectorComponent(0), pVar->VectorComponent(1), pVar->VectorComponent(2));
-		else             snprintf(buf, sizeof(buf), "(%g, %g, %g, %g)", pVar->VectorComponent(0), pVar->VectorComponent(1), pVar->VectorComponent(2), pVar->VectorComponent(3));
+		if (n <= 2)      snprintf(buf, sizeof(buf), "(%g, %g)", pVar.VectorComponent(0), pVar.VectorComponent(1));
+		else if (n == 3) snprintf(buf, sizeof(buf), "(%g, %g, %g)", pVar.VectorComponent(0), pVar.VectorComponent(1), pVar.VectorComponent(2));
+		else             snprintf(buf, sizeof(buf), "(%g, %g, %g, %g)", pVar.VectorComponent(0), pVar.VectorComponent(1), pVar.VectorComponent(2), pVar.VectorComponent(3));
 		out.value = buf;
 		break;
 	}
@@ -1689,11 +1698,11 @@ static void NeoDebugFormatValue(VarInfo* pVar, NeoDebugVariable& out, NeoDebugSn
 	case VAR_VEC3:
 	case VAR_VEC4:
 	{
-		const int n = pVar->VectorComponentCount();
+		const int n = pVar.VectorComponentCount();
 		out.type = (n <= 2) ? "Vector2" : (n == 3 ? "Vector3" : "Vector4");
-		if (n <= 2)      snprintf(buf, sizeof(buf), "(%g, %g)", pVar->VectorComponent(0), pVar->VectorComponent(1));
-		else if (n == 3) snprintf(buf, sizeof(buf), "(%g, %g, %g)", pVar->VectorComponent(0), pVar->VectorComponent(1), pVar->VectorComponent(2));
-		else             snprintf(buf, sizeof(buf), "(%g, %g, %g, %g)", pVar->VectorComponent(0), pVar->VectorComponent(1), pVar->VectorComponent(2), pVar->VectorComponent(3));
+		if (n <= 2)      snprintf(buf, sizeof(buf), "(%g, %g)", pVar.VectorComponent(0), pVar.VectorComponent(1));
+		else if (n == 3) snprintf(buf, sizeof(buf), "(%g, %g, %g)", pVar.VectorComponent(0), pVar.VectorComponent(1), pVar.VectorComponent(2));
+		else             snprintf(buf, sizeof(buf), "(%g, %g, %g, %g)", pVar.VectorComponent(0), pVar.VectorComponent(1), pVar.VectorComponent(2), pVar.VectorComponent(3));
 		out.value = buf;
 		break;
 	}
@@ -1737,7 +1746,7 @@ static void NeoDebugFormatValue(VarInfo* pVar, NeoDebugVariable& out, NeoDebugSn
 				case NeoArrayElementType::Vector4:
 				{
 					float v[4];
-					array->VectorValues()[i].CopyVectorComponents(v);
+					array->VectorAt(i).CopyVectorComponents(v);
 					child.type = GetArrayElementTypeName(array->_elementType);
 					const int n = array->VectorDimension();
 					if (n == 2) snprintf(buf, sizeof(buf), "(%g, %g)", v[0], v[1]);
@@ -1819,7 +1828,7 @@ static void NeoDebugFormatValue(VarInfo* pVar, NeoDebugVariable& out, NeoDebugSn
 				out.children.reserve(childCount + (count > childCount ? 1 : 0));
 				for (int i = 0; i < childCount && budget.nodes > 0; ++i)
 				{
-					VarInfo* pChildValue = pVar->_lst->GetValue(i);
+					ValueRef pChildValue = pVar->_lst->GetValue(i);
 					if (pChildValue == nullptr)
 						continue;
 
@@ -1875,7 +1884,7 @@ static void NeoDebugFormatValue(VarInfo* pVar, NeoDebugVariable& out, NeoDebugSn
 			{
 				NeoDebugVariable child;
 				child.name = "capture[" + std::to_string(i) + "]";
-				NeoDebugFormatValue(&captures[i], child, budget, collectionDepth + 1);
+				NeoDebugFormatValue(pVar->_closure->Capture(i), child, budget, collectionDepth + 1);
 				out.children.push_back(std::move(child));
 			}
 			if (captures.size() > (size_t)childCount)
@@ -2241,7 +2250,7 @@ bool	CNeoVMWorker::RunInternal(int iBreakingCallStack)
 		const SVMOperation& OP = *GetOP();
 		switch (OP.op)
 		{
-		case NOP_MOV:           Move(GetVarPtrF1(OP), GetVarPtr2(OP)); break;
+			case NOP_MOV:           Move(GetVarPtrF1(OP), GetVarPtr2(OP)); break;
 		case NOP_MOV_L:         Move(GetVarPtr_L(OP.n1), GetVarPtr_L(OP.n2)); break;
 		case NOP_MOVI:
 			if (OP.argFlag & NEOS_OP_MODIFIER) StoreArithmeticInt<true>(GetVarPtrF1(OP), OP.n23);
@@ -2254,7 +2263,7 @@ bool	CNeoVMWorker::RunInternal(int iBreakingCallStack)
 		case NOP_MOVF:
 		case NOP_MOVF_L:
 		{
-			VarInfo* target = OP.op == NOP_MOVF_L ? GetVarPtr_L(OP.n1) : GetVarPtrF1(OP);
+			ValueRef target = OP.op == NOP_MOVF_L ? GetVarPtr_L(OP.n1) : GetVarPtrF1(OP);
 			if (OP.argFlag & NEOS_OP_MODIFIER)
 			{
 				float value; std::memcpy(&value, &OP.n23, sizeof(value));
@@ -2270,15 +2279,15 @@ bool	CNeoVMWorker::RunInternal(int iBreakingCallStack)
 		case NOP_JMP:           SetCodeIncPtr(OP.n1); break;
 		case NOP_JMP_FALSE:
         {
-            const VarInfo* condition = GetVarPtr2(OP);
-            assert(condition->GetType() == VAR_BOOL);
+            ValueRef condition = GetVarPtr2(OP);
+            assert(condition.GetType() == VAR_BOOL);
             if (!condition->_bl) SetCodeIncPtr(OP.n1);
             break;
         }
 		case NOP_JMP_TRUE:
         {
-            const VarInfo* condition = GetVarPtr2(OP);
-            assert(condition->GetType() == VAR_BOOL);
+            ValueRef condition = GetVarPtr2(OP);
+            assert(condition.GetType() == VAR_BOOL);
             if (condition->_bl) SetCodeIncPtr(OP.n1);
             break;
         }
@@ -2346,13 +2355,13 @@ bool	CNeoVMWorker::RunInternal(int iBreakingCallStack)
 		case NOP_F64_FIXED: handle_F64_ARITH<true>(OP); break;
 		case NOP_SLOT_COPY:
 		{
-			VarInfo* target = GetVarPtrF1(OP);
-			const VarInfo* source = GetVarPtr2(OP);
+			ValueRef target = GetVarPtrF1(OP);
+			ValueRef source = GetVarPtr2(OP);
 			switch (static_cast<SlotKind>(OP.argFlag & NEOS_OP_SUB_MASK))
 			{
-			case SlotKind::Int: assert(source->GetType() == VAR_INT); StoreArithmeticInt<true>(target, source->_int); break;
-			case SlotKind::Float: assert(source->GetType() == VAR_FLOAT); StoreArithmeticFloat<true>(target, source->_float); break;
-			case SlotKind::Bool: assert(target->GetType() == VAR_BOOL && source->GetType() == VAR_BOOL); target->_bl = source->_bl; break;
+			case SlotKind::Int: assert(source.GetType() == VAR_INT); StoreArithmeticInt<true>(target, source->_int); break;
+			case SlotKind::Float: assert(source.GetType() == VAR_FLOAT); StoreArithmeticFloat<true>(target, source->_float); break;
+			case SlotKind::Bool: assert(target.GetType() == VAR_BOOL && source.GetType() == VAR_BOOL); target->_bl = source->_bl; break;
 			default: CopyStorageReference(target, source, static_cast<SlotKind>(OP.argFlag & NEOS_OP_SUB_MASK)); break;
 			}
 			break;
@@ -2411,6 +2420,7 @@ bool	CNeoVMWorker::RunInternal(int iBreakingCallStack)
             break;
         }
         case NOP_EXTEND: SetError("cannot execute an extension slot"); break;
+		case NOP_PREPARE_CALL: PrepareCallStorage(OP.n1); break;
 		case NOP_NONE:          handle_NONE(OP); break;
 		case NOP_ERROR:
 			handle_ERROR(OP);
@@ -2436,7 +2446,7 @@ void	CNeoVMWorker::DeadCoroutine(CoroutineInfo* pCI)
 	DrainCoroutineClosures(pCI);
 	pCI->_state = COROUTINE_STATE_DEAD;
 	int iSP_Vars_Max2 = pCI->_info._iSP_Vars_Max2;
-	std::vector<VarInfo>& sVarStack = pCI->m_sVarStack;
+	ValueStack& sVarStack = pCI->m_sVarStack;
 	if (iSP_Vars_Max2 > (int)sVarStack.size())
 		iSP_Vars_Max2 = (int)sVarStack.size();
 	for (int i = 0; i < iSP_Vars_Max2; i++)
@@ -2457,7 +2467,7 @@ void CNeoVMWorker::DrainCoroutineClosures(CoroutineInfo* pCI)
 	if (activeClosure != nullptr)
 	{
 		SyncClosureAtFrame(activeClosure, pCI->_info._iSP_Vars, nullptr, &pCI->m_sVarStack);
-		VarInfo active(VAR_CLOSURE);
+		BoundaryValue active(VAR_CLOSURE);
 		active._closure = activeClosure;
 		if (m_pActiveClosure == activeClosure)
 			m_pActiveClosure = nullptr;
@@ -2471,7 +2481,7 @@ void CNeoVMWorker::DrainCoroutineClosures(CoroutineInfo* pCI)
 		if (state._closure == nullptr)
 			continue;
 		SyncClosureAtFrame(state._closure, state._iSP_Vars, nullptr, &pCI->m_sVarStack);
-		VarInfo active(VAR_CLOSURE);
+		BoundaryValue active(VAR_CLOSURE);
 		active._closure = state._closure;
 		state._closure = nullptr;
 		Var_Release(&active);
@@ -2548,7 +2558,7 @@ bool CNeoVMWorker::StartCoroutione(int argSP_Vars, int n3)
 		m_pClosureCallStack = &m_pCur->m_sClosureCallStack;
 		m_pActiveClosure = m_pCur->_activeClosure;
 
-		if (m_pCur->_info._pCodeCurrent == NULL) // first run
+		if (m_pCur->_info._pCodeCurrent == nullptr) // first run
 		{
             // 중단된 코루틴이 해제된 뒤 풀 주소가 재사용되어도 이전 기록은 이어받지 않는다.
             if (!m_sDebugLineSkips.empty()) PruneDebugLineSkips(m_pCur, -1);
@@ -2575,7 +2585,7 @@ bool CNeoVMWorker::StartCoroutione(int argSP_Vars, int n3)
 					closure->_captures.size() != fun._captures.size())
 					return false;
 				for (size_t i = 0; i < fun._captures.size(); ++i)
-					Move(&m_pCur->m_sVarStack[fun._captures[i].second], &closure->_captures[i]);
+					Move(&m_pCur->m_sVarStack[fun._captures[i].second], closure->Capture(i));
 				++closure->_refCount;
 				m_pActiveClosure = closure;
 				m_pCur->_activeClosure = closure;
@@ -2588,21 +2598,21 @@ bool CNeoVMWorker::StartCoroutione(int argSP_Vars, int n3)
 		}
 		SetStackPointer(_iSP_Vars);
 	}
-	m_pRegisterActive = NULL;
+	m_pRegisterActive = nullptr;
 	return true;
 }
 
 
-VarInfo* CNeoVMWorker::testCall(int iFID, VarInfo* args, int argc)
+ValueRef CNeoVMWorker::testCall(int iFID, ValueRef args, int argc)
 {
 	if (_isInitialized == false || !CheckNestedCallDepth())
-		return NULL;
+		return nullptr;
 
 	const SFunctionTable& fun = Functions()[iFID];
 	if (argc != fun._argsCount)
-		return NULL;
+		return nullptr;
 	if (!EnsureStackRange(_iSP_VarsMax, fun._stackSlotCount - 1))
-		return NULL;
+		return nullptr;
 
 	int save_Code = GetCodeptr();
 	int save_iSP_Vars = _iSP_Vars;
@@ -2637,7 +2647,7 @@ VarInfo* CNeoVMWorker::testCall(int iFID, VarInfo* args, int argc)
 	if (!ok) UnwindActiveClosures();
 
 //	_read(&(*m_pVarStack)[_iSP_Vars], *r);
-	VarInfo* r = &(*m_pVarStack_Base)[_iSP_Vars];
+	ValueRef r = &(*m_pVarStack_Base)[_iSP_Vars];
 
 	// 실패한 자식 호출의 오류 트랩은 호스트가 실패를 삼켜도 유지한다.
 	SetCodePtr(ok ? save_Code : 0);
@@ -2651,28 +2661,28 @@ VarInfo* CNeoVMWorker::testCall(int iFID, VarInfo* args, int argc)
 	return ok ? r : nullptr;
 }
 
-VarInfo* CNeoVMWorker::testCall(VarInfo* function, VarInfo* args, int argc)
+ValueRef CNeoVMWorker::testCall(ValueRef function, ValueRef args, int argc)
 {
 	if (function == nullptr || !CheckNestedCallDepth())
-		return NULL;
-	if (function->GetType() == VAR_FUN)
-		return testCall(function->_fun_index, args, argc);
-	if (function->GetType() != VAR_CLOSURE || function->_closure == nullptr ||
+		return nullptr;
+	if (function.GetType() == VAR_FUN)
+		return testCall(function.FunctionIndex(), args, argc);
+	if (function.GetType() != VAR_CLOSURE || function->_closure == nullptr ||
 		_isInitialized == false)
-		return NULL;
+		return nullptr;
 
 	ClosureInfo* closure = function->_closure;
 	if (closure->_ownerWorkerId != GetWorkerID())
 	{
 		SetError(RTE_CALL_INVALID);
-		return NULL;
+		return nullptr;
 	}
 	if (closure->_funIndex < 0 || closure->_funIndex >= (int)Functions().size())
-		return NULL;
+		return nullptr;
 	const SFunctionTable& fun = Functions()[closure->_funIndex];
 	if (argc != fun._argsCount || closure->_captures.size() != fun._captures.size() ||
 		!EnsureStackRange(_iSP_VarsMax, fun._stackSlotCount - 1))
-		return NULL;
+		return nullptr;
 
 	const int save_Code = GetCodeptr();
 	const int save_iSP_Vars = _iSP_Vars;
@@ -2690,7 +2700,7 @@ VarInfo* CNeoVMWorker::testCall(VarInfo* function, VarInfo* args, int argc)
 	for (int i = 0; i < argc; ++i)
 		Move(&(*m_pVarStack_Base)[1 + _iSP_Vars + i], &args[i]);
 	for (size_t i = 0; i < fun._captures.size(); ++i)
-		Move(GetVarPtr_L(fun._captures[i].second), &closure->_captures[i]);
+		Move(GetVarPtr_L(fun._captures[i].second), closure->Capture(i));
 
 	++closure->_refCount; // RET/ERROR가 Sync 후 반납한다.
 	m_pActiveClosure = closure;
@@ -2700,7 +2710,7 @@ VarInfo* CNeoVMWorker::testCall(VarInfo* function, VarInfo* args, int argc)
 	// 예외로 남은 자식 클로저를 부모 프레임 복원 전에 동기화하고 실행 참조를 반납한다.
 	if (!ok) UnwindActiveClosures();
 
-	VarInfo* result = &(*m_pVarStack_Base)[_iSP_Vars];
+	ValueRef result = &(*m_pVarStack_Base)[_iSP_Vars];
 	// 실패한 자식 호출의 오류 트랩은 호스트가 실패를 삼켜도 유지한다.
 	SetCodePtr(ok ? save_Code : 0);
 	_iSP_Vars = save_iSP_Vars;
@@ -2777,13 +2787,13 @@ void CNeoVMWorker::Call(ClosureInfo* closure, int n2, int returnValueIndex)
 	SetCodePtr(fun._codePtr);
 	_iSP_Vars = _iSP_VarsMax;
 	SetStackPointer(_iSP_Vars);
-	PrepareFunctionStorage(fun, _iSP_Vars);
+	PrepareFunctionStorage(fun, _iSP_Vars, true);
 	_iSP_VarsMax = _iSP_Vars + fun._localAddCount;
 	if (_iSP_Vars_Max2 < _iSP_Vars + fun._stackSlotCount)
 		_iSP_Vars_Max2 = _iSP_Vars + fun._stackSlotCount;
 
 	for (size_t i = 0; i < fun._captures.size(); ++i)
-		Move(GetVarPtr_L(fun._captures[i].second), &closure->_captures[i]);
+		Move(GetVarPtr_L(fun._captures[i].second), closure->Capture(i));
 
 	// 호출 중 콜백 값이 컨테이너에서 제거돼도 현재 실행 프레임은 살아 있어야 한다.
 	++closure->_refCount;
@@ -2791,12 +2801,12 @@ void CNeoVMWorker::Call(ClosureInfo* closure, int n2, int returnValueIndex)
 	(void)n2; // 호출 인자는 기존 Call과 동일하게 부모 프레임의 arg 슬롯에 이미 배치돼 있다.
 }
 
-void CNeoVMWorker::SyncActiveClosure(const VarInfo* keepOnStack)
+void CNeoVMWorker::SyncActiveClosure(ValueRef keepOnStack)
 {
 	SyncClosureAtFrame(m_pActiveClosure, _iSP_Vars, keepOnStack);
 }
 
-NEOS_NOINLINE void CNeoVMWorker::FinishClosureReturn(const VarInfo* keepOnStack)
+NEOS_NOINLINE void CNeoVMWorker::FinishClosureReturn(ValueRef keepOnStack)
 {
 	// closure 반환만 여기로 온다. 반환값 슬롯은 caller가 Move할 때까지 남겨 두고,
 	// 나머지 캡처 슬롯은 보관함으로 되돌려 실행 보유 참조도 함께 반납한다.
@@ -2807,13 +2817,13 @@ NEOS_NOINLINE void CNeoVMWorker::FinishClosureReturn(const VarInfo* keepOnStack)
 	if (m_pCur && m_pCur->_activeClosure == closure)
 		m_pCur->_activeClosure = nullptr;
 	m_pActiveClosure = nullptr;
-	VarInfo active(VAR_CLOSURE);
+	BoundaryValue active(VAR_CLOSURE);
 	active._closure = closure;
 	Var_Release(&active);
 }
 
-void CNeoVMWorker::SyncClosureAtFrame(ClosureInfo* closure, int stackBase, const VarInfo* keepOnStack,
-	std::vector<VarInfo>* varStack)
+void CNeoVMWorker::SyncClosureAtFrame(ClosureInfo* closure, int stackBase, ValueRef keepOnStack,
+	ValueStack* varStack)
 {
 	if (closure == nullptr || closure->_funIndex < 0 ||
 		closure->_funIndex >= (int)Functions().size())
@@ -2834,25 +2844,25 @@ void CNeoVMWorker::SyncClosureAtFrame(ClosureInfo* closure, int stackBase, const
 	bool mayContainContainerChild = false;
 	for (size_t i = 0; i < fun._captures.size(); ++i)
 	{
-		VarInfo* source = &(*varStack)[stackBase + fun._captures[i].second];
+		ValueRef source = &(*varStack)[stackBase + fun._captures[i].second];
 		// 반환값으로 아직 사용될 슬롯만 복사로 남긴다. 나머지 캡처 슬롯은 호출
 		// 프레임이 끝난 뒤 쓰이지 않으므로 보관함에 소유권을 넘긴다.
-		if (source->IsContainerType())
+		if (source.IsContainerType())
 			mayContainContainerChild = true;
 
 		if (source == keepOnStack)
-			Move(&closure->_captures[i], source);
+			Move(closure->Capture(i), source);
 		else
-			MoveTake(&closure->_captures[i], source);
+			MoveTake(closure->Capture(i), source);
 	}
 	if (mayContainContainerChild)
 		closure->_cycleState._mayContainContainerChild = true;
 }
 
-bool CNeoVMWorker::CallNative(FunctionPtrNative functionPtrNative, void* pUserData, StringInfo* pStr, int n3, VarInfo* pRet)
+bool CNeoVMWorker::CallNative(FunctionPtrNative functionPtrNative, void* pUserData, StringInfo* pStr, int n3, ValueRef pRet)
 {
 	Neo_NativeFunction func = functionPtrNative._func;
-	if (func == NULL)
+	if (func == nullptr)
 	{
 		SetErrorFormat(RTE_CALL_NAMED, pStr ? pStr->_str.c_str() : "<unknown>");
 		return false;
@@ -2877,12 +2887,12 @@ bool CNeoVMWorker::CallNative(FunctionPtrNative functionPtrNative, void* pUserDa
 			SetErrorFormat(RTE_CALL_NAMED, pStr ? pStr->_str.c_str() : "<unknown>");
 		return false;
 	}
-	if (nullptr != pRet)
+	if (pRet != nullptr)
 		Move(pRet, m_pVarStack_Pointer);
 
 	int argSP_Vars = _iSP_Vars;
 	frame.Restore();
-	if (m_pRegisterActive != NULL)
+	if (m_pRegisterActive != nullptr)
 	{
 		switch(m_pRegisterActive->_sub_state)
 		{
@@ -2914,7 +2924,7 @@ bool CNeoVMWorker::CallNative(FunctionPtrNative functionPtrNative, void* pUserDa
 						}
 						break;
 				}
-				m_pRegisterActive = NULL;
+				m_pRegisterActive = nullptr;
 				break;
 			default:
 				SetError(RTE_COROUTINE_INVALID);
@@ -2924,7 +2934,7 @@ bool CNeoVMWorker::CallNative(FunctionPtrNative functionPtrNative, void* pUserDa
 
 	return true;
 }
-bool CNeoVMWorker::CallDefaultNativeByIndex(int nativeIndex, int n3, VarInfo* pRet)
+bool CNeoVMWorker::CallDefaultNativeByIndex(int nativeIndex, int n3, ValueRef pRet)
 {
 	if (!EnsureStackRange(_iSP_VarsMax, n3))
 		return false;
@@ -2933,11 +2943,11 @@ bool CNeoVMWorker::CallDefaultNativeByIndex(int nativeIndex, int n3, VarInfo* pR
     if (n3 == 1)
     {
         CNeoVM::ScalarNativeFunction scalar = CNeoVM::GetDefaultNativeScalar(nativeIndex);
-        VarInfo* argument = m_pVarStack_Base->data() + _iSP_VarsMax + 1;
+        ValueRef argument = m_pVarStack_Base->data() + _iSP_VarsMax + 1;
         if (scalar)
         {
-            assert(argument->IsNumber());
-            const NS_FLOAT value = scalar(argument->GetFloatNumber());
+            assert(argument.IsNumber());
+            const NS_FLOAT value = scalar(argument.GetFloatNumber());
             if (pRet) StoreNumberFloat(pRet, value);
             return true;
         }
@@ -2960,12 +2970,12 @@ bool CNeoVMWorker::CallDefaultNativeByIndex(int nativeIndex, int n3, VarInfo* pR
 			SetErrorFormat(RTE_CALL_NAMED, CNeoVM::GetDefaultNativeName(nativeIndex));
 		return false;
 	}
-	if (nullptr != pRet)
+	if (pRet != nullptr)
 		Move(pRet, m_pVarStack_Pointer);
 
 	int argSP_Vars = _iSP_Vars;
 	frame.Restore();
-	if (m_pRegisterActive != NULL)
+	if (m_pRegisterActive != nullptr)
 	{
 		switch(m_pRegisterActive->_sub_state)
 		{ 
@@ -2997,7 +3007,7 @@ bool CNeoVMWorker::CallDefaultNativeByIndex(int nativeIndex, int n3, VarInfo* pR
 						}
 						break;
 				}
-				m_pRegisterActive = NULL;
+				m_pRegisterActive = nullptr;
 				break;
 			default:
 				SetError(RTE_COROUTINE_INVALID);
@@ -3007,10 +3017,10 @@ bool CNeoVMWorker::CallDefaultNativeByIndex(int nativeIndex, int n3, VarInfo* pR
 
 	return true;
 }
-bool CNeoVMWorker::PropertyNative(FunctionPtrNative functionPtrNative, void* pUserData, StringInfo* pStr, VarInfo* pRet, bool get, int* deferredTransferFrame)
+bool CNeoVMWorker::PropertyNative(FunctionPtrNative functionPtrNative, void* pUserData, StringInfo* pStr, ValueRef pRet, bool get, int* deferredTransferFrame)
 {
 	Neo_NativeProperty func = functionPtrNative._property;
-	if (func == NULL)
+	if (func == nullptr)
 	{
 		SetErrorFormat(RTE_PROPERTY_NAMED, get ? "read" : "write", pStr ? pStr->_str.c_str() : "<unknown>");
 		return false;
@@ -3058,7 +3068,7 @@ bool CNeoVMWorker::PropertyNative(FunctionPtrNative functionPtrNative, void* pUs
 
 bool CNeoVMWorker::FinishPropertyTransfer(int argSP_Vars)
 {
-	if (m_pRegisterActive != NULL)
+	if (m_pRegisterActive != nullptr)
 	{
 		switch (m_pRegisterActive->_sub_state)
 		{
@@ -3090,7 +3100,7 @@ bool CNeoVMWorker::FinishPropertyTransfer(int argSP_Vars)
 				}
 				break;
 			}
-			m_pRegisterActive = NULL;
+			m_pRegisterActive = nullptr;
 			break;
 		default:
 			SetError(RTE_COROUTINE_INVALID);
@@ -3101,14 +3111,14 @@ bool CNeoVMWorker::FinishPropertyTransfer(int argSP_Vars)
 	return true;
 }
 
-bool CNeoVMWorker::ChangeNumber(VarInfo* p)
+bool CNeoVMWorker::ChangeNumber(ValueRef p)
 {
-	switch(p->GetType())
+	switch(p.GetType())
 	{
 		case VAR_INT:
 			return true;
 		case VAR_FLOAT:
-			p->SetType(VAR_INT);
+			p.SetType(VAR_INT);
 			p->_int = NeoFloatToInt(p->_float);
 			return true;
 		default:
@@ -3116,9 +3126,9 @@ bool CNeoVMWorker::ChangeNumber(VarInfo* p)
 	}
 	char ch[256];
 #ifdef _WIN32
-	snprintf(ch, _countof(ch), "ChangeNumber (%s != number)", GetDataType(p->GetType()).c_str());
+	snprintf(ch, _countof(ch), "ChangeNumber (%s != number)", GetDataType(p.GetType()).c_str());
 #else
-	sprintf(ch, "ChangeNumber (%s != number)", GetDataType(p->GetType()).c_str());
+	sprintf(ch, "ChangeNumber (%s != number)", GetDataType(p.GetType()).c_str());
 #endif
 
 	SetError(ch);
@@ -3126,10 +3136,10 @@ bool CNeoVMWorker::ChangeNumber(VarInfo* p)
 }
 
 
-void CNeoVMWorker::SetArrayAssignError(ArrayInfo* array, VarInfo* value)
+void CNeoVMWorker::SetArrayAssignError(ArrayInfo* array, ValueRef value)
 {
 	if (array->Int32OutOfRange(value)) SetError("int32 array value out of range");
-	else SetErrorFormat(RTE_ARRAY_VALUE_TYPE, GetDataType(value->GetType()).c_str(), GetArrayElementTypeName(array->_elementType));
+	else SetErrorFormat(RTE_ARRAY_VALUE_TYPE, GetDataType(value.GetType()).c_str(), GetArrayElementTypeName(array->_elementType));
 }
 
 std::string GetDataType(VAR_TYPE t)

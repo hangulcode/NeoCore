@@ -41,12 +41,12 @@ inline NS_INT NeoShiftRight(NS_INT value, NS_INT count)
 
 // ==와 맵/set 키가 참조의 동일성 규칙을 공유한다. 내용 비교나 재귀 순회는 하지 않는다.
 // 숫자/문자열/벡터는 값 비교 규칙이 따로 있으므로 여기서 처리하지 않는다.
-inline bool ReferenceEquals(VarInfo* a, VarInfo* b)
+inline bool ReferenceEquals(ValueRef a, ValueRef b)
 {
-	if (a->GetType() != b->GetType()) return false;
-	switch (a->GetType())
+	if (a.GetType() != b.GetType()) return false;
+	switch (a.GetType())
 	{
-	case VAR_FUN:        return a->_fun_index == b->_fun_index;
+	case VAR_FUN:        return a.FunctionIndex() == b.FunctionIndex();
 	case VAR_FUN_NATIVE: return a->_funPtr == b->_funPtr;
 	case VAR_FP_NATIVE:
 	{
@@ -257,6 +257,8 @@ enum eNOperation : OpType
 	// FUSED가 뒤의 EXTEND를 한 번에 소비한다. 확장 슬롯은 독립 실행할 수 없다.
 	NOP_FUSED,
 	NOP_EXTEND,
+	// 인자 평가가 끝난 뒤 호출 창의 고정 배치와 수명을 선택한다.
+	NOP_PREPARE_CALL,
 	NOP_NONE,
 	NOP_ERROR,
 
@@ -431,7 +433,7 @@ inline void PackArithmeticUpdate(SVMOperation& op)
 }
 
 
-struct VarInfo;
+struct BoundaryValue;
 struct SVarWrapper;
 class CNeoVMWorker;
 struct FunctionPtr;
@@ -465,7 +467,7 @@ struct SClosureCallState
 // 일반 호출 프레임의 공통 필드가 아니라 실행 컨텍스트별 LIFO 보관함에 둔다.
 struct SAsyncWaitReturnState
 {
-	VarInfo* _pReturnValue = nullptr;
+	ValueRef _pReturnValue = nullptr;
 	bool	 _returnValue = false;
 };
 
@@ -517,8 +519,55 @@ struct CoroutineBase
 struct AsyncResumeInfo
 {
 	int		codePtr = 0;
-	VarInfo*	pReturnValue = nullptr;
+	ValueRef	pReturnValue = nullptr;
 	bool		returnValue = false;
+};
+
+// 호출 깊이별로 불변 프레임 배치만 선택한다. 개별 슬롯에는 태그를 저장하지 않는다.
+class ValueStack
+{
+public:
+    struct Range { int base; const VAR_TYPE* types; int count; int function; };
+    std::vector<VarInfo> values;
+    std::vector<Range> ranges;
+    ValueRef At(int index) const
+    {
+        for (std::size_t i = ranges.size(); i > 0; --i)
+        {
+            const Range& range = ranges[i - 1];
+            if (index >= range.base)
+                return index < range.base + range.count
+                    ? ValueRef(const_cast<VarInfo*>(values.data()) + index, range.types + index - range.base)
+                    : ValueRef(const_cast<VarInfo*>(values.data()) + index, VAR_NONE);
+        }
+        return ValueRef(const_cast<VarInfo*>(values.data()) + index, VAR_NONE);
+    }
+    ValueRef::Element operator[](std::size_t index) const { return *At(static_cast<int>(index)); }
+    struct Offset
+    {
+        ValueStack* stack;
+        ValueRef operator+(int offset) const { return stack->At(offset); }
+        operator ValueRef() const { return stack->At(0); }
+    };
+    Offset data() { Offset view = {this}; return view; }
+    std::size_t size() const { return values.size(); }
+    std::size_t capacity() const { return values.capacity(); }
+    void resize(std::size_t size) { values.resize(size); }
+    int Function(int base) const
+    { for (std::size_t i = ranges.size(); i > 0; --i) if (ranges[i - 1].base == base) return ranges[i - 1].function; return -1; }
+    void Bind(int base, const std::vector<VAR_TYPE>& types, int function = -1)
+    {
+        while (!ranges.empty() && ranges.back().base >= base) ranges.pop_back();
+        Range range = {base, types.data(), static_cast<int>(types.size()), function};
+        ranges.push_back(range);
+    }
+    void Select(int base, const std::vector<VAR_TYPE>& types)
+    {
+        for (std::size_t i = ranges.size(); i > 0; --i)
+            if (ranges[i - 1].base == base)
+            { ranges[i - 1].types = types.data(); ranges[i - 1].count = static_cast<int>(types.size()); return; }
+        Bind(base, types);
+    }
 };
 
 struct CoroutineInfo : AllocBase
@@ -526,7 +575,7 @@ struct CoroutineInfo : AllocBase
 	//	int	_CoroutineID;
 	int	_fun_index;
 	// coroutine.create가 받은 호출 가능 값. VAR_CLOSURE면 캡처 보관함의 소유권도 가진다.
-	VarInfo	_function;
+	BoundaryValue	_function;
 	// yield로 컨텍스트를 바꿀 때 현재 값-캡처 프레임 보유분을 함께 옮긴다.
 	ClosureInfo*	_activeClosure = nullptr;
 	COROUTINE_STATE _state;
@@ -537,7 +586,7 @@ struct CoroutineInfo : AllocBase
 	// 보관해 중첩 async 대기가 공유 바이트코드를 패치하지 않도록 한다.
 	std::vector<AsyncResumeInfo>	m_sAsyncResumeCodePtrs;
 
-	std::vector<VarInfo>	m_sVarStack;
+	ValueStack	m_sVarStack;
 	SimpleVector<SCallStack>	m_sCallStack;
 	SimpleVector<SClosureCallState>	m_sClosureCallStack;
 	SimpleVector<SAsyncWaitReturnState>	m_sAsyncWaitReturnStack;
@@ -563,7 +612,7 @@ struct NeoExecContextPool
 	CNVMInstPool<CoroutineInfo, 16> _pool;
 	int _varStackSize;
 	// 이 풀이 한 번이라도 대여해 준 컨텍스트들. 풀 페이지는 소멸까지 해제되지 않으므로 포인터가 안정적이다.
-	// 컨텍스트 1개의 var 스택만 50K * sizeof(VarInfo) 라 풀 노드 자체보다 훨씬 크다 — 따로 세야 한다.
+	// 컨텍스트 1개의 var 스택만 50K * sizeof(BoundaryValue) 라 풀 노드 자체보다 훨씬 크다 — 따로 세야 한다.
 	std::vector<NeoExecContext*> _warmCtx;
 	long long _publishedBytes = 0;
 
@@ -578,7 +627,7 @@ struct NeoExecContextPool
 			: pool(p), context(c) {}
 		~AcquiredContextGuard()
 		{
-			if (context != NULL)
+			if (context != nullptr)
 				pool->Confer(context);
 		}
 		AcquiredContextGuard(const AcquiredContextGuard&) = delete;
@@ -587,7 +636,7 @@ struct NeoExecContextPool
 		NeoExecContext* Release()
 		{
 			NeoExecContext* result = context;
-			context = NULL;
+			context = nullptr;
 			return result;
 		}
 	};
@@ -613,7 +662,7 @@ struct NeoExecContextPool
 		// 대여 경계에서 항상 초기화한다.
 		p->_cycleState.Init(p);
 		p->_cycleState._mayContainContainerChild = true;
-		p->_info._pCodeCurrent = NULL;
+		p->_info._pCodeCurrent = nullptr;
 		p->_info.ClearSP();
 		p->m_sAsyncResumeCodePtrs.clear();
 		p->_state = COROUTINE_STATE_RUNNING;
@@ -624,6 +673,8 @@ struct NeoExecContextPool
 		p->m_sClosureCallStack.clear();
 		p->m_sAsyncWaitReturnStack.reserve(8);
 		p->m_sAsyncWaitReturnStack.clear();
+		p->m_sVarStack.ranges.clear();
+        p->m_sVarStack.ranges.reserve(1000);
 		p->m_sVarStack.resize(_varStackSize);
 		if (cold)
 		{
@@ -633,9 +684,10 @@ struct NeoExecContextPool
 		}
 		return guard.Release();
 	}
-	// 반납 전 사용 슬롯의 VarInfo 참조 정리는 호출측(워커)이 수행한다(Var_Release 가 워커 멤버라서).
+	// 반납 전 사용 슬롯의 BoundaryValue 참조 정리는 호출측(워커)이 수행한다(Var_Release 가 워커 멤버라서).
 	void Release(NeoExecContext* p)
 	{
+		p->m_sVarStack.ranges.clear();
 		_pool.Confer(p);
 	}
 
@@ -670,12 +722,12 @@ struct StringInfo : AllocBase, VMString
 
 // 벡터는 값 타입이다. ==, 맵 키, set 원소가 같은 성분 수와 실수 비교 규칙을 쓴다.
 // 포인터가 같아도 NaN 성분은 같지 않으므로 저장소 동일성으로 건너뛰지 않는다.
-inline bool VectorValuesEqual(VarInfo* a, VarInfo* b)
+inline bool VectorValuesEqual(ValueRef a, ValueRef b)
 {
-	const int count = a->VectorComponentCount();
-	if (count == 0 || count != b->VectorComponentCount()) return false;
+	const int count = a.VectorComponentCount();
+	if (count == 0 || count != b.VectorComponentCount()) return false;
 	for (int i = 0; i < count; ++i)
-		if (a->VectorComponent(i) != b->VectorComponent(i)) return false;
+		if (a.VectorComponent(i) != b.VectorComponent(i)) return false;
 	return true;
 }
 
@@ -693,7 +745,7 @@ struct AsyncInfo : AllocBase
 	int			_fun_index;
 	// 일반 함수와 캡처 lambda를 모두 보관한다. _fun_index는 작업 스레드가
 	// 바이트코드를 식별할 때만 쓰고, 호출 시에는 이 값으로 실제 환경을 복원한다.
-	VarInfo		_callback;
+	BoundaryValue		_callback;
 	int			_timeout;
 
 	std::atomic<ASYNC_STATE> _state;
@@ -701,7 +753,7 @@ struct AsyncInfo : AllocBase
 	bool		_success;
 	std::string _resultValue;
 
-	VarInfo		_LockReferance;
+	BoundaryValue		_LockReferance;
 	NeoEvent	_event;
 
 	// 파괴 재진입 방지와 순환 후보 intrusive FIFO 링크.
@@ -718,6 +770,9 @@ struct ClosureInfo : AllocBase
 	// 호스트가 보관한 캡처가 다른 인스턴스나 초기화된 워커로 넘어가지 않게 생성자를 기록한다.
 	u32         _ownerWorkerId = 0;
 	std::vector<VarInfo> _captures;
+	// 프로그램보다 오래 살아 있는 호스트 보유 클로저도 불변 배치의 수명을 공유한다.
+	std::shared_ptr<const std::vector<VAR_TYPE>> _captureTypes;
+	ValueRef Capture(size_t index) { return ValueRef(_captures.data() + index, _captureTypes->data() + index); }
 	CycleState<ClosureInfo> _cycleState;
 	ClosureInfo*	_livePrev = nullptr;
 	ClosureInfo*	_liveNext = nullptr;
@@ -730,19 +785,19 @@ struct ListInfo;
 struct SetInfo;
 struct SetNode;
 
-int& GetModuleRefCount(VarInfo* p);
+int& GetModuleRefCount(ValueRef p);
 
-NEOS_FORCEINLINE void Move_DestNoRelease(VarInfo* v1, VarInfo* v2)
+NEOS_FORCEINLINE void Move_DestNoRelease(ValueRef v1, ValueRef v2)
 {
-	v1->SetType(v2->GetType());
+	v1.SetType(v2.GetType());
 	// case 순서 = VAR_TYPE 열거 순서. Var_ReleaseInternal 과 같은 이유로 순서가 성능을 좌우한다.
-	switch (v2->GetType())
+	switch (v2.GetType())
 	{
 	case VAR_INT: v1->_int = v2->_int; break;
 	case VAR_FLOAT: v1->_float = v2->_float; break;
 	case VAR_BOOL: v1->_bl = v2->_bl; break;
 	case VAR_NONE: break;
-	case VAR_FUN: v1->_fun_index = v2->_fun_index; break;
+	case VAR_FUN: v1.SetFunctionIndex(v2.FunctionIndex()); break;
 	case VAR_FUN_NATIVE: v1->_funPtr = v2->_funPtr; break;
 	case VAR_VEC:
 		// 인라인 벡터는 참조 조정 없이 슬롯 전체를 값으로 복사한다. 자기 대입도 허용한다.
@@ -766,18 +821,18 @@ NEOS_FORCEINLINE void Move_DestNoRelease(VarInfo* v1, VarInfo* v2)
 
 // 문자열 키 전용 fast path.
 // MapInfo::Find의 문자열 의미론을 인라인해 타입 switch / GetHashCode 디스패치를 생략한다.
-NEOS_FORCEINLINE VarInfo* MapInfo::FindString(StringInfo* pKeyStr)
+NEOS_FORCEINLINE ValueRef MapInfo::FindString(StringInfo* pKeyStr)
 {
 	if (pKeyStr == nullptr)
-		return NULL;
+		return nullptr;
 	if (pKeyStr->_interned == false)
 	{
 		pKeyStr = FindCanonicalString(_pVM, pKeyStr);
 		if (pKeyStr == nullptr)
-			return NULL;
+			return nullptr;
 	}
 	if (_BucketCapa <= 0)
-		return NULL;
+		return nullptr;
 	// 여기 도달했다면 pKeyStr 은 정규 문자열이고, _hash 는 인터닝 시점에 이미 채워졌다.
 	// GetHash() 의 "아직 계산 안 됨(0)" 분기는 인터닝되지 않은 문자열용이라 여기서는 죽은 분기다.
 	u32 hash = pKeyStr->_hash;
@@ -794,17 +849,17 @@ NEOS_FORCEINLINE VarInfo* MapInfo::FindString(StringInfo* pKeyStr)
 			break;
 		node = _Bucket + node->next;
 	}
-	return NULL;
+	return nullptr;
 }
 
 // 정수 키 전용 fast path. 문자열 키와 대칭 — 없으면 CltReadRare -> GetTableItem ->
 // MapInfo::Find -> GetHashCode(타입 switch) -> 일반 탐색으로
 // 아웃오브라인 호출 4단을 타게 된다(실측: 문자열 키의 1.8배).
-// 해시는 GetHashCode(VarInfo*) 의 VAR_INT 경로와 같아야 한다.
-NEOS_FORCEINLINE VarInfo* MapInfo::FindInt(NS_INT key)
+// 해시는 GetHashCode(ValueRef) 의 VAR_INT 경로와 같아야 한다.
+NEOS_FORCEINLINE ValueRef MapInfo::FindInt(NS_INT key)
 {
 	if (_BucketCapa <= 0)
-		return NULL;
+		return nullptr;
 	MapNode* node = _Bucket + (HashIntegerKey(key) & _HashBase);
 	while (node->next != MAP_NODE_EMPTY)
 	{
@@ -814,7 +869,7 @@ NEOS_FORCEINLINE VarInfo* MapInfo::FindInt(NS_INT key)
 			break;
 		node = _Bucket + node->next;
 	}
-	return NULL;
+	return nullptr;
 }
 
 
@@ -845,7 +900,7 @@ private:
 	ClosureInfo* _sClosureHead = nullptr;
 	// 컨테이너 파괴는 자식 Var_Release 로 다시 컨테이너 파괴를 유발한다. 호출 스택 대신
 	// 이 대기열을 깊이 우선으로 비워서, 깊은 트리와 순환 모두 안전하게 처리한다.
-	std::vector<VarInfo> _sDestroyQueue;
+	std::vector<BoundaryValue> _sDestroyQueue;
 	bool _bDrainingDestroyQueue = false;
 	// CollectCycles는 객체 내부의 임시 color/scratch를 쓴다. 재진입하면 상태가
 	// 겹치므로 수집 중에는 같은 VM의 중첩 호출을 무시한다.
@@ -880,7 +935,7 @@ private:
 	int _cycleQueueRoundRobin = 0;
 	// 후보 루트, graph node, black work, white set을 구간별로 재사용한다.
 	// 워밍업 뒤에는 CollectCycles가 그래프용 힙을 새로 할당하지 않는다.
-	std::vector<VarInfo> _cycleWorkList;
+	std::vector<BoundaryValue> _cycleWorkList;
 	u32 _dwLastIDVMWorker = 0;
 
 
@@ -942,10 +997,10 @@ public:
 	long long StringIdleBytes();
 	// 조회 시점. 여기서만 stringIdleBytes 를 새로 재고 전역에도 반영한다.
 	void GetAllocStats(SNeoVMAllocStats& outStats);
-	void Var_SetString(VarInfo *d, const char* str);
-	void Var_SetStringA(VarInfo *d, const std::string& str);
-	void Var_SetStringConcat(VarInfo* d, const std::string& left, const std::string& right);
-	void Var_SetTable(VarInfo *d, MapInfo* p);
+	void Var_SetString(ValueRef d, const char* str);
+	void Var_SetStringA(ValueRef d, const std::string& str);
+	void Var_SetStringConcat(ValueRef d, const std::string& left, const std::string& right);
+	void Var_SetTable(ValueRef d, MapInfo* p);
 
 
 	CNeoVMWorker* WorkerAlloc(int iStackSize);
@@ -956,7 +1011,7 @@ public:
 	NeoExecContextPool* GetExecPool() { return _pExecPool; }
 
 	CoroutineInfo* CoroutineAlloc();
-	void FreeCoroutine(VarInfo *d);
+	void FreeCoroutine(ValueRef d);
 
 	// 일반 문자열: 해시와 인터너 작업을 지연한다. 임시 문자열 핫패스용.
 	StringInfo* StringAlloc(const std::string& str);
@@ -966,12 +1021,12 @@ public:
 	StringInfo* StringFind(const std::string& str) const;
 	// Reuses an existing object's lazy hash cache for dynamic Map/Set keys.
 	StringInfo* StringFind(StringInfo* pString) const;
-	void FreeString(VarInfo *d);
+	void FreeString(ValueRef d);
 
 	VecInfo* VecAlloc();
 	void FreeVec(VecInfo* p);
 	// 공유 중이면 복제해서 단독 소유로 만든다(성분 쓰기 직전에 호출). 값 의미론 보존용.
-	VecInfo* VecCopyOnWrite(VarInfo* d);
+	VecInfo* VecCopyOnWrite(ValueRef d);
 
 	MapInfo* TableAlloc(int cnt = 0);
 	void FreeTable(MapInfo* tbl);
@@ -980,25 +1035,25 @@ public:
 
 	ListInfo* ListAlloc(int cnt = 0);
 	void FreeList(ListInfo* tbl);
-	ArrayInfo* ArrayAlloc(NeoArrayElementType elementType, int count, const VarInfo& initialValue);
+	ArrayInfo* ArrayAlloc(NeoArrayElementType elementType, int count, const BoundaryValue& initialValue);
 	bool ArrayResize(ArrayInfo* array, int count);
 	void ArrayReserve(ArrayInfo* array, int capacity);
 	void FreeArray(ArrayInfo* array);
 
 	SetInfo* SetAlloc();
 	void FreeSet(SetInfo* tbl);
-	void QueueContainerForDestroy(const VarInfo& value);
-	void QueueContainerForCycleCheck(const VarInfo& value);
+	void QueueContainerForDestroy(const BoundaryValue& value);
+	void QueueContainerForCycleCheck(const BoundaryValue& value);
 	void CancelCycleCandidate(VAR_TYPE type, void* object);
 	bool PopCycleCandidate(VAR_TYPE& type, void*& object);
 	void ClearCycleCandidates();
 	template<typename Visitor>
-	void VisitCycleContainerChildren(VarInfo source, Visitor visitor);
+	void VisitCycleContainerChildren(BoundaryValue source, Visitor visitor);
 	int CollectUnreachableCycleCandidates(size_t rootBudget);
 
 	AsyncInfo* AsyncAlloc();
-	void FreeAsync(VarInfo* d);
-	ClosureInfo* ClosureAlloc(int functionIndex, int captureCount);
+	void FreeAsync(ValueRef d);
+	ClosureInfo* ClosureAlloc(int functionIndex, const std::shared_ptr<const std::vector<VAR_TYPE>>& types);
 	void FreeClosure(ClosureInfo* closure);
 
 	FunctionPtr* FunctionPtrAlloc(FunctionPtr* pOld);
@@ -1014,7 +1069,7 @@ public:
 	// (워커를 자주 만들고 지워도, async 를 쓴 워커가 없으면 계속 0 이다)
 	int _orphanAsyncCount = 0;
 
-	NEOS_FORCEINLINE bool Var_ReleaseVecFast(VarInfo* d)
+	NEOS_FORCEINLINE bool Var_ReleaseVecFast(ValueRef d)
 	{
 		VecInfo* vec = d->_vec;
 		if (vec->_refCount <= 1)
@@ -1022,11 +1077,11 @@ public:
 
 		--vec->_refCount;
 		d->_vec = nullptr;
-		d->ClearType();
+		d.ClearType();
 		return true;
 	}
 
-	NEOS_FORCEINLINE bool Var_ReleaseStringFast(VarInfo* d)
+	NEOS_FORCEINLINE bool Var_ReleaseStringFast(ValueRef d)
 	{
 		StringInfo* str = d->_str;
 		if (str->_refCount <= 1)
@@ -1034,11 +1089,11 @@ public:
 
 		--str->_refCount;
 		d->_str = nullptr;
-		d->ClearType();
+		d.ClearType();
 		return true;
 	}
 
-	NEOS_FORCEINLINE bool Var_ReleaseListFast(VarInfo* d)
+	NEOS_FORCEINLINE bool Var_ReleaseListFast(ValueRef d)
 	{
 		ListInfo* list = d->_lst;
 		if (list->_refCount <= 1 || list->_cycleState._mayContainContainerChild)
@@ -1046,11 +1101,11 @@ public:
 
 		--list->_refCount;
 		d->_lst = nullptr;
-		d->ClearType();
+		d.ClearType();
 		return true;
 	}
 
-	NEOS_FORCEINLINE bool Var_ReleaseArrayFast(VarInfo* d)
+	NEOS_FORCEINLINE bool Var_ReleaseArrayFast(ValueRef d)
 	{
 		ArrayInfo* array = d->_array;
 		if (array->_refCount <= 1)
@@ -1058,37 +1113,37 @@ public:
 
 		--array->_refCount;
 		d->_array = nullptr;
-		d->ClearType();
+		d.ClearType();
 		return true;
 	}
 
 
 
-	NEOS_FORCEINLINE void Move(VarInfo* v1, VarInfo* v2)
+	NEOS_FORCEINLINE void Move(ValueRef v1, ValueRef v2)
 	{
-		if (v1->IsAllocType())
+		if (v1.IsAllocType())
 		{
 			if (v1 == v2)
 				return;
 			Var_Release(v1);
 		}
 
-		if (v2->IsAllocType() == false)
+		if (v2.IsAllocType() == false)
 			*v1 = *v2;
 		else
 			Move_DestNoRelease(v1, v2);
 	}
 
 
-	NEOS_FORCEINLINE void Var_Release(VarInfo *d)
+	NEOS_FORCEINLINE void Var_Release(ValueRef d)
 	{
-		if (d->IsAllocType() == false)
+		if (d.IsAllocType() == false)
 		{
-			d->ClearType();
+			d.ClearType();
 			return;
 		}
 
-		const VAR_TYPE type = d->GetType();
+		const VAR_TYPE type = d.GetType();
 		if ((type == VAR_VEC3 || type == VAR_VEC4) && Var_ReleaseVecFast(d))
 			return;
 		if (type == VAR_STRING && Var_ReleaseStringFast(d))
@@ -1101,7 +1156,7 @@ public:
 		Var_ReleaseInternal(d);
 	}
 
-	VarInfo m_sDefaultValue[NDF_MAX];
+	BoundaryValue m_sDefaultValue[NDF_MAX];
 
 	// 페이지 크기는 고정이다(배증 없음 — 마지막 한 장이 필요량을 크게 넘겨 잡던 문제).
 	// 아래 개수는 노드 크기(헤더 포함)를 기준으로 한 장이 대략 3~13KB 가 되게 잡은 값이다.
@@ -1161,7 +1216,7 @@ public:
 	typedef NS_FLOAT (*ScalarNativeFunction)(NS_FLOAT);
 	static ScalarNativeFunction GetDefaultNativeScalar(int nativeIndex);
 	static bool CallDefaultNativeByIndex(int nativeIndex, CNeoVMWorker* pWorker, short args);
-	void RegLibrary(VarInfo* pSystem, const char* pLibName);// , SNeoFunLib* pFuns);
+	void RegLibrary(ValueRef pSystem, const char* pLibName);// , SNeoFunLib* pFuns);
 	static void RegObjLibrary();
 	static void InitLib();
 	void SetError(const std::string& msg);
@@ -1177,7 +1232,7 @@ public:
 	// _pErrorMsg 까지 비운다: 이게 남아 있으면 SetError 가 계속 무시되어 첫 에러가 고정된다.
 	void ClearLastErrorMsg() { _bError = false; _sErrorMsgDetail.clear(); _pErrorMsg.clear(); }
 	void SetLastErrorMsg(const char* msg) { SetError(msg != nullptr ? std::string(msg) : std::string()); }
-	void Var_ReleaseInternal(VarInfo* d);
+	void Var_ReleaseInternal(ValueRef d);
 
 	INeoVMWorker*	LoadVM(const NeoLoadVMParam* vparam, void* pBuffer, int iSize, bool blMainWorker = true, bool init = false, int iStackSize = 50 * 1024); // 0 is error
 	INeoVMWorker*	LoadVM(const NeoLoadVMParam* vparam, CNeoVMProgram* pProgram, bool blMainWorker = true, bool init = false, int iStackSize = 50 * 1024);

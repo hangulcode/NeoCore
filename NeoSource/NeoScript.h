@@ -376,7 +376,7 @@ public:
     void* instanceUserData() const;  // InstanceDesc.userData (인스턴스 일반 데이터)
     IRuntime* runtime() const;
     InstanceHandle instance() const;
-    // (raw INeoVMWorker*/VarInfo* 는 공개 API 에 노출되지 않는다 — 전부 shim 내부.)
+    // (raw INeoVMWorker*/ValueRef 는 공개 API 에 노출되지 않는다 — 전부 shim 내부.)
 
     // 인자 읽기 (zero-copy, VM 슬롯 직접)
     std::size_t argCount() const;

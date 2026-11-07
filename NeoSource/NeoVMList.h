@@ -11,7 +11,7 @@ class CNeoVMWorker;
 
 struct ListInfo : AllocBase
 {
-	VarInfo*	_Bucket;
+	BoundaryValue*	_Bucket;
 
 	CNeoVM*	_pVM;
 
@@ -30,7 +30,7 @@ struct ListInfo : AllocBase
 	ListInfo* _livePrev;
 
 	// SBO 인라인 버킷. 작은 리스트는 _Bucket 이 여기를 가리킨다(_Bucket == _inlineBucket).
-	VarInfo _inlineBucket[NEOS_LIST_INLINE_CAP];
+	BoundaryValue _inlineBucket[NEOS_LIST_INLINE_CAP];
 
 	NEOS_FORCEINLINE bool IsInlineBucket() { return _Bucket == _inlineBucket; }
 	NEOS_FORCEINLINE void InitInlineBucket()
@@ -53,19 +53,19 @@ struct ListInfo : AllocBase
 	inline int		GetCount() { return _itemCount; }
 	// 한 번이라도 컨테이너 자식을 저장했으면 pool 재대여 전까지 유지한다.
 	NEOS_FORCEINLINE void MarkContainerChild() { _cycleState._mayContainContainerChild = true; }
-	bool GetValue(int idx, VarInfo* pValue);
-	VarInfo* GetValue(int idx);
-	bool SetValue(int idx, VarInfo* pValue);
+	bool GetValue(int idx, ValueRef pValue);
+	ValueRef GetValue(int idx);
+	bool SetValue(int idx, ValueRef pValue);
 	bool SetValue(int idx, NS_INT v);
 	bool SetValue(int idx, int v) { return SetValue(idx, NS_INT(v)); }
 	bool SetValue(int idx, NS_FLOAT v);
 
-	bool Insert(int idx, VarInfo* pValue);
+	bool Insert(int idx, ValueRef pValue);
 	bool Remove(int idx);
-	bool InsertLast(VarInfo* pValue);
+	bool InsertLast(ValueRef pValue);
 	bool InsertLast(const std::string& str);
 
-	inline VarInfo* GetDataUnsafe() { return _Bucket; }
+	inline ValueRef GetDataUnsafe() { return _Bucket; }
 
 	// 파괴 재진입 방지와 순환 후보 intrusive FIFO 링크.
 	CycleState<ListInfo> _cycleState;

@@ -4,15 +4,15 @@
 // Its definition must therefore be visible from NeoVMWorker.h; placing it only
 // in NeoVMWorker.cpp works accidentally with MSVC LTCG but is invalid without
 // cross-TU optimization on GCC/Clang.
-NEOS_FORCEINLINE void CNeoVMWorker::Move(VarInfo* v1, VarInfo* v2)
+NEOS_FORCEINLINE void CNeoVMWorker::Move(ValueRef v1, ValueRef v2)
 {
-	if (v1->IsAllocType())
+	if (v1.IsAllocType())
 	{
 		if (v1 == v2)
 			return;
 		Var_ReleaseAlloc(v1);
 	}
-	if (v2->IsAllocType() == false)
+	if (v2.IsAllocType() == false)
 		*v1 = *v2;
 	else
 		Move_DestNoRelease(v1, v2);
@@ -20,14 +20,14 @@ NEOS_FORCEINLINE void CNeoVMWorker::Move(VarInfo* v1, VarInfo* v2)
 
 // source가 들고 있던 값을 destination으로 넘긴다. source는 release하지 않고
 // none으로만 만들어, 호출 프레임 종료 뒤에도 소유권이 closure 보관함 하나에만 남는다.
-NEOS_FORCEINLINE void CNeoVMWorker::MoveTake(VarInfo* v1, VarInfo* v2)
+NEOS_FORCEINLINE void CNeoVMWorker::MoveTake(ValueRef v1, ValueRef v2)
 {
 	if (v1 == v2)
 		return;
-	if (v1->IsAllocType())
+	if (v1.IsAllocType())
 		Var_ReleaseAlloc(v1);
 	*v1 = *v2;
-	v2->ClearType();
+	v2.ClearType();
 }
 
 // [핫패스] 스크립트 함수 호출. 측정상 호출 비용의 78%가 이 프레임 push/pop 에 있어
@@ -70,7 +70,7 @@ NEOS_FORCEINLINE void CNeoVMWorker::Call(int n1, int n2, int returnValueIndex)
 	SetCodePtr(fun._codePtr);
 	_iSP_Vars = _iSP_VarsMax;
 	SetStackPointer(_iSP_Vars);
-	PrepareFunctionStorage(fun, _iSP_Vars);
+	PrepareFunctionStorage(fun, _iSP_Vars, true);
 	_iSP_VarsMax = _iSP_Vars + fun._localAddCount;
 	if (_iSP_Vars_Max2 < _iSP_Vars + fun._stackSlotCount)
 		_iSP_Vars_Max2 = _iSP_Vars + fun._stackSlotCount;

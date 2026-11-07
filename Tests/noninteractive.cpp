@@ -10,6 +10,10 @@ struct NoninteractiveTests
 {
     NoninteractiveTests()
     {
+#if defined(NEOCORE_TEST_CONSOLE)
+        char enabled[2];
+        if (!GetEnvironmentVariableA("NEOCORE_TEST_NONINTERACTIVE", enabled, sizeof(enabled))) return;
+#endif
         _set_error_mode(_OUT_TO_STDERR);
         _set_abort_behavior(0, _WRITE_ABORT_MSG | _CALL_REPORTFAULT);
         SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX);

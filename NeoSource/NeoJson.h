@@ -13,12 +13,13 @@ struct JsonResult
 };
 
 class CNeoVMWorker;
-struct VarInfo;
+struct BoundaryValue;
+class ValueRef;
 namespace JsonInternal
 {
-bool Encode(const VarInfo& value, std::string& text, JsonResult& result, bool sortKeys,
+bool Encode(const BoundaryValue& value, std::string& text, JsonResult& result, bool sortKeys,
     bool preserveNullMembers = false);
-bool Decode(CNeoVMWorker& worker, const char* text, size_t size, VarInfo& value,
+bool Decode(CNeoVMWorker& worker, const char* text, size_t size, ValueRef value,
     JsonResult& result, bool strictIntegers = true, bool requireMap = false,
     bool preserveNullMembers = false);
 }

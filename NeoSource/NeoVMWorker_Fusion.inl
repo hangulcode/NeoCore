@@ -20,25 +20,25 @@
 #define NEOCORE_FUSION_FIRST(OP) case OP: plan.execute = FusionPairExecutor<OP>(second, plan); break;
 
 // 컴파일 때 숫자 태그 유지가 증명된 목적지에만 값 부분을 갱신한다.
-NEOS_FORCEINLINE static void FusionUpdate(VarInfo* value, NS_INT number)
-{ assert(value->GetType() == VAR_INT); value->_int = number; }
-NEOS_FORCEINLINE static void FusionUpdate(VarInfo* value, NS_FLOAT number)
-{ assert(value->GetType() == VAR_FLOAT); value->_float = number; }
-NEOS_FORCEINLINE void FusionArithmeticStore(VarInfo* value, NS_INT number, bool update)
+NEOS_FORCEINLINE static void FusionUpdate(ValueRef value, NS_INT number)
+{ assert(value.GetType() == VAR_INT); value->_int = number; }
+NEOS_FORCEINLINE static void FusionUpdate(ValueRef value, NS_FLOAT number)
+{ assert(value.GetType() == VAR_FLOAT); value->_float = number; }
+NEOS_FORCEINLINE void FusionArithmeticStore(ValueRef value, NS_INT number, bool update)
 { if (update) FusionUpdate(value, number); else StoreNumberInt(value, number); }
-NEOS_FORCEINLINE void FusionArithmeticStore(VarInfo* value, NS_FLOAT number, bool update)
+NEOS_FORCEINLINE void FusionArithmeticStore(ValueRef value, NS_FLOAT number, bool update)
 { if (update) FusionUpdate(value, number); else StoreNumberFloat(value, number); }
 
 template<OperationCode Operation>
-NEOS_FORCEINLINE bool ExecuteFusionStep(const ProgramFusion& plan, unsigned i, VarInfo** bases,
+NEOS_FORCEINLINE bool ExecuteFusionStep(const ProgramFusion& plan, unsigned i, ValueRef* bases,
     const SVMOperation* code, const SVMOperation*& next)
 {
         const SVMOperation& op = plan.operations[i];
         const ProgramFusion::Address* address = plan.addresses[i];
-        VarInfo* receiver = bases[address[0].base] + address[0].slot;
-        VarInfo* left = bases[address[1].base] + address[1].slot;
-        VarInfo* right = bases[address[2].base] + address[2].slot;
-        VarInfo* value = bases[address[3].base] + address[3].slot;
+        ValueRef receiver = bases[address[0].base] + address[0].slot;
+        ValueRef left = bases[address[1].base] + address[1].slot;
+        ValueRef right = bases[address[2].base] + address[2].slot;
+        ValueRef value = bases[address[3].base] + address[3].slot;
         bool jump = false;
         // 실패할 수 있는 연산만 원래 IP를 기록한다. 성공한 그룹은 끝에서 한 번 이동한다.
 #define NEOCORE_FUSION_FAULT_LOCATION() (_pCodeCurrent = code + i + 1)
@@ -163,9 +163,9 @@ NEOS_FORCEINLINE bool ExecuteFusionStep(const ProgramFusion& plan, unsigned i, V
 
 static NEOS_NOINLINE void ExecuteTypedFusion(CNeoVMWorker* worker, const ProgramFusion& plan)
 {
-    VarInfo values[ProgramFusion::MaxSteps];
+    BoundaryValue values[ProgramFusion::MaxSteps];
     // 상수 영역이 비어 있어도 기준 주소만 구한다. 0번 원소를 조회하지 않는다.
-    VarInfo* bases[] = { worker->m_pVarGlobal_Pointer, worker->m_pVarStack_Pointer, values };
+    ValueRef bases[] = { worker->m_pVarGlobal_Pointer, worker->m_pVarStack_Pointer, values };
     const SVMOperation* code = reinterpret_cast<const SVMOperation*>(worker->_pCodeBegin) + plan.start;
     const SVMOperation* next = code + plan.count;
     for (unsigned i = 0; i < plan.count; ++i)
@@ -176,9 +176,9 @@ static NEOS_NOINLINE void ExecuteTypedFusion(CNeoVMWorker* worker, const Program
 template<OperationCode First, OperationCode Second>
 static NEOS_NOINLINE void ExecuteTypedFusionPair(CNeoVMWorker* worker, const ProgramFusion& plan)
 {
-    VarInfo values[ProgramFusion::MaxSteps];
+    BoundaryValue values[ProgramFusion::MaxSteps];
     // 상수 영역이 비어 있어도 기준 주소만 구한다. 0번 원소를 조회하지 않는다.
-    VarInfo* bases[] = { worker->m_pVarGlobal_Pointer, worker->m_pVarStack_Pointer, values };
+    ValueRef bases[] = { worker->m_pVarGlobal_Pointer, worker->m_pVarStack_Pointer, values };
     const SVMOperation* code = reinterpret_cast<const SVMOperation*>(worker->_pCodeBegin) + plan.start;
     const SVMOperation* next = code + plan.count;
     for (unsigned i = 0; i < plan.count; i += 2)
@@ -189,20 +189,20 @@ static NEOS_NOINLINE void ExecuteTypedFusionPair(CNeoVMWorker* worker, const Pro
     worker->_pCodeCurrent = next;
 }
 
-// 두 숫자 연산만 있는 지역 슬롯 그룹은 범용 VarInfo 작업 배열을 만들지 않는다.
+// 두 숫자 연산만 있는 지역 슬롯 그룹은 범용 BoundaryValue 작업 배열을 만들지 않는다.
 // 중간값은 C++ 숫자로 전달하되, 원래 목적지의 참조 해제와 사용자 변수 쓰기는 유지한다.
-NEOS_FORCEINLINE static NS_INT FusionNumber(const VarInfo* value, NS_INT*) { return value->_int; }
-NEOS_FORCEINLINE static NS_FLOAT FusionNumber(const VarInfo* value, NS_FLOAT*) { return value->_float; }
+NEOS_FORCEINLINE static NS_INT FusionNumber(ValueRef value, NS_INT*) { return value->_int; }
+NEOS_FORCEINLINE static NS_FLOAT FusionNumber(ValueRef value, NS_FLOAT*) { return value->_float; }
 // 참조 해제가 필요한 목적지는 그룹 전체를 기존 실행기로 보낸 뒤 이 경로에 들어온다.
-NEOS_FORCEINLINE static void FusionStore(VarInfo* value, NS_INT number)
+NEOS_FORCEINLINE static void FusionStore(ValueRef value, NS_INT number)
 {
-    assert(!value->IsAllocType());
-    value->SetType(VAR_INT); value->_int = number;
+    assert(!value.IsAllocType());
+    value.SetType(VAR_INT); value->_int = number;
 }
-NEOS_FORCEINLINE static void FusionStore(VarInfo* value, NS_FLOAT number)
+NEOS_FORCEINLINE static void FusionStore(ValueRef value, NS_FLOAT number)
 {
-    assert(!value->IsAllocType());
-    value->SetType(VAR_FLOAT); value->_float = number;
+    assert(!value.IsAllocType());
+    value.SetType(VAR_FLOAT); value->_float = number;
 }
 
 template<OperationCode Operation>
@@ -262,7 +262,7 @@ NEOS_FORCEINLINE static bool FusionArithmeticCanFail()
 template<OperationCode First, OperationCode Second, typename Number>
 static NEOS_NOINLINE void ExecuteScalarFusionPair(CNeoVMWorker* worker, const ProgramFusion& plan)
 {
-    VarInfo* stack = worker->m_pVarStack_Pointer;
+    ValueRef stack = worker->m_pVarStack_Pointer;
     const SVMOperation& first = plan.operations[0];
     const SVMOperation& second = plan.operations[1];
     // 원래 해제 순서를 보존하며, 흔한 숫자 경로에는 해제 호출용 레지스터 보관을 남기지 않는다.

@@ -47,13 +47,13 @@ void ProgramSwitchTable::Build()
 	}
 }
 
-int ProgramSwitchTable::Find(VarInfo* pKey) const
+int ProgramSwitchTable::Find(ValueRef pKey) const
 {
 	if (buckets.empty() || pKey == nullptr)
 		return defaultOffset;
 
 	// strict type match. case key 로 쓸 수 없는 타입(float/map/list/vector/null 등)은 default 로.
-	VAR_TYPE t = pKey->GetType();
+	VAR_TYPE t = pKey.GetType();
 	u32 h;
 	switch (t)
 	{
@@ -622,13 +622,15 @@ bool CNeoVMProgram::Load(CNArchive& ar, std::string* err)
             std::vector<bool> seen(functions.size(), false);
             for (u32 i = 0; i < count; ++i)
             {
-                int id = -1; u32 slots = 0;
-                ReadRequired(ar, id);
+                int id = -1; u32 slots = 0; SlotKind resultKind;
+                ReadRequired(ar, id); ReadRequired(ar, resultKind);
                 if (id < 0 || static_cast<std::size_t>(id) >= functions.size() || seen[id] ||
                     !ReadCount(ar, slots) || slots >= static_cast<u32>(functions[id]._localAddCount))
                     throw ImageLoadError{"Invalid function storage layout"};
                 seen[id] = true;
                 SFunctionTable& function = functions[id];
+                if (resultKind > SlotKind::Iterator) throw ImageLoadError{"Invalid function result storage"};
+                function._resultType = StorageValueType(resultKind);
                 RequireImageCount(ar, slots, 7, "Truncated function storage layout");
                 function._storage.resize(slots);
                 int previous = 0;
@@ -636,7 +638,7 @@ bool CNeoVMProgram::Load(CNArchive& ar, std::string* err)
                 {
                     ReadRequired(ar, slot.slot); ReadRequired(ar, slot.kind); ReadRequired(ar, slot.typeId);
                     if (slot.slot <= previous || slot.slot >= function._localAddCount ||
-                        slot.kind > SlotKind::Function)
+                        slot.kind > SlotKind::Iterator)
                         throw ImageLoadError{"Invalid function storage slot"};
                     previous = slot.slot;
                 }
@@ -648,7 +650,7 @@ bool CNeoVMProgram::Load(CNArchive& ar, std::string* err)
                 for (SlotCleanup& slot : function._cleanup)
                 {
                     ReadRequired(ar, slot.slot); ReadRequired(ar, slot.kind);
-                    if (slot.slot <= previous || slot.slot >= function._stackSlotCount || slot.kind > SlotKind::Function)
+                    if (slot.slot <= previous || slot.slot >= function._stackSlotCount || slot.kind > SlotKind::Iterator)
                         throw ImageLoadError{"Invalid function cleanup slot"};
                     previous = slot.slot;
                 }
@@ -661,9 +663,34 @@ bool CNeoVMProgram::Load(CNArchive& ar, std::string* err)
             for (SlotLayout& slot : globalStorage)
             {
                 ReadRequired(ar, slot.slot); ReadRequired(ar, slot.kind); ReadRequired(ar, slot.typeId);
-                if (slot.slot <= previous || slot.slot >= -1 || slot.kind > SlotKind::Function)
+                if (slot.slot <= previous || slot.slot >= -1 || slot.kind > SlotKind::Iterator)
                     throw ImageLoadError{"Invalid global storage slot"};
                 previous = slot.slot;
+            }
+        }
+        else if (magic == 0x4c4c4143)
+        {
+            u32 count = 0;
+            if (!ReadCount(ar, count) || count != functions.size()) throw ImageLoadError{"Invalid call layout count"};
+            for (u32 index = 0; index < count; ++index)
+            {
+                int id = -1; u32 calls = 0; ReadRequired(ar, id);
+                if (id != static_cast<int>(index) || !ReadCount(ar, calls) || calls > code.size())
+                    throw ImageLoadError{"Invalid call storage layout"};
+                functions[id]._calls.resize(calls);
+                for (CallStoragePlan& call : functions[id]._calls)
+                {
+                    SlotKind result; u32 args = 0; ReadRequired(ar, result);
+                    if (result > SlotKind::Iterator || !ReadCount(ar, args) || args > SHRT_MAX)
+                        throw ImageLoadError{"Invalid call signature"};
+                    call.types.push_back(StorageValueType(result));
+                    for (u32 arg = 0; arg < args; ++arg)
+                    {
+                        SlotKind kind; ReadRequired(ar, kind);
+                        if (kind > SlotKind::Iterator) throw ImageLoadError{"Invalid call argument storage"};
+                        call.types.push_back(StorageValueType(kind));
+                    }
+                }
             }
         }
         else if (magic == 0x45535546)
@@ -709,8 +736,35 @@ bool CNeoVMProgram::Load(CNArchive& ar, std::string* err)
 	}
 
     if (!hasStorage) { SetLoadError(err, "Missing compiler storage layouts"); return false; }
-    for (const SFunctionTable& function : functions)
+    globalTypes.assign(GetGlobalSlotCount(), VAR_NONE);
+    for (const SlotLayout& slot : globalStorage)
     {
+        if (slot.kind == SlotKind::Boxed) { SetLoadError(err, "Missing global storage type"); return false; }
+        globalTypes[ConstantBase() + slot.slot] = StorageValueType(slot.kind);
+    }
+    for (int i = 0; i < header._iStaticVarCount; ++i) globalTypes[ConstantBase() + i] = staticValues[i]._type;
+    for (SFunctionTable& function : functions)
+    {
+        function._slotTypes.assign(function._localAddCount, VAR_NONE);
+        function._slotTypes[0] = function._resultType;
+        for (const SlotLayout& slot : function._storage) function._slotTypes[slot.slot] = StorageValueType(slot.kind);
+        for (CallStoragePlan& call : function._calls)
+        {
+            call.frameTypes = function._slotTypes;
+            call.frameTypes.insert(call.frameTypes.end(), call.types.begin(), call.types.end());
+        }
+        if (!function._captures.empty())
+        {
+            std::shared_ptr<std::vector<VAR_TYPE>> types(new std::vector<VAR_TYPE>);
+            types->reserve(function._captures.size());
+            for (const std::pair<short, short>& capture : function._captures)
+            {
+                const SlotKind kind = FindSlotKind(function._storage, capture.second);
+                if (kind == SlotKind::Boxed) { SetLoadError(err, "Missing capture storage type"); return false; }
+                types->push_back(StorageValueType(kind));
+            }
+            function._captureTypes = types;
+        }
         std::size_t typed = 0, cleanup = 0;
         // 로더는 컴파일러의 정리 계획을 검증할 뿐 새 최적화를 선택하지 않는다.
         for (int i = 1; i < function._stackSlotCount; ++i)
@@ -719,7 +773,7 @@ bool CNeoVMProgram::Load(CNArchive& ar, std::string* err)
             if (typed < function._storage.size() && function._storage[typed].slot == i)
                 kind = function._storage[typed++].kind;
             if (kind == SlotKind::Int || kind == SlotKind::Float || kind == SlotKind::Bool ||
-                kind == SlotKind::Vector2 || kind == SlotKind::ObjectId) continue;
+                kind == SlotKind::Vector2 || kind == SlotKind::ObjectId || kind == SlotKind::Iterator) continue;
             if (cleanup >= function._cleanup.size() || function._cleanup[cleanup].slot != i ||
                 function._cleanup[cleanup].kind != kind)
             { SetLoadError(err, "Incomplete function cleanup layout"); return false; }
@@ -821,6 +875,10 @@ bool CNeoVMProgram::VerifyCode(const std::vector<int>& owners, std::string* err)
         }
         switch (checkedCode)
         {
+        case NOP_PREPARE_CALL:
+            if (op.argFlag || op.n1 < 0 || static_cast<std::size_t>(op.n1) >= fun._calls.size() || op.n23)
+                return reject("Invalid call preparation");
+            break;
         case NOP_MOV: slots = 3; writes = 1; break;
         case NOP_MOVI:
         case NOP_MOVF: slots = writes = 1; break;
@@ -1396,6 +1454,9 @@ bool FormatDebugOperation(const DebugInstructionFormatContext& context, std::str
         outAssembly = FormatAsm("FUSED plan[%d], %d slots", v.n23, v.n1); break;
     case NOP_EXTEND:
         outAssembly = "EXTEND (owned by FUSED)"; break;
+    case NOP_PREPARE_CALL:
+        byteCount = OpFlagByteChars + 2;
+        outAssembly = FormatAsm("PREPARE_CALL plan[%d]", v.n1); break;
 	case NOP_ERROR:
 		outAssembly = FormatAsm("Begin");
 		break;
@@ -1491,7 +1552,7 @@ bool FormatDebugOperation(const DebugInstructionFormatContext& context, std::str
 }
 
 // 컴파일 타임 GetValueString(NeoExport.cpp)의 런타임 짝. static 상수 하나를 표기한다.
-// 컴파일 타임은 VarInfo, 런타임은 SStaticConst 라 타입이 달라 본문을 공유할 수 없다.
+// 컴파일 타임은 BoundaryValue, 런타임은 SStaticConst 라 타입이 달라 본문을 공유할 수 없다.
 static std::string StaticConstToString(const SStaticConst& c)
 {
 	char ch[128] = { 0, };

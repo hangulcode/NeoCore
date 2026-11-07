@@ -13,47 +13,47 @@
 //
 // 벡터를 쓰는 모든 경로(생성 intrinsic, 성분 쓰기, 산술 결과)가 여기를 지나므로
 // .cpp 의 아웃오브라인 정의로 두면 벡터 연산마다 호출이 하나 붙는다.
-NEOS_FORCEINLINE VecInfo* INeoVMWorker::VecStoreFor(VarInfo* d, int dimension)
+NEOS_FORCEINLINE VecInfo* INeoVMWorker::VecStoreFor(ValueRef d, int dimension)
 {
 	assert(dimension == 3 || dimension == 4);
-	assert((d->GetType() != VAR_VEC3 && d->GetType() != VAR_VEC4) || d->_vec->_refCount > 0);
-	if ((d->GetType() == VAR_VEC3 || d->GetType() == VAR_VEC4) && d->_vec->_refCount <= 1)
+	assert((d.GetType() != VAR_VEC3 && d.GetType() != VAR_VEC4) || d->_vec->_refCount > 0);
+	if ((d.GetType() == VAR_VEC3 || d.GetType() == VAR_VEC4) && d->_vec->_refCount <= 1)
 	{
-		d->SetVecType(dimension);
+		d.SetVecType(dimension);
 		return d->_vec;
 	}
-	if (d->IsAllocType()) Var_Release(d);
+	if (d.IsAllocType()) Var_Release(d);
 	VecInfo* p = _pVM->VecAlloc();
 	p->_refCount = 1;
-	d->SetVecType(dimension);
+	d.SetVecType(dimension);
 	d->_vec = p;
 	return p;
 }
 
 // 성분을 쓰기 직전의 저장소. 단독 소유(refcount 1)면 호출 없이 그대로 쓰고, 공유 중일 때만
 // VecCopyOnWrite 로 복제한다(값 의미론). 성분 쓰기마다 지나는 자리라 VecStoreFor 처럼 인라인.
-NEOS_FORCEINLINE float& INeoVMWorker::WritableVectorComponent(VarInfo* d, int index)
+NEOS_FORCEINLINE float& INeoVMWorker::WritableVectorComponent(ValueRef d, int index)
 {
-	if (d->GetType() == VAR_VEC)
+	if (d.GetType() == VAR_VEC)
 		return d->_vecXY[index];
 	VecInfo* p = d->_vec;
 	return (p->_refCount <= 1 ? p : _pVM->VecCopyOnWrite(d))->v[index];
 }
 
-NEOS_FORCEINLINE void INeoVMWorker::StoreVector(VarInfo* d, int count, float x, float y, float z, float w)
+NEOS_FORCEINLINE void INeoVMWorker::StoreVector(ValueRef d, int count, float x, float y, float z, float w)
 {
 	// 성분을 값 인자로 받아 대상이 입력과 같아도 해제 전에 읽기를 끝낸다.
 	if (count == 2)
 	{
-		if (d->IsAllocType()) Var_Release(d);
-		d->SetInlineVec(x, y);
+		if (d.IsAllocType()) Var_Release(d);
+		d.SetInlineVec(x, y);
 		return;
 	}
 	VecInfo* p = VecStoreFor(d, count);
 	p->v[0] = x; p->v[1] = y; p->v[2] = z; p->v[3] = w;
 }
 
-NEOS_FORCEINLINE bool INeoVMWorker::Var_ReleaseVecFast(VarInfo* d)
+NEOS_FORCEINLINE bool INeoVMWorker::Var_ReleaseVecFast(ValueRef d)
 {
 	VecInfo* vec = d->_vec;
 	if (vec->_refCount <= 1)
@@ -61,11 +61,11 @@ NEOS_FORCEINLINE bool INeoVMWorker::Var_ReleaseVecFast(VarInfo* d)
 
 	--vec->_refCount;
 	d->_vec = nullptr;
-	d->ClearType();
+	d.ClearType();
 	return true;
 }
 
-NEOS_FORCEINLINE bool INeoVMWorker::Var_ReleaseStringFast(VarInfo* d)
+NEOS_FORCEINLINE bool INeoVMWorker::Var_ReleaseStringFast(ValueRef d)
 {
 	StringInfo* str = d->_str;
 	if (str->_refCount <= 1)
@@ -73,11 +73,11 @@ NEOS_FORCEINLINE bool INeoVMWorker::Var_ReleaseStringFast(VarInfo* d)
 
 	--str->_refCount;
 	d->_str = nullptr;
-	d->ClearType();
+	d.ClearType();
 	return true;
 }
 
-NEOS_FORCEINLINE bool INeoVMWorker::Var_ReleaseListFast(VarInfo* d)
+NEOS_FORCEINLINE bool INeoVMWorker::Var_ReleaseListFast(ValueRef d)
 {
 	ListInfo* list = d->_lst;
 	// 컨테이너 자식이 있으면 감소 후 순환 후보 등록이 필요하다.
@@ -86,11 +86,11 @@ NEOS_FORCEINLINE bool INeoVMWorker::Var_ReleaseListFast(VarInfo* d)
 
 	--list->_refCount;
 	d->_lst = nullptr;
-	d->ClearType();
+	d.ClearType();
 	return true;
 }
 
-NEOS_FORCEINLINE bool INeoVMWorker::Var_ReleaseArrayFast(VarInfo* d)
+NEOS_FORCEINLINE bool INeoVMWorker::Var_ReleaseArrayFast(ValueRef d)
 {
 	ArrayInfo* array = d->_array;
 	if (array->_refCount <= 1)
@@ -98,17 +98,17 @@ NEOS_FORCEINLINE bool INeoVMWorker::Var_ReleaseArrayFast(VarInfo* d)
 
 	--array->_refCount;
 	d->_array = nullptr;
-	d->ClearType();
+	d.ClearType();
 	return true;
 }
 
 // 호출자가 alloc 여부로 이미 분기한 자리용. Move/MoveTake/MoveI/MoveF 는 IsAllocType 이
 // 참인 가지에서만 해제하므로, Var_Release 로 들어가면 같은 비교를 한 번 더 한다.
-NEOS_FORCEINLINE void INeoVMWorker::Var_ReleaseAlloc(VarInfo* d)
+NEOS_FORCEINLINE void INeoVMWorker::Var_ReleaseAlloc(ValueRef d)
 {
 	// 공유 중인 3·4성분 벡터의 참조 감소만 여기서 끝내고,
 	// 마지막 참조 및 순환 후보는 기존 dispatcher가 모든 부수 처리를 맡는다.
-	const VAR_TYPE type = d->GetType();
+	const VAR_TYPE type = d.GetType();
 	if ((type == VAR_VEC3 || type == VAR_VEC4) && Var_ReleaseVecFast(d))
 		return;
 	if (type == VAR_STRING && Var_ReleaseStringFast(d))
@@ -121,134 +121,133 @@ NEOS_FORCEINLINE void INeoVMWorker::Var_ReleaseAlloc(VarInfo* d)
 	_pVM->Var_ReleaseInternal(d);
 }
 
-NEOS_FORCEINLINE void INeoVMWorker::Var_Release(VarInfo* d)
+NEOS_FORCEINLINE void INeoVMWorker::Var_Release(ValueRef d)
 {
-	if (d->IsAllocType() == false)
+	if (d.IsAllocType() == false)
 	{
-		d->ClearType();
+		d.ClearType();
 		return;
 	}
 	Var_ReleaseAlloc(d);
 }
-NEOS_FORCEINLINE void INeoVMWorker::Var_SetInt(VarInfo* d, NS_INT v)
+NEOS_FORCEINLINE void INeoVMWorker::Var_SetInt(ValueRef d, NS_INT v)
 {
-	if (d->IsAllocType())
+	if (d.IsAllocType())
 		Var_Release(d);
 
-	d->SetType(VAR_INT);
+	d.SetType(VAR_INT);
 	d->_int = v;
 }
 
-NEOS_FORCEINLINE void INeoVMWorker::Var_SetFloat(VarInfo* d, NS_FLOAT v)
+NEOS_FORCEINLINE void INeoVMWorker::Var_SetFloat(ValueRef d, NS_FLOAT v)
 {
-	if (d->IsAllocType())
+	if (d.IsAllocType())
 		Var_Release(d);
 
-	d->SetType(VAR_FLOAT);
+	d.SetType(VAR_FLOAT);
 	d->_float = v;
 }
-NEOS_FORCEINLINE void INeoVMWorker::Var_SetNone(VarInfo* d)
+NEOS_FORCEINLINE void INeoVMWorker::Var_SetNone(ValueRef d)
 {
-	if (d->GetType() != VAR_NONE)
+	if (d.GetType() != VAR_NONE)
 	{
-		if (d->IsAllocType())
+		if (d.IsAllocType())
 			Var_Release(d);
 
-		d->ClearType();
+		d.ClearType();
 	}
 }
 
-NEOS_FORCEINLINE void INeoVMWorker::Var_SetBool(VarInfo* d, bool v)
+NEOS_FORCEINLINE void INeoVMWorker::Var_SetBool(ValueRef d, bool v)
 {
-	if (d->IsAllocType())
+	if (d.IsAllocType())
 		Var_Release(d);
 
-	d->SetType(VAR_BOOL);
+	d.SetType(VAR_BOOL);
 	d->_bl = v;
 }
-NEOS_FORCEINLINE void INeoVMWorker::Var_SetFun(VarInfo* d, int fun_index)
+NEOS_FORCEINLINE void INeoVMWorker::Var_SetFun(ValueRef d, int fun_index)
 {
-	if (d->IsAllocType())
+	if (d.IsAllocType())
 		Var_Release(d);
 
-	d->SetType(VAR_FUN);
-	d->_fun_index = fun_index;
+	d.SetFunctionIndex(fun_index);
 }
-inline void INeoVMWorker::Var_SetCoroutine(VarInfo* d, CoroutineInfo* p)
+inline void INeoVMWorker::Var_SetCoroutine(ValueRef d, CoroutineInfo* p)
 {
-	if (d->IsAllocType())
+	if (d.IsAllocType())
 		Var_Release(d);
 
-	d->SetType(VAR_COROUTINE);
+	d.SetType(VAR_COROUTINE);
 	d->_cor = p;
 	++d->_cor->_refCount;
 }
-NEOS_FORCEINLINE void INeoVMWorker::Var_SetString(VarInfo* d, const char* str)
+NEOS_FORCEINLINE void INeoVMWorker::Var_SetString(ValueRef d, const char* str)
 {
 	Var_SetStringA(d, str);
 }
 
-NEOS_FORCEINLINE void INeoVMWorker::Var_SetStringA(VarInfo* d, const std::string& str)
+NEOS_FORCEINLINE void INeoVMWorker::Var_SetStringA(ValueRef d, const std::string& str)
 {
 	// Keep aliased input and the old destination intact until allocation succeeds.
 	StringInfo* value = _pVM->StringAlloc(str);
 	++value->_refCount;
-	if (d->IsAllocType())
+	if (d.IsAllocType())
 		Var_Release(d);
-	d->SetType(VAR_STRING);
+	d.SetType(VAR_STRING);
 	d->_str = value;
 }
-NEOS_FORCEINLINE void INeoVMWorker::Var_SetTable(VarInfo* d, MapInfo* p)
+NEOS_FORCEINLINE void INeoVMWorker::Var_SetTable(ValueRef d, MapInfo* p)
 {
-	if (d->IsAllocType())
+	if (d.IsAllocType())
 		Var_Release(d);
 
-	d->SetType(VAR_MAP);
+	d.SetType(VAR_MAP);
 	d->_tbl = p;
 	++p->_refCount;
 }
-NEOS_FORCEINLINE void INeoVMWorker::Var_SetList(VarInfo* d, ListInfo* p)
+NEOS_FORCEINLINE void INeoVMWorker::Var_SetList(ValueRef d, ListInfo* p)
 {
-	if (d->IsAllocType())
+	if (d.IsAllocType())
 		Var_Release(d);
 
-	d->SetType(VAR_LIST);
+	d.SetType(VAR_LIST);
 	d->_lst = p;
 	++p->_refCount;
 }
-NEOS_FORCEINLINE void INeoVMWorker::Var_SetArray(VarInfo* d, ArrayInfo* p)
+NEOS_FORCEINLINE void INeoVMWorker::Var_SetArray(ValueRef d, ArrayInfo* p)
 {
-	if (d->IsAllocType())
+	if (d.IsAllocType())
 		Var_Release(d);
 
-	d->SetType(VAR_ARRAY);
+	d.SetType(VAR_ARRAY);
 	d->_array = p;
 	++p->_refCount;
 }
-NEOS_FORCEINLINE void INeoVMWorker::Var_SetSet(VarInfo* d, SetInfo* p)
+NEOS_FORCEINLINE void INeoVMWorker::Var_SetSet(ValueRef d, SetInfo* p)
 {
-	if (d->IsAllocType())
+	if (d.IsAllocType())
 		Var_Release(d);
 
-	d->SetType(VAR_SET);
+	d.SetType(VAR_SET);
 	d->_set = p;
 	++p->_refCount;
 }
-inline void INeoVMWorker::Var_SetAsync(VarInfo* d, AsyncInfo* p)
+inline void INeoVMWorker::Var_SetAsync(ValueRef d, AsyncInfo* p)
 {
-	if (d->IsAllocType())
+	if (d.IsAllocType())
 		Var_Release(d);
 
-	d->SetType(VAR_ASYNC);
+	d.SetType(VAR_ASYNC);
 	d->_async = p;
 	++p->_refCount;
 }
 
 inline bool INeoVMWorker::GetArg_StlString(int idx, std::string& r)
 {
-	VarInfo* p = GetStackVar(idx);
+	ValueRef p = GetStackVar(idx);
 	if (p == nullptr) return false;
-	switch (p->GetType())
+	switch (p.GetType())
 	{
 	case VAR_STRING:
 		r = p->_str->_str;
@@ -260,9 +259,9 @@ inline bool INeoVMWorker::GetArg_StlString(int idx, std::string& r)
 }
 inline bool INeoVMWorker::GetArg_Int(int idx, NS_INT& r)
 {
-	VarInfo* p = GetStackVar(idx);
+	ValueRef p = GetStackVar(idx);
 	if (p == nullptr) return false;
-	switch (p->GetType())
+	switch (p.GetType())
 	{
 	case VAR_INT:
 		r = p->_int;
@@ -277,9 +276,9 @@ inline bool INeoVMWorker::GetArg_Int(int idx, NS_INT& r)
 }
 inline bool INeoVMWorker::GetArg_Float(int idx, NS_FLOAT& r)
 {
-	VarInfo* p = GetStackVar(idx);
+	ValueRef p = GetStackVar(idx);
 	if (p == nullptr) return false;
-	switch (p->GetType())
+	switch (p.GetType())
 	{
 	case VAR_INT:
 		r = (NS_FLOAT)p->_int;
@@ -294,9 +293,9 @@ inline bool INeoVMWorker::GetArg_Float(int idx, NS_FLOAT& r)
 }
 inline bool INeoVMWorker::GetArg_Bool(int idx, bool& r)
 {
-	VarInfo* p = GetStackVar(idx);
+	ValueRef p = GetStackVar(idx);
 	if (p == nullptr) return false;
-	if (p->GetType() == VAR_BOOL)
+	if (p.GetType() == VAR_BOOL)
 	{
 		r = p->_bl;
 		return true;

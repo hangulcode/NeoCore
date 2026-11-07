@@ -15,26 +15,39 @@ struct VecInfo : AllocBase
 	float v[4];
 };
 
-NEOS_FORCEINLINE float VarInfo::VectorComponent(int index) const
+NEOS_FORCEINLINE float BoundaryValue::VectorComponent(int index) const
 {
 	if (GetType() == VAR_VEC) return _vecXY[index];
 	return _vec->v[index];
 }
 template<int Dimension>
-NEOS_FORCEINLINE void VarInfo::CopyVectorComponents(float* out) const
+NEOS_FORCEINLINE void BoundaryValue::CopyVectorComponents(float* out) const
 {
     static_assert(Dimension >= 2 && Dimension <= 4, "vector dimension must be 2..4");
     assert(VectorComponentCount() == Dimension);
     if (Dimension == 2) std::memcpy(out, _vecXY, sizeof(_vecXY));
     else std::memmove(out, _vec->v, sizeof(float) * Dimension);
 }
-NEOS_FORCEINLINE void VarInfo::CopyVectorComponents(float* out) const
+NEOS_FORCEINLINE void BoundaryValue::CopyVectorComponents(float* out) const
 {
 	// 호출자가 요청한 유효 성분만 쓴다. 남는 출력 레인은 보존한다.
 	if (GetType() == VAR_VEC)
 		std::memcpy(out, _vecXY, sizeof(_vecXY));
 	else
 		std::memmove(out, _vec->v, sizeof(float) * VectorComponentCount());
+}
+
+inline float ValueRef::VectorComponent(int index) const { return GetType() == VAR_VEC ? value_->_vecXY[index] : value_->_vec->v[index]; }
+inline void ValueRef::CopyVectorComponents(float* out) const
+{
+    if (GetType() == VAR_VEC) std::memcpy(out, value_->_vecXY, sizeof(value_->_vecXY));
+    else std::memmove(out, value_->_vec->v, sizeof(float) * VectorComponentCount());
+}
+template<int Dimension> inline void ValueRef::CopyVectorComponents(float* out) const
+{
+    assert(VectorComponentCount() == Dimension);
+    if (Dimension == 2) std::memcpy(out, value_->_vecXY, sizeof(value_->_vecXY));
+    else std::memmove(out, value_->_vec->v, sizeof(float) * Dimension);
 }
 
 } // namespace NeoScript

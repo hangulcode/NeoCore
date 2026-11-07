@@ -15,7 +15,7 @@ using Document = std::unique_ptr<yyjson_doc, decltype(&yyjson_doc_free)>;
 using MutableDocument = std::unique_ptr<yyjson_mut_doc, decltype(&yyjson_mut_doc_free)>;
 struct HeldValue {
     CNeoVMWorker& worker;
-    VarInfo value;
+    BoundaryValue value;
     explicit HeldValue(CNeoVMWorker& w) : worker(w) {}
     ~HeldValue() { worker.Var_Release(&value); }
 };
@@ -94,7 +94,7 @@ struct Encoder {
     yyjson_mut_doc* doc; JsonResult& result; bool sorted; bool preserveNullMembers;
     std::vector<const void*> active;
     yyjson_mut_val* Fail(const std::string& path, const std::string& message) { result.Fail(path, message); return nullptr; }
-    yyjson_mut_val* Value(const VarInfo& v, const std::string& path, int depth) {
+    yyjson_mut_val* Value(const BoundaryValue& v, const std::string& path, int depth) {
         switch (v.GetType()) {
         case VAR_INT: return yyjson_mut_sint(doc, v._int);
         case VAR_FLOAT: {
@@ -163,7 +163,7 @@ struct Encoder {
 
 struct Decoder {
     CNeoVMWorker& worker; JsonResult& result; bool strict; bool preserveNullMembers;
-    bool Number(yyjson_val* value, VarInfo& out, const std::string& path) {
+    bool Number(yyjson_val* value, ValueRef out, const std::string& path) {
         bool integer = yyjson_is_int(value);
         double number = yyjson_get_num(value);
         if (yyjson_is_sint(value)) {
@@ -187,7 +187,7 @@ struct Decoder {
         if (integer) result.warnings.push_back(path + ": integer outside int64 range converted to float64");
         worker.Var_SetFloat(&out, static_cast<NS_FLOAT>(number)); return true;
     }
-    bool Value(yyjson_val* value, VarInfo& out, const std::string& path, int depth) {
+    bool Value(yyjson_val* value, ValueRef out, const std::string& path, int depth) {
         if (yyjson_is_null(value)) return true;
         if (yyjson_is_bool(value)) { worker.Var_SetBool(&out, yyjson_get_bool(value)); return true; }
         if (yyjson_is_num(value) || yyjson_is_raw(value)) return Number(value, out, path);
@@ -204,7 +204,7 @@ struct Decoder {
             size_t i, max; yyjson_val* item;
             yyjson_arr_foreach(value, i, max, item) {
                 if (!Value(item, *list->GetValue(static_cast<int>(i)), path + '[' + std::to_string(i) + ']', depth)) return false;
-                if (list->GetValue(static_cast<int>(i))->IsContainerType()) list->MarkContainerChild();
+                if (list->GetValue(static_cast<int>(i)).IsContainerType()) list->MarkContainerChild();
             }
         } else {
             auto* map = worker.GetVM()->TableAlloc(static_cast<int>(size)); worker.Var_SetTable(&out, map);
@@ -214,7 +214,7 @@ struct Decoder {
                 const std::string child = KeyPath(path, name);
                 if (name.find('\0') != std::string::npos) return result.Fail(child, "NUL in key");
                 HeldValue converted(worker), keyValue(worker);
-                if (!Value(item, converted.value, child, depth)) return false;
+                if (!Value(item, &converted.value, child, depth)) return false;
                 worker.Var_SetStringA(&keyValue.value, name);
                 if (!preserveNullMembers && converted.value.GetType() == VAR_NONE) map->Remove(&keyValue.value);
                 else map->Insert(&keyValue.value, &converted.value);
@@ -225,7 +225,7 @@ struct Decoder {
 };
 }
 
-bool Encode(const VarInfo& value, std::string& text, JsonResult& result, bool sortKeys, bool preserveNullMembers) {
+bool Encode(const BoundaryValue& value, std::string& text, JsonResult& result, bool sortKeys, bool preserveNullMembers) {
     result = JsonResult(); text.clear();
     try {
         MutableDocument doc(yyjson_mut_doc_new(nullptr), yyjson_mut_doc_free);
@@ -241,7 +241,7 @@ bool Encode(const VarInfo& value, std::string& text, JsonResult& result, bool so
         text.assign(buffer.get(), size); return true;
     } catch (const std::exception& error) { return result.Fail("$", error.what()); }
 }
-bool Decode(CNeoVMWorker& worker, const char* text, size_t size, VarInfo& value,
+bool Decode(CNeoVMWorker& worker, const char* text, size_t size, ValueRef value,
     JsonResult& result, bool strictIntegers, bool requireMap, bool preserveNullMembers) {
     result = JsonResult();
     try {
@@ -253,7 +253,7 @@ bool Decode(CNeoVMWorker& worker, const char* text, size_t size, VarInfo& value,
         auto* root = yyjson_doc_get_root(doc.get());
         if (requireMap && !yyjson_is_obj(root)) return result.Fail("$", "expected map");
         HeldValue decoded(worker); Decoder decoder{worker, result, strictIntegers, preserveNullMembers};
-        if (!decoder.Value(root, decoded.value, "$", 0)) return false;
+        if (!decoder.Value(root, &decoded.value, "$", 0)) return false;
         // Commit only a complete value. The return slot can alias an input.
         worker.Move(&value, &decoded.value); return true;
     } catch (const std::exception& error) { return result.Fail("$", error.what()); }

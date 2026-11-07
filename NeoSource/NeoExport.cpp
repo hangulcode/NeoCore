@@ -1,6 +1,7 @@
 ﻿#include <stdio.h>
 #include <math.h>
 #include "NeoParser.h"
+#include "NeoCoreBuiltins.h"
 #include "NeoTextLoader.h"
 #include "NeoExport.h"
 #include "NeoVMFusion.h"
@@ -88,7 +89,7 @@ static bool ChangeRangeOperand(int staticCount, int localCount, int curFunStatkS
 }
 struct STempDebug
 {
-	std::vector<VarInfo>				_staticVars;
+	std::vector<BoundaryValue>				_staticVars;
 	std::vector<std::string>			_globalVars;
 	std::vector< debug_info>			debugInfo;
 };
@@ -102,6 +103,8 @@ std::string GetFunctionName(SFunctions& funs, short nID)
 	return (*it).second->GetFullName();
 }
 
+#include "NeoStorageCompiler.inl"
+
 void WriteFun(CArchiveRdWC& arText, CNArchive& ar, SFunctions& funs, SFunctionInfo& fi, SVars& vars, std::map<int, SFunctionTableForWriter>& funPos, std::vector< debug_info>& debugInfo)
 {
 	int iOPCount = 0;
@@ -113,6 +116,7 @@ void WriteFun(CArchiveRdWC& arText, CNArchive& ar, SFunctions& funs, SFunctionIn
 	fun._localVarCount = fi._localVarCount;
 	fun._funType = fi._funType;
 	fun._name = fi._name;
+    fun._calls = fi._calls; fun._resultType = fi._returnStorage;
 	fun._captures.clear();
 	fun._captures.reserve(fi._captures.size());
 	for (const SClosureCapture& capture : fi._captures)
@@ -170,6 +174,7 @@ void WriteFun(CArchiveRdWC& arText, CNArchive& ar, SFunctions& funs, SFunctionIn
 		switch (v.Code())
 		{
 
+		case NOP_PREPARE_CALL: break;
 		case NOP_MOV:
 		case NOP_LOG_NOT:
 			argFlag |= ChangeIndex(staticCount, localCount, curFunStatkSize, v, 1);
@@ -387,12 +392,12 @@ void WriteFun(CArchiveRdWC& arText, CNArchive& ar, SFunctions& funs, SFunctionIn
         if (typedSlot < fun._storage.size() && fun._storage[typedSlot].slot == i)
             kind = fun._storage[typedSlot++].kind;
         if (kind == SlotKind::Int || kind == SlotKind::Float || kind == SlotKind::Bool ||
-            kind == SlotKind::Vector2 || kind == SlotKind::ObjectId) continue;
+            kind == SlotKind::Vector2 || kind == SlotKind::ObjectId || kind == SlotKind::Iterator) continue;
         SlotCleanup cleanup;
         cleanup.slot = CompileShort("cleanup slot", i); cleanup.kind = kind;
         fun._cleanup.push_back(cleanup);
     }
-    funPos[fi._funID] = std::move(fun);
+	funPos[fi._funID] = std::move(fun);
 	int iNewCodeEnd = ar.GetBufferOffset();
 	fi._iCode_Begin = iNewCodeBegin;
 	fi._iCode_Size = iNewCodeEnd - iNewCodeBegin;
@@ -421,7 +426,7 @@ static std::string ToPtringString(const std::string & str)
 #else
 #define FLOAT_FORMAT	"%lf"
 #endif
-std::string GetValueString(VarInfo& vi, std::map<int, std::string>* pFunTable = NULL)
+std::string GetValueString(BoundaryValue& vi, std::map<int, std::string>* pFunTable = NULL)
 {
 	char ch[64] = { 0, };
 	switch (vi.GetType())
@@ -814,6 +819,12 @@ bool Write(CArchiveRdWC& arText, CNArchive& ar, SFunctions& funs, SVars& vars)
 	ar << op;
 	op.SetCode(NOP_IDLE);
 	ar << op;
+    try { StorageCompiler(funs, vars).Run(); }
+    catch (const std::logic_error& error)
+    {
+        SetCompileError(arText, error.what());
+        return false;
+    }
 
 	for (auto it = funs._funSequence.begin(); it != funs._funSequence.end(); it++)
 	{
@@ -866,7 +877,7 @@ bool Write(CArchiveRdWC& arText, CNArchive& ar, SFunctions& funs, SVars& vars)
 
 	for (int i = 0; i < header._iStaticVarCount; i++)
 	{
-		VarInfo& vi = funs._staticVars[i];
+		BoundaryValue& vi = funs._staticVars[i];
 		ar << vi.GetType();
 		switch (vi.GetType())
 		{
@@ -915,6 +926,7 @@ bool Write(CArchiveRdWC& arText, CNArchive& ar, SFunctions& funs, SVars& vars)
     for (const auto& item : funPos)
     {
         ar << item.first;
+        ar << item.second._resultType.kind;
         ar.WriteCount(static_cast<u32>(item.second._storage.size()));
         for (const SlotLayout& slot : item.second._storage)
             ar << slot.slot << slot.kind << slot.typeId;
@@ -929,6 +941,21 @@ bool Write(CArchiveRdWC& arText, CNArchive& ar, SFunctions& funs, SVars& vars)
         const auto found = vars._globalStorage.find(index);
         const SlotType type = found == vars._globalStorage.end() ? SlotType() : found->second;
         ar << slot << type.kind << type.typeId;
+    }
+
+    const u32 callMagic = 0x4c4c4143; // CALL
+    ar << callMagic;
+    ar.WriteCount(static_cast<u32>(funPos.size()));
+    for (const auto& item : funPos)
+    {
+        ar << item.first;
+        ar.WriteCount(static_cast<u32>(item.second._calls.size()));
+        for (const CompileCallStorage& call : item.second._calls)
+        {
+            ar << call.returnType.kind;
+            ar.WriteCount(static_cast<u32>(call.types.size()));
+            for (const SlotType& type : call.types) ar << type.kind;
+        }
     }
 
     // 타입을 잃지 않은 최종 명령 그래프에서 공통 융합을 고른다. 주소를 바꾸지 않아 점프·함수 오프셋은 유지된다.
@@ -1016,7 +1043,7 @@ bool WriteLog(CArchiveRdWC& arText, CNArchive& arw, SFunctions& funs, SVars& var
 	// Static 변수
 	for (int i = 0; i < header._iStaticVarCount; i++)
 	{
-		VarInfo& vi = funs._staticVars[i];
+		BoundaryValue& vi = funs._staticVars[i];
 		OutAsm("Static   [%d] %s\n", i, GetValueString(vi, &mapFun).c_str());
 	}
 

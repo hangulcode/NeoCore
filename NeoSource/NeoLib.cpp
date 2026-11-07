@@ -39,8 +39,8 @@ struct neo_libs
 	// 프런트엔드가 float 인자를 double로 변환한다. 호스트용 범용 변환기는 거치지 않는다.
 	static NEOS_FORCEINLINE NS_FLOAT FloatArgument(CNeoVMWorker* worker, int index)
 	{
-		const VarInfo* value = worker->GetStack(index);
-		assert(value->GetType() == VAR_FLOAT);
+		ValueRef value = worker->GetStack(index);
+		assert(value.GetType() == VAR_FLOAT);
 		return value->_float;
 	}
 
@@ -49,18 +49,18 @@ struct neo_libs
 	struct HeldValue
 	{
 		CNeoVMWorker* worker;
-		VarInfo value;
-		HeldValue(CNeoVMWorker* w, VarInfo* source) : worker(w)
+		BoundaryValue value;
+		HeldValue(CNeoVMWorker* w, ValueRef source) : worker(w)
 		{ Move_DestNoRelease(&value, source); }
 		~HeldValue() { worker->Var_Release(&value); }
 		HeldValue(const HeldValue&) = delete;
 		HeldValue& operator=(const HeldValue&) = delete;
 	};
 
-	static bool Str_sub(CNeoVMWorker* pN, VarInfo* pVar, short args)
+	static bool Str_sub(CNeoVMWorker* pN, ValueRef pVar, short args)
 	{
-		assert(pVar->GetType() == VAR_STRING);
-		assert(args == 2 && pN->GetStack(1)->GetType() == VAR_INT && pN->GetStack(2)->GetType() == VAR_INT);
+		assert(pVar.GetType() == VAR_STRING);
+		assert(args == 2 && pN->GetStack(1).GetType() == VAR_INT && pN->GetStack(2).GetType() == VAR_INT);
 
 		int len = pVar->_str->_StringLen;
 		std::string* p = &pVar->_str->_str;
@@ -83,31 +83,31 @@ struct neo_libs
 		pN->ReturnValue(sTempString.c_str());
 		return true;
 	}
-	static bool Str_len(CNeoVMWorker* pN, VarInfo* pVar, short args)
+	static bool Str_len(CNeoVMWorker* pN, ValueRef pVar, short args)
 	{
-		assert(pVar->GetType() == VAR_STRING);
+		assert(pVar.GetType() == VAR_STRING);
 		assert(args == 0);
 
 		pN->ReturnValue(pVar->_str->_StringLen);
 		return true;
 	}
-    static bool Str_codepoint(CNeoVMWorker* pN, VarInfo* pVar, short args)
+    static bool Str_codepoint(CNeoVMWorker* pN, ValueRef pVar, short args)
     {
-        assert(pVar->GetType() == VAR_STRING && args == 1);
-        VarInfo* index = pN->GetStack(1);
-        assert(index->GetType() == VAR_INT);
+        assert(pVar.GetType() == VAR_STRING && args == 1);
+        ValueRef index = pN->GetStack(1);
+        assert(index.GetType() == VAR_INT);
         pN->ReturnValue(utf_string::CodePointAt(pVar->_str->_str, NeoNarrowInt(index->_int)));
         return true;
     }
-	static bool Str_find(CNeoVMWorker* pN, VarInfo* pVar, short args)
+	static bool Str_find(CNeoVMWorker* pN, ValueRef pVar, short args)
 	{
-		assert(pVar->GetType() == VAR_STRING);
+		assert(pVar.GetType() == VAR_STRING);
 		assert(args == 1);
 
 		std::string* p = &pVar->_str->_str;
-		const VarInfo* needle = pN->GetStack(1);
-		assert(needle->GetType() == VAR_STRING || needle->GetType() == VAR_NONE);
-		if (needle->GetType() == VAR_NONE) return false;
+		ValueRef needle = pN->GetStack(1);
+		assert(needle.GetType() == VAR_STRING || needle.GetType() == VAR_NONE);
+		if (needle.GetType() == VAR_NONE) return false;
 		const char* p2 = needle->_str->_str.c_str();
 
 		const size_t found = p->find(p2);
@@ -115,9 +115,9 @@ struct neo_libs
 		pN->ReturnValue((int)iFind);
 		return true;
 	}
-	static bool Str_upper(CNeoVMWorker* pN, VarInfo* pVar, short args)
+	static bool Str_upper(CNeoVMWorker* pN, ValueRef pVar, short args)
 	{
-		assert(pVar->GetType() == VAR_STRING);
+		assert(pVar.GetType() == VAR_STRING);
 		assert(args == 0);
 
 		std::string str = pVar->_str->_str;
@@ -125,9 +125,9 @@ struct neo_libs
 		pN->ReturnValue(str.c_str());
 		return true;
 	}
-	static bool Str_lower(CNeoVMWorker* pN, VarInfo* pVar, short args)
+	static bool Str_lower(CNeoVMWorker* pN, ValueRef pVar, short args)
 	{
-		assert(pVar->GetType() == VAR_STRING);
+		assert(pVar.GetType() == VAR_STRING);
 		assert(args == 0);
 
 		std::string str = pVar->_str->_str;
@@ -135,9 +135,9 @@ struct neo_libs
 		pN->ReturnValue(str.c_str());
 		return true;
 	}
-	static bool Str_trim(CNeoVMWorker* pN, VarInfo* pVar, short args)
+	static bool Str_trim(CNeoVMWorker* pN, ValueRef pVar, short args)
 	{
-		assert(pVar->GetType() == VAR_STRING);
+		assert(pVar.GetType() == VAR_STRING);
 		assert(args == 0);
 
 		std::string drop = " ";
@@ -147,9 +147,9 @@ struct neo_libs
 		pN->ReturnValue(str.c_str());
 		return true;
 	}
-	static bool Str_ltrim(CNeoVMWorker* pN, VarInfo* pVar, short args)
+	static bool Str_ltrim(CNeoVMWorker* pN, ValueRef pVar, short args)
 	{
-		assert(pVar->GetType() == VAR_STRING);
+		assert(pVar.GetType() == VAR_STRING);
 		assert(args == 0);
 
 		std::string drop = " ";
@@ -158,9 +158,9 @@ struct neo_libs
 		pN->ReturnValue(str.c_str());
 		return true;
 	}
-	static bool Str_rtrim(CNeoVMWorker* pN, VarInfo* pVar, short args)
+	static bool Str_rtrim(CNeoVMWorker* pN, ValueRef pVar, short args)
 	{
-		assert(pVar->GetType() == VAR_STRING);
+		assert(pVar.GetType() == VAR_STRING);
 		assert(args == 0);
 
 		std::string drop = " ";
@@ -169,17 +169,17 @@ struct neo_libs
 		pN->ReturnValue(str.c_str());
 		return true;
 	}
-	static bool Str_replace(CNeoVMWorker* pN, VarInfo* pVar, short args)
+	static bool Str_replace(CNeoVMWorker* pN, ValueRef pVar, short args)
 	{
-		assert(pVar->GetType() == VAR_STRING);
+		assert(pVar.GetType() == VAR_STRING);
 		assert(args == 2);
 
-		VarInfo *pFind = pN->GetStack(1);
-		VarInfo *pReplace = pN->GetStack(2);
-		assert(pFind->GetType() == VAR_STRING || pFind->GetType() == VAR_NONE);
-		if (pFind->GetType() == VAR_NONE) return false;
-		assert(pReplace->GetType() == VAR_STRING || pReplace->GetType() == VAR_NONE);
-		if (pReplace->GetType() == VAR_NONE) return false;
+		ValueRef pFind = pN->GetStack(1);
+		ValueRef pReplace = pN->GetStack(2);
+		assert(pFind.GetType() == VAR_STRING || pFind.GetType() == VAR_NONE);
+		if (pFind.GetType() == VAR_NONE) return false;
+		assert(pReplace.GetType() == VAR_STRING || pReplace.GetType() == VAR_NONE);
+		if (pReplace.GetType() == VAR_NONE) return false;
 
 		std::string str = pVar->_str->_str;
 		const size_t found = str.find(pFind->_str->_str);
@@ -191,14 +191,14 @@ struct neo_libs
 		pN->ReturnValue(str.c_str());
 		return true;
 	}
-	static bool Str_replaceAll(CNeoVMWorker* pN, VarInfo* pVar, short args)
+	static bool Str_replaceAll(CNeoVMWorker* pN, ValueRef pVar, short args)
 	{
-		assert(pVar->GetType() == VAR_STRING && args == 2);
-		VarInfo* pFind = pN->GetStack(1);
-		VarInfo* pReplace = pN->GetStack(2);
-		assert((pFind->GetType() == VAR_STRING || pFind->GetType() == VAR_NONE) &&
-			(pReplace->GetType() == VAR_STRING || pReplace->GetType() == VAR_NONE));
-		if (pFind->GetType() == VAR_NONE || pReplace->GetType() == VAR_NONE) return false;
+		assert(pVar.GetType() == VAR_STRING && args == 2);
+		ValueRef pFind = pN->GetStack(1);
+		ValueRef pReplace = pN->GetStack(2);
+		assert((pFind.GetType() == VAR_STRING || pFind.GetType() == VAR_NONE) &&
+			(pReplace.GetType() == VAR_STRING || pReplace.GetType() == VAR_NONE));
+		if (pFind.GetType() == VAR_NONE || pReplace.GetType() == VAR_NONE) return false;
 		const std::string& source = pVar->_str->_str;
 		const std::string& needle = pFind->_str->_str;
 		const std::string& replacement = pReplace->_str->_str;
@@ -224,16 +224,16 @@ struct neo_libs
 		return true;
 	}
 	// 결과를 완성한 뒤 반환 슬롯에 기록해 수신자와 슬롯이 겹치는 경우를 보호한다.
-	static bool StringRegex(CNeoVMWorker* pN, VarInfo* pVar, short args, int operation)
+	static bool StringRegex(CNeoVMWorker* pN, ValueRef pVar, short args, int operation)
 	{
 		const int required = operation == 2 ? 2 : 1;
-		assert(pVar->GetType() == VAR_STRING && (args == required || args == required + 1));
+		assert(pVar.GetType() == VAR_STRING && (args == required || args == required + 1));
 		for (int i = 1; i <= required; ++i)
 		{
-			assert(pN->GetStack(i)->GetType() == VAR_STRING || pN->GetStack(i)->GetType() == VAR_NONE);
-			if (pN->GetStack(i)->GetType() == VAR_NONE) return false;
+			assert(pN->GetStack(i).GetType() == VAR_STRING || pN->GetStack(i).GetType() == VAR_NONE);
+			if (pN->GetStack(i).GetType() == VAR_NONE) return false;
 		}
-		assert(args <= required || pN->GetStack(args)->GetType() == VAR_BOOL);
+		assert(args <= required || pN->GetStack(args).GetType() == VAR_BOOL);
 		if (pN->GetStack(1)->_str->_str.size() > pN->GetVM()->_maxRegexPatternBytes)
 		{
 			pN->SetError("regular expression pattern exceeds the host byte limit");
@@ -268,18 +268,18 @@ struct neo_libs
 		}
 		return true;
 	}
-	static bool Str_regex_match(CNeoVMWorker* pN, VarInfo* pVar, short args) { return StringRegex(pN, pVar, args, 0); }
-	static bool Str_regex_search(CNeoVMWorker* pN, VarInfo* pVar, short args) { return StringRegex(pN, pVar, args, 1); }
-	static bool Str_regex_replace(CNeoVMWorker* pN, VarInfo* pVar, short args) { return StringRegex(pN, pVar, args, 2); }
+	static bool Str_regex_match(CNeoVMWorker* pN, ValueRef pVar, short args) { return StringRegex(pN, pVar, args, 0); }
+	static bool Str_regex_search(CNeoVMWorker* pN, ValueRef pVar, short args) { return StringRegex(pN, pVar, args, 1); }
+	static bool Str_regex_replace(CNeoVMWorker* pN, ValueRef pVar, short args) { return StringRegex(pN, pVar, args, 2); }
 
-	static bool Str_split(CNeoVMWorker* pN, VarInfo* pVar, short args)
+	static bool Str_split(CNeoVMWorker* pN, ValueRef pVar, short args)
 	{
-		assert(pVar->GetType() == VAR_STRING);
+		assert(pVar.GetType() == VAR_STRING);
 		assert(args == 1);
 
-		VarInfo *pFind = pN->GetStack(1);
-		assert(pFind->GetType() == VAR_STRING || pFind->GetType() == VAR_NONE);
-		if (pFind->GetType() == VAR_NONE) return false;
+		ValueRef pFind = pN->GetStack(1);
+		assert(pFind.GetType() == VAR_STRING || pFind.GetType() == VAR_NONE);
+		if (pFind.GetType() == VAR_NONE) return false;
 		const std::string& findstr = pFind->_str->_str;
 		// 빈 구분자는 검색 위치가 전진하지 않으므로 결과 리스트를 만들기 전에 거절한다.
 		if (findstr.empty())
@@ -289,7 +289,7 @@ struct neo_libs
 		}
 		std::string str = pVar->_str->_str;
 
-		VarInfo* pRet = pN->GetStack(0);
+		ValueRef pRet = pN->GetStack(0);
 		ListInfo* pListR = pN->GetVM()->ListAlloc();
 		pN->Var_SetList(pRet, pListR); // Set Return Value
 
@@ -310,7 +310,7 @@ struct neo_libs
 	}
 
 
-	static bool Collection_clear(CNeoVMWorker* pN, VarInfo* pVar, short args)
+	static bool Collection_clear(CNeoVMWorker* pN, ValueRef pVar, short args)
 	{
 		assert(args == 0);
 		HeldValue receiver(pN, pVar);
@@ -337,9 +337,9 @@ struct neo_libs
 		size = value < 0 ? 0 : static_cast<int>(value);
 		return true;
 	}
-	static bool Sequence_reserve(CNeoVMWorker* pN, VarInfo* pVar, short args)
+	static bool Sequence_reserve(CNeoVMWorker* pN, ValueRef pVar, short args)
 	{
-		assert(args == 1 && pN->GetStack(1)->GetType() == VAR_INT);
+		assert(args == 1 && pN->GetStack(1).GetType() == VAR_INT);
 		int capacity;
 		if (pN->GetStack(1)->_int < 0)
 		{
@@ -347,22 +347,22 @@ struct neo_libs
 			return false;
 		}
 		if (!ReadCollectionSize(pN, 1, capacity)) return false;
-		if (pVar->GetType() == VAR_LIST) pVar->_lst->Reserve(capacity);
-		else if (pVar->GetType() == VAR_ARRAY) pN->GetVM()->ArrayReserve(pVar->_array, capacity);
+		if (pVar.GetType() == VAR_LIST) pVar->_lst->Reserve(capacity);
+		else if (pVar.GetType() == VAR_ARRAY) pN->GetVM()->ArrayReserve(pVar->_array, capacity);
 		else return false;
 		pN->ReturnValue();
 		return true;
 	}
-	static bool CollectionValueEquals(CNeoVMWorker* pN, VarInfo* a, VarInfo* b)
+	static bool CollectionValueEquals(CNeoVMWorker* pN, ValueRef a, ValueRef b)
 	{
 		// 검색은 대입 변환 없이 스크립트 == 규칙을 따른다. 정수끼리는 정밀도를 잃지 않는다.
-		if (a->GetType() == VAR_INT && b->GetType() == VAR_INT) return a->_int == b->_int;
-		if (a->IsNumber() && b->IsNumber()) return a->GetFloatNumber() == b->GetFloatNumber();
+		if (a.GetType() == VAR_INT && b.GetType() == VAR_INT) return a->_int == b->_int;
+		if (a.IsNumber() && b.IsNumber()) return a.GetFloatNumber() == b.GetFloatNumber();
 		return pN->CompareEQRare(a, b);
 	}
-	static int SequenceFind(CNeoVMWorker* pN, VarInfo* pVar, VarInfo* value)
+	static int SequenceFind(CNeoVMWorker* pN, ValueRef pVar, ValueRef value)
 	{
-		if (pVar->GetType() == VAR_LIST)
+		if (pVar.GetType() == VAR_LIST)
 		{
 			ListInfo* list = pVar->_lst;
 			for (int i = 0; i < list->GetCount(); ++i)
@@ -371,43 +371,43 @@ struct neo_libs
 		else
 		{
 			ArrayInfo* array = pVar->_array;
-			VarInfo item;
+			BoundaryValue item;
 			for (int i = 0; i < array->_count; ++i)
 			{
-				VarInfo* candidate = &item;
+				ValueRef candidate = &item;
 				switch (array->_elementType)
 				{
-				case NeoArrayElementType::Bool: item = VarInfo(VAR_BOOL); item._bl = array->GetBool(i); break;
-				case NeoArrayElementType::Int: item = VarInfo(VAR_INT); item._int = array->IntData()[i]; break;
-				case NeoArrayElementType::Float: item = VarInfo(VAR_FLOAT); item._float = array->FloatData()[i]; break;
+				case NeoArrayElementType::Bool: item = BoundaryValue(VAR_BOOL); item._bl = array->GetBool(i); break;
+				case NeoArrayElementType::Int: item = BoundaryValue(VAR_INT); item._int = array->IntData()[i]; break;
+				case NeoArrayElementType::Float: item = BoundaryValue(VAR_FLOAT); item._float = array->FloatData()[i]; break;
 				case NeoArrayElementType::Vector2:
 				case NeoArrayElementType::Vector3:
-				case NeoArrayElementType::Vector4: candidate = array->VectorValues() + i; break;
-				case NeoArrayElementType::Int32: item = VarInfo(VAR_INT); item._int = array->Int32Data()[i]; break;
-				case NeoArrayElementType::Float32: item = VarInfo(VAR_FLOAT); item._float = array->Float32Data()[i]; break;
+				case NeoArrayElementType::Vector4: candidate = array->VectorAt(i); break;
+				case NeoArrayElementType::Int32: item = BoundaryValue(VAR_INT); item._int = array->Int32Data()[i]; break;
+				case NeoArrayElementType::Float32: item = BoundaryValue(VAR_FLOAT); item._float = array->Float32Data()[i]; break;
 				}
 				if (CollectionValueEquals(pN, candidate, value)) return i;
 			}
 		}
 		return -1;
 	}
-	static bool Sequence_find(CNeoVMWorker* pN, VarInfo* pVar, short args)
+	static bool Sequence_find(CNeoVMWorker* pN, ValueRef pVar, short args)
 	{
-		assert(!(args != 1 || (pVar->GetType() != VAR_LIST && pVar->GetType() != VAR_ARRAY)));
+		assert(!(args != 1 || (pVar.GetType() != VAR_LIST && pVar.GetType() != VAR_ARRAY)));
 		pN->ReturnValue(SequenceFind(pN, pVar, pN->GetStack(1)));
 		return true;
 	}
-	static bool Sequence_contains(CNeoVMWorker* pN, VarInfo* pVar, short args)
+	static bool Sequence_contains(CNeoVMWorker* pN, ValueRef pVar, short args)
 	{
-		assert(!(args != 1 || (pVar->GetType() != VAR_LIST && pVar->GetType() != VAR_ARRAY)));
+		assert(!(args != 1 || (pVar.GetType() != VAR_LIST && pVar.GetType() != VAR_ARRAY)));
 		pN->ReturnValue(SequenceFind(pN, pVar, pN->GetStack(1)) >= 0);
 		return true;
 	}
-	static bool Array_fill(CNeoVMWorker* pN, VarInfo* pVar, short args)
+	static bool Array_fill(CNeoVMWorker* pN, ValueRef pVar, short args)
 	{
-		assert(pVar->GetType() == VAR_ARRAY && args == 1);
+		assert(pVar.GetType() == VAR_ARRAY && args == 1);
 		ArrayInfo* array = pVar->_array;
-		VarInfo* value = pN->GetStack(1);
+		ValueRef value = pN->GetStack(1);
 		if (!array->CanAssignValue(value))
 		{
 			pN->SetArrayAssignError(array, value);
@@ -419,10 +419,10 @@ struct neo_libs
 		pN->ReturnValue();
 		return true;
 	}
-	static bool Set_add(CNeoVMWorker* pN, VarInfo* pVar, short args)
+	static bool Set_add(CNeoVMWorker* pN, ValueRef pVar, short args)
 	{
-		assert(pVar->GetType() == VAR_SET && args == 1);
-		if (pN->GetStack(1)->GetType() == VAR_NONE) { pN->SetError("set element cannot be null"); return false; }
+		assert(pVar.GetType() == VAR_SET && args == 1);
+		if (pN->GetStack(1).GetType() == VAR_NONE) { pN->SetError("set element cannot be null"); return false; }
 		HeldValue receiver(pN, pVar);
 		SetInfo* set = receiver.value._set;
 		const int before = set->GetCount();
@@ -430,9 +430,9 @@ struct neo_libs
 		pN->ReturnValue(set->GetCount() != before);
 		return true;
 	}
-	static bool Set_remove(CNeoVMWorker* pN, VarInfo* pVar, short args)
+	static bool Set_remove(CNeoVMWorker* pN, ValueRef pVar, short args)
 	{
-		assert(pVar->GetType() == VAR_SET && args == 1);
+		assert(pVar.GetType() == VAR_SET && args == 1);
 		HeldValue receiver(pN, pVar), key(pN, pN->GetStack(1));
 		SetInfo* set = receiver.value._set;
 		const int before = set->GetCount();
@@ -440,15 +440,15 @@ struct neo_libs
 		pN->ReturnValue(set->GetCount() != before);
 		return true;
 	}
-	static bool Set_contains(CNeoVMWorker* pN, VarInfo* pVar, short args)
+	static bool Set_contains(CNeoVMWorker* pN, ValueRef pVar, short args)
 	{
-		assert(pVar->GetType() == VAR_SET && args == 1);
+		assert(pVar.GetType() == VAR_SET && args == 1);
 		pN->ReturnValue(pVar->_set->Find(pN->GetStack(1)));
 		return true;
 	}
-	static bool Set_values(CNeoVMWorker* pN, VarInfo* pVar, short args)
+	static bool Set_values(CNeoVMWorker* pN, ValueRef pVar, short args)
 	{
-		assert(pVar->GetType() == VAR_SET && args == 0);
+		assert(pVar.GetType() == VAR_SET && args == 0);
 		HeldValue receiver(pN, pVar);
 		SetInfo* source = receiver.value._set;
 		ListInfo* dest = pN->GetVM()->ListAlloc();
@@ -459,15 +459,15 @@ struct neo_libs
 			dest->SetValue(index++, &it._pSetNode->data->key);
 		return true;
 	}
-	static bool Map_contains(CNeoVMWorker* pN, VarInfo* pVar, short args)
+	static bool Map_contains(CNeoVMWorker* pN, ValueRef pVar, short args)
 	{
-		assert(pVar->GetType() == VAR_MAP && args == 1);
+		assert(pVar.GetType() == VAR_MAP && args == 1);
 		pN->ReturnValue(pVar->_tbl->Find(pN->GetStack(1)) != nullptr);
 		return true;
 	}
-	static bool Map_remove(CNeoVMWorker* pN, VarInfo* pVar, short args)
+	static bool Map_remove(CNeoVMWorker* pN, ValueRef pVar, short args)
 	{
-		assert(pVar->GetType() == VAR_MAP && args == 1);
+		assert(pVar.GetType() == VAR_MAP && args == 1);
 		HeldValue receiver(pN, pVar), key(pN, pN->GetStack(1));
 		MapInfo* map = receiver.value._tbl;
 		const int before = map->GetCount();
@@ -475,7 +475,7 @@ struct neo_libs
 		pN->ReturnValue(map->GetCount() != before);
 		return true;
 	}
-	static bool Collection_clone(CNeoVMWorker* pN, VarInfo* pVar, short args)
+	static bool Collection_clone(CNeoVMWorker* pN, ValueRef pVar, short args)
 	{
 		assert(args == 0);
 		// 반환 슬롯과 수신자가 겹쳐도 원본은 유지한다. 중첩 컨테이너는 얕게 공유한다.
@@ -486,24 +486,24 @@ struct neo_libs
 		case VAR_ARRAY:
 		{
 			ArrayInfo* source = receiver.value._array;
-			VarInfo initial;
+			BoundaryValue initial;
 			switch (source->_elementType)
 			{
-			case NeoArrayElementType::Bool: initial = VarInfo(VAR_BOOL); initial._bl = source->_initialBool; break;
-			case NeoArrayElementType::Int: initial = VarInfo(VAR_INT); initial._int = source->_initialInt; break;
-			case NeoArrayElementType::Float: initial = VarInfo(VAR_FLOAT); initial._float = source->_initialFloat; break;
+			case NeoArrayElementType::Bool: initial = BoundaryValue(VAR_BOOL); initial._bl = source->_initialBool; break;
+			case NeoArrayElementType::Int: initial = BoundaryValue(VAR_INT); initial._int = source->_initialInt; break;
+			case NeoArrayElementType::Float: initial = BoundaryValue(VAR_FLOAT); initial._float = source->_initialFloat; break;
 			case NeoArrayElementType::Vector2:
 			case NeoArrayElementType::Vector3:
-			case NeoArrayElementType::Vector4: initial = source->_initialVector; break;
-			case NeoArrayElementType::Int32: initial = VarInfo(VAR_INT); initial._int = source->_initialInt; break;
-			case NeoArrayElementType::Float32: initial = VarInfo(VAR_FLOAT); initial._float = source->_initialFloat; break;
+			case NeoArrayElementType::Vector4: initial = BoundaryValue(ValueRef(&source->_initialVector, source->VectorType())); break;
+			case NeoArrayElementType::Int32: initial = BoundaryValue(VAR_INT); initial._int = source->_initialInt; break;
+			case NeoArrayElementType::Float32: initial = BoundaryValue(VAR_FLOAT); initial._float = source->_initialFloat; break;
 			}
 			ArrayInfo* dest = vm->ArrayAlloc(source->_elementType, source->_count, initial);
 			if (dest == nullptr) return false;
 			pN->Var_SetArray(pN->GetStack(0), dest);
 			if (source->VectorDimension() != 0)
 			{
-				for (int i = 0; i < source->_count; ++i) dest->AssignValue(i, source->VectorValues() + i);
+				for (int i = 0; i < source->_count; ++i) dest->AssignValue(i, source->VectorAt(i));
 			}
 			else if (source->_count != 0) memcpy(dest->_data, source->_data, dest->BufferBytes());
 			break;
@@ -517,7 +517,7 @@ struct neo_libs
 			for (CollectionIterator it = source->FirstNode(); it._pTableNode; source->NextNode(it))
 			{
 				MapData* data = it._pTableNode->data;
-				VarInfo* slot = dest->Insert(&data->key);
+				ValueRef slot = dest->Insert(&data->key);
 				if (slot == nullptr) return false;
 				if (data->value.IsContainerType()) dest->MarkContainerChild();
 				vm->Move(slot, &data->value);
@@ -547,10 +547,10 @@ struct neo_libs
 		}
 		return true;
 	}
-	static bool List_resize(CNeoVMWorker* pN, VarInfo* pVar, short args)
+	static bool List_resize(CNeoVMWorker* pN, ValueRef pVar, short args)
 	{
-		assert(pVar->GetType() == VAR_LIST);
-		assert(args == 1 && pN->GetStack(1)->GetType() == VAR_INT);
+		assert(pVar.GetType() == VAR_LIST);
+		assert(args == 1 && pN->GetStack(1).GetType() == VAR_INT);
 
 		int size;
 		if (!ReadCollectionSize(pN, 1, size)) return false;
@@ -558,26 +558,26 @@ struct neo_libs
 		pN->ReturnValue();
 		return true;
 	}
-	static bool List_len(CNeoVMWorker* pN, VarInfo* pVar, short args)
+	static bool List_len(CNeoVMWorker* pN, ValueRef pVar, short args)
 	{
-		assert(pVar->GetType() == VAR_LIST);
+		assert(pVar.GetType() == VAR_LIST);
 		assert(args == 0);
 
 		pN->ReturnValue((int)pVar->_lst->GetCount());
 		return true;
 	}
-	static bool Array_len(CNeoVMWorker* pN, VarInfo* pVar, short args)
+	static bool Array_len(CNeoVMWorker* pN, ValueRef pVar, short args)
 	{
-		assert(pVar->GetType() == VAR_ARRAY);
+		assert(pVar.GetType() == VAR_ARRAY);
 		assert(args == 0);
 
 		pN->ReturnValue(pVar->_array->_count);
 		return true;
 	}
-	static bool Array_resize(CNeoVMWorker* pN, VarInfo* pVar, short args)
+	static bool Array_resize(CNeoVMWorker* pN, ValueRef pVar, short args)
 	{
-		assert(pVar->GetType() == VAR_ARRAY);
-		assert(args == 1 && pN->GetStack(1)->GetType() == VAR_INT);
+		assert(pVar.GetType() == VAR_ARRAY);
+		assert(args == 1 && pN->GetStack(1).GetType() == VAR_INT);
 
 		int size;
 		if (!ReadCollectionSize(pN, 1, size)) return false;
@@ -585,13 +585,13 @@ struct neo_libs
 		pN->ReturnValue();
 		return true;
 	}
-	static bool Array_append(CNeoVMWorker* pN, VarInfo* pVar, short args)
+	static bool Array_append(CNeoVMWorker* pN, ValueRef pVar, short args)
 	{
-		assert(pVar->GetType() == VAR_ARRAY);
+		assert(pVar.GetType() == VAR_ARRAY);
 		assert(args == 1);
 
 		ArrayInfo* array = pVar->_array;
-		VarInfo* value = pN->GetStack(1);
+		ValueRef value = pN->GetStack(1);
 		if (array->CanAssignValue(value) == false)
 		{
 			pN->SetArrayAssignError(array, value);
@@ -606,9 +606,9 @@ struct neo_libs
 		pN->ReturnValue();
 		return true;
 	}
-	static bool List_append(CNeoVMWorker* pN, VarInfo* pVar, short args)
+	static bool List_append(CNeoVMWorker* pN, ValueRef pVar, short args)
 	{
-		assert(pVar->GetType() == VAR_LIST);
+		assert(pVar.GetType() == VAR_LIST);
 		if (args == 1)
 		{
 			pVar->_lst->InsertLast(pN->GetStack(1));
@@ -617,8 +617,8 @@ struct neo_libs
 		}
 		else if (args == 2)
 		{
-			VarInfo* pIndex = pN->GetStack(2);
-			assert(pIndex->GetType() == VAR_INT);
+			ValueRef pIndex = pN->GetStack(2);
+			assert(pIndex.GetType() == VAR_INT);
 			if (false == pVar->_lst->Insert(NeoNarrowInt(pIndex->_int), pN->GetStack(1)))
 				return false;
 			pN->ReturnValue();
@@ -626,11 +626,11 @@ struct neo_libs
 		}
 		return false;
 	}
-	static bool List_insert(CNeoVMWorker* pN, VarInfo* pVar, short args)
+	static bool List_insert(CNeoVMWorker* pN, ValueRef pVar, short args)
 	{
-		assert(pVar->GetType() == VAR_LIST && args == 2);
-		VarInfo* index = pN->GetStack(1);
-		assert(index->GetType() == VAR_INT);
+		assert(pVar.GetType() == VAR_LIST && args == 2);
+		ValueRef index = pN->GetStack(1);
+		assert(index.GetType() == VAR_INT);
 		if (!pVar->_lst->Insert(NeoNarrowInt(index->_int), pN->GetStack(2)))
 		{
 			pN->SetError("list insert index out of range");
@@ -639,11 +639,11 @@ struct neo_libs
 		pN->ReturnValue();
 		return true;
 	}
-	static bool ListRemoveAt(CNeoVMWorker* pN, VarInfo* pVar, int offset, bool swapLast)
+	static bool ListRemoveAt(CNeoVMWorker* pN, ValueRef pVar, int offset, bool swapLast)
 	{
 		HeldValue receiver(pN, pVar);
 		ListInfo* list = receiver.value._lst;
-		VarInfo* item = list->GetValue(offset);
+		ValueRef item = list->GetValue(offset);
 		if (item == nullptr)
 		{
 			pN->SetError("list remove index out of range");
@@ -661,19 +661,19 @@ struct neo_libs
 		pN->ReturnValue(&removed.value);
 		return true;
 	}
-	static bool List_remove(CNeoVMWorker* pN, VarInfo* pVar, short args)
+	static bool List_remove(CNeoVMWorker* pN, ValueRef pVar, short args)
 	{
-		assert(pVar->GetType() == VAR_LIST && args == 1 && pN->GetStack(1)->GetType() == VAR_INT);
+		assert(pVar.GetType() == VAR_LIST && args == 1 && pN->GetStack(1).GetType() == VAR_INT);
 		return ListRemoveAt(pN, pVar, NeoNarrowInt(pN->GetStack(1)->_int), false);
 	}
-	static bool List_remove_swap(CNeoVMWorker* pN, VarInfo* pVar, short args)
+	static bool List_remove_swap(CNeoVMWorker* pN, ValueRef pVar, short args)
 	{
-		assert(pVar->GetType() == VAR_LIST && args == 1 && pN->GetStack(1)->GetType() == VAR_INT);
+		assert(pVar.GetType() == VAR_LIST && args == 1 && pN->GetStack(1).GetType() == VAR_INT);
 		return ListRemoveAt(pN, pVar, NeoNarrowInt(pN->GetStack(1)->_int), true);
 	}
-	static bool List_pop(CNeoVMWorker* pN, VarInfo* pVar, short args)
+	static bool List_pop(CNeoVMWorker* pN, ValueRef pVar, short args)
 	{
-		assert(pVar->GetType() == VAR_LIST && args == 0);
+		assert(pVar.GetType() == VAR_LIST && args == 0);
 		const int count = pVar->_lst->GetCount();
 		if (count == 0)
 		{
@@ -682,12 +682,12 @@ struct neo_libs
 		}
 		return ListRemoveAt(pN, pVar, count - 1, false);
 	}
-	static bool List_sort(CNeoVMWorker* pN, VarInfo* pVar, short args)
+	static bool List_sort(CNeoVMWorker* pN, ValueRef pVar, short args)
 	{
-		assert(pVar->GetType() == VAR_LIST && args == 1);
-		VarInfo* compare = pN->GetStack(1);
-		assert(compare->GetType() == VAR_NONE || compare->GetType() == VAR_FUN || compare->GetType() == VAR_CLOSURE);
-		if (compare->GetType() == VAR_NONE) return false;
+		assert(pVar.GetType() == VAR_LIST && args == 1);
+		ValueRef compare = pN->GetStack(1);
+		assert(compare.GetType() == VAR_NONE || compare.GetType() == VAR_FUN || compare.GetType() == VAR_CLOSURE);
+		if (compare.GetType() == VAR_NONE) return false;
 		// The native sort cannot suspend and resume its C++ frame. Never disable
 		// a host's time limit to run a comparator: it may loop forever.
 		if (pN->IsSynchronousExecutionLimited())
@@ -710,9 +710,9 @@ struct neo_libs
 		struct Snapshot
 		{
 			CNeoVMWorker* worker;
-			std::vector<VarInfo> values;
+			std::vector<BoundaryValue> values;
 			~Snapshot() { for (auto& value : values) worker->Var_Release(&value); }
-		} snapshot{pN, std::vector<VarInfo>(count)};
+		} snapshot{pN, std::vector<BoundaryValue>(count)};
 		std::vector<size_t> order(count), next(count);
 		for (size_t i = 0; i < count; ++i)
 		{
@@ -734,8 +734,8 @@ struct neo_libs
 					bool takeRight = left == middle;
 					if (left < middle && right < end)
 					{
-						VarInfo callArgs[2] = {snapshot.values[order[right]], snapshot.values[order[left]]};
-						VarInfo* result = pN->testCall(&callback.value, callArgs, 2);
+						BoundaryValue callArgs[2] = {snapshot.values[order[right]], snapshot.values[order[left]]};
+						ValueRef result = pN->testCall(&callback.value, callArgs, 2);
 						if (pN->GetVM()->IsLastErrorMsg()) return false;
 						if (list->_mutationVersion != version)
 						{
@@ -747,7 +747,7 @@ struct neo_libs
 							pN->SetError("list sort comparator must accept two arguments and return bool");
 							return false;
 						}
-						assert(result->GetType() == VAR_BOOL);
+						assert(result.GetType() == VAR_BOOL);
 						takeRight = result->_bl;
 					}
 					next[dest] = takeRight ? order[right++] : order[left++];
@@ -764,13 +764,13 @@ struct neo_libs
 		pN->ReturnValue();
 		return true;
 	}
-	static bool Set_len(CNeoVMWorker* pN, VarInfo* pVar, short args)
+	static bool Set_len(CNeoVMWorker* pN, ValueRef pVar, short args)
 	{
-		assert(pVar->GetType() == VAR_SET && args == 0);
+		assert(pVar.GetType() == VAR_SET && args == 0);
 		pN->ReturnValue(pVar->_set->GetCount());
 		return true;
 	}
-	static bool Math_abs(CNeoVMWorker* pN, VarInfo* pVar, short args)
+	static bool Math_abs(CNeoVMWorker* pN, ValueRef pVar, short args)
 	{
 		assert(args == 1);
 
@@ -778,7 +778,7 @@ struct neo_libs
 		pN->ReturnValue(::abs(v));
 		return true;
 	}
-	static bool Math_acos(CNeoVMWorker* pN, VarInfo* pVar, short args)
+	static bool Math_acos(CNeoVMWorker* pN, ValueRef pVar, short args)
 	{
 		assert(args == 1);
 
@@ -786,7 +786,7 @@ struct neo_libs
 		pN->ReturnValue(::acos(v));
 		return true;
 	}
-	static bool Math_asin(CNeoVMWorker* pN, VarInfo* pVar, short args)
+	static bool Math_asin(CNeoVMWorker* pN, ValueRef pVar, short args)
 	{
 		assert(args == 1);
 
@@ -794,7 +794,7 @@ struct neo_libs
 		pN->ReturnValue(::asin(v));
 		return true;
 	}
-	static bool Math_atan(CNeoVMWorker* pN, VarInfo* pVar, short args)
+	static bool Math_atan(CNeoVMWorker* pN, ValueRef pVar, short args)
 	{
 		assert(args == 1);
 
@@ -802,7 +802,7 @@ struct neo_libs
 		pN->ReturnValue(::atan(v));
 		return true;
 	}
-	static bool Math_ceil(CNeoVMWorker* pN, VarInfo* pVar, short args)
+	static bool Math_ceil(CNeoVMWorker* pN, ValueRef pVar, short args)
 	{
 		assert(args == 1);
 
@@ -810,7 +810,7 @@ struct neo_libs
 		pN->ReturnValue(::ceil(v));
 		return true;
 	}
-	static bool Math_floor(CNeoVMWorker* pN, VarInfo* pVar, short args)
+	static bool Math_floor(CNeoVMWorker* pN, ValueRef pVar, short args)
 	{
 		assert(args == 1);
 
@@ -818,7 +818,7 @@ struct neo_libs
 		pN->ReturnValue(::floor(v));
 		return true;
 	}
-	static bool Math_round(CNeoVMWorker* pN, VarInfo* pVar, short args)
+	static bool Math_round(CNeoVMWorker* pN, ValueRef pVar, short args)
 	{
 		assert(args == 1);
 
@@ -826,7 +826,7 @@ struct neo_libs
 		pN->ReturnValue(::round(v));
 		return true;
 	}
-	static bool Math_sin(CNeoVMWorker* pN, VarInfo* pVar, short args)
+	static bool Math_sin(CNeoVMWorker* pN, ValueRef pVar, short args)
 	{
 		assert(args == 1);
 
@@ -834,7 +834,7 @@ struct neo_libs
 		pN->ReturnValue(::sin(v));
 		return true;
 	}
-	static bool Math_cos(CNeoVMWorker* pN, VarInfo* pVar, short args)
+	static bool Math_cos(CNeoVMWorker* pN, ValueRef pVar, short args)
 	{
 		assert(args == 1);
 
@@ -842,7 +842,7 @@ struct neo_libs
 		pN->ReturnValue(::cos(v));
 		return true;
 	}
-	static bool Math_tan(CNeoVMWorker* pN, VarInfo* pVar, short args)
+	static bool Math_tan(CNeoVMWorker* pN, ValueRef pVar, short args)
 	{
 		assert(args == 1);
 
@@ -850,7 +850,7 @@ struct neo_libs
 		pN->ReturnValue(::tan(v));
 		return true;
 	}
-	static bool Math_log(CNeoVMWorker* pN, VarInfo* pVar, short args)
+	static bool Math_log(CNeoVMWorker* pN, ValueRef pVar, short args)
 	{
 		assert(args == 1);
 
@@ -858,7 +858,7 @@ struct neo_libs
 		pN->ReturnValue(::log(v));
 		return true;
 	}
-	static bool Math_log10(CNeoVMWorker* pN, VarInfo* pVar, short args)
+	static bool Math_log10(CNeoVMWorker* pN, ValueRef pVar, short args)
 	{
 		assert(args == 1);
 
@@ -866,7 +866,7 @@ struct neo_libs
 		pN->ReturnValue(::log10(v));
 		return true;
 	}
-	static bool Math_exp(CNeoVMWorker* pN, VarInfo* pVar, short args)
+	static bool Math_exp(CNeoVMWorker* pN, ValueRef pVar, short args)
 	{
 		assert(args == 1);
 
@@ -874,7 +874,7 @@ struct neo_libs
 		pN->ReturnValue(::exp(v));
 		return true;
 	}
-	static bool Math_pow(CNeoVMWorker* pN, VarInfo* pVar, short args)
+	static bool Math_pow(CNeoVMWorker* pN, ValueRef pVar, short args)
 	{
 		assert(args == 2);
 
@@ -883,7 +883,7 @@ struct neo_libs
 		pN->ReturnValue(::pow(v1, v2));
 		return true;
 	}
-	static bool Math_deg(CNeoVMWorker* pN, VarInfo* pVar, short args)
+	static bool Math_deg(CNeoVMWorker* pN, ValueRef pVar, short args)
 	{
 		assert(args == 1);
 
@@ -891,7 +891,7 @@ struct neo_libs
 		pN->ReturnValue(((radian) * (180.0f / MATH_PI)));
 		return true;
 	}
-	static bool Math_rad(CNeoVMWorker* pN, VarInfo* pVar, short args)
+	static bool Math_rad(CNeoVMWorker* pN, ValueRef pVar, short args)
 	{
 		assert(args == 1);
 
@@ -899,7 +899,7 @@ struct neo_libs
 		pN->ReturnValue(((degree) * (MATH_PI / 180.0f)));
 		return true;
 	}
-	static bool Math_sqrt(CNeoVMWorker* pN, VarInfo* pVar, short args)
+	static bool Math_sqrt(CNeoVMWorker* pN, ValueRef pVar, short args)
 	{
 		assert(args == 1);
 
@@ -955,13 +955,13 @@ struct neo_libs
 		return cur + (d > (NS_FLOAT)0 ? maxDelta : -maxDelta);
 	}
 
-	static bool Math_atan2(CNeoVMWorker* pN, VarInfo* pVar, short args)
+	static bool Math_atan2(CNeoVMWorker* pN, ValueRef pVar, short args)
 	{
 		assert(args == 2);
 		pN->ReturnValue(::atan2(FloatArgument(pN, 1), FloatArgument(pN, 2)));
 		return true;
 	}
-	static bool Math_hypot(CNeoVMWorker* pN, VarInfo* pVar, short args)
+	static bool Math_hypot(CNeoVMWorker* pN, ValueRef pVar, short args)
 	{
 		assert(args == 2);
 		NS_FLOAT x = FloatArgument(pN, 1);
@@ -969,7 +969,7 @@ struct neo_libs
 		pN->ReturnValue(::sqrt(x * x + y * y));
 		return true;
 	}
-	static bool Math_fmod(CNeoVMWorker* pN, VarInfo* pVar, short args)
+	static bool Math_fmod(CNeoVMWorker* pN, ValueRef pVar, short args)
 	{
 		assert(args == 2);
 		NS_FLOAT x = FloatArgument(pN, 1);
@@ -978,13 +978,13 @@ struct neo_libs
 		pN->ReturnValue(y == (NS_FLOAT)0 ? (NS_FLOAT)0 : ::fmod(x, y));
 		return true;
 	}
-	static bool Math_trunc(CNeoVMWorker* pN, VarInfo* pVar, short args)
+	static bool Math_trunc(CNeoVMWorker* pN, ValueRef pVar, short args)
 	{
 		assert(args == 1);
 		pN->ReturnValue(::trunc(FloatArgument(pN, 1)));
 		return true;
 	}
-	static bool Math_fract(CNeoVMWorker* pN, VarInfo* pVar, short args)
+	static bool Math_fract(CNeoVMWorker* pN, ValueRef pVar, short args)
 	{
 		assert(args == 1);
 		NS_FLOAT x = FloatArgument(pN, 1);
@@ -995,32 +995,32 @@ struct neo_libs
 		pN->ReturnValue(result);
 		return true;
 	}
-	static bool Math_sinh(CNeoVMWorker* pN, VarInfo* pVar, short args)
+	static bool Math_sinh(CNeoVMWorker* pN, ValueRef pVar, short args)
 	{
 		assert(args == 1);
 		pN->ReturnValue(::sinh(FloatArgument(pN, 1)));
 		return true;
 	}
-	static bool Math_cosh(CNeoVMWorker* pN, VarInfo* pVar, short args)
+	static bool Math_cosh(CNeoVMWorker* pN, ValueRef pVar, short args)
 	{
 		assert(args == 1);
 		pN->ReturnValue(::cosh(FloatArgument(pN, 1)));
 		return true;
 	}
-	static bool Math_tanh(CNeoVMWorker* pN, VarInfo* pVar, short args)
+	static bool Math_tanh(CNeoVMWorker* pN, ValueRef pVar, short args)
 	{
 		assert(args == 1);
 		pN->ReturnValue(::tanh(FloatArgument(pN, 1)));
 		return true;
 	}
-	static bool Math_Sign(CNeoVMWorker* pN, VarInfo* pVar, short args)
+	static bool Math_Sign(CNeoVMWorker* pN, ValueRef pVar, short args)
 	{
 		assert(args == 1);
 		NS_FLOAT x = FloatArgument(pN, 1);
 		pN->ReturnValue(x > (NS_FLOAT)0 ? (NS_FLOAT)1 : (x < (NS_FLOAT)0 ? (NS_FLOAT)-1 : (NS_FLOAT)0));
 		return true;
 	}
-	static bool Math_Min(CNeoVMWorker* pN, VarInfo* pVar, short args)
+	static bool Math_Min(CNeoVMWorker* pN, ValueRef pVar, short args)
 	{
 		assert(args == 2);
 		NS_FLOAT a = FloatArgument(pN, 1);
@@ -1028,7 +1028,7 @@ struct neo_libs
 		pN->ReturnValue(a < b ? a : b);
 		return true;
 	}
-	static bool Math_Max(CNeoVMWorker* pN, VarInfo* pVar, short args)
+	static bool Math_Max(CNeoVMWorker* pN, ValueRef pVar, short args)
 	{
 		assert(args == 2);
 		NS_FLOAT a = FloatArgument(pN, 1);
@@ -1036,13 +1036,13 @@ struct neo_libs
 		pN->ReturnValue(a > b ? a : b);
 		return true;
 	}
-	static bool Math_Repeat(CNeoVMWorker* pN, VarInfo* pVar, short args)
+	static bool Math_Repeat(CNeoVMWorker* pN, ValueRef pVar, short args)
 	{
 		assert(args == 2);
 		pN->ReturnValue(NsRepeat(FloatArgument(pN, 1), FloatArgument(pN, 2)));
 		return true;
 	}
-	static bool Math_PingPong(CNeoVMWorker* pN, VarInfo* pVar, short args)
+	static bool Math_PingPong(CNeoVMWorker* pN, ValueRef pVar, short args)
 	{
 		assert(args == 2);
 		NS_FLOAT x = FloatArgument(pN, 1);
@@ -1065,13 +1065,13 @@ struct neo_libs
 		pN->ReturnValue(length - ::fabs(t - length));
 		return true;
 	}
-	static bool Math_WrapAngle(CNeoVMWorker* pN, VarInfo* pVar, short args)
+	static bool Math_WrapAngle(CNeoVMWorker* pN, ValueRef pVar, short args)
 	{
 		assert(args == 1);
 		pN->ReturnValue(NsWrapAngle(FloatArgument(pN, 1)));
 		return true;
 	}
-	static bool Math_DeltaAngle(CNeoVMWorker* pN, VarInfo* pVar, short args)
+	static bool Math_DeltaAngle(CNeoVMWorker* pN, ValueRef pVar, short args)
 	{
 		assert(args == 2);
 		const NS_FLOAT from = FloatArgument(pN, 1), to = FloatArgument(pN, 2);
@@ -1081,7 +1081,7 @@ struct neo_libs
 			pN->ReturnValue(NsWrapAngle(to - from));
 		return true;
 	}
-	static bool Math_LerpAngle(CNeoVMWorker* pN, VarInfo* pVar, short args)
+	static bool Math_LerpAngle(CNeoVMWorker* pN, ValueRef pVar, short args)
 	{
 		assert(args == 3);
 		NS_FLOAT a = FloatArgument(pN, 1);
@@ -1107,13 +1107,13 @@ struct neo_libs
 		}
 		return true;
 	}
-	static bool Math_MoveToward(CNeoVMWorker* pN, VarInfo* pVar, short args)
+	static bool Math_MoveToward(CNeoVMWorker* pN, ValueRef pVar, short args)
 	{
 		assert(args == 3);
 		pN->ReturnValue(NsMoveToward(FloatArgument(pN, 1), FloatArgument(pN, 2), FloatArgument(pN, 3)));
 		return true;
 	}
-	static bool Math_MoveTowardAngle(CNeoVMWorker* pN, VarInfo* pVar, short args)
+	static bool Math_MoveTowardAngle(CNeoVMWorker* pN, ValueRef pVar, short args)
 	{
 		assert(args == 3);
 		NS_FLOAT cur = FloatArgument(pN, 1);
@@ -1132,7 +1132,7 @@ struct neo_libs
 		}
 		return true;
 	}
-	static bool Math_InverseLerp(CNeoVMWorker* pN, VarInfo* pVar, short args)
+	static bool Math_InverseLerp(CNeoVMWorker* pN, ValueRef pVar, short args)
 	{
 		assert(args == 3);
 		NS_FLOAT a = FloatArgument(pN, 1);
@@ -1141,7 +1141,7 @@ struct neo_libs
 		pN->ReturnValue(b == a ? (NS_FLOAT)0 : (v - a) / (b - a));
 		return true;
 	}
-	static bool Math_Remap(CNeoVMWorker* pN, VarInfo* pVar, short args)
+	static bool Math_Remap(CNeoVMWorker* pN, ValueRef pVar, short args)
 	{
 		assert(args == 5);
 		NS_FLOAT v = FloatArgument(pN, 1);
@@ -1153,7 +1153,7 @@ struct neo_libs
 		pN->ReturnValue(outMin + (outMax - outMin) * t);
 		return true;
 	}
-	static bool Math_SmoothStep(CNeoVMWorker* pN, VarInfo* pVar, short args)
+	static bool Math_SmoothStep(CNeoVMWorker* pN, ValueRef pVar, short args)
 	{
 		assert(args == 3);
 		NS_FLOAT e0 = FloatArgument(pN, 1);
@@ -1163,7 +1163,7 @@ struct neo_libs
 		pN->ReturnValue(t * t * ((NS_FLOAT)3.0 - (NS_FLOAT)2.0 * t));
 		return true;
 	}
-	static bool Math_Distance2(CNeoVMWorker* pN, VarInfo* pVar, short args)
+	static bool Math_Distance2(CNeoVMWorker* pN, ValueRef pVar, short args)
 	{
 		assert(args == 4);
 		NS_FLOAT dx = FloatArgument(pN, 3) - FloatArgument(pN, 1);
@@ -1171,7 +1171,7 @@ struct neo_libs
 		pN->ReturnValue(::sqrt(dx * dx + dy * dy));
 		return true;
 	}
-	static bool Math_Dot3(CNeoVMWorker* pN, VarInfo* pVar, short args)
+	static bool Math_Dot3(CNeoVMWorker* pN, ValueRef pVar, short args)
 	{
 		assert(args == 2);
 		float a[3], b[3];
@@ -1180,7 +1180,7 @@ struct neo_libs
 		pN->ReturnValue((NS_FLOAT)(a[0] * b[0] + a[1] * b[1] + a[2] * b[2]));
 		return true;
 	}
-	static bool Math_Length3(CNeoVMWorker* pN, VarInfo* pVar, short args)
+	static bool Math_Length3(CNeoVMWorker* pN, ValueRef pVar, short args)
 	{
 		assert(args == 1);
 		float v[3];
@@ -1188,7 +1188,7 @@ struct neo_libs
 		pN->ReturnValue(static_cast<NS_FLOAT>(static_cast<float>(::sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]))));
 		return true;
 	}
-	static bool Math_Distance3(CNeoVMWorker* pN, VarInfo* pVar, short args)
+	static bool Math_Distance3(CNeoVMWorker* pN, ValueRef pVar, short args)
 	{
 		assert(args == 2);
 		float a[3], b[3];
@@ -1200,26 +1200,26 @@ struct neo_libs
 		pN->ReturnValue(::sqrt(dx * dx + dy * dy + dz * dz));
 		return true;
 	}
-	static bool Math_Vector2(CNeoVMWorker* pN, VarInfo* pVar, short args)
+	static bool Math_Vector2(CNeoVMWorker* pN, ValueRef pVar, short args)
 	{
 		assert(args == 2);
 		pN->Var_SetVec2(pN->GetReturnVar(), NeoNarrowFloat32(FloatArgument(pN, 1)), NeoNarrowFloat32(FloatArgument(pN, 2)));
 		return true;
 	}
-	static bool Math_Vector3(CNeoVMWorker* pN, VarInfo* pVar, short args)
+	static bool Math_Vector3(CNeoVMWorker* pN, ValueRef pVar, short args)
 	{
 		assert(args == 3);
 		pN->Var_SetVec3(pN->GetReturnVar(), NeoNarrowFloat32(FloatArgument(pN, 1)), NeoNarrowFloat32(FloatArgument(pN, 2)), NeoNarrowFloat32(FloatArgument(pN, 3)));
 		return true;
 	}
-	static bool Math_Vector4(CNeoVMWorker* pN, VarInfo* pVar, short args)
+	static bool Math_Vector4(CNeoVMWorker* pN, ValueRef pVar, short args)
 	{
 		assert(args == 4);
 		pN->Var_SetVec4(pN->GetReturnVar(), NeoNarrowFloat32(FloatArgument(pN, 1)), NeoNarrowFloat32(FloatArgument(pN, 2)),
 			NeoNarrowFloat32(FloatArgument(pN, 3)), NeoNarrowFloat32(FloatArgument(pN, 4)));
 		return true;
 	}
-	static bool Math_Quaternion(CNeoVMWorker* pN, VarInfo* pVar, short args)
+	static bool Math_Quaternion(CNeoVMWorker* pN, ValueRef pVar, short args)
 	{
 		assert(args == 4);
 		pN->Var_SetQuat(pN->GetReturnVar(), NeoNarrowFloat32(FloatArgument(pN, 1)), NeoNarrowFloat32(FloatArgument(pN, 2)),
@@ -1238,26 +1238,26 @@ struct neo_libs
 		if (v > maxValue) return maxValue;
 		return v;
 	}
-	static bool Math_Clamp01(CNeoVMWorker* pN, VarInfo* pVar, short args)
+	static bool Math_Clamp01(CNeoVMWorker* pN, ValueRef pVar, short args)
 	{
 		assert(args == 1);
 		pN->ReturnValue(MathClamp01Value(FloatArgument(pN, 1)));
 		return true;
 	}
-	static bool Math_Clamp(CNeoVMWorker* pN, VarInfo* pVar, short args)
+	static bool Math_Clamp(CNeoVMWorker* pN, ValueRef pVar, short args)
 	{
 		assert(args == 3);
 		pN->ReturnValue(MathClampValue(FloatArgument(pN, 1), FloatArgument(pN, 2), FloatArgument(pN, 3)));
 		return true;
 	}
-	static bool Math_SmoothStep01(CNeoVMWorker* pN, VarInfo* pVar, short args)
+	static bool Math_SmoothStep01(CNeoVMWorker* pN, ValueRef pVar, short args)
 	{
 		assert(args == 1);
 		NS_FLOAT x = MathClamp01Value(FloatArgument(pN, 1));
 		pN->ReturnValue(x * x * ((NS_FLOAT)3.0 - (NS_FLOAT)2.0 * x));
 		return true;
 	}
-	static bool Math_Lerp(CNeoVMWorker* pN, VarInfo* pVar, short args)
+	static bool Math_Lerp(CNeoVMWorker* pN, ValueRef pVar, short args)
 	{
 		assert(args == 3);
 		NS_FLOAT a = FloatArgument(pN, 1);
@@ -1266,11 +1266,11 @@ struct neo_libs
 		pN->ReturnValue(a + (b - a) * t);
 		return true;
 	}
-	// Read 는 VarInfo::GetVec* 로 벡터 값타입(VAR_VEC*)만 받는다 (리스트 폴백 없음).
-	static void ReadVec3(VarInfo* pVar, float out[3])
+	// Read 는 BoundaryValue::GetVec* 로 벡터 값타입(VAR_VEC*)만 받는다 (리스트 폴백 없음).
+	static void ReadVec3(ValueRef pVar, float out[3])
 	{
-		assert(pVar != nullptr && pVar->VectorComponentCount() == 3);
-		pVar->CopyVectorComponents<3>(out);
+		assert(pVar != nullptr && pVar.VectorComponentCount() == 3);
+		pVar.CopyVectorComponents<3>(out);
 	}
 	// Write 는 워커 Var_SetVec3(release 처리)로 인라인 값타입을 반환한다(힙 리스트 할당 제거).
 	static bool WriteVec3(CNeoVMWorker* pN, float x, float y, float z)
@@ -1278,10 +1278,10 @@ struct neo_libs
 		pN->Var_SetVec3(pN->GetReturnVar(), x, y, z);
 		return true;
 	}
-	static void ReadQuat(VarInfo* pVar, float out[4])
+	static void ReadQuat(ValueRef pVar, float out[4])
 	{
-		assert(pVar != nullptr && pVar->VectorComponentCount() == 4);
-		pVar->CopyVectorComponents<4>(out);
+		assert(pVar != nullptr && pVar.VectorComponentCount() == 4);
+		pVar.CopyVectorComponents<4>(out);
 	}
 	// q 는 wxyz. 정규화한 뒤 반환한다 (인자는 건드리지 않는다 — 호출측이 계속 쓸 수 있게).
 	static bool WriteQuat(CNeoVMWorker* pN, float w, float x, float y, float z)
@@ -1298,7 +1298,7 @@ struct neo_libs
 		}
 		return true;
 	}
-	static bool Math_Lerp3(CNeoVMWorker* pN, VarInfo* pVar, short args)
+	static bool Math_Lerp3(CNeoVMWorker* pN, ValueRef pVar, short args)
 	{
 		assert(args == 3);
 
@@ -1312,7 +1312,7 @@ struct neo_libs
 			(float)(a[1] + (b[1] - a[1]) * t),
 			(float)(a[2] + (b[2] - a[2]) * t));
 	}
-	static bool Math_DistanceSquared3(CNeoVMWorker* pN, VarInfo* pVar, short args)
+	static bool Math_DistanceSquared3(CNeoVMWorker* pN, ValueRef pVar, short args)
 	{
 		assert(args == 2);
 
@@ -1326,7 +1326,7 @@ struct neo_libs
 		pN->ReturnValue(dx * dx + dy * dy + dz * dz);
 		return true;
 	}
-	static bool Math_Normalize3(CNeoVMWorker* pN, VarInfo* pVar, short args)
+	static bool Math_Normalize3(CNeoVMWorker* pN, ValueRef pVar, short args)
 	{
 		assert(args == 2);
 
@@ -1348,7 +1348,7 @@ struct neo_libs
 		float invLen = (float)((float)1.0 / (float)::sqrt(lenSq));
 		return WriteVec3(pN, v[0] * invLen, v[1] * invLen, v[2] * invLen);
 	}
-	static bool Math_Cross3(CNeoVMWorker* pN, VarInfo* pVar, short args)
+	static bool Math_Cross3(CNeoVMWorker* pN, ValueRef pVar, short args)
 	{
 		assert(args == 2);
 
@@ -1360,7 +1360,7 @@ struct neo_libs
 			a[2] * b[0] - a[0] * b[2],
 			a[0] * b[1] - a[1] * b[0]);
 	}
-	static bool Math_RotateVectorByQuat(CNeoVMWorker* pN, VarInfo* pVar, short args)
+	static bool Math_RotateVectorByQuat(CNeoVMWorker* pN, ValueRef pVar, short args)
 	{
 		assert(args == 2);
 
@@ -1390,7 +1390,7 @@ struct neo_libs
 		v[2] *= invLen;
 		return true;
 	}
-	static bool Math_quat_from_basis(CNeoVMWorker* pN, VarInfo* pVar, short args)
+	static bool Math_quat_from_basis(CNeoVMWorker* pN, ValueRef pVar, short args)
 	{
 		assert(args == 3);
 
@@ -1442,7 +1442,7 @@ struct neo_libs
 
 		return WriteQuat(pN, (float)w, (float)x, (float)y, (float)z);
 	}
-	static bool Math_quat_slerp(CNeoVMWorker* pN, VarInfo* pVar, short args)
+	static bool Math_quat_slerp(CNeoVMWorker* pN, ValueRef pVar, short args)
 	{
 		assert(args == 3);
 
@@ -1490,9 +1490,9 @@ struct neo_libs
 			(float)(a[2] * scaleA + b[2] * scaleB),
 			(float)(a[3] * scaleA + b[3] * scaleB));
 	}
-	static bool	Math_srand(CNeoVMWorker* pN, VarInfo* pVar, short args)
+	static bool	Math_srand(CNeoVMWorker* pN, ValueRef pVar, short args)
 	{
-		assert(args == 1 && pN->GetStack(1)->GetType() == VAR_INT);
+		assert(args == 1 && pN->GetStack(1).GetType() == VAR_INT);
 
 		int init = NeoNarrowInt(pN->GetStack(1)->_int);
 		//::srand((u32)init);
@@ -1500,7 +1500,7 @@ struct neo_libs
 		pN->ReturnValue();
 		return true;
 	}
-	static bool	Math_rand(CNeoVMWorker* pN, VarInfo* pVar, short args)
+	static bool	Math_rand(CNeoVMWorker* pN, ValueRef pVar, short args)
 	{
 		assert(args == 0);
 
@@ -1516,7 +1516,7 @@ struct neo_libs
 	//
 	// 필요할 때만 지수 표기로 넘어가고(1.5e-07), 그 형태도 JSON 숫자 문법에 맞으므로
 	// 그대로 파일에 넣어도 된다.
-	static bool	Math_ToStr(CNeoVMWorker* pN, VarInfo* pVar, short args)
+	static bool	Math_ToStr(CNeoVMWorker* pN, ValueRef pVar, short args)
 	{
 		assert(args == 1);
 
@@ -1525,13 +1525,13 @@ struct neo_libs
 		pN->ReturnValue(ch);
 		return true;
 	}
-	static bool Math_Rand01(CNeoVMWorker* pN, VarInfo* pVar, short args)
+	static bool Math_Rand01(CNeoVMWorker* pN, ValueRef pVar, short args)
 	{
 		assert(args == 0);
 		pN->ReturnValue((NS_FLOAT)pN->m_sRand.rnd() / (NS_FLOAT)32767.0);
 		return true;
 	}
-	static bool Math_RandRange(CNeoVMWorker* pN, VarInfo* pVar, short args)
+	static bool Math_RandRange(CNeoVMWorker* pN, ValueRef pVar, short args)
 	{
 		assert(args == 2);
 		NS_FLOAT a = FloatArgument(pN, 1);
@@ -1540,9 +1540,9 @@ struct neo_libs
 		pN->ReturnValue(a + (b - a) * t);
 		return true;
 	}
-	static bool Math_Hash32(CNeoVMWorker* pN, VarInfo* pVar, short args)
+	static bool Math_Hash32(CNeoVMWorker* pN, ValueRef pVar, short args)
 	{
-		assert(args == 1 && pN->GetStack(1)->GetType() == VAR_INT);
+		assert(args == 1 && pN->GetStack(1).GetType() == VAR_INT);
 
 		// Keep the exact unsigned 32-bit overflow behavior used by native gameplay code.
 		std::uint32_t value = static_cast<std::uint32_t>(pN->GetStack(1)->_int);
@@ -1559,7 +1559,7 @@ struct neo_libs
 		// 색 채널의 NaN은 0으로 변환하고, 나머지는 기존 0..1 제한과 소수부 버림을 유지한다.
 		return static_cast<int>(NeoFloatToInt(MathClamp01Value(value) * (NS_FLOAT)255.0));
 	}
-	static bool Math_ColorRGB(CNeoVMWorker* pN, VarInfo* pVar, short args)
+	static bool Math_ColorRGB(CNeoVMWorker* pN, ValueRef pVar, short args)
 	{
 		assert(args == 3);
 		const int r = MathColorByte(FloatArgument(pN, 1));
@@ -1569,7 +1569,7 @@ struct neo_libs
 		pN->ReturnValue(color);
 		return true;
 	}
-	static bool Math_ColorARGB(CNeoVMWorker* pN, VarInfo* pVar, short args)
+	static bool Math_ColorARGB(CNeoVMWorker* pN, ValueRef pVar, short args)
 	{
 		assert(args == 4);
 		const int a = MathColorByte(FloatArgument(pN, 1));
@@ -1583,18 +1583,18 @@ struct neo_libs
 		return true;
 	}
 
-	static bool map_len(CNeoVMWorker* pN, VarInfo* pVar, short args)
+	static bool map_len(CNeoVMWorker* pN, ValueRef pVar, short args)
 	{
-		assert(pVar->GetType() == VAR_MAP);
+		assert(pVar.GetType() == VAR_MAP);
 		assert(args == 0);
 
 		pN->ReturnValue((int)pVar->_tbl->GetCount());
 		return true;
 	}
-	static bool map_reserve(CNeoVMWorker* pN, VarInfo* pVar, short args)
+	static bool map_reserve(CNeoVMWorker* pN, ValueRef pVar, short args)
 	{
-		assert(pVar->GetType() == VAR_MAP);
-		assert(args == 1 && pN->GetStack(1)->GetType() == VAR_INT);
+		assert(pVar.GetType() == VAR_MAP);
+		assert(args == 1 && pN->GetStack(1).GetType() == VAR_INT);
 
 		int size;
 		if (!ReadCollectionSize(pN, 1, size)) return false;
@@ -1602,12 +1602,12 @@ struct neo_libs
 		pN->ReturnValue();
 		return true;
 	}
-	static bool map_sort(CNeoVMWorker* pN, VarInfo* pVar, short args)
+	static bool map_sort(CNeoVMWorker* pN, ValueRef pVar, short args)
 	{
-		assert(pVar->GetType() == VAR_MAP && args == 1);
-		VarInfo* compare = pN->GetStack(1);
-		assert(compare->GetType() == VAR_NONE || compare->GetType() == VAR_FUN || compare->GetType() == VAR_CLOSURE);
-		if (compare->GetType() == VAR_NONE) return false;
+		assert(pVar.GetType() == VAR_MAP && args == 1);
+		ValueRef compare = pN->GetStack(1);
+		assert(compare.GetType() == VAR_NONE || compare.GetType() == VAR_FUN || compare.GetType() == VAR_CLOSURE);
+		if (compare.GetType() == VAR_NONE) return false;
 		// The native sort cannot suspend and resume its C++ frame. Never disable
 		// a host's time limit to run a comparator: it may loop forever.
 		if (pN->IsSynchronousExecutionLimited())
@@ -1625,16 +1625,16 @@ struct neo_libs
 			~SynchronousCall() { worker->EndNestedScriptCall(); }
 		} synchronousCall(pN);
 		MapInfo* table = receiver.value._tbl;
-		std::vector<VarInfo*> slots;
+		std::vector<ValueRef> slots;
 		if (!table->ToListValues(slots)) return false;
 		const size_t count = slots.size();
 		const u32 version = table->_mutationVersion;
 		struct Snapshot
 		{
 			CNeoVMWorker* worker;
-			std::vector<VarInfo> values;
+			std::vector<BoundaryValue> values;
 			~Snapshot() { for (auto& value : values) worker->Var_Release(&value); }
-		} snapshot{pN, std::vector<VarInfo>(count)};
+		} snapshot{pN, std::vector<BoundaryValue>(count)};
 		std::vector<size_t> order(count), next(count);
 		for (size_t i = 0; i < count; ++i)
 		{
@@ -1657,8 +1657,8 @@ struct neo_libs
 					bool takeRight = left == middle;
 					if (left < middle && right < end)
 					{
-						VarInfo callArgs[2] = {snapshot.values[order[right]], snapshot.values[order[left]]};
-						VarInfo* result = pN->testCall(&callback.value, callArgs, 2);
+						BoundaryValue callArgs[2] = {snapshot.values[order[right]], snapshot.values[order[left]]};
+						ValueRef result = pN->testCall(&callback.value, callArgs, 2);
 						if (pN->GetVM()->IsLastErrorMsg()) return false;
 						if (table->_mutationVersion != version)
 						{
@@ -1670,7 +1670,7 @@ struct neo_libs
 							pN->SetError("map sort comparator must accept two arguments");
 							return false;
 						}
-						assert(result->GetType() == VAR_BOOL);
+						assert(result.GetType() == VAR_BOOL);
 						takeRight = result->_bl;
 					}
 					next[dest] = takeRight ? order[right++] : order[left++];
@@ -1687,48 +1687,48 @@ struct neo_libs
 		pN->ReturnValue();
 		return true;
 	}
-	static bool map_keys(CNeoVMWorker* pN, VarInfo* pVar, short args)
+	static bool map_keys(CNeoVMWorker* pN, ValueRef pVar, short args)
 	{
 		assert(args == 0);
-		assert(pVar->GetType() == VAR_MAP);
+		assert(pVar.GetType() == VAR_MAP);
 
-		std::vector<VarInfo*> lst;
+		std::vector<ValueRef> lst;
 		if (false == pVar->_tbl->ToListKeys(lst)) return false;
 		
-		VarInfo* pRet = pN->GetStack(0);
+		ValueRef pRet = pN->GetStack(0);
 		ListInfo* pR = pN->GetVM()->ListAlloc();
 		pN->Var_SetList(pRet, pR); // return value
 		pR->Resize((int)lst.size());
 
-		VarInfo* dest = pR->GetDataUnsafe();
+		ValueRef dest = pR->GetDataUnsafe();
 		bool mayContainContainerChild = false;
 		for (int i = 0; i < (int)lst.size(); i++)
 		{
-			mayContainContainerChild |= lst[i]->IsContainerType();
+			mayContainContainerChild |= lst[i].IsContainerType();
 			Move_DestNoRelease(&dest[i], lst[i]);
 		}
 		if (mayContainContainerChild)
 			pR->MarkContainerChild();
 		return true;
 	}
-	static bool map_values(CNeoVMWorker* pN, VarInfo* pVar, short args)
+	static bool map_values(CNeoVMWorker* pN, ValueRef pVar, short args)
 	{
 		assert(args == 0);
-		assert(pVar->GetType() == VAR_MAP);
+		assert(pVar.GetType() == VAR_MAP);
 
-		std::vector<VarInfo*> lst;
+		std::vector<ValueRef> lst;
 		if (false == pVar->_tbl->ToListValues(lst)) return false;
 
-		VarInfo* pRet = pN->GetStack(0);
+		ValueRef pRet = pN->GetStack(0);
 		ListInfo* pR = pN->GetVM()->ListAlloc();
 		pN->Var_SetList(pRet, pR); // return value
 		pR->Resize((int)lst.size());
 
-		VarInfo* dest = pR->GetDataUnsafe();
+		ValueRef dest = pR->GetDataUnsafe();
 		bool mayContainContainerChild = false;
 		for (int i = 0; i < (int)lst.size(); i++)
 		{
-			mayContainContainerChild |= lst[i]->IsContainerType();
+			mayContainContainerChild |= lst[i].IsContainerType();
 			Move_DestNoRelease(&dest[i], lst[i]);
 		}
 		if (mayContainContainerChild)
@@ -1736,7 +1736,7 @@ struct neo_libs
 		return true;
 	}
 
-	static bool async_get(CNeoVMWorker* pN, VarInfo* pVar, short args)
+	static bool async_get(CNeoVMWorker* pN, ValueRef pVar, short args)
 	{
 		if (pN->IsNativeScriptCallActive())
 		{
@@ -1744,38 +1744,38 @@ struct neo_libs
 			return false;
 		}
 		assert(args == 3);
-		assert(pVar->GetType() == VAR_ASYNC);
+		assert(pVar.GetType() == VAR_ASYNC);
 		AsyncInfo* pAsync = pVar->_async;
 		if(pAsync->_state != ASYNC_READY) return false;
 
-		VarInfo* v1 = pN->GetStack(1);
-		assert(v1->GetType() == VAR_INT);
+		ValueRef v1 = pN->GetStack(1);
+		assert(v1.GetType() == VAR_INT);
 
-		VarInfo* v2 = pN->GetStack(2);
-		assert(v2->GetType() == VAR_STRING || v2->GetType() == VAR_NONE);
-		if (v2->GetType() == VAR_NONE) return false;
+		ValueRef v2 = pN->GetStack(2);
+		assert(v2.GetType() == VAR_STRING || v2.GetType() == VAR_NONE);
+		if (v2.GetType() == VAR_NONE) return false;
 
-		VarInfo* v3 = pN->GetStack(3);
-		assert(v3->GetType() == VAR_NONE || v3->GetType() == VAR_FUN || v3->GetType() == VAR_CLOSURE);
-		if (v3->GetType() == VAR_NONE) return false;
+		ValueRef v3 = pN->GetStack(3);
+		assert(v3.GetType() == VAR_NONE || v3.GetType() == VAR_FUN || v3.GetType() == VAR_CLOSURE);
+		if (v3.GetType() == VAR_NONE) return false;
 
 		pAsync->_type = ASYNC_GET;
 		pAsync->_timeout = NeoNarrowInt(v1->_int);
 		pAsync->_request = v2->_str->_str;
-		pAsync->_fun_index = (v3->GetType() == VAR_FUN) ? v3->_fun_index : v3->_closure->_funIndex;
+		pAsync->_fun_index = (v3.GetType() == VAR_FUN) ? v3.FunctionIndex() : v3->_closure->_funIndex;
 		pN->Move(&pAsync->_callback, v3);
 
 		pAsync->_ownerWorkerId = pN->GetWorkerID();
 		++pN->_asyncPendingCount;
 		pAsync->_event.reset();
 		pAsync->_state = ASYNC_PENDING;
-		if (pVar->IsContainerType() || v3->IsContainerType()) pAsync->_cycleState._mayContainContainerChild = true;
+		if (pVar.IsContainerType() || v3.IsContainerType()) pAsync->_cycleState._mayContainContainerChild = true;
 		pN->Move(&pAsync->_LockReferance, pVar);
 		pN->GetVM()->AddHttp_Request(pAsync);
 		pN->ReturnValue();
 		return true;
 	}
-	static bool async_post(CNeoVMWorker* pN, VarInfo* pVar, short args)
+	static bool async_post(CNeoVMWorker* pN, ValueRef pVar, short args)
 	{
 		if (pN->IsNativeScriptCallActive())
 		{
@@ -1783,64 +1783,64 @@ struct neo_libs
 			return false;
 		}
 		assert(args == 4);
-		assert(pVar->GetType() == VAR_ASYNC);
+		assert(pVar.GetType() == VAR_ASYNC);
 		AsyncInfo* pAsync = pVar->_async;
 		if (pAsync->_state != ASYNC_READY) return false;
 
-		VarInfo* v1 = pN->GetStack(1);
-		assert(v1->GetType() == VAR_INT);
+		ValueRef v1 = pN->GetStack(1);
+		assert(v1.GetType() == VAR_INT);
 
-		VarInfo* v2 = pN->GetStack(2);
-		assert(v2->GetType() == VAR_STRING || v2->GetType() == VAR_NONE);
-		if (v2->GetType() == VAR_NONE) return false;
+		ValueRef v2 = pN->GetStack(2);
+		assert(v2.GetType() == VAR_STRING || v2.GetType() == VAR_NONE);
+		if (v2.GetType() == VAR_NONE) return false;
 
-		VarInfo* v3 = pN->GetStack(3);
-		assert(v3->GetType() == VAR_STRING || v3->GetType() == VAR_NONE);
-		if (v3->GetType() == VAR_NONE) return false;
+		ValueRef v3 = pN->GetStack(3);
+		assert(v3.GetType() == VAR_STRING || v3.GetType() == VAR_NONE);
+		if (v3.GetType() == VAR_NONE) return false;
 
-		VarInfo* v4 = pN->GetStack(4);
-		assert(v4->GetType() == VAR_NONE || v4->GetType() == VAR_FUN || v4->GetType() == VAR_CLOSURE);
-		if (v4->GetType() == VAR_NONE) return false;
+		ValueRef v4 = pN->GetStack(4);
+		assert(v4.GetType() == VAR_NONE || v4.GetType() == VAR_FUN || v4.GetType() == VAR_CLOSURE);
+		if (v4.GetType() == VAR_NONE) return false;
 
 		pAsync->_type = ASYNC_POST;
 		pAsync->_timeout = NeoNarrowInt(v1->_int);
 		pAsync->_request = v2->_str->_str;
 		pAsync->_body = v3->_str->_str;
-		pAsync->_fun_index = (v4->GetType() == VAR_FUN) ? v4->_fun_index : v4->_closure->_funIndex;
+		pAsync->_fun_index = (v4.GetType() == VAR_FUN) ? v4.FunctionIndex() : v4->_closure->_funIndex;
 		pN->Move(&pAsync->_callback, v4);
 
 		pAsync->_ownerWorkerId = pN->GetWorkerID();
 		++pN->_asyncPendingCount;
 		pAsync->_event.reset();
 		pAsync->_state = ASYNC_PENDING;
-		if (pVar->IsContainerType() || v4->IsContainerType()) pAsync->_cycleState._mayContainContainerChild = true;
+		if (pVar.IsContainerType() || v4.IsContainerType()) pAsync->_cycleState._mayContainContainerChild = true;
 		pN->Move(&pAsync->_LockReferance, pVar);
 		pN->GetVM()->AddHttp_Request(pAsync);
 		pN->ReturnValue();
 		return true;
 	}
 
-	static bool async_add_header(CNeoVMWorker* pN, VarInfo* pVar, short args)
+	static bool async_add_header(CNeoVMWorker* pN, ValueRef pVar, short args)
 	{
 		assert(args == 2);
-		assert(pVar->GetType() == VAR_ASYNC);
+		assert(pVar.GetType() == VAR_ASYNC);
 		AsyncInfo* pAsync = pVar->_async;
 		if (pAsync->_state != ASYNC_READY) return false;
 
-		VarInfo* v1 = pN->GetStack(1);
-		assert(v1->GetType() == VAR_STRING || v1->GetType() == VAR_NONE);
-		if (v1->GetType() == VAR_NONE) return false;
+		ValueRef v1 = pN->GetStack(1);
+		assert(v1.GetType() == VAR_STRING || v1.GetType() == VAR_NONE);
+		if (v1.GetType() == VAR_NONE) return false;
 
-		VarInfo* v2 = pN->GetStack(2);
-		assert(v2->GetType() == VAR_STRING || v2->GetType() == VAR_NONE);
-		if (v2->GetType() == VAR_NONE) return false;
+		ValueRef v2 = pN->GetStack(2);
+		assert(v2.GetType() == VAR_STRING || v2.GetType() == VAR_NONE);
+		if (v2.GetType() == VAR_NONE) return false;
 
 		std::pair<std::string, std::string> header = { v1->_str->_str, v2->_str->_str };
 		pAsync->_headers.push_back(header);
 		pN->ReturnValue();
 		return true;
 	}
-	static bool async_wait(CNeoVMWorker* pN, VarInfo* pVar, short args)
+	static bool async_wait(CNeoVMWorker* pN, ValueRef pVar, short args)
 	{
 		if (pN->IsNativeScriptCallActive())
 		{
@@ -1848,7 +1848,7 @@ struct neo_libs
 			return false;
 		}
 		assert(args == 0);
-		assert(pVar->GetType() == VAR_ASYNC);
+		assert(pVar.GetType() == VAR_ASYNC);
 		AsyncInfo* pAsync = pVar->_async;
 		if (pAsync->_state != ASYNC_PENDING)
 		{
@@ -1863,28 +1863,28 @@ struct neo_libs
 		pN->ReturnValue(ok);
 		return true;
 	}
-	static bool async_close(CNeoVMWorker* pN, VarInfo* pVar, short args)
+	static bool async_close(CNeoVMWorker* pN, ValueRef pVar, short args)
 	{
 		assert(args == 0);
-		assert(pVar->GetType() == VAR_ASYNC);
+		assert(pVar.GetType() == VAR_ASYNC);
 		pN->ReturnValue();
 		return true;
 	}
 
-	static bool core_fail(CNeoVMWorker* pN, VarInfo*, short args)
+	static bool core_fail(CNeoVMWorker* pN, ValueRef, short args)
 	{
-		VarInfo* pArg1 = args >= 1 ? pN->GetStack(1) : nullptr;
-		if (pArg1 != nullptr && pArg1->GetType() == VAR_STRING)
+		ValueRef pArg1 = args >= 1 ? pN->GetStack(1) : nullptr;
+		if (pArg1 != nullptr && pArg1.GetType() == VAR_STRING)
 			pN->SetError(pArg1->_str->_str.c_str());
 		else
 			pN->SetError("script failure");
 		return false;
 	}
-	static bool io_print(CNeoVMWorker* pN, VarInfo* pVar, short args)
+	static bool io_print(CNeoVMWorker* pN, ValueRef pVar, short args)
 	{
 		if (args == 1)
 		{
-			VarInfo* pArg1 = pN->GetStack(1);
+			ValueRef pArg1 = pN->GetStack(1);
 			std::string str = CNeoVMWorker::ToString(pArg1);
 			if(NeoVMSystem::m_pFunPrint == nullptr)
 				std::cout << str.c_str() << '\n';
@@ -1895,8 +1895,8 @@ struct neo_libs
 		}
 		else if (args == 2)
 		{
-			VarInfo* pArg1 = pN->GetStack(1);
-			VarInfo* pArg2 = pN->GetStack(2);
+			ValueRef pArg1 = pN->GetStack(1);
+			ValueRef pArg2 = pN->GetStack(2);
 			std::string str1 = CNeoVMWorker::ToString(pArg1);
 			std::string str2 = CNeoVMWorker::ToString(pArg2);
 			if (NeoVMSystem::m_pFunPrint == nullptr)
@@ -1909,7 +1909,7 @@ struct neo_libs
 		return false;
 	}
 
-	static bool sys_time(CNeoVMWorker* pN, VarInfo* pVar, short args)
+	static bool sys_time(CNeoVMWorker* pN, ValueRef pVar, short args)
 	{
 		assert(args == 0);
 
@@ -1985,11 +1985,11 @@ struct neo_libs
 		}
 		return true;
 	}
-	static bool sys_utc_date(CNeoVMWorker* worker, VarInfo*, short args)
+	static bool sys_utc_date(CNeoVMWorker* worker, ValueRef, short args)
 	{
-		assert(args == 2 && worker->GetStack(2)->GetType() == VAR_INT);
-		assert(worker->GetStack(1)->GetType() == VAR_STRING || worker->GetStack(1)->GetType() == VAR_NONE);
-		if (worker->GetStack(1)->GetType() == VAR_NONE) return false;
+		assert(args == 2 && worker->GetStack(2).GetType() == VAR_INT);
+		assert(worker->GetStack(1).GetType() == VAR_STRING || worker->GetStack(1).GetType() == VAR_NONE);
+		if (worker->GetStack(1).GetType() == VAR_NONE) return false;
 		std::tm calendar;
 		if (!TimeLibrary::UtcCalendar(worker->GetStack(2)->_int, calendar))
 		{
@@ -2005,11 +2005,11 @@ struct neo_libs
 		worker->ReturnValue(result.c_str());
 		return true;
 	}
-	static bool sys_date(CNeoVMWorker* worker, VarInfo*, short args)
+	static bool sys_date(CNeoVMWorker* worker, ValueRef, short args)
 	{
-		assert(args == 2 && worker->GetStack(2)->GetType() == VAR_INT);
-		assert(worker->GetStack(1)->GetType() == VAR_STRING || worker->GetStack(1)->GetType() == VAR_NONE);
-		if (worker->GetStack(1)->GetType() == VAR_NONE) return false;
+		assert(args == 2 && worker->GetStack(2).GetType() == VAR_INT);
+		assert(worker->GetStack(1).GetType() == VAR_STRING || worker->GetStack(1).GetType() == VAR_NONE);
+		if (worker->GetStack(1).GetType() == VAR_NONE) return false;
 		const NS_INT seconds = worker->GetStack(2)->_int;
 		std::tm calendar = std::tm();
 		bool valid = false;
@@ -2043,44 +2043,44 @@ struct neo_libs
 		worker->ReturnValue(result.c_str());
 		return true;
 	}
-	static bool sys_clock(CNeoVMWorker* pN, VarInfo* pVar, short args)
+	static bool sys_clock(CNeoVMWorker* pN, ValueRef pVar, short args)
 	{
 		assert(args == 0);
 
 		pN->ReturnValue(NS_FLOAT((double)clock() / (double)CLOCKS_PER_SEC));
 		return true;
 	}
-	static bool sys_array32(CNeoVMWorker* pN, VarInfo*, short args)
+	static bool sys_array32(CNeoVMWorker* pN, ValueRef, short args)
 	{
 		assert(args == 2);
-		VarInfo* initial = pN->GetStack(1);
-		VarInfo* size = pN->GetStack(2);
-		assert(size->GetType() == VAR_INT);
+		ValueRef initial = pN->GetStack(1);
+		ValueRef size = pN->GetStack(2);
+		assert(size.GetType() == VAR_INT);
 		if (size->_int < 0 || size->_int > INT32_MAX) return false;
-		assert(initial->IsNumber());
-		if (initial->GetType() == VAR_INT && (initial->_int < INT32_MIN || initial->_int > INT32_MAX))
+		assert(initial.IsNumber());
+		if (initial.GetType() == VAR_INT && (initial->_int < INT32_MIN || initial->_int > INT32_MAX))
 		{
 			pN->SetError("int32 array value out of range");
 			return false;
 		}
-		const NeoArrayElementType type = initial->GetType() == VAR_INT ? NeoArrayElementType::Int32 : NeoArrayElementType::Float32;
+		const NeoArrayElementType type = initial.GetType() == VAR_INT ? NeoArrayElementType::Int32 : NeoArrayElementType::Float32;
 		ArrayInfo* array = pN->GetVM()->ArrayAlloc(type, static_cast<int>(size->_int), *initial);
 		if (!array) return false;
 		pN->Var_SetArray(pN->GetStack(0), array);
 		return true;
 	}
-	static bool sys_array(CNeoVMWorker* pN, VarInfo* pVar, short args)
+	static bool sys_array(CNeoVMWorker* pN, ValueRef pVar, short args)
 	{
 		assert(args == 2);
 
-		VarInfo* initialValue = pN->GetStack(1);
-		VarInfo* sizeValue = pN->GetStack(2);
-		assert(sizeValue->GetType() == VAR_INT);
+		ValueRef initialValue = pN->GetStack(1);
+		ValueRef sizeValue = pN->GetStack(2);
+		assert(sizeValue.GetType() == VAR_INT);
 		if (sizeValue->_int < 0 || sizeValue->_int > INT_MAX)
 			return false;
 
 		NeoArrayElementType elementType;
-		switch (initialValue->GetType())
+		switch (initialValue.GetType())
 		{
 		case VAR_INT:   elementType = NeoArrayElementType::Int; break;
 		case VAR_FLOAT: elementType = NeoArrayElementType::Float; break;
@@ -2088,7 +2088,7 @@ struct neo_libs
 		case VAR_VEC:
 		case VAR_VEC3:
 		case VAR_VEC4:
-			switch (initialValue->VectorComponentCount())
+			switch (initialValue.VectorComponentCount())
 			{
 			case 2: elementType = NeoArrayElementType::Vector2; break;
 			case 3: elementType = NeoArrayElementType::Vector3; break;
@@ -2106,21 +2106,21 @@ struct neo_libs
 		return true;
 	}
 	// system.load(source, name) — arg1 = 컴파일할 소스 텍스트, arg2 = 청크 이름(현재 미사용).
-    static bool sys_jsonEncode(CNeoVMWorker* worker, VarInfo*, short args)
+    static bool sys_jsonEncode(CNeoVMWorker* worker, ValueRef, short args)
     {
         JsonResult result; std::string text;
-        assert(args >= 1 && args <= 2 && (args != 2 || worker->GetStack(2)->GetType() == VAR_BOOL));
+        assert(args >= 1 && args <= 2 && (args != 2 || worker->GetStack(2).GetType() == VAR_BOOL));
         JsonInternal::Encode(*worker->GetStack(1), text, result, args == 2 && worker->GetStack(2)->_bl);
         if (result.error.empty()) worker->Var_SetStringA(worker->GetStack(0), text);
         else worker->ReturnValue();
         return true;
     }
-    static bool sys_jsonDecode(CNeoVMWorker* worker, VarInfo*, short args)
+    static bool sys_jsonDecode(CNeoVMWorker* worker, ValueRef, short args)
     {
         JsonResult result;
         assert(args == 1);
-        assert(worker->GetStack(1)->GetType() == VAR_STRING || worker->GetStack(1)->GetType() == VAR_NONE);
-        if (worker->GetStack(1)->GetType() == VAR_NONE)
+        assert(worker->GetStack(1).GetType() == VAR_STRING || worker->GetStack(1).GetType() == VAR_NONE);
+        if (worker->GetStack(1).GetType() == VAR_NONE)
             result.Fail("$", "jsonDecode expects a string");
         else {
             const auto& text = worker->GetStack(1)->_str->_str;
@@ -2129,25 +2129,25 @@ struct neo_libs
         if (!result.error.empty()) worker->ReturnValue();
         return true;
     }
-	static bool coroutine_create(CNeoVMWorker* pN, VarInfo* pVar, short args)
+	static bool coroutine_create(CNeoVMWorker* pN, ValueRef pVar, short args)
 	{
 		assert(args == 1);
 
-		VarInfo* v = pN->GetStack(1);
-		assert(v->GetType() == VAR_NONE || v->GetType() == VAR_FUN || v->GetType() == VAR_CLOSURE);
-		if (v->GetType() == VAR_NONE) return false;
+		ValueRef v = pN->GetStack(1);
+		assert(v.GetType() == VAR_NONE || v.GetType() == VAR_FUN || v.GetType() == VAR_CLOSURE);
+		if (v.GetType() == VAR_NONE) return false;
 
 		CNeoVM* pVM = pN->GetVM();
 		CoroutineInfo* pCI = pVM->CoroutineAlloc();
 		pCI->_refCount = 0;
-		pCI->_fun_index = (v->GetType() == VAR_FUN) ? v->_fun_index : v->_closure->_funIndex;
+		pCI->_fun_index = (v.GetType() == VAR_FUN) ? v.FunctionIndex() : v->_closure->_funIndex;
 		pN->Move(&pCI->_function, v);
 		pCI->_state = COROUTINE_STATE_SUSPENDED;
 
 		pN->ReturnValue(pCI);
 		return true;
 	}
-	static bool coroutine_resume(CNeoVMWorker* pN, VarInfo* pVar, short args)
+	static bool coroutine_resume(CNeoVMWorker* pN, ValueRef pVar, short args)
 	{
 		if (pN->IsNativeScriptCallActive())
 		{
@@ -2156,9 +2156,9 @@ struct neo_libs
 		}
 		assert(args >= 1);
 
-		VarInfo* v = pN->GetStack(1);
-		assert(v->GetType() == VAR_COROUTINE || v->GetType() == VAR_NONE);
-		if (v->GetType() == VAR_NONE) return false;
+		ValueRef v = pN->GetStack(1);
+		assert(v.GetType() == VAR_COROUTINE || v.GetType() == VAR_NONE);
+		if (v.GetType() == VAR_NONE) return false;
 
 		CoroutineInfo* pCI = v->_cor;
 		if (pCI->_state != COROUTINE_STATE_SUSPENDED) return false;
@@ -2168,13 +2168,13 @@ struct neo_libs
 		pN->ReturnValue();
 		return true;
 	}
-	static bool coroutine_status(CNeoVMWorker* pN, VarInfo* pVar, short args)
+	static bool coroutine_status(CNeoVMWorker* pN, ValueRef pVar, short args)
 	{
 		assert(args == 1);
 
-		VarInfo* v = pN->GetStack(1);
-		assert(v->GetType() == VAR_COROUTINE || v->GetType() == VAR_NONE);
-		if (v->GetType() == VAR_NONE) return false;
+		ValueRef v = pN->GetStack(1);
+		assert(v.GetType() == VAR_COROUTINE || v.GetType() == VAR_NONE);
+		if (v.GetType() == VAR_NONE) return false;
 
 		CNeoVM* pVM = pN->GetVM();
 		switch (v->_cor->_state)
@@ -2198,7 +2198,7 @@ struct neo_libs
 
 		return true;
 	}
-	static bool coroutine_close(CNeoVMWorker* pN, VarInfo* pVar, short args)
+	static bool coroutine_close(CNeoVMWorker* pN, ValueRef pVar, short args)
 	{
 		if (pN->IsNativeScriptCallActive())
 		{
@@ -2210,13 +2210,12 @@ struct neo_libs
 		CoroutineInfo* pCI;
 		if(args == 1)
 		{
-			VarInfo* v = pN->GetStack(1);
-			assert(v->GetType() == VAR_COROUTINE || v->GetType() == VAR_NONE);
-			if (v->GetType() == VAR_NONE) return false;
+			ValueRef v = pN->GetStack(1);
+			assert(v.GetType() == VAR_COROUTINE || v.GetType() == VAR_NONE);
+			if (v.GetType() == VAR_NONE) return false;
 			pCI = v->_cor;
 			if(pCI->_state == COROUTINE_STATE_DEAD)
 			{
-				pN->ReturnValue(pCI);
 				return true;
 			}
 		}
@@ -2234,11 +2233,10 @@ struct neo_libs
 		pN->m_pRegisterActive = pCI;
 		pCI->_sub_state = COROUTINE_SUB_CLOSE;
 
-		pN->ReturnValue(pCI);
 		return true;
 	}
 
-	static bool sys_aysnc_create(CNeoVMWorker* pN, VarInfo* pVar, short args)
+	static bool sys_aysnc_create(CNeoVMWorker* pN, ValueRef pVar, short args)
 	{
 		assert(args == 0);
 
@@ -2247,13 +2245,13 @@ struct neo_libs
 		return true;
 	}	
 
-	static bool sys_set(CNeoVMWorker* pN, VarInfo* pVar, short args)
+	static bool sys_set(CNeoVMWorker* pN, ValueRef pVar, short args)
 	{
 		assert(args == 1);
 
-		VarInfo* pRet = pN->GetStack(0);
-		VarInfo* pArg1 = pN->GetStack(1);
-		switch(pArg1->GetType())
+		ValueRef pRet = pN->GetStack(0);
+		ValueRef pArg1 = pN->GetStack(1);
+		switch(pArg1.GetType())
 		{
 		case VAR_LIST:
 			{
@@ -2262,7 +2260,7 @@ struct neo_libs
 
 				ListInfo* pListV1 = pArg1->_lst;
 				int sz = pListV1->GetCount();
-				VarInfo* src = pListV1->GetDataUnsafe();
+				ValueRef src = pListV1->GetDataUnsafe();
 				for (int i = 0; i < sz; i++)
 				{
 					if (src[i].GetType() == VAR_NONE) { pN->SetError("set element cannot be null"); return false; }
@@ -2271,7 +2269,7 @@ struct neo_libs
 				return true;
 			}
 		default:
-			pN->SetErrorFormat(RTE_SET_UNSUPPORTED, GetDataType(pArg1->GetType()).c_str());
+			pN->SetErrorFormat(RTE_SET_UNSUPPORTED, GetDataType(pArg1.GetType()).c_str());
 			return false;
 		}
 		pN->ReturnValue();
@@ -2283,7 +2281,7 @@ struct neo_libs
 
 //typedef bool (ClassName::*TYPE_NeoLib)(CNeoVMWorker* pN, short args);
 //typedef bool(*TYPE_NeoLib)(CNeoVMWorker* pN, short args);
-typedef bool(*TYPE_NeoLib)(CNeoVMWorker* pN, VarInfo* pVar, short args);
+typedef bool(*TYPE_NeoLib)(CNeoVMWorker* pN, ValueRef pVar, short args);
 
 static VMHash<TYPE_NeoLib> g_sNeoFunLib_Default;
 static VMHash<TYPE_NeoLib> g_sNeoFunLib_List;
@@ -2313,7 +2311,7 @@ static bool Fun_Default(INeoVMWorker* pN, void* pUserData, const VMString* pStr,
 	if(false == g_sNeoFunLib_Default.TryGetValue(pStr, &f))
 		return false;
 
-	return (*f)((CNeoVMWorker*)pN, (VarInfo*)pUserData, args);
+	return (*f)((CNeoVMWorker*)pN, *static_cast<ValueRef*>(pUserData), args);
 }
 static bool Fun_String(INeoVMWorker* pN, void* pUserData, const VMString* pStr, short args)
 {
@@ -2321,7 +2319,7 @@ static bool Fun_String(INeoVMWorker* pN, void* pUserData, const VMString* pStr, 
 	if (false == g_sNeoFunLib_String.TryGetValue(pStr, &f))
 		return false;
 
-	return (*f)((CNeoVMWorker*)pN, (VarInfo*)pUserData, args);
+	return (*f)((CNeoVMWorker*)pN, *static_cast<ValueRef*>(pUserData), args);
 }
 static bool Fun_List(INeoVMWorker* pN, void* pUserData, const VMString* pStr, short args)
 {
@@ -2329,7 +2327,7 @@ static bool Fun_List(INeoVMWorker* pN, void* pUserData, const VMString* pStr, sh
 	if (false == g_sNeoFunLib_List.TryGetValue(pStr, &f))
 		return false;
 
-	return (*f)((CNeoVMWorker*)pN, (VarInfo*)pUserData, args);
+	return (*f)((CNeoVMWorker*)pN, *static_cast<ValueRef*>(pUserData), args);
 }
 static bool Fun_Array(INeoVMWorker* pN, void* pUserData, const VMString* pStr, short args)
 {
@@ -2337,7 +2335,7 @@ static bool Fun_Array(INeoVMWorker* pN, void* pUserData, const VMString* pStr, s
 	if (false == g_sNeoFunLib_Array.TryGetValue(pStr, &f))
 		return false;
 
-	return (*f)((CNeoVMWorker*)pN, (VarInfo*)pUserData, args);
+	return (*f)((CNeoVMWorker*)pN, *static_cast<ValueRef*>(pUserData), args);
 }
 static bool Fun_Map(INeoVMWorker* pN, void* pUserData, const VMString* pStr, short args)
 {
@@ -2345,13 +2343,13 @@ static bool Fun_Map(INeoVMWorker* pN, void* pUserData, const VMString* pStr, sho
 	if (false == g_sNeoFunLib_Map.TryGetValue(pStr, &f))
 		return false;
 
-	return (*f)((CNeoVMWorker*)pN, (VarInfo*)pUserData, args);
+	return (*f)((CNeoVMWorker*)pN, *static_cast<ValueRef*>(pUserData), args);
 }
 static bool Fun_Set(INeoVMWorker* pN, void* pUserData, const VMString* pStr, short args)
 {
 	TYPE_NeoLib f;
 	if (!g_sNeoFunLib_Set.TryGetValue(pStr, &f)) return false;
-	return (*f)((CNeoVMWorker*)pN, (VarInfo*)pUserData, args);
+	return (*f)((CNeoVMWorker*)pN, *static_cast<ValueRef*>(pUserData), args);
 }
 static bool Fun_Async(INeoVMWorker* pN, void* pUserData, const VMString* pStr, short args)
 {
@@ -2359,7 +2357,7 @@ static bool Fun_Async(INeoVMWorker* pN, void* pUserData, const VMString* pStr, s
 	if (false == g_sNeoFunLib_Async.TryGetValue(pStr, &f))
 		return false;
 
-	return (*f)((CNeoVMWorker*)pN, (VarInfo*)pUserData, args);
+	return (*f)((CNeoVMWorker*)pN, *static_cast<ValueRef*>(pUserData), args);
 }
 
 std::map<std::string, std::list< SystemFun>> g_sSystemFuns;
@@ -2592,7 +2590,7 @@ static void AddGlobalLibFun()
 	AddSystemFun("create", &neo_libs::coroutine_create, "coroutine", "fun f");
 	AddSystemFun("resume", &neo_libs::coroutine_resume, "var", "coroutine co", "...");
 	AddSystemFun("status", &neo_libs::coroutine_status, "string", "coroutine co");
-	AddSystemFun("close", &neo_libs::coroutine_close, "coroutine", "...");
+	AddSystemFun("close", &neo_libs::coroutine_close, "void", "...");
 
 	g_sCurrentSystem.clear();
 	// 기존 네이티브 함수의 인덱스 순서를 유지하도록 새 함수는 등록부 끝에 추가한다.
@@ -2624,9 +2622,9 @@ const std::list< SystemFun>* CNeoVM::GetSystemModule(const std::string& module)
 		return nullptr;
 	return &(*it).second;
 }
-void CNeoVM::RegLibrary(VarInfo* pSystem, const char* pLibName)
+void CNeoVM::RegLibrary(ValueRef pSystem, const char* pLibName)
 {
-	if (pSystem && pSystem->GetType() == VAR_FP_NATIVE)
+	if (pSystem && pSystem.GetType() == VAR_FP_NATIVE)
 		NeoVMSystem::RegisterTableCallBack(pSystem, nullptr, Fun_Default, nullptr);
 	//AddGlobalLibFun();
 
@@ -2719,7 +2717,7 @@ void CNeoVM::RegObjLibrary()
 
 void CNeoVM::InitLib()
 {
-/*	VarInfo* pSystem = &m_sVarGlobal[0];
+/*	ValueRef pSystem = &m_sVarGlobal[0];
 	Var_SetTable(pSystem, TableAlloc());
 
 	RegLibrary(pSystem, "sys");*/

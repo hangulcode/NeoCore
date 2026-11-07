@@ -9,8 +9,8 @@ class CNeoVM;
 // hash/next/data 포인터만 읽고, 실제 키 비교가 필요한 경우에만 MapData로 간다.
 struct MapData
 {
-	VarInfo	key;
-	VarInfo	value;
+	BoundaryValue	key;
+	BoundaryValue	value;
 };
 
 struct MapNode
@@ -63,24 +63,24 @@ struct MapInfo : AllocBase
 	void Clear();
 
 	void Reserve(int sz);
-	VarInfo* Insert(VarInfo* pKey);
-	void Insert(const std::string& pKey, VarInfo* pValue);
+	ValueRef Insert(ValueRef pKey);
+	void Insert(const std::string& pKey, ValueRef pValue);
 	bool Insert(const std::string& pKey, NS_FLOAT value);
-	void Insert(VarInfo* pKey, VarInfo* pValue);
-	void Insert(VarInfo* pKey, NS_INT v);
-	void Insert(NS_INT Key, VarInfo* pValue);
+	void Insert(ValueRef pKey, ValueRef pValue);
+	void Insert(ValueRef pKey, NS_INT v);
+	void Insert(NS_INT Key, ValueRef pValue);
 	void Insert(NS_INT Key, NS_INT v);
-	void Remove(VarInfo* pKey);
-	VarInfo* Find(VarInfo *pKey);
-	VarInfo* Find(const std::string& key);
-	VarInfo* FindString(StringInfo* pKeyStr); // 문자열 키 전용 fast path (NeoVMInternal.h 에 인라인 정의)
-	VarInfo* FindInt(NS_INT key);                // 정수 키 전용 fast path (NeoVMInternal.h 에 인라인 정의)
+	void Remove(ValueRef pKey);
+	ValueRef Find(ValueRef pKey);
+	ValueRef Find(const std::string& key);
+	ValueRef FindString(StringInfo* pKeyStr); // 문자열 키 전용 fast path (NeoVMInternal.h 에 인라인 정의)
+	ValueRef FindInt(NS_INT key);                // 정수 키 전용 fast path (NeoVMInternal.h 에 인라인 정의)
 
 	CollectionIterator FirstNode();
 	bool NextNode(CollectionIterator&);
 
-	bool ToListKeys(std::vector<VarInfo*>& lst);
-	bool ToListValues(std::vector<VarInfo*>& lst);
+	bool ToListKeys(std::vector<ValueRef>& lst);
+	bool ToListValues(std::vector<ValueRef>& lst);
 	inline int		GetCount() { return _itemCount; }
 	// 한 번이라도 컨테이너 자식을 저장했으면 pool 재대여 전까지 유지한다. 제거 시
 	// 다시 끄지 않아 mutation hot path에는 부담을 주지 않으며, false이면 순환 불가다.
@@ -94,7 +94,7 @@ private:
 	void ClearNode(MapNode& node);
 	MapData* AllocNodeData();
 	void FreeNodeData(MapData* data);
-	int FindNodeIndex(VarInfo* pKey, u32 hash, int* pPrevious = nullptr) const;
+	int FindNodeIndex(ValueRef pKey, u32 hash, int* pPrevious = nullptr) const;
 	int FindFreeNodeIndex();
 	int InsertNewNode(u32 hash);
 	bool ReMap(int minCapacity = 0);

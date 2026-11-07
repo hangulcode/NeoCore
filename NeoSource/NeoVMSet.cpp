@@ -39,15 +39,15 @@ u32 GetHashCode(u8* buffer, int len)
 	return h;
 }
 
-static u32 GetVectorHashCode(const VarInfo* p)
+static u32 GetVectorHashCode(ValueRef p)
 {
 	// 값으로 같은 벡터는 저장소·부호 있는 0에 관계없이 같은 해시를 갖는다.
-	const int count = p->VectorComponentCount();
+	const int count = p.VectorComponentCount();
 	u32 h = 2166136261u ^ static_cast<u32>(count);
 	for (int i = 0; i < count; ++i)
 	{
 		u32 bits = 0;
-		const float value = p->VectorComponent(i);
+		const float value = p.VectorComponent(i);
 		if (value != 0.0f) memcpy(&bits, &value, sizeof(bits));
 		h = (h ^ bits) * 16777619u;
 	}
@@ -58,15 +58,15 @@ static u32 GetVectorHashCode(const VarInfo* p)
 	return h ^ (h >> 16);
 }
 
-u32 GetHashCode(VarInfo* p)
+u32 GetHashCode(ValueRef p)
 {
-	switch (p->GetType())
+	switch (p.GetType())
 	{
 	case VAR_INT:        return HashIntegerKey(p->_int);
 	case VAR_FLOAT:      return p->_float == 0.0f ? 0 : GetHashCode((u8*)&p->_float, sizeof(p->_float));
 	case VAR_BOOL:       return p->_bl;
 	case VAR_NONE:       return 0;
-	case VAR_FUN:        return (u32)p->_fun_index;
+	case VAR_FUN:        return (u32)p.FunctionIndex();
 	case VAR_FUN_NATIVE: return (u32)(uintptr_t)p->_funPtr;
 	case VAR_VEC:       return GetVectorHashCode(p);
 	case VAR_STRING:     return p->_str->GetHash();
@@ -117,7 +117,7 @@ void SetInfo::ClearNode(SetNode& node)
 {
 	node.hash = 0;
 	node.next = SET_NODE_EMPTY;
-	node.data = NULL;
+	node.data = nullptr;
 }
 
 SetData* SetInfo::AllocNodeData()
@@ -144,19 +144,19 @@ void SetInfo::Clear()
 
 void SetInfo::FreeNodeData(SetData* data)
 {
-	if (data == NULL)
+	if (data == nullptr)
 		return;
 	_pVM->Var_Release(&data->key);
 	_pVM->m_sPool_SetData.Confer(data);
 }
 
-static bool SetKeyEquals(SetNode& node, VarInfo* pKey, u32 hash)
+static bool SetKeyEquals(SetNode& node, ValueRef pKey, u32 hash)
 {
 	SetData* data = node.data;
-	if (node.hash != hash || data == NULL || data->key.GetType() != pKey->GetType())
+	if (node.hash != hash || data == nullptr || data->key.GetType() != pKey.GetType())
 		return false;
 
-	switch (pKey->GetType())
+	switch (pKey.GetType())
 	{
 	case VAR_INT:        return data->key._int == pKey->_int;
 	case VAR_FLOAT:      return data->key._float == pKey->_float;
@@ -171,9 +171,9 @@ static bool SetKeyEquals(SetNode& node, VarInfo* pKey, u32 hash)
 	}
 }
 
-static VarInfo* NormalizeSetStringKey(CNeoVM* vm, VarInfo* pKey, VarInfo& normalized, bool forInsert)
+static ValueRef NormalizeSetStringKey(CNeoVM* vm, ValueRef pKey, BoundaryValue& normalized, bool forInsert)
 {
-	if (pKey->GetType() != VAR_STRING || pKey->_str->_interned)
+	if (pKey.GetType() != VAR_STRING || pKey->_str->_interned)
 		return pKey;
 
 	StringInfo* canonical = forInsert
@@ -187,7 +187,7 @@ static VarInfo* NormalizeSetStringKey(CNeoVM* vm, VarInfo* pKey, VarInfo& normal
 	return &normalized;
 }
 
-int SetInfo::FindNodeIndex(VarInfo* pKey, u32 hash, int* pPrevious) const
+int SetInfo::FindNodeIndex(ValueRef pKey, u32 hash, int* pPrevious) const
 {
 	if (pPrevious) *pPrevious = SET_NODE_END;
 	if (_BucketCapa <= 0)
@@ -315,13 +315,13 @@ CollectionIterator SetInfo::FirstNode()
 			return r;
 		}
 	}
-	r._pSetNode = NULL;
+	r._pSetNode = nullptr;
 	return r;
 }
 
 bool SetInfo::NextNode(CollectionIterator& r)
 {
-	if (r._pSetNode == NULL || _BucketCapa <= 0)
+	if (r._pSetNode == nullptr || _BucketCapa <= 0)
 		return false;
 
 	const ptrdiff_t current = r._pSetNode - _Bucket;
@@ -333,7 +333,7 @@ bool SetInfo::NextNode(CollectionIterator& r)
 			return true;
 		}
 	}
-	r._pSetNode = NULL;
+	r._pSetNode = nullptr;
 	return false;
 }
 
@@ -346,7 +346,7 @@ void SetInfo::Free()
 	}
 
 	delete[] _Bucket;
-	_Bucket = NULL;
+	_Bucket = nullptr;
 	_BucketCapa = _HashBase = 0;
 	_lastFree = -1;
 	_itemCount = 0;
@@ -360,13 +360,13 @@ void SetInfo::Reserve(int sz)
 		ReMap(minCapacity);
 }
 
-bool SetInfo::Insert(VarInfo* pKey)
+bool SetInfo::Insert(ValueRef pKey)
 {
-	if (pKey->GetType() == VAR_NONE) return false;
-	if (pKey->IsContainerType())
+	if (pKey.GetType() == VAR_NONE) return false;
+	if (pKey.IsContainerType())
 		MarkContainerChild();
 
-	VarInfo normalizedKey;
+	BoundaryValue normalizedKey;
 	pKey = NormalizeSetStringKey(_pVM, pKey, normalizedKey, true);
 	if (pKey == nullptr)
 		return false;
@@ -408,7 +408,7 @@ bool SetInfo::Insert(VarInfo* pKey)
 
 void SetInfo::Insert(std::string& key)
 {
-	VarInfo var;
+	BoundaryValue var;
 	var.SetType(VAR_STRING);
 	var._str = _pVM->StringIntern(key);
 	Insert(&var);
@@ -418,17 +418,17 @@ void SetInfo::Insert(std::string& key)
 
 void SetInfo::Insert(NS_INT key)
 {
-	VarInfo var;
+	BoundaryValue var;
 	var.SetType(VAR_INT);
 	var._int = key;
 	Insert(&var);
 }
 
-void SetInfo::Remove(VarInfo* pKey)
+void SetInfo::Remove(ValueRef pKey)
 {
 	if (_BucketCapa <= 0)
 		return;
-	VarInfo normalizedKey;
+	BoundaryValue normalizedKey;
 	pKey = NormalizeSetStringKey(_pVM, pKey, normalizedKey, false);
 	if (pKey == nullptr)
 		return;
@@ -464,9 +464,9 @@ void SetInfo::Remove(VarInfo* pKey)
 	++_mutationVersion;
 }
 
-bool SetInfo::Find(VarInfo* pKey)
+bool SetInfo::Find(ValueRef pKey)
 {
-	VarInfo normalizedKey;
+	BoundaryValue normalizedKey;
 	pKey = NormalizeSetStringKey(_pVM, pKey, normalizedKey, false);
 	if (pKey == nullptr)
 		return false;
@@ -496,7 +496,7 @@ bool SetInfo::Find(std::string& key)
 	return false;
 }
 
-bool SetInfo::ToList(std::vector<VarInfo*>& lst)
+bool SetInfo::ToList(std::vector<ValueRef>& lst)
 {
 	lst.resize(_itemCount);
 	int count = 0;

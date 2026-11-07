@@ -4,6 +4,7 @@
 #include "NeoVMWorker.h"
 #include "NeoTextLoader.h"
 #include <cmath>
+#include "NeoCoreIR.h"
 
 namespace NeoScript
 {
@@ -80,6 +81,34 @@ struct SLocalVar
 		return (*it).second;
 	}
 };
+
+inline SlotType CoreStorageType(const NeoCore::TypeRegistry& types, NeoCore::TypeId id)
+{
+    using NeoCore::TypeKind;
+    SlotType storage;
+    storage.typeId = id;
+    const NeoCore::TypeDesc& type = types.Get(id);
+    switch (type.kind)
+    {
+    case TypeKind::Int: storage.kind = SlotKind::Int; break;
+    case TypeKind::Float: storage.kind = SlotKind::Float; break;
+    case TypeKind::Bool: storage.kind = SlotKind::Bool; break;
+    case TypeKind::String: storage.kind = SlotKind::String; break;
+    case TypeKind::Vector2: storage.kind = SlotKind::Vector2; break;
+    case TypeKind::Vector3: storage.kind = SlotKind::Vector3; break;
+    case TypeKind::Vector4: case TypeKind::Quaternion: storage.kind = SlotKind::Vector4; break;
+    case TypeKind::Array: case TypeKind::Array32: storage.kind = SlotKind::Array; break;
+    case TypeKind::List: case TypeKind::Struct: storage.kind = SlotKind::List; break;
+    case TypeKind::Map: storage.kind = SlotKind::Map; break;
+    case TypeKind::Set: storage.kind = SlotKind::Set; break;
+    case TypeKind::Function: storage.kind = SlotKind::Function; break;
+    case TypeKind::Native: storage.kind = SlotKind::ObjectId; break;
+    case TypeKind::BuiltinObject: storage.kind = type.name == "AsyncRequest" ? SlotKind::Async : SlotKind::Native; break;
+    case TypeKind::Coroutine: storage.kind = SlotKind::Coroutine; break;
+    default: break;
+    }
+    return storage;
+}
 
 struct SFunctionInfo;
 
@@ -211,6 +240,16 @@ struct SVars
     std::map<int, SlotType> _globalStorage;
 };
 
+struct CompileCallStorage
+{
+    std::vector<int> sources;
+    std::vector<SlotType> types;
+    int result = -1;
+    int function = -1;
+    int receiver = -1, member = -1;
+    SlotType returnType;
+};
+
 struct SFunctionTableForWriter
 {
 	FUNCTION_TYPE				_funType;
@@ -222,6 +261,8 @@ struct SFunctionTableForWriter
 	std::vector<std::pair<short, short>> _captures;
     std::vector<SlotLayout> _storage;
     std::vector<SlotCleanup> _cleanup;
+    std::vector<CompileCallStorage> _calls;
+    SlotType _resultType;
 };
 
 // 익명 함수 한 개가 생성될 때 부모 프레임에서 복사할 지역 슬롯과, 그 값을
@@ -247,6 +288,9 @@ struct SFunctionInfo
 	std::map<int, std::string>	_debugVarNames;
 	std::vector<SClosureCapture>	_captures;
     std::map<int, SlotType> _storage;
+    SlotType _returnStorage;
+    std::vector<SlotType> _parameterStorage;
+    std::vector<CompileCallStorage> _calls;
 
 
 	int							_localVarCount;
@@ -270,7 +314,7 @@ struct SFunctionInfo
 		_args.clear();
 		_debugVarNames.clear();
 		_captures.clear();
-        _storage.clear();
+        _storage.clear(); _calls.clear();
 		_localVarCount = 0;
 		_localTempMax = _localTempCount = 0;
 		_tempStorage.clear(); _tempBusy.clear(); _tempOrder.clear();
@@ -308,25 +352,35 @@ struct SFunctionInfo
 		return slot;
 	}
 
+    void SetStorage(int slot, const SlotType& type)
+    {
+        if (type.kind == SlotKind::Boxed || slot < 0 || slot >= COMPILE_STATIC_VAR_BEGIN) return;
+        const auto previous = _storage.find(slot);
+        if (previous != _storage.end() && previous->second.kind != SlotKind::Boxed)
+        {
+            if (previous->second.kind != type.kind)
+                throw std::logic_error("conflicting compiler slot types");
+            return;
+        }
+        _storage[slot] = type;
+        if (slot >= COMPILE_LOCALTMP_VAR_BEGIN && slot < COMPILE_CALLARG_VAR_BEGIN)
+        {
+            const int index = slot - COMPILE_LOCALTMP_VAR_BEGIN - 1 - static_cast<int>(_args.size());
+            if (index >= 0 && index < static_cast<int>(_tempStorage.size())) _tempStorage[index] = type;
+        }
+    }
 	int AllocLocalTempVar(const SlotType& type = SlotType())
 	{
 		std::size_t index = 0;
 		for (; index < _tempStorage.size(); ++index)
-			if (!_tempBusy[index] && _tempStorage[index].kind == type.kind && _tempStorage[index].typeId == type.typeId) break;
+			if (type.kind != SlotKind::Boxed && !_tempBusy[index] && _tempStorage[index].kind == type.kind && _tempStorage[index].typeId == type.typeId) break;
 		if (index == _tempStorage.size()) { _tempStorage.push_back(type); _tempBusy.push_back(0); }
 		return UseTempSlot(index);
 	}
 	// 벡터 생성·저장 인자는 연속 구간을 요구한다. 개별 타입별 재사용과 섞어도 순서를 보존한다.
 	int AllocTempWindow(int count)
 	{
-		std::size_t begin = 0;
-		for (;; ++begin)
-		{
-			bool available = true;
-			for (int i = 0; i < count && begin + i < _tempStorage.size(); ++i)
-				if (_tempBusy[begin + i] || _tempStorage[begin + i].kind != SlotKind::Boxed) { available = false; break; }
-			if (available) break;
-		}
+		const std::size_t begin = _tempStorage.size();
 		while (_tempStorage.size() < begin + count) { _tempStorage.push_back(SlotType()); _tempBusy.push_back(0); }
 		const int first = COMPILE_LOCALTMP_VAR_BEGIN + 1 + static_cast<int>(_args.size()) + static_cast<int>(begin);
 		for (int i = 0; i < count; ++i) UseTempSlot(begin + i);
@@ -504,8 +558,16 @@ struct SFunctionInfo
 
 		Push_Flag(OperationSubCode(op), r, a1, a2);
 	}
+    void PrepareCall(CArchiveRdWC& ar, const std::vector<int>& sources, int line = -1)
+    {
+        CompileCallStorage plan; plan.sources = sources; plan.types.resize(sources.size());
+        _calls.push_back(plan);
+        Push_OP(ar, NOP_PREPARE_CALL, CompileShort("call storage plan", _calls.size() - 1), 0, 0, line);
+    }
 	void	Push_Call(CArchiveRdWC& ar, OperationCode op, int fun, int args, int res, int iDebugLine = -1)
 	{
+        assert(!_calls.empty());
+        _calls.back().result = res; _calls.back().function = fun;
 		AddDebugData(ar, iDebugLine);
 		_iLastOPOffset = _code->GetBufferOffset();
 		++_callOpEmitCount;
@@ -520,6 +582,8 @@ struct SFunctionInfo
 	{
 		OperandTemps temps(*this);
 		table = ReadOperand(ar, table); index = ReadOperand(ar, index);
+        assert(!_calls.empty()); _calls.back().result = STACK_POS_RETURN;
+        _calls.back().receiver = table; _calls.back().member = index;
 		AddDebugData(ar, iDebugLine);
 		_iLastOPOffset = _code->GetBufferOffset();
 		++_callOpEmitCount;
@@ -535,6 +599,7 @@ struct SFunctionInfo
 	{
 		OperandTemps temps(*this);
 		index = ReadOperand(ar, index);
+        assert(!_calls.empty()); _calls.back().result = res;
 		AddDebugData(ar, iDebugLine);
 		_iLastOPOffset = _code->GetBufferOffset();
 		++_callOpEmitCount;
@@ -565,7 +630,11 @@ struct SFunctionInfo
 					short* preDest = (short*)pre;
 					if (*preDest == s)
 					{
-						*preDest = CompileShort("destination operand", r);
+                        // 생략한 임시의 고정 타입도 실제 목적지에 전달한다.
+                        const auto sourceStorage = _storage.find(s);
+                        if (sourceStorage != _storage.end() && r >= 0 && r < COMPILE_CALLARG_VAR_BEGIN)
+                            SetStorage(r, sourceStorage->second);
+                        *preDest = CompileShort("destination operand", r);
 						return;
 					}
 				}
@@ -897,6 +966,7 @@ struct SRangeJumpCompile
 
 struct SFunctions
 {
+    const NeoCore::TypedIR* _typedIR = nullptr;
 	std::set<std::string> _exportNames;
     std::unordered_map<std::string, SlotType> _declaredStorage;
     std::map<std::string, std::map<std::string, SlotType>> _helperStorage;
@@ -916,7 +986,7 @@ struct SFunctions
 	std::list<SFunctionInfo*>				_funSequence;
 
 	SFunctionInfo*						_cur = nullptr;
-	std::vector<VarInfo>				_staticVars;
+	std::vector<BoundaryValue>				_staticVars;
 	// 숫자 상수의 중복 제거 색인: NS_FLOAT 비트 / int 값 → 풀 인덱스. 선형 탐색은 리터럴 수의 제곱으로 느려졌다.
 	std::unordered_map<uint64_t, int>	_floatConstants;
 	std::unordered_map<NS_INT, int>		_intConstants;
@@ -966,7 +1036,7 @@ struct SFunctions
 		_funLayers.clear();
 		for (int i = (int)_staticVars.size() - 1; i >= 0; i--)
 		{
-			VarInfo& v2 = _staticVars[i];
+			BoundaryValue& v2 = _staticVars[i];
 			if (VAR_STRING == v2.GetType())
 			{
 				delete v2._str;
@@ -1006,6 +1076,16 @@ struct SFunctions
 		p = new SFunctionInfo();
 		p->Clear();
 		p->_name = name;
+        if (_typedIR)
+            for (const NeoCore::IRFunction& signature : _typedIR->functions)
+                if (signature.backendName == name)
+                {
+                    p->_returnStorage = CoreStorageType(_typedIR->types, signature.returnType);
+                    for (NeoCore::TypeId type : signature.parameterTypes)
+                        p->_parameterStorage.push_back(CoreStorageType(_typedIR->types, type));
+                    break;
+                }
+
 		p->_code = code;
 		p->_pDebugData = pDebugData;
 		_curModule->_funs[name] = p;
@@ -1066,7 +1146,7 @@ struct SFunctions
 	// 마지막 상수를 되돌린다. 색인도 함께 지워야 같은 값이 다시 올 때 새 슬롯을 만든다.
 	void PopLastStatic()
 	{
-		const VarInfo& v = _staticVars.back();
+		const BoundaryValue& v = _staticVars.back();
 		if (v.GetType() == VAR_FLOAT)
 		{
 			uint64_t bits = 0;
@@ -1100,7 +1180,7 @@ struct SFunctions
 		if (found != _intConstants.end())
 			return StaticCompileIndex(found->second);
 		const int idx = NextStaticIndex();
-		VarInfo v;
+		BoundaryValue v;
 		v.SetType(VAR_INT);
 		v._int = num;
 
@@ -1115,7 +1195,7 @@ struct SFunctions
 		{
 			if (StaticCompileIndex(i) == var)
 			{
-				VarInfo& v2 = _staticVars[i];
+				BoundaryValue& v2 = _staticVars[i];
 				if (VAR_INT == v2.GetType())
 				{
 					*value = v2._int;
@@ -1143,7 +1223,7 @@ struct SFunctions
 		if (found != _floatConstants.end())
 			return StaticCompileIndex(found->second);
 		const int idx = NextStaticIndex();
-		VarInfo v;
+		BoundaryValue v;
 		v.SetType(VAR_FLOAT);
 		v._float = f;
 
@@ -1161,7 +1241,7 @@ struct SFunctions
 		const int idx = NextStaticIndex();
 		std::unique_ptr<StringInfo> text(new StringInfo());
 		text->_str = str;
-		VarInfo v;
+		BoundaryValue v;
 		v.SetType(VAR_STRING);
 		v._str = text.get();
 
@@ -1174,7 +1254,7 @@ struct SFunctions
 	{
 		for (int i = (int)_staticVars.size() - 1; i >= 0; i--)
 		{
-			VarInfo& v2 = _staticVars[i];
+			BoundaryValue& v2 = _staticVars[i];
 			if (VAR_BOOL == v2.GetType())
 			{
 				if (b == v2._bl)
@@ -1182,7 +1262,7 @@ struct SFunctions
 			}
 		}
 		const int idx = NextStaticIndex();
-		VarInfo v;
+		BoundaryValue v;
 		v.SetType(VAR_BOOL);
 		v._bl = b;
 
@@ -1193,7 +1273,7 @@ struct SFunctions
 	{
 		for (int i = (int)_staticVars.size() - 1; i >= 0; i--)
 		{
-			VarInfo& v2 = _staticVars[i];
+			BoundaryValue& v2 = _staticVars[i];
 			if (VAR_FUN == v2.GetType())
 			{
 				//if (b == v2._bl)
@@ -1201,7 +1281,7 @@ struct SFunctions
 			}
 		}
 		const int idx = NextStaticIndex();
-		VarInfo v;
+		BoundaryValue v;
 		v.SetType(VAR_FUN);
 		v._fun_index = iIndex;
 

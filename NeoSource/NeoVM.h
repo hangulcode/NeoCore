@@ -21,12 +21,14 @@ class CNeoVMWorker;
 class CNeoVMProgram;
 struct FunctionPtr;
 struct VarInfo;
+struct BoundaryValue;
+class ValueRef;
 struct ClosureInfo;
 struct NeoExecContextPool;
 struct SFunctionLayer;
 struct SFunctions;
 struct ArrayInfo;
-NEOS_FORCEINLINE void Move_DestNoRelease(VarInfo* v1, VarInfo* v2);
+NEOS_FORCEINLINE void Move_DestNoRelease(ValueRef v1, ValueRef v2);
 
 // 실행 컨텍스트 풀 팩토리. 내부 동기화가 없으므로 엔진이 스레드별(thread_local)로 하나 만들어 주입한다.
 // varStackSize: 각 컨텍스트의 var 스택 엔트리 수.
@@ -98,7 +100,7 @@ struct INeoLoader
 
 typedef int(*Neo_CFunction) (INeoVMWorker* N, FunctionPtr* pFun, short args);
 typedef bool(*Neo_NativeFunction) (INeoVMWorker* N, void* pUserData, const VMString* pStr, short args);
-typedef bool(*Neo_NativeProperty) (INeoVMWorker* N, void* pUserData, const VMString* pStr, VarInfo* p, bool get);
+typedef bool(*Neo_NativeProperty) (INeoVMWorker* N, void* pUserData, const VMString* pStr, ValueRef p, bool get);
 
 #define NEO_DEFAULT_CHECKOP		(500)
 
@@ -179,7 +181,7 @@ enum VAR_TYPE : u8
 	//
 	// 각 타입이 무엇을 들고 있는지:
 	//   MAP       MapData{key, value}          — 키도 값도 컨테이너가 될 수 있다
-	//   LIST      VarInfo 배열
+	//   LIST      BoundaryValue 배열
 	//   SET       SetData{key}
 	//   COROUTINE CoroutineInfo::m_sVarStack   — 실행 컨텍스트의 var 스택
 	//   MODULE    CNeoVMWorker 의 전역 + var 스택
@@ -191,7 +193,7 @@ enum VAR_TYPE : u8
 	VAR_COROUTINE,
 	VAR_MODULE,
 	VAR_ASYNC,
-	// 익명 함수가 생성 시점에 복사한 상위 지역 VarInfo 묶음. 함수 인덱스만
+	// 익명 함수가 생성 시점에 복사한 상위 지역 BoundaryValue 묶음. 함수 인덱스만
 	// 가진 VAR_FUN과 달리 호출 가능한 인스턴스이며, 자식 VarInfo를 소유한다.
 	VAR_CLOSURE,
 };
@@ -242,7 +244,7 @@ struct MapNode;
 struct SetNode;
 struct VecInfo;
 
-// system.array의 원소 형식. bool은 비트, int/float은 원시 배열, 벡터는 VarInfo 원소로 저장한다.
+// system.array의 원소 형식. bool은 비트, int/float은 원시 배열, 벡터는 BoundaryValue 원소로 저장한다.
 enum class NeoArrayElementType : u8
 {
 	Bool,
@@ -313,8 +315,40 @@ struct CollectionIterator
 };
 #pragma pack()
 
+// 실행 슬롯은 값 8바이트만 보관한다. 타입과 수명은 소유 프레임·컨테이너의 고정 서술자에 있다.
 struct VarInfo
 {
+	union
+	{
+		bool		_bl;
+		CoroutineInfo* _cor;
+		StringInfo* _str;
+		MapInfo* _tbl;
+		ListInfo* _lst;
+		SetInfo* _set;
+		FunctionPtr* _funPtr; // C Native
+		FunctionPropertyInfo* _fpNative; // VAR_FP_NATIVE
+		NS_INT			_int;
+		NS_FLOAT	_float;
+		int			_fun_index;
+		INeoVMWorker* _module;
+		AsyncInfo*	_async;
+		ClosureInfo*	_closure;
+		CollectionIterator	_it;
+		VecInfo*	_vec; // 3·4성분 벡터의 공유 저장소
+		float _vecXY[2]; // 2성분 벡터는 값 영역 안에 직접 보관한다.
+		ArrayInfo*	_array; // VAR_ARRAY 밀집 원시 배열
+		VarInfo* _ref; // VAR_REF: never stored in script values
+	};
+
+    VarInfo() : _int(0) {}
+};
+static_assert(sizeof(VarInfo) == 8, "VM payload must be exactly eight bytes");
+
+// 호스트 호출·컴파일 상수·GC 작업 항목처럼 독립된 값 경계에서만 타입을 함께 보관한다.
+struct BoundaryValue : VarInfo
+{
+	friend class ValueRef;
 private:
 	VAR_TYPE	_type;
 	NEOS_FORCEINLINE void SetType(VAR_TYPE t) { _type = t; }
@@ -339,34 +373,15 @@ private:
 	friend struct ArrayInfo;
 	friend struct SFunctionLayer;
 	friend struct SFunctions;
-	friend void Move_DestNoRelease(VarInfo* v1, VarInfo* v2);
+	friend void Move_DestNoRelease(ValueRef v1, ValueRef v2);
 public:
-	union
-	{
-		bool		_bl;
-		CoroutineInfo* _cor;
-		StringInfo* _str;
-		MapInfo* _tbl;
-		ListInfo* _lst;
-		SetInfo* _set;
-		FunctionPtr* _funPtr; // C Native
-		FunctionPropertyInfo* _fpNative; // VAR_FP_NATIVE
-		NS_INT			_int;
-		NS_FLOAT	_float;
-		int			_fun_index;
-		INeoVMWorker* _module;
-		AsyncInfo*	_async;
-		ClosureInfo*	_closure;
-		CollectionIterator	_it;
-		VecInfo*	_vec; // 3·4성분 벡터의 공유 저장소
-		float _vecXY[2]; // 2성분 벡터는 값 영역 안에 직접 보관한다.
-		ArrayInfo*	_array; // VAR_ARRAY 밀집 원시 배열
-		VarInfo* _ref; // VAR_REF: never stored in script values
-	};
 
-	NEOS_FORCEINLINE VarInfo() { _type = VAR_NONE; }
-	NEOS_FORCEINLINE VarInfo(VAR_TYPE t) { _type = t; }
-	NEOS_FORCEINLINE VarInfo(NS_INT v) { _type = VAR_INT; _int = v; }
+	NEOS_FORCEINLINE BoundaryValue() { _type = VAR_NONE; }
+	BoundaryValue(ValueRef value);
+	ValueRef operator&();
+	ValueRef operator&() const;
+	NEOS_FORCEINLINE BoundaryValue(VAR_TYPE t) { _type = t; }
+	NEOS_FORCEINLINE BoundaryValue(NS_INT v) { _type = VAR_INT; _int = v; }
 
 	NEOS_FORCEINLINE VAR_TYPE GetType() const { return _type; }
 	// 풀 객체 + refcount 를 쓰는 타입인가. 대입/해제 때 참조 카운트를 만져야 하는지 판정.
@@ -429,8 +444,144 @@ public:
 	bool GetQuat(float out[4]); // wxyz
 };
 
-// 모든 플랫폼에서 타입 영역 8바이트 + 값 영역 8바이트를 유지한다.
-static_assert(sizeof(VarInfo) == 16, "VarInfo must remain 16 bytes");
+
+// 함수의 고정 슬롯이나 컨테이너 원소를 빌려 쓰는 뷰. 값 자체에는 태그를 쓰지 않는다.
+class ValueRef
+{
+    VarInfo* value_ = nullptr;
+    VAR_TYPE fixed_ = VAR_NONE;
+    VAR_TYPE* boundary_ = nullptr;
+    int stride_ = sizeof(VarInfo);
+    const VAR_TYPE* layout_ = nullptr;
+public:
+    ValueRef() {}
+    ValueRef(std::nullptr_t) {}
+    ValueRef(BoundaryValue* value)
+        : value_(value), fixed_(VAR_NONE), boundary_(value ? &value->_type : nullptr), stride_(sizeof(BoundaryValue)) {}
+    ValueRef(const BoundaryValue* value) : ValueRef(const_cast<BoundaryValue*>(value)) {}
+    ValueRef(VarInfo* value, VAR_TYPE type) : value_(value), fixed_(type) {}
+    ValueRef(VarInfo* value, const VAR_TYPE* layout) : value_(value), layout_(layout) {}
+    VarInfo* operator->() const { return value_; }
+    VarInfo* Data() const { return value_; }
+    explicit operator bool() const { return value_ != nullptr; }
+    bool operator!() const { return value_ == nullptr; }
+    bool operator==(ValueRef other) const { return value_ == other.value_; }
+    bool operator!=(ValueRef other) const { return value_ != other.value_; }
+    bool operator<(ValueRef other) const { return value_ < other.value_; }
+    bool operator>(ValueRef other) const { return value_ > other.value_; }
+    bool operator<=(ValueRef other) const { return value_ <= other.value_; }
+    bool operator>=(ValueRef other) const { return value_ >= other.value_; }
+    ValueRef operator+(std::ptrdiff_t n) const
+    {
+        if (!value_) { assert(n == 0); return *this; }
+        if (boundary_) return ValueRef(reinterpret_cast<BoundaryValue*>(reinterpret_cast<char*>(value_) + n * stride_));
+        return layout_ ? ValueRef(value_ + n, layout_ + n) : ValueRef(value_ + n, fixed_);
+    }
+    // VM의 고정 슬롯은 경계 값과 보폭을 매번 판별할 필요가 없다.
+    NEOS_FORCEINLINE ValueRef SlotOffset(std::ptrdiff_t n) const
+    {
+        assert(value_ && !boundary_ && layout_);
+        return ValueRef(value_ + n, layout_ + n);
+    }
+    ValueRef operator-(std::ptrdiff_t n) const { return *this + -n; }
+    std::ptrdiff_t operator-(ValueRef other) const
+    { return (reinterpret_cast<char*>(value_) - reinterpret_cast<char*>(other.value_)) / stride_; }
+    ValueRef& operator+=(std::ptrdiff_t n) { *this = *this + n; return *this; }
+    ValueRef& operator-=(std::ptrdiff_t n) { return *this += -n; }
+    ValueRef& operator++() { return *this += 1; }
+    ValueRef operator++(int) { ValueRef old = *this; ++*this; return old; }
+    ValueRef& operator--() { return *this -= 1; }
+    ValueRef operator&() const { return *this; }
+    // 이 두 값은 값 태그가 아니라 불변 배치표의 저장 표현 식별자다.
+    static VAR_TYPE CallableStorageType() { return static_cast<VAR_TYPE>(254); }
+    static VAR_TYPE ObjectIdStorageType() { return static_cast<VAR_TYPE>(253); }
+    int FunctionIndex() const
+    { assert(GetType() == VAR_FUN); return DeclaredType() == CallableStorageType() ? static_cast<int>(NS_UINT(value_->_int) >> 1) : value_->_fun_index; }
+    void SetFunctionIndex(int index) const
+    {
+        SetType(VAR_FUN);
+        if (DeclaredType() == CallableStorageType()) value_->_int = static_cast<NS_INT>((NS_UINT(index) << 1) | 1);
+        else { value_->_int = 0; value_->_fun_index = index; }
+    }
+    VAR_TYPE DeclaredType() const { return boundary_ ? *boundary_ : layout_ ? *layout_ : fixed_; }
+    VAR_TYPE GetType() const
+    {
+        const VAR_TYPE type = DeclaredType();
+        // 함수 슬롯은 같은 정적 함수 타입 안에서 이름 함수 ID와 캡처 포인터를 표현한다.
+        if (type == CallableStorageType())
+            return value_->_int == 0 ? VAR_NONE : (NS_UINT(value_->_int) & 1) ? VAR_FUN : VAR_CLOSURE;
+        if (type == ObjectIdStorageType()) return value_->_int == 0 ? VAR_NONE : VAR_INT;
+        if (!boundary_ && (type >= VAR_STRING || type == VAR_FUN_NATIVE) && value_->_int == 0) return VAR_NONE;
+        return type;
+    }
+    void SetType(VAR_TYPE type) const
+    {
+        if (boundary_) *boundary_ = type;
+        else
+        {
+            assert(type == DeclaredType() || type == VAR_NONE ||
+                (DeclaredType() == ObjectIdStorageType() && type == VAR_INT) ||
+                (DeclaredType() == CallableStorageType() && (type == VAR_FUN || type == VAR_CLOSURE)));
+        }
+    }
+    void ClearType() const { value_->_int = 0; if (boundary_) *boundary_ = VAR_NONE; }
+    void SetVecType(int count) const { SetType(count == 2 ? VAR_VEC : count == 3 ? VAR_VEC3 : VAR_VEC4); }
+    void SetInlineVec(float x, float y) const { SetVecType(2); value_->_vecXY[0] = x; value_->_vecXY[1] = y; }
+    bool IsAllocType() const { return GetType() >= VAR_STRING; }
+    bool IsContainerType() const { return GetType() >= VAR_MAP; }
+    bool IsNumber() const { return GetType() == VAR_INT || GetType() == VAR_FLOAT; }
+    bool IsVector() const { return VectorComponentCount() != 0; }
+    bool IsTrue() const { return GetType() == VAR_BOOL && value_->_bl; }
+    int VectorComponentCount() const { const VAR_TYPE t = GetType(); return t == VAR_VEC ? 2 : t == VAR_VEC3 ? 3 : t == VAR_VEC4 ? 4 : 0; }
+    NS_FLOAT GetFloatNumber() const { return GetType() == VAR_INT ? static_cast<NS_FLOAT>(value_->_int) : GetType() == VAR_FLOAT ? value_->_float : 0; }
+    float VectorComponent(int index) const;
+    void CopyVectorComponents(float* out) const;
+    template<int Dimension> void CopyVectorComponents(float* out) const;
+    bool GetVec2(float out[2]) const;
+    bool GetVec3(float out[3]) const;
+    bool GetVec4(float out[4]) const;
+    bool GetQuat(float out[4]) const;
+    bool MapInsertFloat(const std::string& key, NS_FLOAT v) const;
+    bool MapFindFloat(const std::string& key, NS_FLOAT& v) const;
+    bool ListInsertFloat(int index, NS_FLOAT v) const;
+    bool ListFindFloat(int index, NS_FLOAT& v) const;
+    bool SetListIndexer(VMHash<int>* indexer) const;
+    void CopyPayload(ValueRef source) const
+    {
+        SetType(source.GetType());
+        if (source.GetType() == VAR_FUN) SetFunctionIndex(source.FunctionIndex());
+        else *value_ = *source.value_;
+    }
+    class Element;
+    Element operator*() const;
+    Element operator[](std::ptrdiff_t n) const;
+};
+class ValueRef::Element : public ValueRef
+{
+public:
+    Element(ValueRef value) : ValueRef(value) {}
+    Element& operator=(const Element& other) { CopyPayload(other); return *this; }
+    Element& operator=(const BoundaryValue& other) { CopyPayload(&other); return *this; }
+    Element& operator=(ValueRef other) { CopyPayload(other); return *this; }
+};
+inline ValueRef::Element ValueRef::operator*() const { return Element(*this); }
+inline ValueRef::Element ValueRef::operator[](std::ptrdiff_t n) const { return Element(*this + n); }
+inline BoundaryValue::BoundaryValue(ValueRef value) : VarInfo(*value.Data()), _type(value.GetType())
+{ if (_type == VAR_FUN) { _int = 0; _fun_index = value.FunctionIndex(); } }
+inline ValueRef BoundaryValue::operator&() { return ValueRef(this); }
+inline ValueRef BoundaryValue::operator&() const { return ValueRef(this); }
+inline bool ValueRef::GetVec2(float out[2]) const { BoundaryValue v(*this); return v.GetVec2(out); }
+inline bool ValueRef::GetVec3(float out[3]) const { BoundaryValue v(*this); return v.GetVec3(out); }
+inline bool ValueRef::GetVec4(float out[4]) const { BoundaryValue v(*this); return v.GetVec4(out); }
+inline bool ValueRef::GetQuat(float out[4]) const { BoundaryValue v(*this); return v.GetQuat(out); }
+inline bool ValueRef::MapInsertFloat(const std::string& key, NS_FLOAT v) const { BoundaryValue b(*this); return b.MapInsertFloat(key,v); }
+inline bool ValueRef::MapFindFloat(const std::string& key, NS_FLOAT& v) const { BoundaryValue b(*this); return b.MapFindFloat(key,v); }
+inline bool ValueRef::ListInsertFloat(int index, NS_FLOAT v) const { BoundaryValue b(*this); return b.ListInsertFloat(index,v); }
+inline bool ValueRef::ListFindFloat(int index, NS_FLOAT& v) const { BoundaryValue b(*this); return b.ListFindFloat(index,v); }
+inline bool ValueRef::SetListIndexer(VMHash<int>* indexer) const { BoundaryValue b(*this); return b.SetListIndexer(indexer); }
+
+// 경계 값의 태그는 일반 VM 슬롯의 크기에 포함되지 않는다.
+static_assert(sizeof(BoundaryValue) == 16, "BoundaryValue must remain 16 bytes");
 
 enum NeoDebugStopReason
 {
@@ -486,7 +637,7 @@ struct INeoVMDebugListener
 struct INeoVMWorker
 {
 protected:
-	std::vector<VarInfo>* _args = NULL;
+	std::vector<BoundaryValue>* _args = nullptr;
 	CNeoVM* _pVM;
 
 	u32						_idWorker;
@@ -497,9 +648,9 @@ public:
 	inline int GetBytesSize() { return _BytesSize; }
 
 	virtual void GC() =0;
-	virtual VarInfo* GetReturnVar() =0;
-	virtual VarInfo* GetStackVar(int idx) =0;
-	virtual bool ResetVarType(VarInfo* p, VAR_TYPE type, int capa = 0) =0;
+	virtual ValueRef GetReturnVar() =0;
+	virtual ValueRef GetStackVar(int idx) =0;
+	virtual bool ResetVarType(ValueRef p, VAR_TYPE type, int capa = 0) =0;
 	virtual void DebugSetListener(INeoVMDebugListener* listener) = 0;
 	virtual void DebugSetBreakpoints(const std::vector<int>& lines) = 0;
 	virtual void DebugSetBreakpoints(const std::vector<NeoDebugBreakpoint>& breakpoints) = 0;
@@ -526,34 +677,34 @@ public:
 		pOut->_fn = fn;
 		pOut->_func = pFun;
 	}
-	void Var_Release(VarInfo* d);
+	void Var_Release(ValueRef d);
 	// alloc 여부를 이미 확인한 호출자용 — 재검사를 건너뛴다.
-	void Var_ReleaseAlloc(VarInfo* d);
-	void Var_SetNone(VarInfo* d);
+	void Var_ReleaseAlloc(ValueRef d);
+	void Var_SetNone(ValueRef d);
 
 protected:
 	// 공유 중인 리프/비순환 list는 full release dispatcher를 거치지 않고
 	// refcount만 내린다. false면 마지막 참조 또는 순환 후보라 fallback한다.
-	NEOS_FORCEINLINE bool Var_ReleaseVecFast(VarInfo* d);
-	NEOS_FORCEINLINE bool Var_ReleaseStringFast(VarInfo* d);
-	NEOS_FORCEINLINE bool Var_ReleaseListFast(VarInfo* d);
-	NEOS_FORCEINLINE bool Var_ReleaseArrayFast(VarInfo* d);
+	NEOS_FORCEINLINE bool Var_ReleaseVecFast(ValueRef d);
+	NEOS_FORCEINLINE bool Var_ReleaseStringFast(ValueRef d);
+	NEOS_FORCEINLINE bool Var_ReleaseListFast(ValueRef d);
+	NEOS_FORCEINLINE bool Var_ReleaseArrayFast(ValueRef d);
 
 public:
 
-	virtual void Var_Move(VarInfo* v1, VarInfo* v2) =0;
+	virtual void Var_Move(ValueRef v1, ValueRef v2) =0;
 
 
 	void PushInt(NS_INT v)
 	{
-		VarInfo d;
+		BoundaryValue d;
 		d.SetType(VAR_INT);
 		d._int = v;
 		_args->push_back(d);
 	}
 	void PushFloat(NS_FLOAT v)
 	{
-		VarInfo d;
+		BoundaryValue d;
 		d.SetType(VAR_FLOAT);
 		d._float = v;
 		_args->push_back(d);
@@ -561,16 +712,16 @@ public:
 	void PushString(const char* p);
 	void PushBool(bool b)
 	{
-		VarInfo d;
+		BoundaryValue d;
 		d.SetType(VAR_BOOL);
 		d._bl = b;
 		_args->push_back(d);
 	}
 	void PushNeoFunction(NeoFunction v);
 
-	NS_INT PopInt(VarInfo* V)
+	NS_INT PopInt(ValueRef V)
 	{
-		switch (V->GetType())
+		switch (V.GetType())
 		{
 		case VAR_INT:
 			return V->_int;
@@ -581,9 +732,9 @@ public:
 		}
 		return -1;
 	}
-	NS_FLOAT PopFloat(VarInfo* V)
+	NS_FLOAT PopFloat(ValueRef V)
 	{
-		switch (V->GetType())
+		switch (V.GetType())
 		{
 		case VAR_INT:
 			return (NS_FLOAT)V->_int;
@@ -594,26 +745,26 @@ public:
 		}
 		return -1;
 	}
-	const char* PopString(VarInfo* V);
-	const std::string* PopStlString(VarInfo* V);
-	bool PopBool(VarInfo* V)
+	const char* PopString(ValueRef V);
+	const std::string* PopStlString(ValueRef V);
+	bool PopBool(ValueRef V)
 	{
-		if (V->GetType() == VAR_BOOL)
+		if (V.GetType() == VAR_BOOL)
 			return V->_bl;
 
 		return false;
 	}
-	NeoFunction PopNeoFunction(VarInfo* V)
+	NeoFunction PopNeoFunction(ValueRef V)
 	{
 		NeoFunction r;
-		if (V->GetType() == VAR_FUN)
+		if (V.GetType() == VAR_FUN)
 		{
 			r._pWorker = this;
-			r._fun_index = V->_fun_index;
+			r._fun_index = V.FunctionIndex();
 		}
 		else
 		{
-			r._pWorker = NULL;
+			r._pWorker = nullptr;
 			r._fun_index = -1;
 		}
 		return r;
@@ -640,54 +791,54 @@ public:
 	inline void push(unsigned long long ret) { PushInt((NS_INT)ret); }
 	inline void push(NeoFunction ret) { PushNeoFunction(ret); }
 
-	inline void		_read(VarInfo* V, std::string*& r) { r = (std::string*)PopStlString(V); }
-	inline void		_read(VarInfo* V, char*& r) { r = (char*)PopString(V); }
-	inline void		_read(VarInfo* V, const char*& r) { r = PopString(V); }
-	inline void		_read(VarInfo* V, char& r) { r = (char)PopInt(V); }
-	inline void		_read(VarInfo* V, unsigned char& r) { r = (unsigned char)PopInt(V); }
-	inline void		_read(VarInfo* V, short& r) { r = (short)PopInt(V); }
-	inline void		_read(VarInfo* V, unsigned short& r) { r = (unsigned short)PopInt(V); }
-	inline void		_read(VarInfo* V, long& r) {
+	inline void		_read(ValueRef V, std::string*& r) { r = (std::string*)PopStlString(V); }
+	inline void		_read(ValueRef V, char*& r) { r = (char*)PopString(V); }
+	inline void		_read(ValueRef V, const char*& r) { r = PopString(V); }
+	inline void		_read(ValueRef V, char& r) { r = (char)PopInt(V); }
+	inline void		_read(ValueRef V, unsigned char& r) { r = (unsigned char)PopInt(V); }
+	inline void		_read(ValueRef V, short& r) { r = (short)PopInt(V); }
+	inline void		_read(ValueRef V, unsigned short& r) { r = (unsigned short)PopInt(V); }
+	inline void		_read(ValueRef V, long& r) {
 		const NS_INT value = PopInt(V);
 		r = value > (std::numeric_limits<long>::max)() ? (std::numeric_limits<long>::max)() :
 			value < (std::numeric_limits<long>::min)() ? (std::numeric_limits<long>::min)() : static_cast<long>(value);
 	}
-	inline void		_read(VarInfo* V, unsigned long& r) { r = (unsigned long)PopInt(V); }
-	inline void		_read(VarInfo* V, int& r) { r = NeoNarrowInt(PopInt(V)); }
-	inline void		_read(VarInfo* V, unsigned int& r) { r = (unsigned int)PopInt(V); }
-	inline void		_read(VarInfo* V, NS_FLOAT& r) { r = (NS_FLOAT)PopFloat(V); }
-	inline void		_read(VarInfo* V, float& r) { r = NeoNarrowFloat32(PopFloat(V)); }
-	inline void		_read(VarInfo* V, bool& r) { r = PopBool(V); }
-	inline void		_read(VarInfo* V) {}
-	inline void		_read(VarInfo* V, long long& r) { r = (long long)PopInt(V); }
-	inline void		_read(VarInfo* V, unsigned long long& r) { r = (unsigned long long)PopInt(V); }
-	inline void		_read(VarInfo* V, VarInfo*& r) { r = V; }
-	inline void		_read(VarInfo* V, NeoFunction& r) { r = PopNeoFunction(V); }
+	inline void		_read(ValueRef V, unsigned long& r) { r = (unsigned long)PopInt(V); }
+	inline void		_read(ValueRef V, int& r) { r = NeoNarrowInt(PopInt(V)); }
+	inline void		_read(ValueRef V, unsigned int& r) { r = (unsigned int)PopInt(V); }
+	inline void		_read(ValueRef V, NS_FLOAT& r) { r = (NS_FLOAT)PopFloat(V); }
+	inline void		_read(ValueRef V, float& r) { r = NeoNarrowFloat32(PopFloat(V)); }
+	inline void		_read(ValueRef V, bool& r) { r = PopBool(V); }
+	inline void		_read(ValueRef V) {}
+	inline void		_read(ValueRef V, long long& r) { r = (long long)PopInt(V); }
+	inline void		_read(ValueRef V, unsigned long long& r) { r = (unsigned long long)PopInt(V); }
+	inline void		_read(ValueRef V, ValueRef& r) { r = V; }
+	inline void		_read(ValueRef V, NeoFunction& r) { r = PopNeoFunction(V); }
 
-	void Var_SetInt(VarInfo* d, NS_INT v);
-	void Var_SetFloat(VarInfo* d, NS_FLOAT v);
-	void Var_SetBool(VarInfo* d, bool v);
+	void Var_SetInt(ValueRef d, NS_INT v);
+	void Var_SetFloat(ValueRef d, NS_FLOAT v);
+	void Var_SetBool(ValueRef d, bool v);
 	// 3·4성분 저장소는 단독 소유일 때 재사용한다. 2성분은 StoreVector가 직접 저장한다.
-	VecInfo*	VecStoreFor(VarInfo* d, int dimension);
-	void StoreVector(VarInfo* d, int count, float x, float y, float z, float w);
-	float&	WritableVectorComponent(VarInfo* d, int index);
+	VecInfo*	VecStoreFor(ValueRef d, int dimension);
+	void StoreVector(ValueRef d, int count, float x, float y, float z, float w);
+	float&	WritableVectorComponent(ValueRef d, int index);
 	// 외부 setter의 인자 수와 벡터 성분 수는 기존과 같다.
-	void Var_SetVec2(VarInfo* d, float x, float y);
-	void Var_SetVec3(VarInfo* d, float x, float y, float z);
-	void Var_SetVec4(VarInfo* d, float x, float y, float z, float w);
-	void Var_SetQuat(VarInfo* d, float w, float x, float y, float z);
-	void Var_SetCoroutine(VarInfo* d, CoroutineInfo* p);
-	void Var_SetString(VarInfo* d, const char* str);
-	void Var_SetStringA(VarInfo* d, const std::string& str);
-	void Var_SetTable(VarInfo* d, MapInfo* p);
-	void Var_SetList(VarInfo* d, ListInfo* p);
-	void Var_SetArray(VarInfo* d, ArrayInfo* p);
-	void Var_SetSet(VarInfo* d, SetInfo* p);
-	void Var_SetFun(VarInfo* d, int fun_index);
-	void Var_SetAsync(VarInfo* d, AsyncInfo* p);
+	void Var_SetVec2(ValueRef d, float x, float y);
+	void Var_SetVec3(ValueRef d, float x, float y, float z);
+	void Var_SetVec4(ValueRef d, float x, float y, float z, float w);
+	void Var_SetQuat(ValueRef d, float w, float x, float y, float z);
+	void Var_SetCoroutine(ValueRef d, CoroutineInfo* p);
+	void Var_SetString(ValueRef d, const char* str);
+	void Var_SetStringA(ValueRef d, const std::string& str);
+	void Var_SetTable(ValueRef d, MapInfo* p);
+	void Var_SetList(ValueRef d, ListInfo* p);
+	void Var_SetArray(ValueRef d, ArrayInfo* p);
+	void Var_SetSet(ValueRef d, SetInfo* p);
+	void Var_SetFun(ValueRef d, int fun_index);
+	void Var_SetAsync(ValueRef d, AsyncInfo* p);
 
 	inline void	ReturnValue() { Var_Release(GetReturnVar()); }
-	inline void	ReturnValue(VarInfo* p) { Var_Move(GetReturnVar(), p); }
+	inline void	ReturnValue(ValueRef p) { Var_Move(GetReturnVar(), p); }
 	inline void	ReturnValue(char* p) { Var_SetString(GetReturnVar(), p); }
 	inline void	ReturnValue(const char* p) { Var_SetString(GetReturnVar(), p); }
 	inline void	ReturnValue(char p) { Var_SetInt(GetReturnVar(), p); }
@@ -712,9 +863,9 @@ public:
 		push(arg1);
 		PushArgs(args...);
 	}
-	inline void ReleaseArgs(std::vector<VarInfo>& args)
+	inline void ReleaseArgs(std::vector<BoundaryValue>& args)
 	{
-		for (VarInfo& arg : args)
+		for (BoundaryValue& arg : args)
 			Var_Release(&arg);
 	}
 
@@ -723,10 +874,10 @@ public:
 	template<typename ... Types>
 	int ExecuteN(int iFID, Types ... args)
 	{
-		std::vector<VarInfo> args_;
+		std::vector<BoundaryValue> args_;
 		_args = &args_;
 		PushArgs(args...);
-		_args = NULL;
+		_args = nullptr;
 
 		int st = ExecuteTop(iFID, args_);
 		ReleaseArgs(args_);
@@ -734,10 +885,10 @@ public:
 	}
 
 	virtual int FindFunction(const std::string& name) = 0;
-	virtual bool	Setup(int iFunctionID, std::vector<VarInfo>& _args) = 0;
+	virtual bool	Setup(int iFunctionID, std::vector<BoundaryValue>& _args) = 0;
 	virtual bool	Run() =0;
 	// 최상위 실행/재개 (NeoExecStatus 반환). IsSuspended() 가 true 면 ResumeTop() 을 호출한다.
-	virtual int	ExecuteTop(int iFunctionID, std::vector<VarInfo>& _args) = 0;
+	virtual int	ExecuteTop(int iFunctionID, std::vector<BoundaryValue>& _args) = 0;
 	virtual int	ResumeTop(bool retainCompletedResult = false) = 0;
 	virtual NeoExecutionState GetExecutionState() = 0;
 	// OOM은 이 워커의 실행 상태를 복구 불가로 만든다. 호스트는 워커를 가진
@@ -754,7 +905,7 @@ public:
 	// BeginHostCall로 확보한 컨텍스트에서 실행하고 상태를 반환한다.
 	// closureValue가 있으면(VAR_CLOSURE), 함수 번호뿐 아니라 생성 시점에 보관한
 	// 캡처 환경까지 최상위 호출 프레임에 주입한다. nullptr은 기존 일반 함수 경로.
-	virtual int RunHostCall(int iFunctionID, std::vector<VarInfo>& _args, VarInfo* closureValue = nullptr) = 0;
+	virtual int RunHostCall(int iFunctionID, std::vector<BoundaryValue>& _args, ValueRef closureValue = nullptr, ValueRef completedResult = nullptr) = 0;
 	// 정지(sleep/디버거/슬라이스 제한)된 실행을 버리고 컨텍스트를 풀로 반납한다.
 	// 전역 변수는 보존된다(워커는 그대로 살아있고 idle 로 돌아감).
 	// 인터프리터 실행 중(네이티브 콜백 안 등)에는 컨텍스트를 해제할 수 없으므로 false 를 반환한다.
@@ -763,7 +914,7 @@ public:
 	// 0은 슬라이스별 명령 제한을 해제한다. 디버거 슬라이스는 동기 콜백을 허용할 수 있다.
 	virtual void SetInstructionBudget(uint64_t budget, bool restrictNested = true) = 0;
 	virtual bool IsInterpreterRunning() const = 0;
-	virtual VarInfo* GetVar(const std::string& name) = 0;
+	virtual ValueRef GetVar(const std::string& name) = 0;
 };
 
 
@@ -844,7 +995,7 @@ struct NeoVMSystem
 	static IO_Print m_pFunPrint;
 	static IO_Print m_pFunError;
 
-	static bool	RegisterTableCallBack(VarInfo* p, void* pUserData, Neo_NativeFunction func, Neo_NativeProperty property,
+	static bool	RegisterTableCallBack(ValueRef p, void* pUserData, Neo_NativeFunction func, Neo_NativeProperty property,
 		const void* identityType = nullptr, const void* identityObject = nullptr,
 		const std::shared_ptr<void>& payloadOwner = {});
 

@@ -3,10 +3,10 @@
 
 struct neo_DCalllibs
 {
-	static bool List_Add(CNeoVMWorker* pN, VarInfo* r, VarInfo* v1, VarInfo* v2)
+	static bool List_Add(CNeoVMWorker* pN, ValueRef r, ValueRef v1, ValueRef v2)
 	{
-		if (v1->GetType() != VAR_LIST) return false;
-		if (v2->GetType() != VAR_LIST) return false;
+		if (v1.GetType() != VAR_LIST) return false;
+		if (v2.GetType() != VAR_LIST) return false;
 
 		ListInfo* pR = pN->GetVM()->ListAlloc();
 		pN->Var_SetList(r, pR);
@@ -19,9 +19,9 @@ struct neo_DCalllibs
 		int sz = s1 + s2;
 		pR->Resize(sz);
 
-		VarInfo* dest = pR->GetDataUnsafe();
-		VarInfo* src1 = pV1->GetDataUnsafe();
-		VarInfo* src2 = pV2->GetDataUnsafe();
+		ValueRef dest = pR->GetDataUnsafe();
+		ValueRef src1 = pV1->GetDataUnsafe();
+		ValueRef src2 = pV2->GetDataUnsafe();
 		bool mayContainContainerChild = false;
 
 		for (int i = 0; i < s1; i++)
@@ -39,10 +39,10 @@ struct neo_DCalllibs
 
 		return true;
 	}
-	static bool Set_And(CNeoVMWorker* pN, VarInfo* r, VarInfo* v1, VarInfo* v2) // 교집합
+	static bool Set_And(CNeoVMWorker* pN, ValueRef r, ValueRef v1, ValueRef v2) // 교집합
 	{
-		if (v1->GetType() != VAR_SET) return false;
-		if (v2->GetType() != VAR_SET) return false;
+		if (v1.GetType() != VAR_SET) return false;
+		if (v2.GetType() != VAR_SET) return false;
 
 		SetInfo* pR = pN->GetVM()->SetAlloc();
 		pN->Var_SetSet(r, pR);
@@ -61,10 +61,10 @@ struct neo_DCalllibs
 		}
 		return true;
 	}
-	static bool Set_Or(CNeoVMWorker* pN, VarInfo* r, VarInfo* v1, VarInfo* v2) // 합집합
+	static bool Set_Or(CNeoVMWorker* pN, ValueRef r, ValueRef v1, ValueRef v2) // 합집합
 	{
-		if (v1->GetType() != VAR_SET) return false;
-		if (v2->GetType() != VAR_SET) return false;
+		if (v1.GetType() != VAR_SET) return false;
+		if (v2.GetType() != VAR_SET) return false;
 
 		SetInfo* pR = pN->GetVM()->SetAlloc();
 		pN->Var_SetSet(r, pR);
@@ -90,10 +90,10 @@ struct neo_DCalllibs
 		}
 		return true;
 	}
-	static bool Set_Sub(CNeoVMWorker* pN, VarInfo* r, VarInfo* v1, VarInfo* v2) // 차집합
+	static bool Set_Sub(CNeoVMWorker* pN, ValueRef r, ValueRef v1, ValueRef v2) // 차집합
 	{
-		if (v1->GetType() != VAR_SET) return false;
-		if (v2->GetType() != VAR_SET) return false;
+		if (v1.GetType() != VAR_SET) return false;
+		if (v2.GetType() != VAR_SET) return false;
 
 		SetInfo* pR = pN->GetVM()->SetAlloc();
 		pN->Var_SetSet(r, pR);

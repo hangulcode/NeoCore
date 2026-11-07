@@ -690,9 +690,18 @@ static void ComparisonShapes(IRuntime* runtime, bool debug)
     }
 }
 
-// 정적 소스는 변수 타입을 바꾸지 않는다. 여기서는 신뢰된 백엔드 입력으로 예전 참조 값이 남은 목적지를 강제로 만든다.
+// 숫자·참조는 고정 슬롯을 따로 쓴다. 타입을 바꾸는 백엔드 입력은 실행 전에 거부한다.
 static void ReferenceCleanup(IRuntime* runtime, bool debug)
 {
+    CompileDesc invalid;
+    invalid.source = "export fun Probe(){var cell=[3];cell=__invalid_iadd_L1(7,2);return cell;}";
+    invalid.coreIntrinsicPrefix = "__invalid_";
+    invalid.includeDebugInfo = debug;
+    std::vector<uint8_t> rejected;
+    const Error invalidError = runtime->CompileToBytecode(invalid, rejected);
+    Check(!invalidError.ok() && invalidError.message.find("conflicting compiler slot types") != std::string::npos,
+        "reference-to-numeric slot reuse is rejected before execution");
+
     struct Cleanup { const char* suffix; const char* a; const char* b; Outcome expected; };
     const Cleanup cases[] = {
         {"iadd", "7", "2", Int(12)}, {"isub", "7", "2", Int(8)},
@@ -707,15 +716,16 @@ static void ReferenceCleanup(IRuntime* runtime, bool debug)
     {
         const std::string arguments = std::string("a") + (item.b ? ",b" : "");
         const std::string source = "export fun Probe(){var a=" + std::string(item.a) +
-            ";var b=" + (item.b ? item.b : "0") + ";var cell=[3];var witness=cell;" +
-            "for(var i in 0,32){cell=[i];cell=" + prefix + item.suffix + "_L1(" + arguments +
+            ";var b=" + (item.b ? item.b : "0") + ";var cell=[3];var witness=cell;var value=" +
+            (item.expected.type == ValueType::Float ? "0.0;" : "0;") +
+            "for(var i in 0,32){cell=[i];value=" + prefix + item.suffix + "_L1(" + arguments +
             ");}return " + prefix + (item.expected.type == ValueType::Float ? "fadd" : "iadd")
-            + "_L1(cell," + (item.expected.type == ValueType::Float ? prefix + "itof_L1(witness[0])" : "witness[0]")
+            + "_L1(value," + (item.expected.type == ValueType::Float ? prefix + "itof_L1(witness[0])" : "witness[0]")
             + ");}export fun Recovery(){return 29;}";
         AllocStats before; GetAllocStats(before);
         const Outcome result = RunBackend(runtime, source, prefix, debug, true, item.suffix);
         AllocStats after; GetAllocStats(after);
-        Check(Same(result, item.expected), std::string(item.suffix) + " ref-bearing destination and retained alias");
+        Check(Same(result, item.expected), std::string(item.suffix) + " fixed numeric destination and retained alias");
         Check(before.lists == after.lists && before.maps == after.maps && before.arrays == after.arrays &&
             before.closures == after.closures && before.vectors == after.vectors,
             std::string(item.suffix) + " overwritten references are released");
@@ -729,31 +739,31 @@ static void ReferenceCleanup(IRuntime* runtime, bool debug)
     for (const auto& item : comparisons)
     {
         const bool integer = item.suffix[0] == 'i';
-        const std::string source = "var witness=null;export fun Probe(){var a=" +
+        const std::string source = "var witness=[3];export fun Probe(){var a=" +
             std::string(integer ? "3" : "3.0") + ";var b=" + (integer ? "2" : "2.0") +
-            ";var cell=[3];witness=cell;for(var i in 0,32){cell=[i];cell=" + prefix + item.suffix +
-            "_L1(a,b);}return cell;}export fun Recovery(){return " + prefix + "iadd_L1(witness[0],26);}";
+            ";var cell=[3];witness=cell;var value=false;for(var i in 0,32){cell=[i];value=" + prefix + item.suffix +
+            "_L1(a,b);}return value;}export fun Recovery(){return " + prefix + "iadd_L1(witness[0],26);}";
         AllocStats before; GetAllocStats(before);
         const Outcome result = RunBackend(runtime, source, prefix, debug, true, item.suffix);
         AllocStats after; GetAllocStats(after);
-        Check(Same(result, Bool(item.expected)), std::string(item.suffix) + " stores bool over ref-bearing destination");
+        Check(Same(result, Bool(item.expected)), std::string(item.suffix) + " stores bool separately from references");
         Check(before.lists == after.lists, std::string(item.suffix) + " comparison releases overwritten references");
     }
 
-    // 나눗셈 실패는 목적지의 기존 참조를 해제하거나 값을 바꾸기 전에 발생해야 한다.
+    // 나눗셈 실패는 소유 지역을 정리하고 별도 숫자 전역의 이전 값을 보존한다.
     for (bool overflow : {false, true})
     {
         const std::string a = overflow ? "-9223372036854775808" : "7";
         const std::string b = overflow ? "-1" : "0";
-        const std::string source = "var cell=[29];export fun Probe(){var a=" + a +
-            ";var b=" + b + ";cell=" + prefix + "idiv_L1(a,b);return 0;}" +
-            "export fun Recovery(){return cell[0];}";
+        const std::string source = "var witness=[29];var value=29;export fun Probe(){var cell=witness;var a=" + a +
+            ";var b=" + b + ";value=" + prefix + "idiv_L1(a,b);return 0;}" +
+            "export fun Recovery(){if(value!=29)return 0;return witness[0];}";
         AllocStats before; GetAllocStats(before);
         const Outcome result = RunBackend(runtime, source, prefix, debug, true, "division preserves destination");
         AllocStats after; GetAllocStats(after);
         const char* reason = overflow ? "integer division overflow" : "integer division by zero";
         Check(result.valid && result.status == RunStatus::Failed && result.text.find(reason) == 0,
-            "failed typed division retains ref-bearing destination");
+            "failed typed division preserves numeric destination");
         Check(before.lists == after.lists, "failed typed division releases references on final destruction");
     }
 }

@@ -5,102 +5,86 @@ compiler. Its goal is payload-only copies and stores for statically typed VM
 slots, without an allocation test, a type switch, or a repeated type-tag write.
 The VM execution model, script value semantics, and public host API remain intact.
 
-## Final eight-byte representation
+## Eight-byte representation
 
-The agreed target is an eight-byte, untagged `VarInfo` payload. Remove `_type`,
-`_vecCount`, `_unused` and `_vecX` from that payload. This target is not yet the
-representation used by the implemented foundation below.
+`VarInfo` is an eight-byte, untagged payload. Its `_type`, `_vecCount`,
+`_unused` and `_vecX` members are removed, and a size assertion enforces this.
+VM frames, globals, constants, closure captures and vector-array elements use
+this payload directly.
 
 | Language value | Payload representation |
 | --- | --- |
 | int / float / bool | Integer, binary64 or boolean payload |
 | Vector2 | Two inline float32 components |
-| Vector3 / Vector4 / Quaternion | Pointer to the existing `VecInfo`-style shared storage |
+| Vector3 / Vector4 / Quaternion | Pointer to shared `VecInfo` storage |
 | string / collections / struct / owned builtin object | Pointer to the corresponding owned representation |
 | host object | Non-owning object ID; the host resolves and validates it on access |
-| function / coroutine | A uniform callable or execution-context representation |
+| function | Zero for null, encoded named-function ID, or aligned closure pointer |
+| coroutine | Pointer to its execution context |
 
-Vector3 adopts Vector4's reference-counted value semantics and copy-on-write.
-This representation change is implemented: Vector2 occupies the eight-byte
-payload inline, while Vector3 and Vector4 use shared `VecInfo` storage. Array
-initialization, typed reads/writes, host returns and frame cleanup preserve their
-reference ownership. The former inline `_vecX` and `_unused` members are removed;
-the redundant per-value dimension field is also removed. The transitional
-per-value type tag still distinguishes Vector2, Vector3 and Vector4 while the
-remaining tagged paths are migrated.
-Vector dimensions come from the checked instruction or enclosing type descriptor;
-in the final representation they are not stored per value. Vector3 construction
-and detached writes have allocation/reference costs that the former inline
-representation avoided. Smaller
-slots alone are not evidence that these vector workloads become faster.
+Vector3 and Vector4 retain reference-counted value semantics and copy-on-write.
+Their dimensions come from checked instructions and immutable storage descriptors.
+Vector3 construction and detached writes have allocation/reference costs that its
+former inline representation avoided. Smaller slots alone do not prove a speedup.
 
-Immutable type layouts must cover frames, globals, collection key/value types,
-struct fields and closure captures. An owning object retains access to its layout
-for as long as it can outlive its creating instance or program handle. GC and
-exceptional unwinding follow ownership layouts, including suspended frames and
-outgoing argument windows. They must not inspect absent per-value tags or infer
-whether arbitrary payload bits look like a pointer.
+The program owns immutable frame, global and outgoing-call layouts. Captures
+retain a shared immutable layout, so their ownership information survives the
+creating frame. `ValueRef` is a borrowed view over a payload and its layout; it is
+not stored in each VM slot. For a fixed slot, `SetType` checks the contract in
+Debug and never writes a type tag. Typed numeric instructions access the payload
+directly.
 
-Owning-reference null and empty/uninitialized ownership use a zero pointer. Host
-object null uses a zero ID; numeric and ID bits are never interpreted as an
-ownership state. Function values currently mix plain
-function indices and allocated closures, so their representation must be unified
-before removing their tag. Public host/debugger views may carry explicit type
-descriptors at the boundary; ordinary VM copies and stores must not reconstruct a
-tagged value or query a side table on every operation.
+Null owning references use a zero pointer, and null host objects use a zero ID.
+Numeric bits are never inspected as an ownership state. A function slot uses the
+low bit to distinguish a named-function ID from an aligned closure pointer; this
+is a representation choice within one checked function type, not a dynamic
+language type.
 
-All transitional boxed producers and consumers must be migrated before changing
-the shared payload size. Keeping sixteen-byte wrappers for every VM slot would
-not achieve this target. Bytecode images and host libraries need rebuilding when
-the final layout changes.
+## Compiler and call layouts
 
-## Implemented foundation
+Image version 0161 carries `SLOT` layouts, function result storage and `CALL`
+plans. A slot layout entry occupies 8 bytes; a cleanup entry occupies 4 bytes.
+Programs share these arrays across instances and recursive calls. The loader
+validates serialized plans rather than deciding new storage optimizations.
+Older images must be recompiled and host libraries rebuilt.
 
-Image version 0160 carries the compiler's `SLOT` layouts. A layout entry occupies
-8 bytes in memory; a cleanup entry occupies 4 bytes. The program shares these
-arrays across its instances and recursive calls. No per-call layout allocation
-or per-store lookup is introduced.
+The compiler assigns separate compatible temporary slots and emits fixed
+integer/float arithmetic, copies and immediate stores. Those instructions write
+only the payload, including in fused operations. Numeric declaration values are
+not initialized again in the frame prologue. Reference locals start empty.
+Arguments retain the values installed by the caller.
 
-The compiler assigns compatible numeric temporaries separate slots and emits
-fixed integer/float arithmetic, numeric copies, and immediate stores. Those
-instructions write only the payload. The same contract is preserved by fused
-instructions. Numeric tags are established once on frame entry for compatibility
-with the remaining tagged backend; numeric declaration values are not zeroed
-there. Function arguments retain the values installed by their caller.
+`PREPARE_CALL` selects the compiler-produced outgoing window after argument
+expressions have finished. Nested argument calls therefore cannot overwrite
+already evaluated arguments. The caller copies arguments into that window;
+script entry then selects the callee's fixed layout without clearing those
+arguments. Async dispatch similarly selects its fixed `void(bool,string)`
+callback window before writing the completion values. Named and captured
+callbacks use the same argument contract.
 
-Named string, collection, owned builtin-object, asynchronous-request and three/four-component
-vector copies select their retain/release operation from the instruction's storage
-kind. Null is still a runtime value state. Function values keep a separate variant
-policy because a named function and an allocated closure have different ownership.
-Return instructions preserve the result and captures, then traverse only the
-compiler's ownership list. Instance destruction/reset uses the global layout.
-Host object IDs have a separate non-owning copy policy. They never enter pointer
-reference-counting or cleanup, and host access still validates each ID.
+The runtime tracks active frame ranges in a reusable vector. Ordinary local
+access uses a cached contiguous layout view rather than a frame search. Frame
+range capacity can grow with call depth; there is no new type-plan allocation
+on each call. Transitional cleanup of outgoing windows and exceptional paths
+still traverses the relevant storage views.
 
-This is not the complete removal of `VarInfo` tags. Reference copies still carry
-the boundary tag, and generic outgoing argument windows, unconverted temporary
-producers, host transfers and exceptional unwinding retain tagged handling.
-Removing those tags requires migrating their producers, readers and debugger/GC
-boundaries together. Ordinary declaration/temporary slots already have an explicit
-layout, so that next step does not need to rediscover their types at runtime.
+Copy/store instructions encode their storage policy at compilation. Owned copies
+retain the new pointer before releasing the old pointer. Host object IDs have a
+separate non-owning policy and still require validation on engine access. Return
+instructions preserve results and captures before releasing local ownership.
 
-## Runtime representation
+## Remaining tagged boundaries
 
-- A program owns immutable function and global layouts. Each slot records its
-  exact language type and its physical storage/cleanup kind. Source/debug names
-  are not a source of type information.
-- Runtime plans use contiguous arrays and frame-relative offsets. A call must
-  not allocate a map, vector, type descriptor, or cleanup record. Recursive calls
-  share the same plan and use different frame bases.
-- Copy/store instructions encode their storage policy at compilation. They do
-  not look up a slot's type in a runtime table on each execution.
-- Temporary reuse is limited to compatible storage and ownership kinds. Adjacent
-  operand windows retain their required order and contiguity. Call windows and
-  representation-polymorphic function values have explicit ownership rules.
-- Tagged values at public, debugger, container, and transitional backend
-  boundaries are separate from the long-term payload-only frame contract.
-  Retaining a boundary representation does not authorize dynamic type selection
-  inside a statically typed copy/store.
+`BoundaryValue` is a separate sixteen-byte value used by host transfers, native
+scratch values, GC work queues and the existing list/map/set entries. Struct
+fields represented by those containers therefore still use this form. It is
+not a wrapper around every VM stack slot.
+
+Generic bridge operations read a `ValueRef`'s immutable descriptor or a boundary
+value's explicit tag. Completing tag removal from collection storage requires
+container element/field layouts and their host/GC paths to move together. The
+current change removes tags from `VarInfo`; it does not claim that every backend
+operation or heap container is tag-free.
 
 ## Local lifetime
 
@@ -118,7 +102,7 @@ for that release. A declaration without an initializer resets its default value
 on each execution. Captured and otherwise escaped values keep their own ownership.
 
 The temporary allocator reuses a fixed slot only for the same exact type and
-storage kind. Transitional boxed temporaries keep generic cleanup. Reusing a
+storage kind. Boundary scratch values retain explicit ownership metadata. Reusing a
 physical stack region for a different function is handled at the call boundary,
 not by changing that function's immutable slot policy. Future cross-type local
 slot reuse would require compiler-proven lifetime transitions and cleanup on every
@@ -138,25 +122,13 @@ and destruction release all instance-owned global references. Returning from a
 function, sleeping, or cancelling a call does not reset globals. Program-owned
 constants and other instances' globals are not part of instance cleanup.
 
-## Checkpoint status (2026-11-07)
+## Current migration status (2026-11-07)
 
-This checkpoint retains all local opcode-family, general fusion, in-place
-arithmetic and compiler-owned storage work. `_vecCount`, `_unused` and `_vecX`
-are removed. `_type` remains, so `sizeof(VarInfo)` is still 16 bytes; this commit
-does not complete the eight-byte migration.
-
-The next step is to finish exact layouts for generated helpers, outgoing call
-arguments, collection entries and closure captures, then migrate exceptional
-unwinding, GC and host/debugger boundaries together. Only after those paths no
-longer depend on a per-value tag can `_type` be removed and the eight-byte size
-assertion enabled. Do not add a mutable per-slot tag table or retain a tagged
-wrapper for every ordinary VM slot as a substitute.
-
-The checkpoint passes the complete Windows x64 Debug suite (85 tests), including
-image round trips, storage lifetimes, modules, vector arrays and C ABI integration.
-Changed compiler/runtime sources also pass Android arm64 C++11 syntax checks.
-The final vector-tag changes have not received a new complete Release run or
-performance measurement; earlier measurements do not describe this snapshot.
+The eight-byte payload and compiler-owned frame/call layouts are implemented.
+The opcode-family, general fusion and in-place arithmetic changes are retained.
+List/map/set entry storage and some generic bridge operations remain transitional,
+as described above. No performance claim is made for this storage migration
+without a fresh paired benchmark.
 
 ## Validation
 

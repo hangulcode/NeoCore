@@ -10,7 +10,7 @@
 namespace NeoScript
 {
 
-// 벡터 배열은 VarInfo 원소를 보관한다. 2성분은 슬롯 안에 직접 들어가고,
+// 벡터 배열은 BoundaryValue 원소를 보관한다. 2성분은 슬롯 안에 직접 들어가고,
 // 3·4성분은 참조 카운트와 COW를 사용한다. 벡터는 리프라 배열이 순환에 참여하지 않는다.
 // 풀은 헤더만 재활용하므로 별도 원소 버퍼의 수명은 Allocate/Free가 관리한다.
 struct ArrayInfo : AllocBase
@@ -82,25 +82,27 @@ struct ArrayInfo : AllocBase
 	{
 		return NeoNarrowFloat32(value);
 	}
-	bool Int32OutOfRange(const VarInfo* value) const
+	bool Int32OutOfRange(ValueRef value) const
 	{
-		return _elementType == NeoArrayElementType::Int32 && value->GetType() == VAR_INT &&
+		return _elementType == NeoArrayElementType::Int32 && value.GetType() == VAR_INT &&
 			(value->_int < INT32_MIN || value->_int > INT32_MAX);
 	}
 
 	NEOS_FORCEINLINE VarInfo* VectorValues() { return static_cast<VarInfo*>(_data); }
 	NEOS_FORCEINLINE const VarInfo* VectorValues() const { return static_cast<const VarInfo*>(_data); }
-	NEOS_FORCEINLINE void ReadVector(int index, VarInfo* out)
+	VAR_TYPE VectorType() const { return VectorDimension() == 2 ? VAR_VEC : VectorDimension() == 3 ? VAR_VEC3 : VAR_VEC4; }
+	ValueRef VectorAt(int index) const { return ValueRef(const_cast<VarInfo*>(VectorValues()) + index, VectorType()); }
+	NEOS_FORCEINLINE void ReadVector(int index, ValueRef out)
 	{
-		const VarInfo* source = VectorValues() + index;
-		if (source->GetType() == VAR_VEC && !out->IsAllocType())
+		ValueRef source = VectorAt(index);
+		if (source.GetType() == VAR_VEC && !out.IsAllocType())
 		{
 			*out = *source;
 			return;
 		}
 		ReadVectorRare(index, out);
 	}
-	void ReadVectorRare(int index, VarInfo* out);
+	void ReadVectorRare(int index, ValueRef out);
 	bool SetVectorComponents(int index, const float* components, int dimension);
 
 	NEOS_FORCEINLINE bool GetBool(int index) const
@@ -120,42 +122,42 @@ struct ArrayInfo : AllocBase
 	// 같은 타입의 int/float 저장과 성분 수가 맞는 인라인 벡터(2성분) 저장만 인라인한다.
 	// 변환·bool·공유 벡터 저장은 아웃라인으로 보낸다.
 	// (디스패치 루프의 인라인 크기가 곧 성능 — CltRead 의 배열 읽기와 같은 분리).
-	NEOS_FORCEINLINE bool AssignValue(int index, VarInfo* value)
+	NEOS_FORCEINLINE bool AssignValue(int index, ValueRef value)
 	{
-		const VAR_TYPE vt = value->GetType();
+		const VAR_TYPE vt = value.GetType();
 		if (_elementType == NeoArrayElementType::Int && vt == VAR_INT) { IntData()[index] = value->_int; return true; }
 		if (_elementType == NeoArrayElementType::Float && vt == VAR_FLOAT) { FloatData()[index] = value->_float; return true; }
-		if (vt == VAR_VEC && value->VectorComponentCount() == VectorDimension()) { VectorValues()[index] = *value; return true; }
+		if (vt == VAR_VEC && value.VectorComponentCount() == VectorDimension()) { VectorValues()[index] = *value.Data(); return true; }
 		return AssignValueRare(index, value);
 	}
-	NEOS_NOINLINE bool AssignValueRare(int index, VarInfo* value)
+	NEOS_NOINLINE bool AssignValueRare(int index, ValueRef value)
 	{
 		switch (_elementType)
 		{
 		case NeoArrayElementType::Bool:
-			if (value->GetType() != VAR_BOOL)
+			if (value.GetType() != VAR_BOOL)
 				return false;
 			SetBool(index, value->_bl);
 			return true;
 		case NeoArrayElementType::Int:
-			if (value->GetType() == VAR_INT)
+			if (value.GetType() == VAR_INT)
 			{
 				IntData()[index] = value->_int;
 				return true;
 			}
-			if (value->GetType() == VAR_FLOAT)
+			if (value.GetType() == VAR_FLOAT)
 			{
 				IntData()[index] = NeoFloatToInt(value->_float);
 				return true;
 			}
 			return false;
 		case NeoArrayElementType::Float:
-			if (value->GetType() == VAR_INT)
+			if (value.GetType() == VAR_INT)
 			{
 				FloatData()[index] = (NS_FLOAT)value->_int;
 				return true;
 			}
-			if (value->GetType() == VAR_FLOAT)
+			if (value.GetType() == VAR_FLOAT)
 			{
 				FloatData()[index] = value->_float;
 				return true;
@@ -172,35 +174,35 @@ struct ArrayInfo : AllocBase
 			Int32Data()[index] = static_cast<int32_t>(value->_int);
 			return true;
 		case NeoArrayElementType::Float32:
-			if (!value->IsNumber()) return false;
-			Float32Data()[index] = NarrowFloat32(value->GetFloatNumber());
+			if (!value.IsNumber()) return false;
+			Float32Data()[index] = NarrowFloat32(value.GetFloatNumber());
 			return true;
 		}
 		return false;
 	}
 
-	NEOS_FORCEINLINE bool CanAssignValue(VarInfo* value) const
+	NEOS_FORCEINLINE bool CanAssignValue(ValueRef value) const
 	{
 		switch (_elementType)
 		{
 		case NeoArrayElementType::Bool:
-			return value->GetType() == VAR_BOOL;
+			return value.GetType() == VAR_BOOL;
 		case NeoArrayElementType::Int:
 		case NeoArrayElementType::Float:
-			return value->GetType() == VAR_INT || value->GetType() == VAR_FLOAT;
+			return value.GetType() == VAR_INT || value.GetType() == VAR_FLOAT;
 		case NeoArrayElementType::Vector2:
 		case NeoArrayElementType::Vector3:
 		case NeoArrayElementType::Vector4:
-			return value->IsVector() && value->VectorComponentCount() == VectorDimension();
+			return value.IsVector() && value.VectorComponentCount() == VectorDimension();
 		case NeoArrayElementType::Int32:
-			return value->GetType() == VAR_INT && !Int32OutOfRange(value);
+			return value.GetType() == VAR_INT && !Int32OutOfRange(value);
 		case NeoArrayElementType::Float32:
-			return value->IsNumber();
+			return value.IsNumber();
 		}
 		return false;
 	}
 
-	void SetInitialValue(const VarInfo& value)
+	void SetInitialValue(const BoundaryValue& value)
 	{
 		switch (_elementType)
 		{
@@ -397,7 +399,7 @@ private:
 		case NeoArrayElementType::Vector3:
 		case NeoArrayElementType::Vector4:
 			for (int i = begin; i < end; ++i)
-				AssignVector(i, &_initialVector);
+				AssignVector(i, ValueRef(&_initialVector, VectorType()));
 			break;
 		case NeoArrayElementType::Int32:
 			for (int i = begin; i < end; ++i) Int32Data()[i] = static_cast<int32_t>(_initialInt);
@@ -407,14 +409,14 @@ private:
 			break;
 		}
 	}
-	NEOS_FORCEINLINE void AssignVector(int index, VarInfo* value)
+	NEOS_FORCEINLINE void AssignVector(int index, ValueRef value)
 	{
 		// 타입 검사가 끝난 인라인 벡터는 이전 원소 해제 없이 슬롯 전체를 복사한다.
-		if (_elementType == NeoArrayElementType::Vector2) VectorValues()[index] = *value;
+		if (_elementType == NeoArrayElementType::Vector2) VectorValues()[index] = *value.Data();
 		else AssignVectorRare(index, value);
 	}
-	void AssignVectorRare(int index, VarInfo* value);
-	void RetainInitialVector(const VarInfo& value);
+	void AssignVectorRare(int index, ValueRef value);
+	void RetainInitialVector(const BoundaryValue& value);
 	void ReleaseVectorRange(int begin, int end);
 	void FreeVectors();
 };

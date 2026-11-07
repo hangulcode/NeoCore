@@ -7,7 +7,7 @@ struct ValueAccess
 {
     static NeoScript::CNeoVM* VM(NeoScript::IRuntime& runtime)
     { return static_cast<NeoScript::RuntimeImpl&>(runtime).m_vm; }
-    static void SetVector(NeoScript::VarInfo& value, int count, const float* components)
+    static void SetVector(NeoScript::BoundaryValue& value, int count, const float* components)
     {
         if (count == 2) value.SetInlineVec(components[0], components[1]);
         else value.SetVecType(count);
@@ -25,7 +25,7 @@ struct OwnedValue
     std::shared_ptr<void> lifetime;
     NeoScript::RuntimeImpl* runtime;
     NeoScript::CNeoVM* vm;
-    NeoScript::VarInfo value;
+    NeoScript::BoundaryValue value;
     OwnedValue(NeoScript::IRuntime& owner, const std::shared_ptr<void>& keep)
         : lifetime(keep), runtime(static_cast<NeoScript::RuntimeImpl*>(&owner)), vm(ValueAccess::VM(owner)) {}
     ~OwnedValue() { vm->Var_Release(&value); }
@@ -33,7 +33,7 @@ struct OwnedValue
 
 namespace
 {
-ValuePtr CopyOwned(const ValuePtr& owner, NeoScript::VarInfo* value)
+ValuePtr CopyOwned(const ValuePtr& owner, NeoScript::ValueRef value)
 {
     if (!owner || !value) return ValuePtr();
     ValuePtr copy(new OwnedValue(*owner->runtime, owner->lifetime));
@@ -41,7 +41,7 @@ ValuePtr CopyOwned(const ValuePtr& owner, NeoScript::VarInfo* value)
     return copy;
 }
 
-ValuePtr CaptureOwned(NeoScript::InstanceRec* instance, NeoScript::VarInfo* value,
+ValuePtr CaptureOwned(NeoScript::InstanceRec* instance, NeoScript::ValueRef value,
     const std::shared_ptr<void>& lifetime)
 {
     if (!instance || !value || !lifetime) return ValuePtr();
@@ -59,12 +59,12 @@ bool UsableFunction(const ValuePtr& value, NeoScript::INeoVMWorker* target = nul
     if (!value) return false;
     if (value->value.GetType() < VAR_MAP) return true;
     // 반복 탐색으로 깊은 컨테이너와 순환 그래프에서도 C++ 스택을 늘리지 않는다.
-    std::vector<const VarInfo*> pending(1, &value->value);
+    std::vector<ValueRef> pending(1, &value->value);
     std::unordered_set<const void*> visited;
     while (!pending.empty())
     {
-        const VarInfo* current = pending.back(); pending.pop_back();
-        switch (current->GetType())
+        ValueRef current = pending.back(); pending.pop_back();
+        switch (current.GetType())
         {
         case VAR_MAP:
             if (current->_tbl->_cycleState._mayContainContainerChild && visited.insert(current->_tbl).second)
@@ -88,7 +88,7 @@ bool UsableFunction(const ValuePtr& value, NeoScript::INeoVMWorker* target = nul
             if ((target && target->GetWorkerID() != current->_closure->_ownerWorkerId) ||
                 !ValueAccess::WorkerAlive(*value->runtime, current->_closure->_ownerWorkerId)) return false;
             if (visited.insert(current->_closure).second)
-                for (const VarInfo& capture : current->_closure->_captures) pending.push_back(&capture);
+                for (size_t i = 0; i < current->_closure->_captures.size(); ++i) pending.push_back(current->_closure->Capture(i));
             break;
         default: break;
         }
@@ -141,7 +141,7 @@ bool ReturnValue(NeoScript::CallContext& context, const ValuePtr& value)
 {
     NeoScript::CallContextImpl* impl = NeoScript::NeoScriptInternal::ctxImpl(context);
     if (!impl || !value || impl->runtime != value->runtime || !UsableFunction(value, impl->worker)) return false;
-    NeoScript::VarInfo* destination = NeoScript::CtxRetVar(impl);
+    NeoScript::ValueRef destination = NeoScript::CtxRetVar(impl);
     if (!destination) return false;
     value->vm->Move(destination, &value->value);
     return true;
@@ -152,13 +152,13 @@ ValuePtr MakeValue(NeoScript::IRuntime& runtime, const ValueData& data, const st
     using namespace NeoScript;
     if (!lifetime) return ValuePtr();
     ValuePtr result(new OwnedValue(runtime, lifetime));
-    VarInfo& value = result->value;
+    BoundaryValue& value = result->value;
     switch (data.kind)
     {
     case ValueKind::Null: break;
-    case ValueKind::Int: value = VarInfo(VAR_INT); value._int = data.integer; break;
-    case ValueKind::Float: value = VarInfo(VAR_FLOAT); value._float = data.number; break;
-    case ValueKind::Bool: value = VarInfo(VAR_BOOL); value._bl = data.integer != 0; break;
+    case ValueKind::Int: value = BoundaryValue(VAR_INT); value._int = data.integer; break;
+    case ValueKind::Float: value = BoundaryValue(VAR_FLOAT); value._float = data.number; break;
+    case ValueKind::Bool: value = BoundaryValue(VAR_BOOL); value._bl = data.integer != 0; break;
     case ValueKind::String: result->vm->Var_SetStringA(&value, data.text); break;
     case ValueKind::Vector2: ValueAccess::SetVector(value, 2, data.vector); break;
     case ValueKind::Vector3:
@@ -179,15 +179,15 @@ ValuePtr MakeCollection(NeoScript::IRuntime& runtime, ValueKind kind, ArrayStora
     using namespace NeoScript;
     if (!lifetime) return ValuePtr();
     ValuePtr result(new OwnedValue(runtime, lifetime));
-    VarInfo& value = result->value;
+    BoundaryValue& value = result->value;
     switch (kind)
     {
     case ValueKind::List:
-        { ListInfo* list = result->vm->ListAlloc(); value = VarInfo(VAR_LIST); value._lst = list; ++list->_refCount; break; }
+        { ListInfo* list = result->vm->ListAlloc(); value = BoundaryValue(VAR_LIST); value._lst = list; ++list->_refCount; break; }
     case ValueKind::Map:
-        { MapInfo* map = result->vm->TableAlloc(); value = VarInfo(VAR_MAP); value._tbl = map; ++map->_refCount; break; }
+        { MapInfo* map = result->vm->TableAlloc(); value = BoundaryValue(VAR_MAP); value._tbl = map; ++map->_refCount; break; }
     case ValueKind::Set:
-        { SetInfo* set = result->vm->SetAlloc(); value = VarInfo(VAR_SET); value._set = set; ++set->_refCount; break; }
+        { SetInfo* set = result->vm->SetAlloc(); value = BoundaryValue(VAR_SET); value._set = set; ++set->_refCount; break; }
     case ValueKind::Array:
     {
         ValueData initial;
@@ -207,7 +207,7 @@ ValuePtr MakeCollection(NeoScript::IRuntime& runtime, ValueKind kind, ArrayStora
         ValuePtr seed = MakeValue(runtime, initial, lifetime);
         ArrayInfo* array = result->vm->ArrayAlloc(element, 0, seed->value);
         if (!array) return ValuePtr();
-        value = VarInfo(VAR_ARRAY); value._array = array; ++array->_refCount;
+        value = BoundaryValue(VAR_ARRAY); value._array = array; ++array->_refCount;
         break;
     }
     default: return ValuePtr();
@@ -220,7 +220,7 @@ bool ReadValue(const ValuePtr& owner, ValueData& data)
     using namespace NeoScript;
     data = ValueData();
     if (!owner) return false;
-    const VarInfo& value = owner->value;
+    const BoundaryValue& value = owner->value;
     switch (value.GetType())
     {
     case VAR_INT: data.kind = ValueKind::Int; data.integer = value._int; break;
@@ -251,7 +251,7 @@ std::size_t ValueSize(const ValuePtr& owner)
 {
     using namespace NeoScript;
     if (!owner) return 0;
-    const VarInfo& value = owner->value;
+    const BoundaryValue& value = owner->value;
     switch (value.GetType())
     {
     case VAR_ARRAY: return value._array->_count;
@@ -285,7 +285,7 @@ ValuePtr ValueAt(const ValuePtr& owner, std::size_t index)
     case NeoArrayElementType::Float: data.kind = ValueKind::Float; data.number = array->FloatData()[index]; break;
     case NeoArrayElementType::Vector2:
     case NeoArrayElementType::Vector3:
-    case NeoArrayElementType::Vector4: return CopyOwned(owner, array->VectorValues() + index);
+    case NeoArrayElementType::Vector4: return CopyOwned(owner, array->VectorAt(static_cast<int>(index)));
     case NeoArrayElementType::Int32: data.kind = ValueKind::Int; data.integer = array->Int32Data()[index]; break;
     case NeoArrayElementType::Float32: data.kind = ValueKind::Float; data.number = array->Float32Data()[index]; break;
     default: return ValuePtr();
@@ -511,7 +511,7 @@ ValuePtr FindFunction(NeoScript::IRuntime& runtime, NeoScript::ProgramHandle pro
     const NeoScript::FunctionHandle function = runtime.FindFunction(program, name);
     if (!function) return ValuePtr();
     ValuePtr result(new OwnedValue(runtime, lifetime));
-    result->value = NeoScript::VarInfo(NeoScript::VAR_FUN);
+    result->value = NeoScript::BoundaryValue(NeoScript::VAR_FUN);
     result->value._fun_index = static_cast<int>(NeoScript::NeoScriptInternal::funIndex(function));
     return result;
 }
@@ -532,7 +532,7 @@ bool WriteGlobal(NeoScript::IRuntime& runtime, NeoScript::InstanceHandle instanc
     if (!value || value->runtime != &runtime) return false;
     NeoScript::InstanceRec* record = static_cast<NeoScript::RuntimeImpl&>(runtime).resolveInstance(instance);
     if (!record || !record->worker || !UsableFunction(value, record->worker)) return false;
-    NeoScript::VarInfo* destination = record->worker->GetVar(name);
+    NeoScript::ValueRef destination = record->worker->GetVar(name);
     if (!destination) return false;
     value->vm->Move(destination, &value->value);
     return true;
@@ -561,7 +561,7 @@ ValuePtr DecodeJson(NeoScript::IRuntime& runtime, NeoScript::InstanceHandle inst
     ValuePtr value(new OwnedValue(runtime, lifetime));
     NeoScript::JsonResult result;
     const bool success = NeoScript::JsonInternal::Decode(*static_cast<NeoScript::CNeoVMWorker*>(record->worker),
-        text.data(), text.size(), value->value, result, strictIntegers, requireMap, true);
+        text.data(), text.size(), &value->value, result, strictIntegers, requireMap, true);
     error = result.error;
     warnings = std::move(result.warnings);
     return success ? value : ValuePtr();

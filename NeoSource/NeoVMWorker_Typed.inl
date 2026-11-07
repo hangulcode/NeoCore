@@ -2,10 +2,10 @@
 
 // 정적 프런트엔드가 입력 저장형을 확정한다. 실행 중에는 타입을 다시 고르지 않고
 // 알려진 페이로드를 읽으며, 결과 슬롯의 기존 참조와 배열 범위 검사는 유지한다.
-NEOS_NOINLINE void StoreMapReference(VarInfo* result, const VarInfo* found)
+NEOS_NOINLINE void StoreMapReference(ValueRef result, ValueRef found)
 {
     // 목적지를 해제하면서 원본 맵까지 사라질 수 있으므로 값과 소유권을 먼저 보존한다.
-    VarInfo value = *found;
+    BoundaryValue value = *found;
     Var_AddRef(&value);
     Var_Release(result);
     *result = value;
@@ -14,17 +14,17 @@ NEOS_NOINLINE void StoreMapReference(VarInfo* result, const VarInfo* found)
 template<bool StringKey, bool Contains>
 NEOS_FORCEINLINE void TypedMapRead(const SVMOperation& op)
 {
-    VarInfo* receiver = GetVarPtr2(op);
-    VarInfo* key = GetVarPtr3(op);
-    assert(receiver->GetType() == VAR_MAP || receiver->GetType() == VAR_NONE);
-    if (receiver->GetType() == VAR_NONE)
+    ValueRef receiver = GetVarPtr2(op);
+    ValueRef key = GetVarPtr3(op);
+    assert(receiver.GetType() == VAR_MAP || receiver.GetType() == VAR_NONE);
+    if (receiver.GetType() == VAR_NONE)
     {
         SetError("cannot access a null map");
         return;
     }
     // 키 종류는 컴파일 때 확정된다. 문자열 키의 null과 키 존재 여부만 실행 중 검사한다.
-    VarInfo* found = StringKey
-        ? (key->GetType() == VAR_NONE ? nullptr : receiver->_tbl->FindString(key->_str))
+    ValueRef found = StringKey
+        ? (key.GetType() == VAR_NONE ? nullptr : receiver->_tbl->FindString(key->_str))
         : receiver->_tbl->FindInt(key->_int);
     if (Contains)
         StoreNumberBool(GetVarPtrF1(op), found != nullptr);
@@ -32,9 +32,9 @@ NEOS_FORCEINLINE void TypedMapRead(const SVMOperation& op)
         SetErrorFormat("map key not found: %s", ToString(key).c_str());
     else
     {
-        VarInfo* result = GetVarPtrF1(op);
+        ValueRef result = GetVarPtrF1(op);
         // 두 값 모두 비참조형이면 소유권 분기·해제·태그 초기화 없이 슬롯만 복사한다.
-        if (!found->IsAllocType() && !result->IsAllocType()) *result = *found;
+        if (!found.IsAllocType() && !result.IsAllocType()) *result = *found;
         else StoreMapReference(result, found);
     }
 }
@@ -42,15 +42,15 @@ NEOS_FORCEINLINE void TypedMapRead(const SVMOperation& op)
 template<bool StringKey, int Operation>
 NEOS_FORCEINLINE void TypedSetOperation(const SVMOperation& op)
 {
-    VarInfo* receiver = GetVarPtr2(op);
-    VarInfo* key = GetVarPtr3(op);
-    assert(receiver->GetType() == VAR_SET || receiver->GetType() == VAR_NONE);
-    if (receiver->GetType() == VAR_NONE)
+    ValueRef receiver = GetVarPtr2(op);
+    ValueRef key = GetVarPtr3(op);
+    assert(receiver.GetType() == VAR_SET || receiver.GetType() == VAR_NONE);
+    if (receiver.GetType() == VAR_NONE)
     {
         SetError("cannot access a null set");
         return;
     }
-    if (StringKey && key->GetType() == VAR_NONE)
+    if (StringKey && key.GetType() == VAR_NONE)
     {
         if (Operation == 1) SetError("set element cannot be null");
         else StoreNumberBool(GetVarPtrF1(op), false);
@@ -74,7 +74,7 @@ NEOS_FORCEINLINE void TypedSetOperation(const SVMOperation& op)
 }
 
 template<int Dimension>
-static NEOS_FORCEINLINE void ReadTypedVector(const VarInfo* value, float* components)
+static NEOS_FORCEINLINE void ReadTypedVector(ValueRef value, float* components)
 {
     if (Dimension == 2)
     {
@@ -85,7 +85,7 @@ static NEOS_FORCEINLINE void ReadTypedVector(const VarInfo* value, float* compon
     }
     else
     {
-        assert((value->GetType() == VAR_VEC3 || value->GetType() == VAR_VEC4) && value->_vec->_refCount > 0);
+        assert((value.GetType() == VAR_VEC3 || value.GetType() == VAR_VEC4) && value->_vec->_refCount > 0);
         std::memcpy(components, value->_vec->v, sizeof(float) * 4);
     }
 }
@@ -101,9 +101,9 @@ NEOS_NOINLINE void TypedVectorMake(const SVMOperation& op)
     }
     else
     {
-        const VarInfo* arguments = GetVarPtr_L(op.n2);
+        ValueRef arguments = GetVarPtr_L(op.n2);
         for (int i = 0; i < Dimension; ++i)
-            components[i] = NeoNarrowFloat32(arguments[i]._float);
+            components[i] = NeoNarrowFloat32(arguments[i]->_float);
     }
     StoreVector(GetVarPtrF1(op), Dimension, components[0], components[1], components[2], components[3]);
 }
@@ -138,10 +138,10 @@ NEOS_NOINLINE void TypedVectorGet(const SVMOperation& op)
 template<int Dimension>
 NEOS_NOINLINE void TypedVectorSet(const SVMOperation& op)
 {
-    const VarInfo* arguments = GetVarPtr_L(op.n2);
+    ValueRef arguments = GetVarPtr_L(op.n2);
     float components[4];
     ReadTypedVector<Dimension>(&arguments[0], components);
-    components[op.n3] = NeoNarrowFloat32(arguments[1]._float);
+    components[op.n3] = NeoNarrowFloat32(arguments[1]->_float);
     // 성분 교체는 새 값을 만든다. 원래 변수·배열·프로퍼티에 되쓰는 것은 별도 명령이다.
     StoreVector(GetVarPtrF1(op), Dimension, components[0], components[1], components[2], components[3]);
 }
@@ -149,9 +149,9 @@ NEOS_NOINLINE void TypedVectorSet(const SVMOperation& op)
 NEOS_NOINLINE void TypedCellNew(const SVMOperation& op)
 {
     ListInfo* cell = GetVM()->ListAlloc(1);
-    VarInfo* value = GetVarPtr2(op);
+    ValueRef value = GetVarPtr2(op);
     // 셀 안 값의 참조·순환 추적은 유지한다. 이 검사는 연산자 타입 선택이 아니다.
-    if (value->IsContainerType()) cell->MarkContainerChild();
+    if (value.IsContainerType()) cell->MarkContainerChild();
     Move(&cell->_Bucket[0], value);
     Var_SetList(GetVarPtrF1(op), cell);
 }
@@ -159,27 +159,27 @@ NEOS_NOINLINE void TypedCellNew(const SVMOperation& op)
 NEOS_NOINLINE void TypedCellGet(const SVMOperation& op)
 {
     // 결과 임시가 셀 자체를 보유할 수 있어 셀 해제 전에 원소의 소유권을 확보한다.
-    VarInfo value = GetVarPtr2(op)->_lst->_Bucket[0];
+    BoundaryValue value = GetVarPtr2(op)->_lst->_Bucket[0];
     Var_AddRef(&value);
-    VarInfo* result = GetVarPtrF1(op);
+    ValueRef result = GetVarPtrF1(op);
     Var_Release(result);
     *result = value;
 }
 
 NEOS_NOINLINE void TypedCellSet(const SVMOperation& op)
 {
-    VarInfo value = *GetVarPtr2(op);
+    BoundaryValue value = *GetVarPtr2(op);
     Var_AddRef(&value);
     ListInfo* cell = GetVarPtr3(op)->_lst;
     if (value.IsContainerType()) cell->MarkContainerChild();
     Move(&cell->_Bucket[0], &value);
-    VarInfo* result = GetVarPtrF1(op);
+    ValueRef result = GetVarPtrF1(op);
     Var_Release(result);
     *result = value;
 }
 
 template<NeoArrayElementType Element>
-NEOS_FORCEINLINE void ReadTypedArrayValue(ArrayInfo* array, int index, VarInfo* result)
+NEOS_FORCEINLINE void ReadTypedArrayValue(ArrayInfo* array, int index, ValueRef result)
 {
     if (Element == NeoArrayElementType::Bool)
         StoreNumberBool(result, array->GetBool(index));
@@ -194,7 +194,7 @@ NEOS_FORCEINLINE void ReadTypedArrayValue(ArrayInfo* array, int index, VarInfo* 
     else
     {
         // 결과 해제로 배열이 사라지더라도 공유 벡터 저장소는 결과가 계속 보유한다.
-        VarInfo value = array->VectorValues()[index];
+        BoundaryValue value(array->VectorAt(index));
         if (Element != NeoArrayElementType::Vector2) ++value._vec->_refCount;
         Var_Release(result);
         *result = value;
@@ -202,7 +202,7 @@ NEOS_FORCEINLINE void ReadTypedArrayValue(ArrayInfo* array, int index, VarInfo* 
 }
 
 template<NeoArrayElementType Element>
-NEOS_FORCEINLINE void WriteTypedArrayValue(ArrayInfo* array, int index, const VarInfo* value)
+NEOS_FORCEINLINE void WriteTypedArrayValue(ArrayInfo* array, int index, ValueRef value)
 {
     if (Element == NeoArrayElementType::Bool) array->SetBool(index, value->_bl);
     else if (Element == NeoArrayElementType::Int) array->IntData()[index] = value->_int;
@@ -211,17 +211,17 @@ NEOS_FORCEINLINE void WriteTypedArrayValue(ArrayInfo* array, int index, const Va
     else if (Element == NeoArrayElementType::Float32) array->Float32Data()[index] = NeoNarrowFloat32(value->_float);
     else if (Element == NeoArrayElementType::Vector3 || Element == NeoArrayElementType::Vector4)
     {
-        VarInfo copy = *value;
+        BoundaryValue copy = *value;
         ++copy._vec->_refCount;
-        VarInfo* target = &array->VectorValues()[index];
+        ValueRef target = array->VectorAt(index);
         Var_Release(target);
         *target = copy;
     }
-    else array->VectorValues()[index] = *value;
+    else array->VectorValues()[index] = *value.Data();
 }
 
 template<NeoArrayElementType Element>
-NEOS_FORCEINLINE bool CheckTypedArrayValue(const VarInfo* value)
+NEOS_FORCEINLINE bool CheckTypedArrayValue(ValueRef value)
 {
     // 정적 타입이 int64여도 32비트 저장 범위는 실제 값으로 검사한다. 변경 전에 호출한다.
     if (Element == NeoArrayElementType::Int32 && (value->_int < INT32_MIN || value->_int > INT32_MAX))
@@ -232,11 +232,11 @@ NEOS_FORCEINLINE bool CheckTypedArrayValue(const VarInfo* value)
     return true;
 }
 
-NEOS_FORCEINLINE bool CheckTypedArrayReceiver(const VarInfo* value)
+NEOS_FORCEINLINE bool CheckTypedArrayReceiver(ValueRef value)
 {
     // 참조 타입은 null일 수 있다. ClearType 뒤 남은 이전 포인터 페이로드를 읽기 전에 태그로 검사한다.
-    assert(value->GetType() == VAR_ARRAY || value->GetType() == VAR_NONE);
-    if (value->GetType() != VAR_NONE) return true;
+    assert(value.GetType() == VAR_ARRAY || value.GetType() == VAR_NONE);
+    if (value.GetType() != VAR_NONE) return true;
     SetError("cannot access a null array");
     return false;
 }
@@ -250,7 +250,7 @@ NEOS_NOINLINE void TypedArrayNew(const SVMOperation& op)
         SetError(RTE_CALL_INVALID);
         return;
     }
-    const VarInfo* initial = GetVarPtr3(op);
+    ValueRef initial = GetVarPtr3(op);
     if (!CheckTypedArrayValue<Element>(initial)) return;
     ArrayInfo* array = GetVM()->ArrayAlloc(Element, static_cast<int>(size), *initial);
     if (!array)
@@ -264,7 +264,7 @@ NEOS_NOINLINE void TypedArrayNew(const SVMOperation& op)
 template<NeoArrayElementType Element>
 NEOS_NOINLINE void TypedArrayGet(const SVMOperation& op)
 {
-    const VarInfo* owner = GetVarPtr2(op);
+    ValueRef owner = GetVarPtr2(op);
     if (!CheckTypedArrayReceiver(owner)) return;
     ArrayInfo* array = owner->_array;
     const NS_INT index = GetVarPtr3(op)->_int;
@@ -279,10 +279,10 @@ NEOS_NOINLINE void TypedArrayGet(const SVMOperation& op)
 template<NeoArrayElementType Element>
 NEOS_NOINLINE void TypedArraySet(const SVMOperation& op)
 {
-    const VarInfo* arguments = GetVarPtr_L(op.n2);
+    ValueRef arguments = GetVarPtr_L(op.n2);
     if (!CheckTypedArrayReceiver(&arguments[1])) return;
-    ArrayInfo* array = arguments[1]._array;
-    const NS_INT index = arguments[2]._int;
+    ArrayInfo* array = arguments[1]->_array;
+    const NS_INT index = arguments[2]->_int;
     if (!array->IsValidIndex(index))
     {
         SetError(RTE_ARRAY_INDEX_WRITE);
@@ -296,7 +296,7 @@ NEOS_NOINLINE void TypedArraySet(const SVMOperation& op)
 template<NeoArrayElementType Element>
 NEOS_NOINLINE void TypedArrayAppend(const SVMOperation& op)
 {
-    const VarInfo* owner = GetVarPtr2(op);
+    ValueRef owner = GetVarPtr2(op);
     if (!CheckTypedArrayReceiver(owner)) return;
     ArrayInfo* array = owner->_array;
     const int index = array->_count;
@@ -317,7 +317,7 @@ NEOS_NOINLINE void TypedArrayAppend(const SVMOperation& op)
 
 NEOS_NOINLINE void TypedArrayResize(const SVMOperation& op)
 {
-    const VarInfo* owner = GetVarPtr2(op);
+    ValueRef owner = GetVarPtr2(op);
     if (!CheckTypedArrayReceiver(owner)) return;
     const NS_INT size = GetVarPtr3(op)->_int;
     if (size > INT32_MAX)
@@ -331,7 +331,7 @@ NEOS_NOINLINE void TypedArrayResize(const SVMOperation& op)
 
 NEOS_NOINLINE void TypedArrayReserve(const SVMOperation& op)
 {
-    const VarInfo* owner = GetVarPtr2(op);
+    ValueRef owner = GetVarPtr2(op);
     if (!CheckTypedArrayReceiver(owner)) return;
     const NS_INT size = GetVarPtr3(op)->_int;
     if (size < 0 || size > INT32_MAX)
@@ -359,10 +359,10 @@ NEOS_NOINLINE void TypedIntegerShift(const SVMOperation& op)
 
 // Owner: 0은 목록, 1은 정수 키 맵, 2는 문자열 키 맵이다. 값의 타입은 템플릿으로 고정한다.
 template<int Owner>
-NEOS_FORCEINLINE VarInfo* ScalarContainerElement(VarInfo* receiver, VarInfo* key, bool write)
+NEOS_FORCEINLINE ValueRef ScalarContainerElement(ValueRef receiver, ValueRef key, bool write)
 {
-    assert(receiver->GetType() == (Owner == 0 ? VAR_LIST : VAR_MAP) || receiver->GetType() == VAR_NONE);
-    if (receiver->GetType() == VAR_NONE)
+    assert(receiver.GetType() == (Owner == 0 ? VAR_LIST : VAR_MAP) || receiver.GetType() == VAR_NONE);
+    if (receiver.GetType() == VAR_NONE)
     {
         SetError(Owner == 0 ? "cannot access a null list" : "cannot access a null map");
         return nullptr;
@@ -377,34 +377,34 @@ NEOS_FORCEINLINE VarInfo* ScalarContainerElement(VarInfo* receiver, VarInfo* key
         }
         return &receiver->_lst->_Bucket[index];
     }
-    if (Owner == 2 && key->GetType() == VAR_NONE)
+    if (Owner == 2 && key.GetType() == VAR_NONE)
     {
         if (write) SetError("map key cannot be null");
         else SetErrorFormat("map key not found: %s", ToString(key).c_str());
         return nullptr;
     }
-    VarInfo* found = Owner == 1 ? receiver->_tbl->FindInt(key->_int) : receiver->_tbl->FindString(key->_str);
+    ValueRef found = Owner == 1 ? receiver->_tbl->FindInt(key->_int) : receiver->_tbl->FindString(key->_str);
     if (!found && !write) SetErrorFormat("map key not found: %s", ToString(key).c_str());
     return found;
 }
 
 template<int Owner, VAR_TYPE Value>
-NEOS_FORCEINLINE void ScalarContainerLoad(VarInfo* result, VarInfo* receiver, VarInfo* key)
+NEOS_FORCEINLINE void ScalarContainerLoad(ValueRef result, ValueRef receiver, ValueRef key)
 {
-    VarInfo* found = ScalarContainerElement<Owner>(receiver, key, false);
+    ValueRef found = ScalarContainerElement<Owner>(receiver, key, false);
     if (!found) return;
-    assert(found->GetType() == Value);
+    assert(found.GetType() == Value);
     if (Value == VAR_INT) StoreNumberInt(result, found->_int);
     else if (Value == VAR_FLOAT) StoreNumberFloat(result, found->_float);
     else StoreNumberBool(result, found->_bl);
 }
 
 template<int Owner, VAR_TYPE Value>
-NEOS_FORCEINLINE void ScalarContainerStore(VarInfo* receiver, VarInfo* key, VarInfo* value)
+NEOS_FORCEINLINE void ScalarContainerStore(ValueRef receiver, ValueRef key, ValueRef value)
 {
-    VarInfo* target = ScalarContainerElement<Owner>(receiver, key, true);
+    ValueRef target = ScalarContainerElement<Owner>(receiver, key, true);
     if (IsErrorTrap()) return;
-    assert(value->GetType() == Value);
+    assert(value.GetType() == Value);
     if (target)
     {
         if (Value == VAR_INT) StoreNumberInt(target, value->_int);
@@ -415,7 +415,7 @@ NEOS_FORCEINLINE void ScalarContainerStore(VarInfo* receiver, VarInfo* key, VarI
 }
 
 template<NeoArrayElementType Element>
-NEOS_FORCEINLINE void ScalarArrayStore(VarInfo* receiver, VarInfo* key, VarInfo* value)
+NEOS_FORCEINLINE void ScalarArrayStore(ValueRef receiver, ValueRef key, ValueRef value)
 {
     if (!CheckTypedArrayReceiver(receiver)) return;
     if (!receiver->_array->IsValidIndex(key->_int)) { SetError(RTE_ARRAY_INDEX_WRITE); return; }
@@ -469,9 +469,9 @@ inline void handle_JMP_COMPARE_L(const SVMOperation& OP)
 // 입력과 목적지가 같은 숫자 슬롯이므로 참조 해제와 타입 태그 쓰기를 반복하지 않는다.
 inline void UpdateIntegerArithmetic(const SVMOperation& OP)
 {
-    VarInfo* value = GetVarPtrF1(OP);
-    const VarInfo* right = GetVarPtr2(OP);
-    assert(value->GetType() == VAR_INT && right->GetType() == VAR_INT);
+    ValueRef value = GetVarPtrF1(OP);
+    ValueRef right = GetVarPtr2(OP);
+    assert(value.GetType() == VAR_INT && right.GetType() == VAR_INT);
     const NS_INT a = value->_int, b = right->_int;
     switch (static_cast<ArithmeticOp>(OP.argFlag & NEOS_OP_SUB_MASK))
     {
@@ -490,9 +490,9 @@ inline void UpdateIntegerArithmetic(const SVMOperation& OP)
 }
 inline void UpdateFloatArithmetic(const SVMOperation& OP)
 {
-    VarInfo* value = GetVarPtrF1(OP);
-    const VarInfo* right = GetVarPtr2(OP);
-    assert(value->GetType() == VAR_FLOAT && right->GetType() == VAR_FLOAT);
+    ValueRef value = GetVarPtrF1(OP);
+    ValueRef right = GetVarPtr2(OP);
+    assert(value.GetType() == VAR_FLOAT && right.GetType() == VAR_FLOAT);
     const NS_FLOAT a = value->_float, b = right->_float;
     switch (static_cast<ArithmeticOp>(OP.argFlag & NEOS_OP_SUB_MASK))
     {
@@ -505,15 +505,15 @@ inline void UpdateFloatArithmetic(const SVMOperation& OP)
 }
 
 template<bool Fixed>
-NEOS_FORCEINLINE void StoreArithmeticInt(VarInfo* target, NS_INT value)
+NEOS_FORCEINLINE void StoreArithmeticInt(ValueRef target, NS_INT value)
 {
-    if (Fixed) { assert(target->GetType() == VAR_INT); target->_int = value; }
+    if (Fixed) { assert(target.GetType() == VAR_INT); target->_int = value; }
     else StoreNumberInt(target, value);
 }
 template<bool Fixed>
-NEOS_FORCEINLINE void StoreArithmeticFloat(VarInfo* target, NS_FLOAT value)
+NEOS_FORCEINLINE void StoreArithmeticFloat(ValueRef target, NS_FLOAT value)
 {
-    if (Fixed) { assert(target->GetType() == VAR_FLOAT); target->_float = value; }
+    if (Fixed) { assert(target.GetType() == VAR_FLOAT); target->_float = value; }
     else StoreNumberFloat(target, value);
 }
 

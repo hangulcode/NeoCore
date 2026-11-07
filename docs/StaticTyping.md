@@ -53,7 +53,7 @@ a family handler, which switches on the low-bit sub-operation. Family handlers
 use ordinary inline definitions without forced inlining or outlining. Combined
 operation keys remain compiler and validation metadata, not the VM dispatch key.
 Invalid sub-operations are
-rejected when loading an image. Existing images must be regenerated for image version `0160`.
+rejected when loading an image. Existing images must be regenerated for image version `0161`.
 This transition preserves evaluation order, value-dependent
 runtime failures and the current general-fusion implementation; it is not a
 performance claim.
@@ -262,7 +262,7 @@ revalidate the saved receiver ID. Bool/string conversions remain checked generic
 conversions. Numeric expressions now emit from structured IR; the remaining
 compile-only intrinsics and compatibility leaves are explicit migration boundaries,
 not a complete typed-AST-to-bytecode backend replacement.
-NeoCore bytecode images use version `0160` and must be regenerated; the NeoCore
+NeoCore bytecode images use version `0161` and must be regenerated; the NeoCore
 image container that carries the static type table is at version 4. Regenerate older
 images: generated-code source mappings now mark shared helpers so their failures
 report the user callsite. The five generic `NOP_TABLE_*` arithmetic-write
@@ -890,7 +890,7 @@ an invalid index or empty pop fails at runtime. Maps support `len`,
 Keys and values produce typed lists. A stored key such as `"contains"` or `"len"`
 does not shadow these statically resolved methods.
 
-The current collection operations require backend image version 0160. Rebuild host libraries and
+The current collection operations require backend image version 0161. Rebuild host libraries and
 recompile previously cached program images. Existing `map.get` calls must be
 replaced with checked indexing or an explicit `contains` guard.
 

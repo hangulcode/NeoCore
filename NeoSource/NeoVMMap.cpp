@@ -13,16 +13,16 @@ namespace NeoScript
 
 extern u32 GetHashCode(const std::string& str);
 extern u32 GetHashCode(u8 *buffer, int len);
-extern u32 GetHashCode(VarInfo *p);
+extern u32 GetHashCode(ValueRef p);
 
-static u32 GetMapKeyHash(VarInfo* pKey)
+static u32 GetMapKeyHash(ValueRef pKey)
 {
-	return pKey->GetType() == VAR_STRING ? pKey->_str->GetHash() : GetHashCode(pKey);
+	return pKey.GetType() == VAR_STRING ? pKey->_str->GetHash() : GetHashCode(pKey);
 }
 
-static VarInfo* NormalizeMapStringKey(CNeoVM* vm, VarInfo* pKey, VarInfo& normalized, bool forInsert)
+static ValueRef NormalizeMapStringKey(CNeoVM* vm, ValueRef pKey, BoundaryValue& normalized, bool forInsert)
 {
-	if (pKey->GetType() != VAR_STRING || pKey->_str->_interned)
+	if (pKey.GetType() != VAR_STRING || pKey->_str->_interned)
 		return pKey;
 
 	StringInfo* canonical = forInsert
@@ -40,7 +40,7 @@ void MapInfo::ClearNode(MapNode& node)
 {
 	node.hash = 0;
 	node.next = MAP_NODE_EMPTY;
-	node.data = NULL;
+	node.data = nullptr;
 }
 
 MapData* MapInfo::AllocNodeData()
@@ -68,20 +68,20 @@ void MapInfo::Clear()
 
 void MapInfo::FreeNodeData(MapData* data)
 {
-	if (data == NULL)
+	if (data == nullptr)
 		return;
 	_pVM->Var_Release(&data->key);
 	_pVM->Var_Release(&data->value);
 	_pVM->m_sPool_TableData.Confer(data);
 }
 
-static bool MapKeyEquals(MapNode& node, VarInfo* pKey, u32 hash)
+static bool MapKeyEquals(MapNode& node, ValueRef pKey, u32 hash)
 {
 	MapData* data = node.data;
-	if (node.hash != hash || data == NULL || data->key.GetType() != pKey->GetType())
+	if (node.hash != hash || data == nullptr || data->key.GetType() != pKey.GetType())
 		return false;
 
-	switch (pKey->GetType())
+	switch (pKey.GetType())
 	{
 	case VAR_INT:       return data->key._int == pKey->_int;
 	case VAR_FLOAT:     return data->key._float == pKey->_float;
@@ -96,7 +96,7 @@ static bool MapKeyEquals(MapNode& node, VarInfo* pKey, u32 hash)
 	}
 }
 
-int MapInfo::FindNodeIndex(VarInfo* pKey, u32 hash, int* pPrevious) const
+int MapInfo::FindNodeIndex(ValueRef pKey, u32 hash, int* pPrevious) const
 {
 	if (pPrevious) *pPrevious = MAP_NODE_END;
 	if (_BucketCapa <= 0)
@@ -234,13 +234,13 @@ CollectionIterator MapInfo::FirstNode()
 			return r;
 		}
 	}
-	r._pTableNode = NULL;
+	r._pTableNode = nullptr;
 	return r;
 }
 
 bool MapInfo::NextNode(CollectionIterator& r)
 {
-	if (r._pTableNode == NULL || _BucketCapa <= 0)
+	if (r._pTableNode == nullptr || _BucketCapa <= 0)
 		return false;
 
 	const ptrdiff_t current = r._pTableNode - _Bucket;
@@ -252,7 +252,7 @@ bool MapInfo::NextNode(CollectionIterator& r)
 			return true;
 		}
 	}
-	r._pTableNode = NULL;
+	r._pTableNode = nullptr;
 	return false;
 }
 
@@ -266,7 +266,7 @@ void MapInfo::Free()
 	}
 
 	delete[] _Bucket;
-	_Bucket = NULL;
+	_Bucket = nullptr;
 	_BucketCapa = _HashBase = 0;
 	_lastFree = -1;
 	_itemCount = 0;
@@ -282,16 +282,16 @@ void MapInfo::Reserve(int sz)
 		ReMap(minCapacity);
 }
 
-VarInfo* MapInfo::Insert(VarInfo* pKey)
+ValueRef MapInfo::Insert(ValueRef pKey)
 {
-	if (pKey->GetType() == VAR_NONE) return nullptr;
-	if (pKey->IsContainerType())
+	if (pKey.GetType() == VAR_NONE) return nullptr;
+	if (pKey.IsContainerType())
 		MarkContainerChild();
 
-	VarInfo normalizedKey;
+	BoundaryValue normalizedKey;
 	pKey = NormalizeMapStringKey(_pVM, pKey, normalizedKey, true);
 	if (pKey == nullptr)
-		return NULL;
+		return nullptr;
 
 	u32 hash = GetMapKeyHash(pKey);
 	const int found = FindNodeIndex(pKey, hash);
@@ -302,7 +302,7 @@ VarInfo* MapInfo::Insert(VarInfo* pKey)
 		|| (long long)(_itemCount + 1) * 4 > (long long)_BucketCapa * 3)
 	{
 		if (!ReMap(GrowHashCapacity(_BucketCapa)))
-			return NULL;
+			return nullptr;
 	}
 
 	int index = InsertNewNode(hash);
@@ -314,11 +314,11 @@ VarInfo* MapInfo::Insert(VarInfo* pKey)
 			? GrowHashCapacity(_BucketCapa)
 			: _BucketCapa;
 		if (!ReMap(minCapacity))
-			return NULL;
+			return nullptr;
 		index = InsertNewNode(hash);
 	}
 	if (index == MAP_NODE_END)
-		return NULL;
+		return nullptr;
 
 	MapNode& node = _Bucket[index];
 	node.data = AllocNodeData();
@@ -329,9 +329,9 @@ VarInfo* MapInfo::Insert(VarInfo* pKey)
 	return &node.data->value;
 }
 
-void MapInfo::Insert(const std::string& Key, VarInfo* pValue)
+void MapInfo::Insert(const std::string& Key, ValueRef pValue)
 {
-	VarInfo var;
+	BoundaryValue var;
 	var.SetType(VAR_STRING);
 	var._str = _pVM->StringIntern(Key);
 	Insert(&var, pValue);
@@ -341,46 +341,46 @@ void MapInfo::Insert(const std::string& Key, VarInfo* pValue)
 
 bool MapInfo::Insert(const std::string& key, NS_FLOAT value)
 {
-	VarInfo var;
+	BoundaryValue var;
 	var.SetType(VAR_STRING);
 	var._str = _pVM->StringIntern(key);
-	VarInfo* pDest = Insert(&var);
-	if (pDest == NULL)
+	ValueRef pDest = Insert(&var);
+	if (pDest == nullptr)
 	{
 		_pVM->FreeString(&var);
 		return false;
 	}
 	_pVM->Var_Release(pDest);
-	pDest->SetType(VAR_FLOAT);
+	pDest.SetType(VAR_FLOAT);
 	pDest->_float = value;
 	if (var._str->_refCount <= 0)
 		_pVM->FreeString(&var);
 	return true;
 }
 
-void MapInfo::Insert(VarInfo* pKey, VarInfo* pValue)
+void MapInfo::Insert(ValueRef pKey, ValueRef pValue)
 {
-	VarInfo* pDest = Insert(pKey);
-	if (pDest != NULL)
+	ValueRef pDest = Insert(pKey);
+	if (pDest != nullptr)
 	{
-		if (pValue->IsContainerType())
+		if (pValue.IsContainerType())
 			MarkContainerChild();
 		_pVM->Move(pDest, pValue);
 	}
 }
 
-void MapInfo::Insert(VarInfo* pKey, NS_INT v)
+void MapInfo::Insert(ValueRef pKey, NS_INT v)
 {
-	VarInfo* pDest = Insert(pKey);
-	if (pDest == NULL) return;
-	if (pDest->IsAllocType()) _pVM->Var_Release(pDest);
-	pDest->SetType(VAR_INT);
+	ValueRef pDest = Insert(pKey);
+	if (pDest == nullptr) return;
+	if (pDest.IsAllocType()) _pVM->Var_Release(pDest);
+	pDest.SetType(VAR_INT);
 	pDest->_int = v;
 }
 
-void MapInfo::Insert(NS_INT Key, VarInfo* pValue)
+void MapInfo::Insert(NS_INT Key, ValueRef pValue)
 {
-	VarInfo var;
+	BoundaryValue var;
 	var.SetType(VAR_INT);
 	var._int = Key;
 	Insert(&var, pValue);
@@ -388,17 +388,17 @@ void MapInfo::Insert(NS_INT Key, VarInfo* pValue)
 
 void MapInfo::Insert(NS_INT Key, NS_INT v)
 {
-	VarInfo var;
+	BoundaryValue var;
 	var.SetType(VAR_INT);
 	var._int = Key;
 	Insert(&var, v);
 }
 
-void MapInfo::Remove(VarInfo* pKey)
+void MapInfo::Remove(ValueRef pKey)
 {
 	if (_BucketCapa <= 0)
 		return;
-	VarInfo normalizedKey;
+	BoundaryValue normalizedKey;
 	pKey = NormalizeMapStringKey(_pVM, pKey, normalizedKey, false);
 	if (pKey == nullptr)
 		return;
@@ -435,22 +435,22 @@ void MapInfo::Remove(VarInfo* pKey)
 	++_mutationVersion;
 }
 
-VarInfo* MapInfo::Find(VarInfo *pKey)
+ValueRef MapInfo::Find(ValueRef pKey)
 {
-	if (pKey->GetType() == VAR_STRING)
+	if (pKey.GetType() == VAR_STRING)
 		return FindString(pKey->_str);
 
 	const int index = FindNodeIndex(pKey, GetMapKeyHash(pKey));
-	return index == MAP_NODE_END ? NULL : &_Bucket[index].data->value;
+	return index == MAP_NODE_END ? nullptr : &_Bucket[index].data->value;
 }
 
-VarInfo* MapInfo::Find(const std::string& key)
+ValueRef MapInfo::Find(const std::string& key)
 {
 	StringInfo* pKey = _pVM->StringFind(key);
-	return pKey ? FindString(pKey) : NULL;
+	return pKey ? FindString(pKey) : nullptr;
 }
 
-bool MapInfo::ToListKeys(std::vector<VarInfo*>& lst)
+bool MapInfo::ToListKeys(std::vector<ValueRef>& lst)
 {
 	lst.resize(_itemCount);
 	int cnt = 0;
@@ -462,7 +462,7 @@ bool MapInfo::ToListKeys(std::vector<VarInfo*>& lst)
 	return cnt == _itemCount;
 }
 
-bool MapInfo::ToListValues(std::vector<VarInfo*>& lst)
+bool MapInfo::ToListValues(std::vector<ValueRef>& lst)
 {
 	lst.resize(_itemCount);
 	int cnt = 0;

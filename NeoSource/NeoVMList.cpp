@@ -42,9 +42,9 @@ void ListInfo::Reserve(int capa)
 
 	if (_BucketCapa < capa)
 	{
-		VarInfo* pNew = new VarInfo[capa];
+		BoundaryValue* pNew = new BoundaryValue[capa];
 		if (_itemCount > 0)
-			memcpy(pNew, _Bucket, sizeof(VarInfo) * _itemCount);
+			memcpy(pNew, _Bucket, sizeof(BoundaryValue) * _itemCount);
 		if (_BucketCapa > 0 && _Bucket != _inlineBucket)   // 인라인→힙 전환 시 인라인 버킷은 delete 하지 않음
 			delete[] _Bucket;
 
@@ -54,7 +54,7 @@ void ListInfo::Reserve(int capa)
 		_BucketCapa = capa;
 	}
 }
-bool ListInfo::GetValue(int idx, VarInfo* pValue)
+bool ListInfo::GetValue(int idx, ValueRef pValue)
 {
 	if (idx < 0 || idx >= _itemCount)
 		return false;
@@ -62,7 +62,7 @@ bool ListInfo::GetValue(int idx, VarInfo* pValue)
 	return true;
 }
 
-VarInfo* ListInfo::GetValue(int idx)
+ValueRef ListInfo::GetValue(int idx)
 {
 	if (idx < 0 || idx >= _itemCount)
 		return nullptr;
@@ -70,11 +70,11 @@ VarInfo* ListInfo::GetValue(int idx)
 }
 
 
-bool ListInfo::SetValue(int idx, VarInfo* pValue)
+bool ListInfo::SetValue(int idx, ValueRef pValue)
 {
 	if (idx < 0 || idx >= _itemCount)
 		return false;
-	if (pValue->IsContainerType())
+	if (pValue.IsContainerType())
 		MarkContainerChild();
 	_pVM->Move(&_Bucket[idx], pValue);
 	return true;
@@ -100,7 +100,7 @@ bool ListInfo::SetValue(int idx, NS_FLOAT v)
 	return true;
 }
 
-bool ListInfo::Insert(int idx, VarInfo* pValue)
+bool ListInfo::Insert(int idx, ValueRef pValue)
 {
 	if (idx < 0 || idx > _itemCount)
 		return false;
@@ -108,8 +108,8 @@ bool ListInfo::Insert(int idx, VarInfo* pValue)
 		return InsertLast(pValue);
 
 	InsertLast(pValue);
-	VarInfo tmp = _Bucket[_itemCount - 1];
-	memmove(&_Bucket[idx + 1], &_Bucket[idx], sizeof(VarInfo) * (_itemCount - idx - 1)); // overlap memory
+	BoundaryValue tmp = _Bucket[_itemCount - 1];
+	memmove(_Bucket + idx + 1, _Bucket + idx, sizeof(BoundaryValue) * (_itemCount - idx - 1)); // overlap memory
 	_Bucket[idx] = tmp;
 	return true;
 }
@@ -119,13 +119,13 @@ bool ListInfo::Remove(int idx)
 	_pVM->Var_Release(&_Bucket[idx]);
 	// Transfer ownership while closing the gap. The duplicate tail does not
 	// own an extra reference and must be cleared without releasing it again.
-	memmove(&_Bucket[idx], &_Bucket[idx + 1], sizeof(VarInfo) * (_itemCount - idx - 1));
+	memmove(_Bucket + idx, _Bucket + idx + 1, sizeof(BoundaryValue) * (_itemCount - idx - 1));
 	_Bucket[--_itemCount].ClearType();
 	++_mutationVersion;
 	return true;
 }
 
-bool ListInfo::InsertLast(VarInfo* pValue)
+bool ListInfo::InsertLast(ValueRef pValue)
 {
 	if (_itemCount == INT32_MAX)
 		throw std::length_error("collection capacity exceeds limit");
@@ -135,7 +135,7 @@ bool ListInfo::InsertLast(VarInfo* pValue)
 			_BucketCapa > INT32_MAX / 2 ? INT32_MAX : _BucketCapa * 2;
 		Reserve(capacity);
 	}
-	if (pValue->IsContainerType())
+	if (pValue.IsContainerType())
 		MarkContainerChild();
 	_pVM->Move(&_Bucket[_itemCount++], pValue);
 	++_mutationVersion;

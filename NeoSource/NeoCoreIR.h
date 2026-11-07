@@ -98,6 +98,7 @@ struct TypedIR
     TypeRegistry types;
     std::vector<IRNode> nodes;
     std::vector<IRFunction> functions;
+    std::vector<IRFunction> nativeCalls;
     std::vector<IRStorageSymbol> storageSymbols;
     std::vector<IRReturn> returns;
 };

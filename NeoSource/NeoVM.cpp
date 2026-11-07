@@ -31,11 +31,11 @@ FunctionPtrNative NeoVMSystem::RegisterNative(Neo_NativeFunction func)
 	CNeoVMWorker::neo_pushcclosureNative(&fun, func);
 	return fun;
 }
-bool	NeoVMSystem::RegisterTableCallBack(VarInfo* p, void* pUserData, Neo_NativeFunction func, Neo_NativeProperty property,
+bool	NeoVMSystem::RegisterTableCallBack(ValueRef p, void* pUserData, Neo_NativeFunction func, Neo_NativeProperty property,
 	const void* identityType, const void* identityObject, const std::shared_ptr<void>& payloadOwner)
 {
 	// 일반 VAR_MAP을 변환하지 않는다. VAR_FP_NATIVE를 생성한 뒤에만 바인딩한다.
-	if (p == nullptr || p->GetType() != VAR_FP_NATIVE || p->_fpNative == nullptr) return false;
+	if (p == nullptr || p.GetType() != VAR_FP_NATIVE || p->_fpNative == nullptr) return false;
 	FunctionPropertyInfo* fp = p->_fpNative;
 
 	fp->_pUserData = pUserData;
@@ -48,9 +48,9 @@ bool	NeoVMSystem::RegisterTableCallBack(VarInfo* p, void* pUserData, Neo_NativeF
 	return true;
 }
 
-//void NeoVMSystem::Var_AddRef(VarInfo* d)
+//void NeoVMSystem::Var_AddRef(ValueRef d)
 //{
-//	switch (d->GetType())
+//	switch (d.GetType())
 //	{
 //	case VAR_STRING:
 //		++d->_str->_refCount;
@@ -78,10 +78,10 @@ bool	NeoVMSystem::RegisterTableCallBack(VarInfo* p, void* pUserData, Neo_NativeF
 //	}
 //}
 //
-//void NeoVMSystem::Move_DestNoRelease(VarInfo* v1, VarInfo* v2)
+//void NeoVMSystem::Move_DestNoRelease(ValueRef v1, ValueRef v2)
 //{
-//	v1->SetType(v2->GetType());
-//	switch (v2->GetType())
+//	v1.SetType(v2.GetType());
+//	switch (v2.GetType())
 //	{
 //	case VAR_INT: v1->_int = v2->_int; break;
 //	case VAR_FLOAT: v1->_float = v2->_float; break;
@@ -99,87 +99,87 @@ bool	NeoVMSystem::RegisterTableCallBack(VarInfo* p, void* pUserData, Neo_NativeF
 //	default: break;
 //	}
 //}
-void CNeoVM::Var_ReleaseInternal(VarInfo* d)
+void CNeoVM::Var_ReleaseInternal(ValueRef d)
 {
 	// case 순서 = VAR_TYPE 열거 순서 (리프 STRING/VEC/FP_NATIVE 먼저, 그다음 컨테이너).
 	// 이 함수는 인터프리터 핫패스에 인라인된다. 어긋나면 코드 생성이 나빠져 벤치 전체가
 	// 눈에 띄게 느려진다(실측 +5%). 열거를 바꾸면 여기도 반드시 같이 바꿀 것.
-	switch (d->GetType())
+	switch (d.GetType())
 	{
 	case VAR_STRING:
 		if (--d->_str->_refCount <= 0)
 			FreeString(d);
-		d->_str = NULL;
+		d->_str = nullptr;
 		break;
 	case VAR_VEC3:
 	case VAR_VEC4:
 		if (--d->_vec->_refCount <= 0)
 			FreeVec(d->_vec);
-		d->_vec = NULL;
+		d->_vec = nullptr;
 		break;
 	case VAR_FP_NATIVE:
 		if (--d->_fpNative->_refCount <= 0)
 			FreeFunctionProperty(d->_fpNative);
-		d->_fpNative = NULL;
+		d->_fpNative = nullptr;
 		break;
 	case VAR_ARRAY:
 		if (--d->_array->_refCount <= 0)
 			FreeArray(d->_array);
-		d->_array = NULL;
+		d->_array = nullptr;
 		break;
 	case VAR_MAP:
 		if (--d->_tbl->_refCount <= 0)
 			QueueContainerForDestroy(*d);
 		else if (d->_tbl->_cycleState._mayContainContainerChild)
 			QueueContainerForCycleCheck(*d);
-		d->_tbl = NULL;
+		d->_tbl = nullptr;
 		break;
 	case VAR_LIST:
 		if (--d->_lst->_refCount <= 0)
 			QueueContainerForDestroy(*d);
 		else if (d->_lst->_cycleState._mayContainContainerChild)
 			QueueContainerForCycleCheck(*d);
-		d->_lst = NULL;
+		d->_lst = nullptr;
 		break;
 	case VAR_SET:
 		if (--d->_set->_refCount <= 0)
 			QueueContainerForDestroy(*d);
 		else if (d->_set->_cycleState._mayContainContainerChild)
 			QueueContainerForCycleCheck(*d);
-		d->_set = NULL;
+		d->_set = nullptr;
 		break;
 	case VAR_COROUTINE:
 		if (--d->_cor->_refCount <= 0)
 			QueueContainerForDestroy(*d);
 		else if (d->_cor->_cycleState._mayContainContainerChild)
 			QueueContainerForCycleCheck(*d);
-		d->_cor = NULL;
+		d->_cor = nullptr;
 		break;
 	case VAR_MODULE:
 		if (--((CNeoVMWorker*)(d->_module))->_refCount <= 0)
 			QueueContainerForDestroy(*d);
 		else if (((CNeoVMWorker*)(d->_module))->_cycleState._mayContainContainerChild)
 			QueueContainerForCycleCheck(*d);
-		d->_module = NULL;
+		d->_module = nullptr;
 		break;
 	case VAR_ASYNC:
 		if (--d->_async->_refCount <= 0)
 			QueueContainerForDestroy(*d);
 		else if (d->_async->_cycleState._mayContainContainerChild)
 			QueueContainerForCycleCheck(*d);
-		d->_async = NULL;
+		d->_async = nullptr;
 		break;
 	case VAR_CLOSURE:
 		if (--d->_closure->_refCount <= 0)
 			QueueContainerForDestroy(*d);
 		else if (d->_closure->_cycleState._mayContainContainerChild)
 			QueueContainerForCycleCheck(*d);
-		d->_closure = NULL;
+		d->_closure = nullptr;
 		break;
 	default:
 		break;
 	}
-	d->ClearType();
+	d.ClearType();
 }
 /// <summary>
 /// INeoVMWorker 
@@ -190,7 +190,7 @@ void CNeoVM::Var_ReleaseInternal(VarInfo* d)
 void INeoVMWorker::PushString(const char* p)
 {
 	std::string s(p);
-	VarInfo d;
+	BoundaryValue d;
 	d.SetType(VAR_STRING);
 	d._str = _pVM->StringAlloc(s);
 	++d._str->_refCount;
@@ -198,7 +198,7 @@ void INeoVMWorker::PushString(const char* p)
 }
 void INeoVMWorker::PushNeoFunction(NeoFunction v)
 {
-	VarInfo d;
+	BoundaryValue d;
 	if (v._fun_index >= 0 && v._pWorker == this)
 	{
 		d.SetType(VAR_FUN);
@@ -213,59 +213,59 @@ void INeoVMWorker::PushNeoFunction(NeoFunction v)
 		d.ClearType();
 	_args->push_back(d);
 }
-const char* INeoVMWorker::PopString(VarInfo* V)
+const char* INeoVMWorker::PopString(ValueRef V)
 {
-	if (V->GetType() == VAR_STRING)
+	if (V.GetType() == VAR_STRING)
 		return V->_str->_str.c_str();
 
-	return NULL;
+	return nullptr;
 }
-const std::string* INeoVMWorker::PopStlString(VarInfo* V)
+const std::string* INeoVMWorker::PopStlString(ValueRef V)
 {
-	if (V->GetType() == VAR_STRING)
+	if (V.GetType() == VAR_STRING)
 		return &V->_str->_str;
 
-	return NULL;
+	return nullptr;
 }
 
-bool VarInfo::MapInsertFloat(const std::string& pKey, NS_FLOAT value)
+bool BoundaryValue::MapInsertFloat(const std::string& pKey, NS_FLOAT value)
 {
 	if(_type != VAR_MAP) return false;
 	return _tbl->Insert(pKey, value);
 }
-bool VarInfo::MapFindFloat(const std::string& pKey, NS_FLOAT& value)
+bool BoundaryValue::MapFindFloat(const std::string& pKey, NS_FLOAT& value)
 {
 	if (_type != VAR_MAP) return false;
-	VarInfo* p = _tbl->Find(pKey);
-	if (p == NULL) return false;
-	if (p->GetType() == VAR_FLOAT) { value = p->_float; return true; }
-	if (p->GetType() == VAR_INT) { value = (NS_FLOAT)p->_int; return true; }
+	ValueRef p = _tbl->Find(pKey);
+	if (p == nullptr) return false;
+	if (p.GetType() == VAR_FLOAT) { value = p->_float; return true; }
+	if (p.GetType() == VAR_INT) { value = (NS_FLOAT)p->_int; return true; }
 	return false;
 }
 
-bool VarInfo::ListInsertFloat(int idx, NS_FLOAT value)
+bool BoundaryValue::ListInsertFloat(int idx, NS_FLOAT value)
 {
 	if (_type != VAR_LIST) return false;
 	return _lst->SetValue(idx, value);
 }
-bool VarInfo::ListFindFloat(int idx, NS_FLOAT& value)
+bool BoundaryValue::ListFindFloat(int idx, NS_FLOAT& value)
 {
 	if (_type != VAR_LIST) return false;
-	VarInfo* p = _lst->GetValue(idx);
+	ValueRef p = _lst->GetValue(idx);
 	if(p == nullptr) return false;
-	if (p->GetType() == VAR_INT)
+	if (p.GetType() == VAR_INT)
 	{
 		value = (NS_FLOAT)p->_int;
 		return true;
 	}
-	else if (p->GetType() == VAR_FLOAT)
+	else if (p.GetType() == VAR_FLOAT)
 	{
 		value = p->_float;
 		return true;
 	}
 	return false;
 }
-bool VarInfo::SetListIndexer(VMHash<int>* pIndexer)
+bool BoundaryValue::SetListIndexer(VMHash<int>* pIndexer)
 {
 	if (_type != VAR_LIST) return false;
 	_lst->_pIndexer = pIndexer;
@@ -275,32 +275,32 @@ bool VarInfo::SetListIndexer(VMHash<int>* pIndexer)
 // ---- 벡터 값타입 Get/Set ----
 // Get: 벡터 값타입(VAR_VEC*) 전용. 리스트 폴백 없음 — 벡터 인자는 값타입이어야 한다.
 // 성공/실패 모두 요청한 성분까지만 쓴다 — 남는 레인은 호출자 몫이다.
-bool VarInfo::GetVec2(float out[2])
+bool BoundaryValue::GetVec2(float out[2])
 {
 	if (IsVector() && VectorComponentCount() >= 2) { out[0] = VectorComponent(0); out[1] = VectorComponent(1); return true; }
 	out[0] = out[1] = 0.0f;
 	return false;
 }
-bool VarInfo::GetVec3(float out[3])
+bool BoundaryValue::GetVec3(float out[3])
 {
 	if (IsVector() && VectorComponentCount() >= 3) { out[0] = VectorComponent(0); out[1] = VectorComponent(1); out[2] = VectorComponent(2); return true; }
 	out[0] = out[1] = out[2] = 0.0f;
 	return false;
 }
-bool VarInfo::GetVec4(float out[4])
+bool BoundaryValue::GetVec4(float out[4])
 {
 	if (IsVector() && VectorComponentCount() >= 4) { out[0] = VectorComponent(0); out[1] = VectorComponent(1); out[2] = VectorComponent(2); out[3] = VectorComponent(3); return true; }
 	out[0] = out[1] = out[2] = out[3] = 0.0f;
 	return false;
 }
-bool VarInfo::GetQuat(float out[4])
+bool BoundaryValue::GetQuat(float out[4])
 {
 	// wxyz 순서 (엔진 컨벤션). 저장이 v[0]=w,[1]=x,[2]=y,[3]=z 라 GetVec4 와 복사 순서는 같다.
 	if (IsVector() && VectorComponentCount() >= 4) { out[0] = VectorComponent(0); out[1] = VectorComponent(1); out[2] = VectorComponent(2); out[3] = VectorComponent(3); return true; }
 	out[0] = out[1] = out[2] = out[3] = 0.0f;
 	return false;
 }
-// Set 은 VarInfo 멤버에서 없앴다 — 벡터가 alloc 타입이 되면서 VM(풀)이 있어야 저장소를
+// Set 은 BoundaryValue 멤버에서 없앴다 — 벡터가 alloc 타입이 되면서 VM(풀)이 있어야 저장소를
 // 만들 수 있기 때문이다. 대신 INeoVMWorker::Var_SetVec2/3/4/Quat 를 쓴다.
 
 
@@ -575,23 +575,23 @@ static NEOS_FORCEINLINE T* CycleList_PopFront(T*& head, T*& tail)
 	return p;
 }
 
-void CNeoVM::Var_SetString(VarInfo *d, const char* str)
+void CNeoVM::Var_SetString(ValueRef d, const char* str)
 {
 	CheckRuntimeStringSize(strlen(str));
 	std::string s(str);
 	Var_SetStringA(d, s);
 }
-void CNeoVM::Var_SetStringA(VarInfo *d, const std::string& str)
+void CNeoVM::Var_SetStringA(ValueRef d, const std::string& str)
 {
 	// Allocate first: str may alias the old value, and failure must preserve it.
 	StringInfo* value = StringAlloc(str);
 	++value->_refCount;
-	if (d->IsAllocType())
+	if (d.IsAllocType())
 		Var_Release(d);
-	d->SetType(VAR_STRING);
+	d.SetType(VAR_STRING);
 	d->_str = value;
 }
-void CNeoVM::Var_SetStringConcat(VarInfo* d, const std::string& left, const std::string& right)
+void CNeoVM::Var_SetStringConcat(ValueRef d, const std::string& left, const std::string& right)
 {
 	CheckRuntimeStringGrowth(left.size(), right.size());
 	// 입력을 복사한 임시 문자열 없이 최종 저장소를 채운다. 목적지는 완성 뒤에 해제하여
@@ -616,16 +616,16 @@ void CNeoVM::Var_SetStringConcat(VarInfo* d, const std::string& left, const std:
 	// 입력 끝의 불완전한 UTF-8이 연결 뒤 한 글자가 될 수 있으므로 길이를 단순히 더하지 않는다.
 	value->_StringLen = utf_string::UTF8_LENGTH(value->_str);
 	++m_sAllocStats.strings;
-	if (d->IsAllocType()) Var_Release(d);
-	d->SetType(VAR_STRING);
+	if (d.IsAllocType()) Var_Release(d);
+	d.SetType(VAR_STRING);
 	d->_str = value;
 }
-void CNeoVM::Var_SetTable(VarInfo *d, MapInfo* p)
+void CNeoVM::Var_SetTable(ValueRef d, MapInfo* p)
 {
-	if (d->IsAllocType())
+	if (d.IsAllocType())
 		Var_Release(d);
 
-	d->SetType(VAR_MAP);
+	d.SetType(VAR_MAP);
 	d->_tbl = p;
 	++d->_tbl->_refCount;
 }
@@ -671,7 +671,7 @@ CNeoVMWorker* CNeoVM::FindWorker(int iModule)
 {
 	auto it = _sVMWorkers.find(iModule);
 	if (it == _sVMWorkers.end())
-		return NULL;
+		return nullptr;
 
 	return (*it).second;
 }
@@ -685,7 +685,7 @@ CoroutineInfo* CNeoVM::CoroutineAlloc()
 	++m_sAllocStats.coroutines;
 	return p;
 }
-void CNeoVM::FreeCoroutine(VarInfo *d)
+void CNeoVM::FreeCoroutine(ValueRef d)
 {
 	CoroutineInfo* pCI = d->_cor;
 	CancelCycleCandidate(VAR_COROUTINE, pCI);
@@ -697,7 +697,7 @@ void CNeoVM::FreeCoroutine(VarInfo *d)
 	// 완료(DeadCoroutine)를 거친 코루틴은 _iSP_Vars_Max2 가 0 이라 무해하지만,
 	// yield 된 채 버려진 코루틴은 live ref 가 남아있어 정리하지 않으면 다른 VM 재사용 시 손상된다.
 	int n = pCI->_info._iSP_Vars_Max2;
-	std::vector<VarInfo>& s = pCI->m_sVarStack;
+	ValueStack& s = pCI->m_sVarStack;
 	if (n > (int)s.size()) n = (int)s.size();
 	for (int i = 0; i < n; i++)
 		Var_Release(&s[i]);
@@ -708,7 +708,7 @@ void CNeoVM::FreeCoroutine(VarInfo *d)
 		SClosureCallState& state = pCI->m_sClosureCallStack[i];
 		if (state._closure == nullptr)
 			continue;
-		VarInfo active(VAR_CLOSURE);
+		BoundaryValue active(VAR_CLOSURE);
 		active._closure = state._closure;
 		state._closure = nullptr;
 		Var_Release(&active);
@@ -717,7 +717,7 @@ void CNeoVM::FreeCoroutine(VarInfo *d)
 	Var_Release(&pCI->_function);
 	if (pCI->_activeClosure)
 	{
-		VarInfo active(VAR_CLOSURE);
+		BoundaryValue active(VAR_CLOSURE);
 		active._closure = pCI->_activeClosure;
 		pCI->_activeClosure = nullptr;
 		Var_Release(&active);
@@ -888,7 +888,7 @@ void CNeoVM::RemoveInternedString(StringInfo* p)
 // MSVC x64 는 15자까지 SSO(힙 미사용)라, 이 값은 그보다 충분히 커야 의미가 있다.
 static const size_t kStringReleaseCapacity = 32;
 
-void CNeoVM::FreeString(VarInfo *d)
+void CNeoVM::FreeString(ValueRef d)
 {
 	StringInfo* p = d->_str;
 	if (p->_interned)
@@ -919,28 +919,28 @@ void CNeoVM::FreeVec(VecInfo* p)
 	m_sPool_Vec.Confer(p);
 }
 // 3·4성분은 공유 저장소를 보유한다. 2성분 벡터는 일반 값 복사다.
-void ArrayInfo::AssignVectorRare(int index, VarInfo* value)
+void ArrayInfo::AssignVectorRare(int index, ValueRef value)
 {
-	_pVM->Move(&VectorValues()[index], value);
+	_pVM->Move(VectorAt(index), value);
 }
-void ArrayInfo::RetainInitialVector(const VarInfo& value)
+void ArrayInfo::RetainInitialVector(const BoundaryValue& value)
 {
 	_initialVector = value;
-	if (_initialVector.GetType() == VAR_VEC3 || _initialVector.GetType() == VAR_VEC4) ++_initialVector._vec->_refCount;
+	if (VectorDimension() > 2) ++_initialVector._vec->_refCount;
 }
 void ArrayInfo::ReleaseVectorRange(int begin, int end)
 {
-	for (int i = begin; i < end; ++i) _pVM->Var_Release(&VectorValues()[i]);
+	for (int i = begin; i < end; ++i) _pVM->Var_Release(VectorAt(i));
 }
 void ArrayInfo::FreeVectors()
 {
 	ReleaseVectorRange(0, _count);
-	_pVM->Var_Release(&_initialVector);
+	_pVM->Var_Release(ValueRef(&_initialVector, VectorType()));
 }
-void ArrayInfo::ReadVectorRare(int index, VarInfo* out)
+void ArrayInfo::ReadVectorRare(int index, ValueRef out)
 {
 	// a = a[0]이면 out 해제와 동시에 이 배열도 파괴된다. 먼저 원소 소유권을 확보한다.
-	VarInfo value = VectorValues()[index];
+	BoundaryValue value(VectorAt(index));
 	if (value.GetType() == VAR_VEC3 || value.GetType() == VAR_VEC4) ++value._vec->_refCount;
 	_pVM->Var_Release(out);
 	*out = value;
@@ -952,12 +952,12 @@ bool ArrayInfo::SetVectorComponents(int index, const float* components, int dime
 	// 입력이 기존 원소의 일부를 가리켜도 COW나 덮어쓰기 전에 읽기를 끝낸다.
 	float copy[4] = {};
 	std::memcpy(copy, components, dimension * sizeof(float));
-	VarInfo* value = &VectorValues()[index];
-	if (dimension == 2) value->SetInlineVec(copy[0], copy[1]);
+	ValueRef value = VectorAt(index);
+	if (dimension == 2) value.SetInlineVec(copy[0], copy[1]);
 	else std::memcpy(_pVM->VecCopyOnWrite(value)->v, copy, sizeof(copy));
 	return true;
 }
-ArrayInfo* CNeoVM::ArrayAlloc(NeoArrayElementType elementType, int count, const VarInfo& initialValue)
+ArrayInfo* CNeoVM::ArrayAlloc(NeoArrayElementType elementType, int count, const BoundaryValue& initialValue)
 {
 	if (count < 0)
 		return nullptr;
@@ -1035,13 +1035,13 @@ void CNeoVM::FreeArray(ArrayInfo* array)
 	m_sPool_Array.Confer(array);
 	--m_sAllocStats.arrays;
 }
-VecInfo* CNeoVM::VecCopyOnWrite(VarInfo* d)
+VecInfo* CNeoVM::VecCopyOnWrite(ValueRef d)
 {
 	VecInfo* src = d->_vec;
 	if (src->_refCount <= 1)
 		return src;              // 단독 소유 → 그대로 쓴다
 
-	VecInfo* dst = VecAlloc();   // 공유 중 → 복제해서 이 VarInfo 만 새 것을 갖는다
+	VecInfo* dst = VecAlloc();   // 공유 중 → 복제해서 이 BoundaryValue 만 새 것을 갖는다
 	dst->v[0] = src->v[0]; dst->v[1] = src->v[1];
 	dst->v[2] = src->v[2]; dst->v[3] = src->v[3];
 	--src->_refCount;
@@ -1093,18 +1093,18 @@ FunctionPropertyInfo* CNeoVM::FunctionPropertyAlloc()
 {
 	FunctionPropertyInfo* fp = m_sPool_FunctionProperty.Receive();
 	fp->_refCount = 0;
-	fp->_fun._func = NULL;
-	fp->_fun._property = NULL;
-	fp->_pUserData = NULL;
+	fp->_fun._func = nullptr;
+	fp->_fun._property = nullptr;
+	fp->_pUserData = nullptr;
 	fp->_identityType = nullptr;
 	fp->_identityObject = nullptr;
 	return fp;
 }
 void CNeoVM::FreeFunctionProperty(FunctionPropertyInfo* fp)
 {
-	fp->_fun._func = NULL;
-	fp->_fun._property = NULL;
-	fp->_pUserData = NULL;
+	fp->_fun._func = nullptr;
+	fp->_fun._property = nullptr;
+	fp->_pUserData = nullptr;
 	fp->_identityType = nullptr;
 	fp->_identityObject = nullptr;
 	fp->_payloadOwner.reset();
@@ -1117,7 +1117,7 @@ ListInfo* CNeoVM::ListAlloc(int cnt)
 	pList->_refCount = 0;
 	pList->_cycleState.Init(pList);
 	pList->_mutationVersion = 0;
-	pList->_pUserData = NULL;
+	pList->_pUserData = nullptr;
 	pList->_pIndexer = nullptr;
 	pList->InitInlineBucket();   // _Bucket=인라인, capa=4, itemCount=0 (작은 리스트는 힙 할당 없음)
 
@@ -1197,7 +1197,7 @@ AsyncInfo* CNeoVM::AsyncAlloc()
 	++m_sAllocStats.asyncs;
 	return p;
 }
-void CNeoVM::FreeAsync(VarInfo* d)
+void CNeoVM::FreeAsync(ValueRef d)
 {
 	AsyncInfo* p = d->_async;
 	CancelCycleCandidate(VAR_ASYNC, p);
@@ -1216,7 +1216,7 @@ void CNeoVM::FreeAsync(VarInfo* d)
 	m_sPool_Async.Confer(p);
 }
 
-ClosureInfo* CNeoVM::ClosureAlloc(int functionIndex, int captureCount)
+ClosureInfo* CNeoVM::ClosureAlloc(int functionIndex, const std::shared_ptr<const std::vector<VAR_TYPE>>& types)
 {
 	ClosureInfo* closure = m_sPool_Closure.Receive();
 	closure->_pVM = this;
@@ -1225,7 +1225,8 @@ ClosureInfo* CNeoVM::ClosureAlloc(int functionIndex, int captureCount)
 	closure->_refCount = 0;
 	closure->_cycleState.Init(closure);
 	closure->_captures.clear();
-	closure->_captures.resize(captureCount);
+	closure->_captureTypes = types;
+	closure->_captures.resize(types->size());
 	LiveList_Insert(_sClosureHead, closure);
 	++m_sAllocStats.closures;
 	return closure;
@@ -1240,15 +1241,16 @@ void CNeoVM::FreeClosure(ClosureInfo* closure)
 		return;
 	closure->_cycleState._destroying = true;
 	LiveList_Remove(_sClosureHead, closure);
-	for (VarInfo& value : closure->_captures)
-		Var_Release(&value);
+	for (size_t i = 0; i < closure->_captures.size(); ++i)
+		Var_Release(closure->Capture(i));
 	closure->_captures.clear();
+	closure->_captureTypes.reset();
 	closure->_pVM = nullptr;
 	m_sPool_Closure.Confer(closure);
 	--m_sAllocStats.closures;
 }
 
-void CNeoVM::QueueContainerForDestroy(const VarInfo& value)
+void CNeoVM::QueueContainerForDestroy(const BoundaryValue& value)
 {
 	// value 는 참조를 새로 잡지 않는 "파괴 권한"이다. refcount 가 이미 0 이하가 된
 	// 객체만 들어오며, Free* 가 먼저 _destroying 을 세워 순환에서 다시 들어온 항목은
@@ -1260,7 +1262,7 @@ void CNeoVM::QueueContainerForDestroy(const VarInfo& value)
 	_bDrainingDestroyQueue = true;
 	while (_sDestroyQueue.empty() == false)
 	{
-		VarInfo next = _sDestroyQueue.back();
+		BoundaryValue next = _sDestroyQueue.back();
 		_sDestroyQueue.pop_back();
 		switch (next.GetType())
 		{
@@ -1277,7 +1279,7 @@ void CNeoVM::QueueContainerForDestroy(const VarInfo& value)
 	_bDrainingDestroyQueue = false;
 }
 
-static void* GetContainerObject(VarInfo value)
+static void* GetContainerObject(BoundaryValue value)
 {
 	switch (value.GetType())
 	{
@@ -1410,9 +1412,9 @@ static int GetContainerRefCount(VAR_TYPE type, void* object)
 	return GetContainerRefCountRef(type, object);
 }
 
-static VarInfo MakeContainerVar(VAR_TYPE type, void* object)
+static BoundaryValue MakeContainerVar(VAR_TYPE type, void* object)
 {
-	VarInfo value(type);
+	BoundaryValue value(type);
 	switch (type)
 	{
 	case VAR_MAP:       value._tbl = (MapInfo*)object; break;
@@ -1430,7 +1432,7 @@ static VarInfo MakeContainerVar(VAR_TYPE type, void* object)
 // Cycle collector의 gray/black 단계에서만 쓴다. 그래프를 별도 노드/children
 // 벡터로 복제하지 않고 실제 컨테이너의 소유 간선을 직접 방문한다.
 template<typename Visitor>
-void CNeoVM::VisitCycleContainerChildren(VarInfo source, Visitor visitor)
+void CNeoVM::VisitCycleContainerChildren(BoundaryValue source, Visitor visitor)
 {
 	switch (source.GetType())
 	{
@@ -1442,8 +1444,8 @@ void CNeoVM::VisitCycleContainerChildren(VarInfo source, Visitor visitor)
 			MapNode& node = map->_Bucket[i];
 			if (IsMapNodeUsed(node) && node.data)
 			{
-				VarInfo key = node.data->key;
-				VarInfo value = node.data->value;
+				BoundaryValue key = node.data->key;
+				BoundaryValue value = node.data->value;
 				if (key.IsContainerType()) visitor(key.GetType(), GetContainerObject(key));
 				if (value.IsContainerType()) visitor(value.GetType(), GetContainerObject(value));
 			}
@@ -1455,7 +1457,7 @@ void CNeoVM::VisitCycleContainerChildren(VarInfo source, Visitor visitor)
 		ListInfo* list = source._lst;
 		for (int i = 0; i < list->_itemCount; ++i)
 		{
-			VarInfo value = list->_Bucket[i];
+			BoundaryValue value = list->_Bucket[i];
 			if (value.IsContainerType()) visitor(value.GetType(), GetContainerObject(value));
 		}
 		break;
@@ -1468,7 +1470,7 @@ void CNeoVM::VisitCycleContainerChildren(VarInfo source, Visitor visitor)
 			SetNode& node = set->_Bucket[i];
 			if (IsSetNodeUsed(node) && node.data)
 			{
-				VarInfo key = node.data->key;
+				BoundaryValue key = node.data->key;
 				if (key.IsContainerType()) visitor(key.GetType(), GetContainerObject(key));
 			}
 		}
@@ -1482,10 +1484,10 @@ void CNeoVM::VisitCycleContainerChildren(VarInfo source, Visitor visitor)
 		if (count > (int)coroutine->m_sVarStack.size()) count = (int)coroutine->m_sVarStack.size();
 		for (int i = 0; i < count; ++i)
 		{
-			VarInfo value = coroutine->m_sVarStack[i];
+			BoundaryValue value = coroutine->m_sVarStack[i];
 			if (value.IsContainerType()) visitor(value.GetType(), GetContainerObject(value));
 		}
-		VarInfo function = coroutine->_function;
+		BoundaryValue function = coroutine->_function;
 		if (function.IsContainerType()) visitor(function.GetType(), GetContainerObject(function));
 		if (coroutine->_activeClosure) visitor(VAR_CLOSURE, coroutine->_activeClosure);
 		for (int i = 0; i < (int)coroutine->m_sClosureCallStack.size(); ++i)
@@ -1498,15 +1500,16 @@ void CNeoVM::VisitCycleContainerChildren(VarInfo source, Visitor visitor)
 	case VAR_MODULE:
 	{
 		CNeoVMWorker* worker = (CNeoVMWorker*)source._module;
-		for (VarInfo& value : worker->m_sVarGlobal)
-		{
+		for (std::size_t i = 0; i < worker->m_sVarGlobal.size(); ++i)
+        {
+            BoundaryValue value(ValueRef(worker->m_sVarGlobal.data() + i, worker->_pProgram->globalTypes.data() + i));
 			if (value.IsContainerType()) visitor(value.GetType(), GetContainerObject(value));
 		}
 		break;
 	}
 	case VAR_ASYNC:
 	{
-		VarInfo value = source._async->_LockReferance;
+		BoundaryValue value = source._async->_LockReferance;
 		if (value.IsContainerType()) visitor(value.GetType(), GetContainerObject(value));
 		value = source._async->_callback;
 		if (value.IsContainerType()) visitor(value.GetType(), GetContainerObject(value));
@@ -1514,8 +1517,11 @@ void CNeoVM::VisitCycleContainerChildren(VarInfo source, Visitor visitor)
 	}
 	case VAR_CLOSURE:
 	{
-		for (VarInfo& value : source._closure->_captures)
-			if (value.IsContainerType()) visitor(value.GetType(), GetContainerObject(value));
+		for (size_t i = 0; i < source._closure->_captures.size(); ++i)
+        {
+            BoundaryValue value(source._closure->Capture(i));
+            if (value.IsContainerType()) visitor(value.GetType(), GetContainerObject(value));
+        }
 		break;
 	}
 	default:
@@ -1523,7 +1529,7 @@ void CNeoVM::VisitCycleContainerChildren(VarInfo source, Visitor visitor)
 	}
 }
 
-void CNeoVM::QueueContainerForCycleCheck(const VarInfo& source)
+void CNeoVM::QueueContainerForCycleCheck(const BoundaryValue& source)
 {
 	// VM 소멸은 참조 그래프의 생존성을 판단하는 단계가 아니다. 아래의 live
 	// registry 강제 해제가 최종 소유자이므로, 정리 중 새 약한 티켓을 만들면
@@ -1531,7 +1537,7 @@ void CNeoVM::QueueContainerForCycleCheck(const VarInfo& source)
 	if (_isTearingDown)
 		return;
 
-	VarInfo value = source;
+	BoundaryValue value = source;
 	if (value.IsContainerType() == false)
 		return;
 
@@ -1689,7 +1695,7 @@ int CNeoVM::CollectUnreachableCycleCandidates(size_t rootBudget)
 
 	for (size_t cursor = 0; cursor < _cycleWorkList.size(); ++cursor)
 	{
-		VarInfo source = _cycleWorkList[cursor]; // child 추가로 vector가 재할당될 수 있다.
+		BoundaryValue source = _cycleWorkList[cursor]; // child 추가로 vector가 재할당될 수 있다.
 		if (IsCycleNativeRoot(source.GetType(), GetContainerObject(source)))
 			continue;
 		VisitCycleContainerChildren(source, [&](VAR_TYPE type, void* object)
@@ -1716,7 +1722,7 @@ int CNeoVM::CollectUnreachableCycleCandidates(size_t rootBudget)
 	const size_t blackBegin = _cycleWorkList.size();
 	for (size_t i = 0; i < touchedCount; ++i)
 	{
-		VarInfo value = _cycleWorkList[i];
+		BoundaryValue value = _cycleWorkList[i];
 		const VAR_TYPE type = value.GetType();
 		void* object = GetContainerObject(value);
 		const bool nativeRoot = IsCycleNativeRoot(type, object);
@@ -1728,7 +1734,7 @@ int CNeoVM::CollectUnreachableCycleCandidates(size_t rootBudget)
 	}
 	for (size_t cursor = blackBegin; cursor < _cycleWorkList.size(); ++cursor)
 	{
-		VarInfo source = _cycleWorkList[cursor];
+		BoundaryValue source = _cycleWorkList[cursor];
 		if (IsCycleNativeRoot(source.GetType(), GetContainerObject(source)))
 			continue;
 		VisitCycleContainerChildren(source, [&](VAR_TYPE type, void* object)
@@ -1745,7 +1751,7 @@ int CNeoVM::CollectUnreachableCycleCandidates(size_t rootBudget)
 	const size_t whiteBegin = _cycleWorkList.size();
 	for (size_t i = 0; i < touchedCount; ++i)
 	{
-		VarInfo value = _cycleWorkList[i];
+		BoundaryValue value = _cycleWorkList[i];
 		const VAR_TYPE type = value.GetType();
 		void* object = GetContainerObject(value);
 		if (GetCycleColorState(type, object) == CYCLE_COLOR_GRAY)
@@ -1760,7 +1766,7 @@ int CNeoVM::CollectUnreachableCycleCandidates(size_t rootBudget)
 	// pool로 반납되지 않는다.
 	for (size_t i = whiteBegin; i < whiteEnd; ++i)
 	{
-		VarInfo value = _cycleWorkList[i];
+		BoundaryValue value = _cycleWorkList[i];
 		void* object = GetContainerObject(value);
 		CancelCycleCandidate(value.GetType(), object);
 		GetCycleCollectingFlag(value.GetType(), object) = true;
@@ -1773,7 +1779,7 @@ int CNeoVM::CollectUnreachableCycleCandidates(size_t rootBudget)
 		setActiveCoroutineNativeRoot(false);
 	for (size_t i = 0; i < touchedCount; ++i)
 	{
-		VarInfo value = _cycleWorkList[i];
+		BoundaryValue value = _cycleWorkList[i];
 		void* object = GetContainerObject(value);
 		GetCycleColor(value.GetType(), object) = CYCLE_COLOR_NONE;
 		GetCycleScratchRefCount(value.GetType(), object) = 0;
@@ -1782,7 +1788,7 @@ int CNeoVM::CollectUnreachableCycleCandidates(size_t rootBudget)
 	if (whiteBegin == whiteEnd)
 		return processed;
 
-	auto releaseVar = [this](VarInfo& value)
+	auto releaseVar = [this](BoundaryValue& value)
 	{
 		if (value.IsContainerType())
 		{
@@ -1809,7 +1815,7 @@ int CNeoVM::CollectUnreachableCycleCandidates(size_t rootBudget)
 	// owner 가 즉시 dangling 이 되므로, 그때는 복사로 바꿔야 한다.
 	for (size_t i = whiteBegin; i < whiteEnd; ++i)
 	{
-		VarInfo& owner = _cycleWorkList[i];
+		BoundaryValue& owner = _cycleWorkList[i];
 		switch (owner.GetType())
 		{
 		case VAR_MAP:
@@ -1851,11 +1857,11 @@ int CNeoVM::CollectUnreachableCycleCandidates(size_t rootBudget)
 			if (count < 0) count = 0;
 			if (count > (int)coroutine->m_sVarStack.size()) count = (int)coroutine->m_sVarStack.size();
 			for (int i = 0; i < count; ++i)
-				releaseVar(coroutine->m_sVarStack[i]);
+				{ BoundaryValue value = coroutine->m_sVarStack[i]; releaseVar(value); coroutine->m_sVarStack[i].ClearType(); }
 			releaseVar(coroutine->_function);
 			if (coroutine->_activeClosure)
 			{
-				VarInfo active(VAR_CLOSURE);
+				BoundaryValue active(VAR_CLOSURE);
 				active._closure = coroutine->_activeClosure;
 				releaseVar(active);
 				coroutine->_activeClosure = nullptr;
@@ -1865,7 +1871,7 @@ int CNeoVM::CollectUnreachableCycleCandidates(size_t rootBudget)
 				SClosureCallState& state = coroutine->m_sClosureCallStack[i];
 				if (state._closure == nullptr)
 					continue;
-				VarInfo active(VAR_CLOSURE);
+				BoundaryValue active(VAR_CLOSURE);
 				active._closure = state._closure;
 				releaseVar(active);
 				state._closure = nullptr;
@@ -1876,8 +1882,13 @@ int CNeoVM::CollectUnreachableCycleCandidates(size_t rootBudget)
 		case VAR_MODULE:
 		{
 			CNeoVMWorker* worker = (CNeoVMWorker*)owner._module;
-			for (VarInfo& value : worker->m_sVarGlobal)
-				releaseVar(value);
+			for (std::size_t i = 0; i < worker->m_sVarGlobal.size(); ++i)
+            {
+                ValueRef slot(worker->m_sVarGlobal.data() + i, worker->_pProgram->globalTypes.data() + i);
+                BoundaryValue value(slot);
+                releaseVar(value);
+                slot.ClearType();
+            }
 			break;
 		}
 		case VAR_ASYNC:
@@ -1885,8 +1896,13 @@ int CNeoVM::CollectUnreachableCycleCandidates(size_t rootBudget)
 			releaseVar(owner._async->_callback);
 			break;
 		case VAR_CLOSURE:
-			for (VarInfo& value : owner._closure->_captures)
-				releaseVar(value);
+			for (size_t i = 0; i < owner._closure->_captures.size(); ++i)
+            {
+                ValueRef slot = owner._closure->Capture(i);
+                BoundaryValue value(slot);
+                releaseVar(value);
+                slot.ClearType();
+            }
 			break;
 		default:
 			break;
@@ -1897,7 +1913,7 @@ int CNeoVM::CollectUnreachableCycleCandidates(size_t rootBudget)
 	// 파괴 큐를 통해 Free*/Confer 경로로 들어간다.
 	for (size_t i = whiteBegin; i < whiteEnd; ++i)
 	{
-		VarInfo value = _cycleWorkList[i];
+		BoundaryValue value = _cycleWorkList[i];
 		void* object = GetContainerObject(value);
 		GetCycleCollectingFlag(value.GetType(), object) = false;
 		if (--GetContainerRefCountRef(value.GetType(), object) <= 0)
@@ -2214,7 +2230,7 @@ INeoVMWorker* CNeoVM::LoadVM(const NeoLoadVMParam* vparam, void* pBuffer, int iS
 	if (pProgram == nullptr)
 	{
 		SetError(err);
-		return NULL;
+		return nullptr;
 	}
 
 	INeoVMWorker* pWorker = LoadVM(vparam, pProgram, blMainWorker, init, iStackSize);
@@ -2227,27 +2243,27 @@ INeoVMWorker* CNeoVM::LoadVM(const NeoLoadVMParam* vparam, CNeoVMProgram* pProgr
 	if (pProgram == nullptr)
 	{
 		SetError(g_sNeoRuntimeErrors[RTE_PROGRAM_REQUIRED]);
-		return NULL;
+		return nullptr;
 	}
 	if (vparam != nullptr && vparam->execPool != nullptr)
 		_pExecPool = vparam->execPool;   // 이후 모듈 로드 워커들이 상속할 수 있도록 VM 에 보관
 	if (_pExecPool == nullptr)
 	{
 		SetError(g_sNeoRuntimeErrors[RTE_EXEC_POOL_REQUIRED]);
-		return NULL;
+		return nullptr;
 	}
 
 	CNeoVMWorker*pWorker = WorkerAlloc(iStackSize);
 	if (false == pWorker->Init(vparam, pProgram, iStackSize))
 	{
 		FreeWorker(pWorker);
-		return NULL;
+		return nullptr;
 	}
-	if (blMainWorker && NULL == _pMainWorker)
+	if (blMainWorker && nullptr == _pMainWorker)
 		_pMainWorker = pWorker;
 	if(init)
 	{
-		std::vector<VarInfo> _args;
+		std::vector<BoundaryValue> _args;
 		pWorker->ExecuteTop(0, _args);
 	}
 	PublishAllocStats();
@@ -2264,7 +2280,7 @@ bool CNeoVM::ReleaseWorker(INeoVMWorker* worker)
 	const bool isMainWorker = (pWorker == _pMainWorker);
 	FreeWorker(pWorker);
 	if (isMainWorker)
-		_pMainWorker = NULL;
+		_pMainWorker = nullptr;
 	PublishAllocStats();
 	return true;
 }

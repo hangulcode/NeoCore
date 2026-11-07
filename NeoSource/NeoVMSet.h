@@ -7,7 +7,7 @@ namespace NeoScript
 // 충돌 체인을 훑고, 실제 키 비교가 필요한 경우에만 SetData로 간다.
 struct SetData
 {
-	VarInfo	key;
+	BoundaryValue	key;
 };
 
 struct SetNode
@@ -56,18 +56,18 @@ struct SetInfo : AllocBase
 	void Clear();
 
 	void Reserve(int sz);
-	bool Insert(VarInfo* pKey);
+	bool Insert(ValueRef pKey);
 	void Insert(std::string& pKey);
 	void Insert(NS_INT Key);
-	void Remove(VarInfo* pKey);
+	void Remove(ValueRef pKey);
 
-	bool Find(VarInfo *pKey);
+	bool Find(ValueRef pKey);
 	bool Find(std::string& key);
 
 	CollectionIterator FirstNode();
 	bool NextNode(CollectionIterator&);
 
-	bool ToList(std::vector<VarInfo*>& lst);
+	bool ToList(std::vector<ValueRef>& lst);
 	inline int		GetCount() { return _itemCount; }
 	// 한 번이라도 컨테이너 자식을 저장했으면 pool 재대여 전까지 유지한다.
 	NEOS_FORCEINLINE void MarkContainerChild() { _cycleState._mayContainContainerChild = true; }
@@ -79,7 +79,7 @@ private:
 	void ClearNode(SetNode& node);
 	SetData* AllocNodeData();
 	void FreeNodeData(SetData* data);
-	int FindNodeIndex(VarInfo* pKey, u32 hash, int* pPrevious = nullptr) const;
+	int FindNodeIndex(ValueRef pKey, u32 hash, int* pPrevious = nullptr) const;
 	int FindFreeNodeIndex();
 	int InsertNewNode(u32 hash);
 	bool ReMap(int minCapacity = 0);

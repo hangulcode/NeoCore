@@ -1145,6 +1145,19 @@ public:
     {
         if (hostSchema_)
         {
+            for (const HostBinding& binding : hostSchema_->Bindings())
+            {
+                IRFunction call; call.backendName = result_.hostPrefix + "b" + std::to_string(binding.id);
+                call.returnType = binding.returnType; call.parameterTypes.push_back(binding.ownerType);
+                call.parameterTypes.insert(call.parameterTypes.end(), binding.parameters.begin(), binding.parameters.end());
+                result_.typedIR.nativeCalls.push_back(call);
+            }
+            for (std::size_t i = 0; i < hostSchema_->Globals().size(); ++i)
+            {
+                IRFunction call; call.backendName = result_.hostPrefix + "g" + std::to_string(i);
+                call.returnType = hostSchema_->Globals()[i].type;
+                result_.typedIR.nativeCalls.push_back(call);
+            }
             // 호스트가 선언한 구조체도 같은 생성·복사·기본값 헬퍼를 사용한다.
             for (const auto& named : hostSchema_->Types().NamedTypes())
                 if (types_.Get(named.second).kind == TypeKind::Struct) structures_.push_back(named.second);
@@ -3478,6 +3491,9 @@ private:
         IROp operation;
         if (allowIR && !expression.constantInitializer &&
             (NumericIROp(expression, operation) || ScalarMutationIROp(expression, operation) || ScalarCollectionIR(expression)
+                || (!expression.writeTarget && !expression.assignmentTarget && !expression.branchCondition &&
+                    expression.type != InvalidType && types_.Get(expression.type).kind != TypeKind::Void && expression.kind != ExprKind::Name && expression.kind != ExprKind::Literal)
+                || (expression.kind == ExprKind::Name && expression.symbol && expression.symbol->hostGlobal)
                 || expression.kind == ExprKind::Conditional
                 || expression.functionIndex != static_cast<std::size_t>(-1)
                 || (expression.widen && !expression.constantWiden)))
@@ -3771,9 +3787,11 @@ private:
             if (validator == scriptHost_->validators.end()) throw std::logic_error("missing script host receiver validator");
             std::size_t apiGlobal = 0;
             while (apiGlobal < hostSchema_->Globals().size() && hostSchema_->Globals()[apiGlobal].name != scriptHost_->apiGlobal) ++apiGlobal;
-            result += "\nfun " + HostCall(binding.id) + "(var self";
-            for (std::size_t i=0;i<binding.parameters.size();++i) result += ",var a" + std::to_string(i);
-            result += "){" + NativeHostCall(validator->second) + "(" + result_.hostPrefix + "g" + std::to_string(apiGlobal) + ".call(),self);return " + implementation.second + "(self";
+            std::vector<std::pair<std::string, TypeId>> parameters{{"self", binding.ownerType}};
+            for (std::size_t i = 0; i < binding.parameters.size(); ++i)
+                parameters.push_back(std::make_pair("a" + std::to_string(i), binding.parameters[i]));
+            result += HelperDefinition(HostCall(binding.id), binding.returnType, parameters);
+            result += NativeHostCall(validator->second) + "(" + result_.hostPrefix + "g" + std::to_string(apiGlobal) + ".call(),self);return " + implementation.second + "(self";
             for (std::size_t i=0;i<binding.parameters.size();++i) result += ",a" + std::to_string(i);
             result += ");}";
         }
@@ -3781,7 +3799,23 @@ private:
         {
             const bool increment = write.operation == "++" || write.operation == "--" || write.operation == "post++" || write.operation == "post--";
             const bool postfix = write.operation == "post++" || write.operation == "post--";
-            result += "\nfun " + write.name + (increment ? "(var self){" : "(var value,var self){");
+            const TypeId storedType = write.component >= 0 ? types_.Float() : write.property->type;
+            const HostBinding& setter = *hostSchema_->FindBinding(write.property->setter);
+            std::vector<std::pair<std::string, TypeId>> parameters;
+            if (!increment) parameters.push_back(std::make_pair(write.operation == "=" ? "value" : "input",
+                write.operation == "=" ? storedType : write.valueType));
+            parameters.push_back(std::make_pair("self", setter.ownerType));
+            result += HelperDefinition(write.name, storedType, parameters);
+            // 입력과 저장 결과의 타입이 다를 수 있으므로 같은 슬롯을 재사용하지 않는다.
+            if (write.operation != "=")
+            {
+                HelperStorage(write.name, "old", storedType);
+                HelperStorage(write.name, "value", storedType);
+            }
+            if (write.component >= 0)
+            {
+                HelperStorage(write.name, "vector", write.property->type);
+            }
             if (write.component >= 0)
             {
                 // 벡터는 값으로 가져온다. 쓰기 직전 setter가 같은 ID의 생존 여부를 다시 검사한다.
@@ -3792,10 +3826,10 @@ private:
                 {
                     result += "var old=" + componentRead + ";";
                     const std::string operation = increment ? (write.operation.find("++") != std::string::npos ? "+" : "-") : write.operation.substr(0, write.operation.size() - 1);
-                    std::string argument = increment ? "1.0" : "value";
+                    std::string argument = increment ? "1.0" : "input";
                     if (write.valueType == types_.Int() && !increment) argument = Intrinsic("itof", write.line) + "(" + argument + ")";
                     const std::string calculation = Intrinsic("f" + ArithmeticSuffix(operation), write.line) + "(old," + argument + ")";
-                    result += std::string(increment ? "var value=" : "value=") + calculation + ";";
+                    result += "var value=" + calculation + ";";
                 }
                 result += "vector=" + Intrinsic(vectorType + "set_C" + std::to_string(write.component), write.line) + "(vector,value);";
                 result += HostCall(write.property->setter) + "(self,vector);";
@@ -3806,7 +3840,7 @@ private:
             {
                 result += "var old=" + HostCall(write.property->getter) + "(self);";
                 const std::string operation = increment ? (write.operation.find("++") != std::string::npos ? "+" : "-") : write.operation.substr(0, write.operation.size() - 1);
-                std::string argument = increment ? (write.property->type == types_.Float() ? "1.0" : "1") : "value";
+                std::string argument = increment ? (write.property->type == types_.Float() ? "1.0" : "1") : "input";
                 std::string prefix;
                 if (types_.IsNumeric(write.property->type))
                 {
@@ -3820,7 +3854,7 @@ private:
                     prefix = "v" + std::to_string(VectorSize(write.property->type));
                 }
                 const std::string calculation = Intrinsic(prefix + ArithmeticSuffix(operation), write.line) + "(old," + argument + ")";
-                result += std::string(increment ? "var value=" : "value=") + calculation + ";";
+                result += "var value=" + calculation + ";";
             }
             result += HostCall(write.property->setter) + "(self,value);";
             result += "return " + std::string(postfix ? "old" : "value") + ";}";
@@ -3922,17 +3956,16 @@ private:
         }
         for (const Expr* lambda : lambdas_)
         {
-            result += "\nfun " + lambda->callName + "(";
-            for (std::size_t i = 0; i < lambda->captures.size(); ++i)
-            {
-                if (i) result += ",";
-                result += "var " + lambda->captures[i]->backendName;
-            }
-            result += "){return fun(";
+            std::vector<std::pair<std::string, TypeId>> parameters;
+            for (const Symbol* capture : lambda->captures)
+                parameters.push_back(std::make_pair(capture->backendName,
+                    capture->boxed ? types_.ListOf(capture->type) : capture->type));
+            result += HelperDefinition(lambda->callName, lambda->type, parameters) + "return fun(";
             for (std::size_t i = 0; i < lambda->lambdaParameters.size(); ++i)
             {
                 if (i) result += ",";
-                result += "var " + lambda->lambdaParameters[i]->backendName;
+                result += "var " + lambda->lambdaParameters[i]->backendName
+                    + (lambda->lambdaParameters[i]->boxed ? "$input" : "");
             }
             const Statement& body = *lambda->lambda->children[0];
             const std::string loweredBody = ApplyEdits(body.token.begin, body.end);

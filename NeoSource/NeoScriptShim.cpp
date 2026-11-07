@@ -33,7 +33,7 @@
 
 namespace NeoScript
 {
-static bool ReadVecN(const VarInfo*, float*, int);
+static bool ReadVecN(ValueRef, float*, int);
 class RuntimeImpl; // 전방선언 (ObjectBinding 이 참조)
 
 namespace
@@ -235,6 +235,7 @@ struct InstanceRec
     bool             hostCallPending = false;
     NeoHostCallBegin pendingBegin = NeoHostCallBegin::Acquired;
     bool             pendingNested = false;
+    BoundaryValue nestedReturn;
 	// Invocation 이 정지한 경우에는 반환 슬롯을 빌리지 않지만 실행 컨텍스트는
 	// ResumeTop이 이어서 쓴다. 원래 Invocation이 살아 있으면 완료 결과도 보존한다.
 	bool             suspendedHostCall = false;
@@ -250,14 +251,14 @@ struct InstanceRec
     // 다른 인스턴스의 별칭을 포함해 네이티브 값들이 공유 바인딩의 수명을 유지한다.
     std::unordered_map<std::pair<const void*, const void*>, std::shared_ptr<ObjectBinding>, PtrPairHash> nestedByKey; // 키는 (RegisteredObject*, userData) 쌍이다.
 
-    // Invocation 스크래치 (한 인스턴스에 동시 1개 Invocation). 인자를 VM VarInfo 로 직접 축적.
+    // Invocation 스크래치 (한 인스턴스에 동시 1개 Invocation). 인자를 VM BoundaryValue 로 직접 축적.
     int                  callFID = -1;
     // 캡처 람다 호출이면 이 임시 보유분이 RunHostCall 시작 전까지 ClosureInfo를 지킨다.
     // 일반 함수 호출은 VAR_NONE이다.
-    VarInfo              callClosure;
-    std::vector<VarInfo> callArgs;
+    BoundaryValue              callClosure;
+    std::vector<BoundaryValue> callArgs;
     // 재진입 중에도 실행 인자와 준비 인자를 분리한다. 캐시에는 참조 없는 빈 버퍼만 둔다.
-    std::vector<std::vector<VarInfo>> spareCallArgs;
+    std::vector<std::vector<BoundaryValue>> spareCallArgs;
     int32_t              callTimeoutMs = -1;
     uint32_t             callBudget = 0;
     RunStatus            callStatus = RunStatus::Failed;
@@ -289,7 +290,7 @@ struct FunctionRef
 static void ReleaseClosureRef(INeoVMWorker* worker, ClosureInfo* closure)
 {
     if (worker == nullptr || closure == nullptr) return;
-    VarInfo value(VAR_CLOSURE);
+    BoundaryValue value(VAR_CLOSURE);
     value._closure = closure;
     worker->Var_Release(&value);
 }
@@ -402,7 +403,7 @@ static RunStatus mapExecStatus(int st)
     }
 }
 
-static void SetVarString(INeoVMWorker* w, VarInfo* out, StringView s)
+static void SetVarString(INeoVMWorker* w, ValueRef out, StringView s)
 {
     w->Var_SetStringA(out, std::string(s.data(), s.size()));
 }
@@ -456,7 +457,7 @@ struct CallContextImpl
     void*          instanceUserData = nullptr;
     short          argCount = 0;
     // 프로퍼티 접근용 오버라이드: get 은 retX 를 propertyVar 로, set 은 argX(0) 를 propertyVar 로.
-    VarInfo*       propertyVar = nullptr;
+    ValueRef       propertyVar = nullptr;
     bool           propertyIsArg = false;   // true=set(arg0=propertyVar), false=get(ret=propertyVar)
     // 이 호출 동안 실제로 요청된 builder/reader impl만 보관(안정 주소 위해 deque).
     LazyDeque<MapBuilderImpl>  mapB;
@@ -471,9 +472,9 @@ static StringView VmName(const VMString* s)
     return StringView(s->_str); // VMString 은 std::string _str 보유
 }
 
-static ValueType VarTypeToValueType(VarInfo* v)
+static ValueType VarTypeToValueType(ValueRef v)
 {
-    switch (v->GetType())
+    switch (v.GetType())
     {
     case VAR_INT:    return ValueType::Int;
     case VAR_FLOAT:  return ValueType::Float;
@@ -483,7 +484,7 @@ static ValueType VarTypeToValueType(VarInfo* v)
     case VAR_FUN_NATIVE: return ValueType::Function;
     case VAR_VEC:
     {
-        const int n = v->VectorComponentCount();
+        const int n = v.VectorComponentCount();
         return (n <= 2) ? ValueType::Vec2 : (n == 3 ? ValueType::Vec3 : ValueType::Vec4);
     }
     case VAR_STRING: return ValueType::String;
@@ -491,7 +492,7 @@ static ValueType VarTypeToValueType(VarInfo* v)
     case VAR_VEC3:
     case VAR_VEC4:
     {
-        const int n = v->VectorComponentCount();
+        const int n = v.VectorComponentCount();
         return (n <= 2) ? ValueType::Vec2 : (n == 3 ? ValueType::Vec3 : ValueType::Vec4);
     }
     case VAR_ARRAY:  return ValueType::Array;
@@ -505,7 +506,7 @@ static ValueType VarTypeToValueType(VarInfo* v)
 } // namespace
 
 static bool MethodTrampoline(INeoVMWorker* N, void* pUserData, const VMString* pStr, short args);
-static bool PropertyTrampoline(INeoVMWorker* N, void* pUserData, const VMString* pStr, VarInfo* p, bool get);
+static bool PropertyTrampoline(INeoVMWorker* N, void* pUserData, const VMString* pStr, ValueRef p, bool get);
 
 // 공개 pimpl 타입의 m_impl 을 셋/겟하는 내부 전용 접근자(헤더에서 friend 로 허용).
 struct NeoScriptInternal
@@ -534,10 +535,10 @@ struct NeoScriptInternal
     static ObjectType  objType(void* i)     { ObjectType t; t.m_impl = i; return t; }
     static void*       objImpl(ObjectType t) { return t.m_impl; }
     // CallResult 저장(invokeR 이 스칼라 반환을 값으로 스냅샷).
-    static void setResult(CallResult& r, ValueType t, int64_t i, const VarInfo* vector, StringView s, double scalar = 0)
+    static void setResult(CallResult& r, ValueType t, int64_t i, ValueRef vector, StringView s, double scalar = 0)
     {
         r.m_type = t; r.m_i = i; r.m_scalar = scalar;
-        if (vector) ReadVecN(vector,r.m_f,vector->VectorComponentCount());
+        if (vector) ReadVecN(vector,r.m_f,vector.VectorComponentCount());
         if (s.data()) r.m_s.assign(s.data(), s.size());
     }
 };
@@ -637,8 +638,8 @@ public:
     void NativeFail(InstanceHandle h, int32_t code, StringView message);
     // 내부 전용: 인스턴스 워커/바인딩 헬퍼(BindGlobalObject/MapObject, retInstanceGlobal 이 사용).
     INeoVMWorker* instanceWorker(InstanceHandle h) const;
-    void BindObjectInto(void* worker, void* mapVar, StringView key, ObjectType type, void* userData);
-    void BindObjectToVar(void* worker, void* varInfo, ObjectType type, void* userData);
+    void BindObjectInto(void* worker, ValueRef mapVar, StringView key, ObjectType type, void* userData);
+    void BindObjectToVar(void* worker, ValueRef varInfo, ObjectType type, void* userData);
 
 private:
     ProgramRec*  resolveProgram(ProgramHandle h) const { return m_programs.get(h.id, h.generation); }
@@ -960,7 +961,7 @@ void RuntimeImpl::BindRegisteredObjects(INeoVMWorker* worker, InstanceRec* inst)
     for (const RegisteredObject& o : m_objects)
     {
         if (o.method == nullptr && o.property == nullptr) continue; // 선언 전용(디스패처 없음)
-        VarInfo* pVar = worker->GetVar(o.name);
+        ValueRef pVar = worker->GetVar(o.name);
         if (!pVar) continue;
         if (!worker->ResetVarType(pVar, VAR_FP_NATIVE)) continue;
 
@@ -1025,18 +1026,18 @@ INeoVMWorker* RuntimeImpl::instanceWorker(InstanceHandle h) const   // 내부 �
 
 
 
-void RuntimeImpl::BindObjectInto(void* worker, void* mapVar, StringView key, ObjectType type, void* userData)
+void RuntimeImpl::BindObjectInto(void* worker, ValueRef mapVar, StringView key, ObjectType type, void* userData)
 {
     // [전이용] 구 neo_globalinterface2 대체: mapVar(VAR_MAP)에 key 로 v2 바인딩 객체 삽입.
     INeoVMWorker* w = static_cast<INeoVMWorker*>(worker);
-    VarInfo* pMap = static_cast<VarInfo*>(mapVar);
+    ValueRef pMap = mapVar;
     const RegisteredObject* ro = static_cast<const RegisteredObject*>(NeoScriptInternal::objImpl(type));
-    if (!w || !pMap || pMap->GetType() != VAR_MAP || !pMap->_tbl || !ro) return;
+    if (!w || !pMap || pMap.GetType() != VAR_MAP || !pMap->_tbl || !ro) return;
     auto it = m_workerHandle.find(w);   // 워커 → 인스턴스 핸들
     if (it == m_workerHandle.end()) return;
     auto bind = AcquireNestedBinding(it->second, ro, userData);
     if (!bind) return;
-    VarInfo v{};
+    BoundaryValue v{};
     w->ResetVarType(&v, VAR_FP_NATIVE);
     NeoVMSystem::RegisterTableCallBack(&v, bind.get(),
         (ro->method)   ? &MethodTrampoline   : nullptr,
@@ -1045,11 +1046,11 @@ void RuntimeImpl::BindObjectInto(void* worker, void* mapVar, StringView key, Obj
     w->Var_Release(&v);
 }
 
-void RuntimeImpl::BindObjectToVar(void* worker, void* varInfo, ObjectType type, void* userData)
+void RuntimeImpl::BindObjectToVar(void* worker, ValueRef varInfo, ObjectType type, void* userData)
 {
     // [전이용] varInfo 를 그 자체로 v2 바인딩 객체(VAR_MAP + 디스패처)로. 구 neo_globalinterface2 대체.
     INeoVMWorker* w = static_cast<INeoVMWorker*>(worker);
-    VarInfo* pVar = static_cast<VarInfo*>(varInfo);
+    ValueRef pVar = varInfo;
     const RegisteredObject* ro = static_cast<const RegisteredObject*>(NeoScriptInternal::objImpl(type));
     if (!w || !pVar || !ro) return;
     auto it = m_workerHandle.find(w);
@@ -1073,7 +1074,7 @@ bool RuntimeImpl::ResetInstance(InstanceHandle h)
 
     inst->lifecycleBusy = true;
     ++inst->bindingGeneration;
-    // 1) 옛 워커에 매달린 것 전부 정리. callArgs 는 옛 워커 소유 VarInfo 라 반드시 먼저 해제.
+    // 1) 옛 워커에 매달린 것 전부 정리. callArgs 는 옛 워커 소유 BoundaryValue 라 반드시 먼저 해제.
     FlushPendingCall(inst);
     if (inst->worker)
     {
@@ -1132,7 +1133,7 @@ RunStatus RuntimeImpl::RunGlobalInit(InstanceHandle h)
     inst->worker->SetTimeout(-1, NEO_DEFAULT_CHECKOP);
     inst->worker->SetInstructionBudget(inst->debugSliceBudget, false);
     BeginCallError(inst); // 스티키 VM 에러 제거(이번 실행 사유만 남김)
-    std::vector<VarInfo> args;
+    std::vector<BoundaryValue> args;
     const RunStatus status = mapExecStatus(inst->worker->ExecuteTop(0, args));
     if (status == RunStatus::Failed)
         CaptureCallError(inst, status);
@@ -1158,6 +1159,7 @@ FunctionHandle RuntimeImpl::FindFunction(ProgramHandle h, StringView name) const
 void RuntimeImpl::FlushPendingCall(InstanceRec* inst)
 {
     if (!inst->hostCallPending) return;
+    inst->worker->Var_Release(&inst->nestedReturn);
     inst->hostCallPending = false;
     inst->pendingSeq = 0;                            // pending 사라짐 → 소유자 없음
     inst->worker->EndHostCall(inst->pendingBegin);   // 여기서 반환 컨텍스트 반납 → 이전 리더 무효
@@ -1186,7 +1188,7 @@ Invocation RuntimeImpl::Call(InstanceHandle h, FunctionHandle fn)
     {
         if (ref->owner != inst || ref->closure == nullptr || ref->closure->_funIndex != inst->callFID)
             return Invocation();
-        inst->callClosure = VarInfo(VAR_CLOSURE);
+        inst->callClosure = BoundaryValue(VAR_CLOSURE);
         inst->callClosure._closure = ref->closure;
         ++ref->closure->_refCount; // arm 상태의 Invocation이 호출 전까지 보유
     }
@@ -1374,29 +1376,29 @@ void GetAllocStats(AllocStats& out)
 // CallContext (타입드, zero-copy). 프로퍼티 접근 시 arg0/ret 를 propertyVar 로 라우팅.
 //==============================================================================
 static CallContextImpl* Ctx(void* p) { return static_cast<CallContextImpl*>(p); }
-static VarInfo* CtxArgVar(CallContextImpl* c, std::size_t i)
+static ValueRef CtxArgVar(CallContextImpl* c, std::size_t i)
 {
     if (i >= static_cast<std::size_t>(c->argCount)) return nullptr;
     if (c->propertyVar && c->propertyIsArg && i == 0) return c->propertyVar;
     return c->worker->GetStackVar(static_cast<int>(i) + 1); // 인자 1-based
 }
-static VarInfo* CtxRetVar(CallContextImpl* c)
+static ValueRef CtxRetVar(CallContextImpl* c)
 {
     if (c->propertyVar && !c->propertyIsArg) return c->propertyVar;
     return c->worker->GetReturnVar();
 }
 // 성분 수를 지정하지 않은 기존 API만 네 성분과 남는 레인의 0 채움을 보장한다.
 // 성분 수를 먼저 검사한다. 실패 시 출력과 미사용 레인은 건드리지 않는다.
-static bool ReadVecN(const VarInfo* v, float* out, int dimension)
+static bool ReadVecN(ValueRef v, float* out, int dimension)
 {
-    if (!out || dimension < 2 || dimension > 4 || !v || v->VectorComponentCount() < dimension) return false;
+    if (!out || dimension < 2 || dimension > 4 || !v || v.VectorComponentCount() < dimension) return false;
     // 작은 출력 버퍼에는 요청한 성분만 쓴다. 원본과 출력이 겹쳐도 먼저 값을 확보한다.
     float components[4];
-    v->CopyVectorComponents(components);
+    v.CopyVectorComponents(components);
     std::memmove(out, components, dimension * sizeof(float));
     return true;
 }
-static bool WriteVecN(INeoVMWorker* worker, VarInfo* value, const float* data, int dimension)
+static bool WriteVecN(INeoVMWorker* worker, ValueRef value, const float* data, int dimension)
 {
     if (!worker || !value || !data || dimension < 2 || dimension > 4) return false;
     // 인자를 먼저 읽으므로 쓰기 대상의 이전 저장소가 해제되어도 입력이 유효하다.
@@ -1407,14 +1409,14 @@ static bool WriteVecN(INeoVMWorker* worker, VarInfo* value, const float* data, i
     }
     return true;
 }
-static void ReadVec(VarInfo* v, float out[4])
+static void ReadVec(ValueRef v, float out[4])
 {
-    if (!v || !v->IsVector()) { out[0] = out[1] = out[2] = out[3] = 0.0f; return; }
-    switch(v->VectorComponentCount())
+    if (!v || !v.IsVector()) { out[0] = out[1] = out[2] = out[3] = 0.0f; return; }
+    switch(v.VectorComponentCount())
     {
-        case 2: v->GetVec2(out); out[2] = out[3] = 0.0f; return;
-        case 3: v->GetVec3(out); out[3] = 0.0f; return;
-        case 4: v->GetVec4(out); return;
+        case 2: v.GetVec2(out); out[2] = out[3] = 0.0f; return;
+        case 3: v.GetVec3(out); out[3] = 0.0f; return;
+        case 4: v.GetVec4(out); return;
     }
     out[0] = out[1] = out[2] = out[3] = 0.0f; return;
 }
@@ -1423,18 +1425,18 @@ void* CallContext::userData() const { return Ctx(m_impl)->bindingUserData; }
 void* CallContext::instanceUserData() const { return Ctx(m_impl)->instanceUserData; }
 IRuntime* CallContext::runtime() const { return Ctx(m_impl)->runtime; }
 InstanceHandle CallContext::instance() const { return Ctx(m_impl)->instance; }
-// (raw INeoVMWorker*/VarInfo* 접근자는 공개 API 에 없다 — 전부 shim 내부.)
+// (raw INeoVMWorker*/ValueRef 접근자는 공개 API 에 없다 — 전부 shim 내부.)
 std::size_t CallContext::argCount() const { return static_cast<std::size_t>(Ctx(m_impl)->argCount); }
-ValueType CallContext::argType(std::size_t i) const { CallContextImpl* c=Ctx(m_impl); VarInfo* v=CtxArgVar(c,i); return v?VarTypeToValueType(v):ValueType::None; }
-bool CallContext::argIsNativeObject(std::size_t i) const { VarInfo* v=CtxArgVar(Ctx(m_impl),i); return v && v->GetType()==VAR_FP_NATIVE; }
-int64_t CallContext::argInt(std::size_t i) const { CallContextImpl* c=Ctx(m_impl); VarInfo* v=CtxArgVar(c,i); return v ? c->worker->PopInt(v) : 0; }
-double CallContext::argFloat(std::size_t i) const { CallContextImpl* c=Ctx(m_impl); VarInfo* v=CtxArgVar(c,i); return v ? static_cast<double>(c->worker->PopFloat(v)) : 0.0f; }
-bool CallContext::argBool(std::size_t i) const { CallContextImpl* c=Ctx(m_impl); VarInfo* v=CtxArgVar(c,i); return v && c->worker->PopBool(v); }
+ValueType CallContext::argType(std::size_t i) const { CallContextImpl* c=Ctx(m_impl); ValueRef v=CtxArgVar(c,i); return v?VarTypeToValueType(v):ValueType::None; }
+bool CallContext::argIsNativeObject(std::size_t i) const { ValueRef v=CtxArgVar(Ctx(m_impl),i); return v && v.GetType()==VAR_FP_NATIVE; }
+int64_t CallContext::argInt(std::size_t i) const { CallContextImpl* c=Ctx(m_impl); ValueRef v=CtxArgVar(c,i); return v ? c->worker->PopInt(v) : 0; }
+double CallContext::argFloat(std::size_t i) const { CallContextImpl* c=Ctx(m_impl); ValueRef v=CtxArgVar(c,i); return v ? static_cast<double>(c->worker->PopFloat(v)) : 0.0f; }
+bool CallContext::argBool(std::size_t i) const { CallContextImpl* c=Ctx(m_impl); ValueRef v=CtxArgVar(c,i); return v && c->worker->PopBool(v); }
 StringView CallContext::argString(std::size_t i) const
 {
-    CallContextImpl* c=Ctx(m_impl); VarInfo* v=CtxArgVar(c,i);
+    CallContextImpl* c=Ctx(m_impl); ValueRef v=CtxArgVar(c,i);
     // 문자열은 NUL을 포함해 원래 길이를 보존한다. 다른 타입의 기존 변환은 유지한다.
-    if (v && v->GetType() == VAR_STRING) return StringView(v->_str->_str);
+    if (v && v.GetType() == VAR_STRING) return StringView(v->_str->_str);
     if (!v) return StringView();
     const char* s=c->worker->PopString(v); return StringView(s?s:"");
 }
@@ -1444,14 +1446,14 @@ FunctionHandle CallContext::argFunction(std::size_t i) const
 {
     // 일반 함수는 기존처럼 정수 function index만 든다. 캡처 람다는 ClosureInfo를
     // FunctionHandle의 내부 보유분으로 AddRef해, 네이티브가 호출 프레임 밖에 오래
-    // 저장해도 생성 시점의 지역 VarInfo 복사본이 살아 있게 한다.
-    CallContextImpl* c=Ctx(m_impl); VarInfo* v=CtxArgVar(c,i);
-    if (!v || (v->GetType() != VAR_FUN && v->GetType() != VAR_CLOSURE)) return FunctionHandle{};
+    // 저장해도 생성 시점의 지역 BoundaryValue 복사본이 살아 있게 한다.
+    CallContextImpl* c=Ctx(m_impl); ValueRef v=CtxArgVar(c,i);
+    if (!v || (v.GetType() != VAR_FUN && v.GetType() != VAR_CLOSURE)) return FunctionHandle{};
     InstanceRec* inst = c->runtime ? static_cast<RuntimeImpl*>(c->runtime)->instanceForWorker(c->worker) : nullptr;
     if (!inst) return FunctionHandle{};
-    const int funIndex = (v->GetType() == VAR_FUN) ? v->_fun_index : v->_closure->_funIndex;
+    const int funIndex = (v.GetType() == VAR_FUN) ? v.FunctionIndex() : v->_closure->_funIndex;
     FunctionHandle fh = NeoScriptInternal::fun(static_cast<uint32_t>(funIndex), inst->program.id, inst->program.generation, inst->runtime->identity());
-    if (v->GetType() == VAR_CLOSURE)
+    if (v.GetType() == VAR_CLOSURE)
     {
         FunctionRef* ref = new FunctionRef();
         ref->owner = inst;
@@ -1473,28 +1475,28 @@ FunctionHandle CallContext::argFunction(std::size_t i) const
 }
 bool CallContext::argAsMap(std::size_t i, MapReader& out) const
 {
-    CallContextImpl* c=Ctx(m_impl); VarInfo* v=CtxArgVar(c,i);
-    if (!v || v->GetType()!=VAR_MAP || v->_tbl==nullptr) return false;
+    CallContextImpl* c=Ctx(m_impl); ValueRef v=CtxArgVar(c,i);
+    if (!v || v.GetType()!=VAR_MAP || v->_tbl==nullptr) return false;
     c->mapR.push_back(MapReaderImpl{ c->worker, v->_tbl, &c->mapR, &c->listR });
     out = NeoScriptInternal::mapR(&c->mapR.back()); return true;
 }
 bool CallContext::argAsList(std::size_t i, ListReader& out) const
 {
-    CallContextImpl* c=Ctx(m_impl); VarInfo* v=CtxArgVar(c,i);
-    if (!v || v->GetType()!=VAR_LIST || v->_lst==nullptr) return false;
+    CallContextImpl* c=Ctx(m_impl); ValueRef v=CtxArgVar(c,i);
+    if (!v || v.GetType()!=VAR_LIST || v->_lst==nullptr) return false;
     c->listR.push_back(ListReaderImpl{ c->worker, v->_lst, &c->mapR, &c->listR });
     out = NeoScriptInternal::listR(&c->listR.back()); return true;
 }
 bool CallContext::argAsArray(std::size_t i, ArrayView& out) const
 {
-    CallContextImpl* c=Ctx(m_impl); VarInfo* v=CtxArgVar(c,i);
-    if (!v || v->GetType()!=VAR_ARRAY || v->_array==nullptr) return false;
+    CallContextImpl* c=Ctx(m_impl); ValueRef v=CtxArgVar(c,i);
+    if (!v || v.GetType()!=VAR_ARRAY || v->_array==nullptr) return false;
     out = NeoScriptInternal::arrayV(v->_array); return true;
 }
 void* CallContext::argObjectUserData(std::size_t i) const
 {
-    CallContextImpl* c=Ctx(m_impl); VarInfo* v=CtxArgVar(c,i);
-    if (!v || v->GetType()!=VAR_FP_NATIVE || v->_fpNative==nullptr) return nullptr;
+    CallContextImpl* c=Ctx(m_impl); ValueRef v=CtxArgVar(c,i);
+    if (!v || v.GetType()!=VAR_FP_NATIVE || v->_fpNative==nullptr) return nullptr;
     void* ud = v->_fpNative->_pUserData;
     // v2 로 바인딩된 객체는 _pUserData 가 ObjectBinding* → .userData 를 푼다.
     // old(neo_globalinterface2) 바인딩은 _pUserData 가 userData(eventID) 그대로.
@@ -1504,7 +1506,7 @@ void* CallContext::argObjectUserData(std::size_t i) const
 }
 bool CallContext::argToJson(std::size_t index, std::string& text, JsonResult& result, bool sortKeys) const
 {
-    auto* value = CtxArgVar(Ctx(m_impl), index);
+    auto value = CtxArgVar(Ctx(m_impl), index);
     if (!value) { result = JsonResult(); text.clear(); return result.Fail("$", "missing JSON argument"); }
     return JsonInternal::Encode(*value, text, result, sortKeys);
 }
@@ -1529,18 +1531,18 @@ void CallContext::retInstanceGlobal(InstanceHandle instance, StringView name)
 {
     CallContextImpl* c=Ctx(m_impl);
     INeoVMWorker* src = c->runtime ? static_cast<RuntimeImpl*>(c->runtime)->instanceWorker(instance) : nullptr;
-    VarInfo* v = src ? src->GetVar(std::string(name.data(), name.size())) : nullptr;
+    ValueRef v = src ? src->GetVar(std::string(name.data(), name.size())) : nullptr;
     if (v) c->worker->Var_Move(CtxRetVar(c), v);          // Var_Move → 반환 슬롯(구 ReturnValue(GetVar) 재현)
     else   c->worker->Var_Release(CtxRetVar(c)); // None
 }
 void CallContext::retVec3(float x, float y, float z) { CallContextImpl* c=Ctx(m_impl); c->worker->Var_SetVec3(CtxRetVar(c), x, y, z); }
 void CallContext::retVec4(float x, float y, float z, float w) { CallContextImpl* c=Ctx(m_impl); c->worker->Var_SetVec4(CtxRetVar(c), x, y, z, w); }
-MapBuilder CallContext::retMap() { CallContextImpl* c=Ctx(m_impl); VarInfo* r=CtxRetVar(c); c->worker->ResetVarType(r, VAR_MAP); c->mapB.push_back(MapBuilderImpl{ c->worker, r->_tbl, c }); return NeoScriptInternal::mapB(&c->mapB.back()); }
-ListBuilder CallContext::retList() { CallContextImpl* c=Ctx(m_impl); VarInfo* r=CtxRetVar(c); c->worker->ResetVarType(r, VAR_LIST); c->listB.push_back(ListBuilderImpl{ c->worker, r->_lst, c }); return NeoScriptInternal::listB(&c->listB.back()); }
+MapBuilder CallContext::retMap() { CallContextImpl* c=Ctx(m_impl); ValueRef r=CtxRetVar(c); c->worker->ResetVarType(r, VAR_MAP); c->mapB.push_back(MapBuilderImpl{ c->worker, r->_tbl, c }); return NeoScriptInternal::mapB(&c->mapB.back()); }
+ListBuilder CallContext::retList() { CallContextImpl* c=Ctx(m_impl); ValueRef r=CtxRetVar(c); c->worker->ResetVarType(r, VAR_LIST); c->listB.push_back(ListBuilderImpl{ c->worker, r->_lst, c }); return NeoScriptInternal::listB(&c->listB.back()); }
 void CallContext::retObject(ObjectType type, void* userData) {
     CallContextImpl* c=Ctx(m_impl);
     const RegisteredObject* ro=static_cast<const RegisteredObject*>(NeoScriptInternal::objImpl(type));
-    VarInfo* r=CtxRetVar(c); if(!ro||!r) return;
+    ValueRef r=CtxRetVar(c); if(!ro||!r) return;
     c->worker->ResetVarType(r, VAR_FP_NATIVE);
     RuntimeImpl* rt=static_cast<RuntimeImpl*>(c->runtime);
     auto b=rt->AcquireNestedBinding(c->instance, ro, userData); if(!b) return;
@@ -1561,38 +1563,38 @@ void CallContext::fail(int32_t code, StringView message)
 //==============================================================================
 // MapBuilder / ListBuilder (타입드) — VM 소유 컬렉션 조립
 //
-// [소유권 규칙] MapInfo::Insert / ListInfo::InsertLast / SetValue 는 넘긴 VarInfo 를 "공유"한다
-// (Move → Move_DestNoRelease = incref). Var_SetStringA / Var_SetVec3 등이 만든 임시 VarInfo 는
+// [소유권 규칙] MapInfo::Insert / ListInfo::InsertLast / SetValue 는 넘긴 BoundaryValue 를 "공유"한다
+// (Move → Move_DestNoRelease = incref). Var_SetStringA / Var_SetVec3 등이 만든 임시 BoundaryValue 는
 // 이미 refCount 1 이므로, 넣고 나서 로컬 참조를 놓지 않으면 refCount 가 1 로 남아 컨테이너가
 // 해제돼도 영원히 회수되지 않는다. 스칼라(int/float/bool)는 alloc 타입이 아니라 해당 없음.
 // (Resource.LoadJson 처럼 키가 수만 개인 경로에서 그대로 수만 개 누수로 드러났다.)
 //==============================================================================
-static NEOS_FORCEINLINE VarInfo* MapInsertKey(MapBuilderImpl* b, StringView key);
-void MapBuilder::setInt(StringView key, int64_t v)    { MapBuilderImpl* b=static_cast<MapBuilderImpl*>(m_impl); VarInfo it; b->w->Var_SetInt(&it, v);   b->map->Insert(std::string(key.data(),key.size()), &it); }
-void MapBuilder::setFloat(StringView key, double v)    { MapBuilderImpl* b=static_cast<MapBuilderImpl*>(m_impl); VarInfo it; b->w->Var_SetFloat(&it, v); b->map->Insert(std::string(key.data(),key.size()), &it); }
-void MapBuilder::setBool(StringView key, bool v)      { MapBuilderImpl* b=static_cast<MapBuilderImpl*>(m_impl); VarInfo it; b->w->Var_SetBool(&it, v);  b->map->Insert(std::string(key.data(),key.size()), &it); }
-void MapBuilder::setString(StringView key, StringView v) { MapBuilderImpl* b=static_cast<MapBuilderImpl*>(m_impl); VarInfo it; SetVarString(b->w, &it, v); b->map->Insert(std::string(key.data(),key.size()), &it); b->w->Var_Release(&it); }
-void MapBuilder::setVec2(StringView key, float x, float y) { auto* b=static_cast<MapBuilderImpl*>(m_impl); if (auto* slot=MapInsertKey(b,key)) b->w->Var_SetVec2(slot,x,y); }
-void MapBuilder::setVec3(StringView key, float x, float y, float z) { auto* b=static_cast<MapBuilderImpl*>(m_impl); if (auto* slot=MapInsertKey(b,key)) b->w->Var_SetVec3(slot,x,y,z); }
-void MapBuilder::setVec4(StringView key, float x, float y, float z, float w) { auto* b=static_cast<MapBuilderImpl*>(m_impl); if (auto* slot=MapInsertKey(b,key)) b->w->Var_SetVec4(slot,x,y,z,w); }
+static NEOS_FORCEINLINE ValueRef MapInsertKey(MapBuilderImpl* b, StringView key);
+void MapBuilder::setInt(StringView key, int64_t v)    { MapBuilderImpl* b=static_cast<MapBuilderImpl*>(m_impl); BoundaryValue it; b->w->Var_SetInt(&it, v);   b->map->Insert(std::string(key.data(),key.size()), &it); }
+void MapBuilder::setFloat(StringView key, double v)    { MapBuilderImpl* b=static_cast<MapBuilderImpl*>(m_impl); BoundaryValue it; b->w->Var_SetFloat(&it, v); b->map->Insert(std::string(key.data(),key.size()), &it); }
+void MapBuilder::setBool(StringView key, bool v)      { MapBuilderImpl* b=static_cast<MapBuilderImpl*>(m_impl); BoundaryValue it; b->w->Var_SetBool(&it, v);  b->map->Insert(std::string(key.data(),key.size()), &it); }
+void MapBuilder::setString(StringView key, StringView v) { MapBuilderImpl* b=static_cast<MapBuilderImpl*>(m_impl); BoundaryValue it; SetVarString(b->w, &it, v); b->map->Insert(std::string(key.data(),key.size()), &it); b->w->Var_Release(&it); }
+void MapBuilder::setVec2(StringView key, float x, float y) { auto* b=static_cast<MapBuilderImpl*>(m_impl); if (auto slot=MapInsertKey(b,key)) b->w->Var_SetVec2(slot,x,y); }
+void MapBuilder::setVec3(StringView key, float x, float y, float z) { auto* b=static_cast<MapBuilderImpl*>(m_impl); if (auto slot=MapInsertKey(b,key)) b->w->Var_SetVec3(slot,x,y,z); }
+void MapBuilder::setVec4(StringView key, float x, float y, float z, float w) { auto* b=static_cast<MapBuilderImpl*>(m_impl); if (auto slot=MapInsertKey(b,key)) b->w->Var_SetVec4(slot,x,y,z,w); }
 bool MapBuilder::setVec(StringView key, const float* data, int dimension)
 {
     if (!m_impl || !data || dimension < 2 || dimension > 4) return false;
     auto* b=static_cast<MapBuilderImpl*>(m_impl); return WriteVecN(b->w,MapInsertKey(b,key),data,dimension);
 }
-static NEOS_FORCEINLINE VarInfo* MapInsertKey(MapBuilderImpl* b, StringView key)
+static NEOS_FORCEINLINE ValueRef MapInsertKey(MapBuilderImpl* b, StringView key)
 {
-    VarInfo k; b->w->Var_SetStringA(&k, std::string(key.data(), key.size()));
-    VarInfo* slot = b->map->Insert(&k);
+    BoundaryValue k; b->w->Var_SetStringA(&k, std::string(key.data(), key.size()));
+    ValueRef slot = b->map->Insert(&k);
     b->w->Var_Release(&k);
     return slot;
 }
-MapBuilder MapBuilder::setMap(StringView key) { MapBuilderImpl* b=static_cast<MapBuilderImpl*>(m_impl); VarInfo* slot=MapInsertKey(b, key); b->w->ResetVarType(slot, VAR_MAP); b->map->MarkContainerChild(); b->ctx->mapB.push_back(MapBuilderImpl{ b->w, slot->_tbl, b->ctx }); return NeoScriptInternal::mapB(&b->ctx->mapB.back()); }
-ListBuilder MapBuilder::setList(StringView key) { MapBuilderImpl* b=static_cast<MapBuilderImpl*>(m_impl); VarInfo* slot=MapInsertKey(b, key); b->w->ResetVarType(slot, VAR_LIST); b->map->MarkContainerChild(); b->ctx->listB.push_back(ListBuilderImpl{ b->w, slot->_lst, b->ctx }); return NeoScriptInternal::listB(&b->ctx->listB.back()); }
+MapBuilder MapBuilder::setMap(StringView key) { MapBuilderImpl* b=static_cast<MapBuilderImpl*>(m_impl); ValueRef slot=MapInsertKey(b, key); b->w->ResetVarType(slot, VAR_MAP); b->map->MarkContainerChild(); b->ctx->mapB.push_back(MapBuilderImpl{ b->w, slot->_tbl, b->ctx }); return NeoScriptInternal::mapB(&b->ctx->mapB.back()); }
+ListBuilder MapBuilder::setList(StringView key) { MapBuilderImpl* b=static_cast<MapBuilderImpl*>(m_impl); ValueRef slot=MapInsertKey(b, key); b->w->ResetVarType(slot, VAR_LIST); b->map->MarkContainerChild(); b->ctx->listB.push_back(ListBuilderImpl{ b->w, slot->_lst, b->ctx }); return NeoScriptInternal::listB(&b->ctx->listB.back()); }
 void MapBuilder::setObject(StringView key, ObjectType type, void* userData) {
     MapBuilderImpl* b=static_cast<MapBuilderImpl*>(m_impl);
     const RegisteredObject* ro=static_cast<const RegisteredObject*>(NeoScriptInternal::objImpl(type)); if(!ro) return;
-    VarInfo* slot=MapInsertKey(b, key); b->w->ResetVarType(slot, VAR_FP_NATIVE);
+    ValueRef slot=MapInsertKey(b, key); b->w->ResetVarType(slot, VAR_FP_NATIVE);
     RuntimeImpl* rt=static_cast<RuntimeImpl*>(b->ctx->runtime);
     auto bind=rt->AcquireNestedBinding(b->ctx->instance, ro, userData); if(!bind) return;
     NeoVMSystem::RegisterTableCallBack(slot, bind.get(), (ro->method)?&MethodTrampoline:nullptr, (ro->property)?&PropertyTrampoline:nullptr, ro, userData, bind);
@@ -1601,36 +1603,36 @@ void MapBuilder::setObject(StringView key, ObjectType type, void* userData) {
 void ListBuilder::reserve(int count) { static_cast<ListBuilderImpl*>(m_impl)->list->Reserve(count); }
 void ListBuilder::resize(int count)  { static_cast<ListBuilderImpl*>(m_impl)->list->Resize(count); }
 int  ListBuilder::count() const      { return static_cast<ListBuilderImpl*>(m_impl)->list->GetCount(); }
-void ListBuilder::pushInt(int64_t v)    { ListBuilderImpl* b=static_cast<ListBuilderImpl*>(m_impl); VarInfo it; b->w->Var_SetInt(&it, v);   b->list->InsertLast(&it); }
-void ListBuilder::pushFloat(double v)    { ListBuilderImpl* b=static_cast<ListBuilderImpl*>(m_impl); VarInfo it; b->w->Var_SetFloat(&it, v); b->list->InsertLast(&it); }
-void ListBuilder::pushBool(bool v)      { ListBuilderImpl* b=static_cast<ListBuilderImpl*>(m_impl); VarInfo it; b->w->Var_SetBool(&it, v);  b->list->InsertLast(&it); }
-void ListBuilder::pushNull() { ListBuilderImpl* b=static_cast<ListBuilderImpl*>(m_impl); VarInfo it; b->list->InsertLast(&it); }
-void ListBuilder::pushString(StringView v) { ListBuilderImpl* b=static_cast<ListBuilderImpl*>(m_impl); VarInfo it; SetVarString(b->w, &it, v); b->list->InsertLast(&it); b->w->Var_Release(&it); }
+void ListBuilder::pushInt(int64_t v)    { ListBuilderImpl* b=static_cast<ListBuilderImpl*>(m_impl); BoundaryValue it; b->w->Var_SetInt(&it, v);   b->list->InsertLast(&it); }
+void ListBuilder::pushFloat(double v)    { ListBuilderImpl* b=static_cast<ListBuilderImpl*>(m_impl); BoundaryValue it; b->w->Var_SetFloat(&it, v); b->list->InsertLast(&it); }
+void ListBuilder::pushBool(bool v)      { ListBuilderImpl* b=static_cast<ListBuilderImpl*>(m_impl); BoundaryValue it; b->w->Var_SetBool(&it, v);  b->list->InsertLast(&it); }
+void ListBuilder::pushNull() { ListBuilderImpl* b=static_cast<ListBuilderImpl*>(m_impl); BoundaryValue it; b->list->InsertLast(&it); }
+void ListBuilder::pushString(StringView v) { ListBuilderImpl* b=static_cast<ListBuilderImpl*>(m_impl); BoundaryValue it; SetVarString(b->w, &it, v); b->list->InsertLast(&it); b->w->Var_Release(&it); }
 bool ListBuilder::pushVec(const float* data, int dimension)
 {
     if (!m_impl || !data || dimension < 2 || dimension > 4) return false;
-    auto* b=static_cast<ListBuilderImpl*>(m_impl); VarInfo value;
+    auto* b=static_cast<ListBuilderImpl*>(m_impl); BoundaryValue value;
     WriteVecN(b->w,&value,data,dimension); const bool ok=b->list->InsertLast(&value); b->w->Var_Release(&value); return ok;
 }
 bool ListBuilder::setVec(int index, const float* data, int dimension)
 {
     if (!m_impl || !data || dimension < 2 || dimension > 4) return false;
-    auto* b=static_cast<ListBuilderImpl*>(m_impl); VarInfo* value=b->list->GetValue(index);
+    auto* b=static_cast<ListBuilderImpl*>(m_impl); ValueRef value=b->list->GetValue(index);
     return value && WriteVecN(b->w,value,data,dimension);
 }
-void ListBuilder::pushVec2(float x, float y) { auto* b=static_cast<ListBuilderImpl*>(m_impl); VarInfo value; b->w->Var_SetVec2(&value,x,y); b->list->InsertLast(&value); b->w->Var_Release(&value); }
-void ListBuilder::pushVec4(float x, float y, float z, float w) { auto* b=static_cast<ListBuilderImpl*>(m_impl); VarInfo value; b->w->Var_SetVec4(&value,x,y,z,w); b->list->InsertLast(&value); b->w->Var_Release(&value); }
-void ListBuilder::pushVec3(float x, float y, float z) { ListBuilderImpl* b=static_cast<ListBuilderImpl*>(m_impl); VarInfo it; b->w->Var_SetVec3(&it, x, y, z); b->list->InsertLast(&it); b->w->Var_Release(&it); }
-void ListBuilder::setInt(int index, int64_t v)    { ListBuilderImpl* b=static_cast<ListBuilderImpl*>(m_impl); VarInfo it; b->w->Var_SetInt(&it, v);   b->list->SetValue(index, &it); }
-void ListBuilder::setFloat(int index, double v)    { ListBuilderImpl* b=static_cast<ListBuilderImpl*>(m_impl); VarInfo it; b->w->Var_SetFloat(&it, v); b->list->SetValue(index, &it); }
-void ListBuilder::setString(int index, StringView v) { ListBuilderImpl* b=static_cast<ListBuilderImpl*>(m_impl); VarInfo it; SetVarString(b->w, &it, v); b->list->SetValue(index, &it); b->w->Var_Release(&it); }
-MapBuilder ListBuilder::pushMap()  { ListBuilderImpl* b=static_cast<ListBuilderImpl*>(m_impl); int idx=b->list->GetCount(); b->list->Resize(idx+1); VarInfo* slot=b->list->GetValue(idx); b->w->ResetVarType(slot, VAR_MAP); b->list->MarkContainerChild(); b->ctx->mapB.push_back(MapBuilderImpl{ b->w, slot->_tbl, b->ctx }); return NeoScriptInternal::mapB(&b->ctx->mapB.back()); }
-ListBuilder ListBuilder::pushList(){ ListBuilderImpl* b=static_cast<ListBuilderImpl*>(m_impl); int idx=b->list->GetCount(); b->list->Resize(idx+1); VarInfo* slot=b->list->GetValue(idx); b->w->ResetVarType(slot, VAR_LIST); b->list->MarkContainerChild(); b->ctx->listB.push_back(ListBuilderImpl{ b->w, slot->_lst, b->ctx }); return NeoScriptInternal::listB(&b->ctx->listB.back()); }
+void ListBuilder::pushVec2(float x, float y) { auto* b=static_cast<ListBuilderImpl*>(m_impl); BoundaryValue value; b->w->Var_SetVec2(&value,x,y); b->list->InsertLast(&value); b->w->Var_Release(&value); }
+void ListBuilder::pushVec4(float x, float y, float z, float w) { auto* b=static_cast<ListBuilderImpl*>(m_impl); BoundaryValue value; b->w->Var_SetVec4(&value,x,y,z,w); b->list->InsertLast(&value); b->w->Var_Release(&value); }
+void ListBuilder::pushVec3(float x, float y, float z) { ListBuilderImpl* b=static_cast<ListBuilderImpl*>(m_impl); BoundaryValue it; b->w->Var_SetVec3(&it, x, y, z); b->list->InsertLast(&it); b->w->Var_Release(&it); }
+void ListBuilder::setInt(int index, int64_t v)    { ListBuilderImpl* b=static_cast<ListBuilderImpl*>(m_impl); BoundaryValue it; b->w->Var_SetInt(&it, v);   b->list->SetValue(index, &it); }
+void ListBuilder::setFloat(int index, double v)    { ListBuilderImpl* b=static_cast<ListBuilderImpl*>(m_impl); BoundaryValue it; b->w->Var_SetFloat(&it, v); b->list->SetValue(index, &it); }
+void ListBuilder::setString(int index, StringView v) { ListBuilderImpl* b=static_cast<ListBuilderImpl*>(m_impl); BoundaryValue it; SetVarString(b->w, &it, v); b->list->SetValue(index, &it); b->w->Var_Release(&it); }
+MapBuilder ListBuilder::pushMap()  { ListBuilderImpl* b=static_cast<ListBuilderImpl*>(m_impl); int idx=b->list->GetCount(); b->list->Resize(idx+1); ValueRef slot=b->list->GetValue(idx); b->w->ResetVarType(slot, VAR_MAP); b->list->MarkContainerChild(); b->ctx->mapB.push_back(MapBuilderImpl{ b->w, slot->_tbl, b->ctx }); return NeoScriptInternal::mapB(&b->ctx->mapB.back()); }
+ListBuilder ListBuilder::pushList(){ ListBuilderImpl* b=static_cast<ListBuilderImpl*>(m_impl); int idx=b->list->GetCount(); b->list->Resize(idx+1); ValueRef slot=b->list->GetValue(idx); b->w->ResetVarType(slot, VAR_LIST); b->list->MarkContainerChild(); b->ctx->listB.push_back(ListBuilderImpl{ b->w, slot->_lst, b->ctx }); return NeoScriptInternal::listB(&b->ctx->listB.back()); }
 void ListBuilder::pushObject(ObjectType type, void* userData) {
     ListBuilderImpl* b=static_cast<ListBuilderImpl*>(m_impl);
     const RegisteredObject* ro=static_cast<const RegisteredObject*>(NeoScriptInternal::objImpl(type)); if(!ro) return;
     int idx=b->list->GetCount(); b->list->Resize(idx+1);
-    VarInfo* slot=b->list->GetValue(idx); b->w->ResetVarType(slot, VAR_FP_NATIVE);
+    ValueRef slot=b->list->GetValue(idx); b->w->ResetVarType(slot, VAR_FP_NATIVE);
     RuntimeImpl* rt=static_cast<RuntimeImpl*>(b->ctx->runtime);
     auto bind=rt->AcquireNestedBinding(b->ctx->instance, ro, userData); if(!bind) return;
     NeoVMSystem::RegisterTableCallBack(slot, bind.get(), (ro->method)?&MethodTrampoline:nullptr, (ro->property)?&PropertyTrampoline:nullptr, ro, userData, bind);
@@ -1639,7 +1641,7 @@ void ListBuilder::pushObject(ObjectType type, void* userData) {
 //==============================================================================
 // MapReader / ListReader (타입드) — VM 소유 컬렉션 열람
 //==============================================================================
-static VarInfo* MapFind(const MapReaderImpl* r, StringView key) { return r->map->Find(std::string(key.data(), key.size())); }
+static ValueRef MapFind(const MapReaderImpl* r, StringView key) { return r->map->Find(std::string(key.data(), key.size())); }
 
 bool MapReader::stringKeys(std::vector<StringView>& out, ValueType* unsupportedKeyType) const
 {
@@ -1648,7 +1650,7 @@ bool MapReader::stringKeys(std::vector<StringView>& out, ValueType* unsupportedK
     const MapReaderImpl* r = static_cast<const MapReaderImpl*>(m_impl);
     for (CollectionIterator it = r->map->FirstNode(); it._pTableNode; r->map->NextNode(it))
     {
-        VarInfo& key = it._pTableNode->data->key;
+        BoundaryValue& key = it._pTableNode->data->key;
         if (key.GetType() != VAR_STRING)
         {
             if (unsupportedKeyType) *unsupportedKeyType = VarTypeToValueType(&key);
@@ -1671,32 +1673,32 @@ bool ListReader::sameStorage(const ListReader& other) const
 }
 
 bool MapReader::has(StringView key) const { const MapReaderImpl* r=static_cast<const MapReaderImpl*>(m_impl); return MapFind(r,key)!=nullptr; }
-ValueType MapReader::type(StringView key) const { const MapReaderImpl* r=static_cast<const MapReaderImpl*>(m_impl); VarInfo* v=MapFind(r,key); return v?VarTypeToValueType(v):ValueType::None; }
-bool MapReader::isNull(StringView key) const { VarInfo* v=MapFind(static_cast<const MapReaderImpl*>(m_impl),key); return v && v->GetType()==VAR_NONE; }
-bool MapReader::isNativeObject(StringView key) const { VarInfo* v=MapFind(static_cast<const MapReaderImpl*>(m_impl),key); return v && v->GetType()==VAR_FP_NATIVE; }
-bool MapReader::getInt(StringView key, int64_t& out) const { const MapReaderImpl* r=static_cast<const MapReaderImpl*>(m_impl); VarInfo* v=MapFind(r,key); if(!v) return false; out=r->w->PopInt(v); return true; }
-bool MapReader::getFloat(StringView key, double& out) const { const MapReaderImpl* r=static_cast<const MapReaderImpl*>(m_impl); VarInfo* v=MapFind(r,key); if(!v) return false; out=static_cast<double>(r->w->PopFloat(v)); return true; }
-bool MapReader::getBool(StringView key, bool& out) const { const MapReaderImpl* r=static_cast<const MapReaderImpl*>(m_impl); VarInfo* v=MapFind(r,key); if(!v) return false; out=r->w->PopBool(v); return true; }
-bool MapReader::getString(StringView key, StringView& out) const { const MapReaderImpl* r=static_cast<const MapReaderImpl*>(m_impl); VarInfo* v=MapFind(r,key); if(!v||v->GetType()!=VAR_STRING) return false; out=StringView(v->_str->_str); return true; }
-bool MapReader::getVec(StringView key, float out[4]) const { const MapReaderImpl* r=static_cast<const MapReaderImpl*>(m_impl); VarInfo* v=MapFind(r,key); if(!v) return false; ReadVec(v,out); return v->IsVector(); }
+ValueType MapReader::type(StringView key) const { const MapReaderImpl* r=static_cast<const MapReaderImpl*>(m_impl); ValueRef v=MapFind(r,key); return v?VarTypeToValueType(v):ValueType::None; }
+bool MapReader::isNull(StringView key) const { ValueRef v=MapFind(static_cast<const MapReaderImpl*>(m_impl),key); return v && v.GetType()==VAR_NONE; }
+bool MapReader::isNativeObject(StringView key) const { ValueRef v=MapFind(static_cast<const MapReaderImpl*>(m_impl),key); return v && v.GetType()==VAR_FP_NATIVE; }
+bool MapReader::getInt(StringView key, int64_t& out) const { const MapReaderImpl* r=static_cast<const MapReaderImpl*>(m_impl); ValueRef v=MapFind(r,key); if(!v) return false; out=r->w->PopInt(v); return true; }
+bool MapReader::getFloat(StringView key, double& out) const { const MapReaderImpl* r=static_cast<const MapReaderImpl*>(m_impl); ValueRef v=MapFind(r,key); if(!v) return false; out=static_cast<double>(r->w->PopFloat(v)); return true; }
+bool MapReader::getBool(StringView key, bool& out) const { const MapReaderImpl* r=static_cast<const MapReaderImpl*>(m_impl); ValueRef v=MapFind(r,key); if(!v) return false; out=r->w->PopBool(v); return true; }
+bool MapReader::getString(StringView key, StringView& out) const { const MapReaderImpl* r=static_cast<const MapReaderImpl*>(m_impl); ValueRef v=MapFind(r,key); if(!v||v.GetType()!=VAR_STRING) return false; out=StringView(v->_str->_str); return true; }
+bool MapReader::getVec(StringView key, float out[4]) const { const MapReaderImpl* r=static_cast<const MapReaderImpl*>(m_impl); ValueRef v=MapFind(r,key); if(!v) return false; ReadVec(v,out); return v.IsVector(); }
 bool MapReader::getVec(StringView key, float* out, int dimension) const { return m_impl && ReadVecN(MapFind(static_cast<const MapReaderImpl*>(m_impl),key),out,dimension); }
-bool MapReader::getMap(StringView key, MapReader& out) const { const MapReaderImpl* r=static_cast<const MapReaderImpl*>(m_impl); VarInfo* v=MapFind(r,key); if(!v||v->GetType()!=VAR_MAP||!v->_tbl) return false; r->mpool->push_back(MapReaderImpl{r->w,v->_tbl,r->mpool,r->lpool}); out=NeoScriptInternal::mapR(&r->mpool->back()); return true; }
-bool MapReader::getList(StringView key, ListReader& out) const { const MapReaderImpl* r=static_cast<const MapReaderImpl*>(m_impl); VarInfo* v=MapFind(r,key); if(!v||v->GetType()!=VAR_LIST||!v->_lst) return false; r->lpool->push_back(ListReaderImpl{r->w,v->_lst,r->mpool,r->lpool}); out=NeoScriptInternal::listR(&r->lpool->back()); return true; }
-bool MapReader::getArray(StringView key, ArrayView& out) const { const MapReaderImpl* r=static_cast<const MapReaderImpl*>(m_impl); VarInfo* v=MapFind(r,key); if(!v||v->GetType()!=VAR_ARRAY||!v->_array) return false; out=NeoScriptInternal::arrayV(v->_array); return true; }
+bool MapReader::getMap(StringView key, MapReader& out) const { const MapReaderImpl* r=static_cast<const MapReaderImpl*>(m_impl); ValueRef v=MapFind(r,key); if(!v||v.GetType()!=VAR_MAP||!v->_tbl) return false; r->mpool->push_back(MapReaderImpl{r->w,v->_tbl,r->mpool,r->lpool}); out=NeoScriptInternal::mapR(&r->mpool->back()); return true; }
+bool MapReader::getList(StringView key, ListReader& out) const { const MapReaderImpl* r=static_cast<const MapReaderImpl*>(m_impl); ValueRef v=MapFind(r,key); if(!v||v.GetType()!=VAR_LIST||!v->_lst) return false; r->lpool->push_back(ListReaderImpl{r->w,v->_lst,r->mpool,r->lpool}); out=NeoScriptInternal::listR(&r->lpool->back()); return true; }
+bool MapReader::getArray(StringView key, ArrayView& out) const { const MapReaderImpl* r=static_cast<const MapReaderImpl*>(m_impl); ValueRef v=MapFind(r,key); if(!v||v.GetType()!=VAR_ARRAY||!v->_array) return false; out=NeoScriptInternal::arrayV(v->_array); return true; }
 
 int ListReader::count() const { return static_cast<const ListReaderImpl*>(m_impl)->list->GetCount(); }
-ValueType ListReader::type(int index) const { const ListReaderImpl* r=static_cast<const ListReaderImpl*>(m_impl); VarInfo* v=r->list->GetValue(index); return v?VarTypeToValueType(v):ValueType::None; }
-bool ListReader::isNull(int index) const { VarInfo* v=static_cast<const ListReaderImpl*>(m_impl)->list->GetValue(index); return v && v->GetType()==VAR_NONE; }
-bool ListReader::isNativeObject(int index) const { VarInfo* v=static_cast<const ListReaderImpl*>(m_impl)->list->GetValue(index); return v && v->GetType()==VAR_FP_NATIVE; }
-bool ListReader::getInt(int index, int64_t& out) const { const ListReaderImpl* r=static_cast<const ListReaderImpl*>(m_impl); VarInfo* v=r->list->GetValue(index); if(!v) return false; out=r->w->PopInt(v); return true; }
-bool ListReader::getFloat(int index, double& out) const { const ListReaderImpl* r=static_cast<const ListReaderImpl*>(m_impl); VarInfo* v=r->list->GetValue(index); if(!v) return false; out=static_cast<double>(r->w->PopFloat(v)); return true; }
-bool ListReader::getBool(int index, bool& out) const { const ListReaderImpl* r=static_cast<const ListReaderImpl*>(m_impl); VarInfo* v=r->list->GetValue(index); if(!v) return false; out=r->w->PopBool(v); return true; }
-bool ListReader::getString(int index, StringView& out) const { const ListReaderImpl* r=static_cast<const ListReaderImpl*>(m_impl); VarInfo* v=r->list->GetValue(index); if(!v||v->GetType()!=VAR_STRING) return false; out=StringView(v->_str->_str); return true; }
-bool ListReader::getVec(int index, float out[4]) const { const ListReaderImpl* r=static_cast<const ListReaderImpl*>(m_impl); VarInfo* v=r->list->GetValue(index); if(!v) return false; ReadVec(v,out); return v->IsVector(); }
+ValueType ListReader::type(int index) const { const ListReaderImpl* r=static_cast<const ListReaderImpl*>(m_impl); ValueRef v=r->list->GetValue(index); return v?VarTypeToValueType(v):ValueType::None; }
+bool ListReader::isNull(int index) const { ValueRef v=static_cast<const ListReaderImpl*>(m_impl)->list->GetValue(index); return v && v.GetType()==VAR_NONE; }
+bool ListReader::isNativeObject(int index) const { ValueRef v=static_cast<const ListReaderImpl*>(m_impl)->list->GetValue(index); return v && v.GetType()==VAR_FP_NATIVE; }
+bool ListReader::getInt(int index, int64_t& out) const { const ListReaderImpl* r=static_cast<const ListReaderImpl*>(m_impl); ValueRef v=r->list->GetValue(index); if(!v) return false; out=r->w->PopInt(v); return true; }
+bool ListReader::getFloat(int index, double& out) const { const ListReaderImpl* r=static_cast<const ListReaderImpl*>(m_impl); ValueRef v=r->list->GetValue(index); if(!v) return false; out=static_cast<double>(r->w->PopFloat(v)); return true; }
+bool ListReader::getBool(int index, bool& out) const { const ListReaderImpl* r=static_cast<const ListReaderImpl*>(m_impl); ValueRef v=r->list->GetValue(index); if(!v) return false; out=r->w->PopBool(v); return true; }
+bool ListReader::getString(int index, StringView& out) const { const ListReaderImpl* r=static_cast<const ListReaderImpl*>(m_impl); ValueRef v=r->list->GetValue(index); if(!v||v.GetType()!=VAR_STRING) return false; out=StringView(v->_str->_str); return true; }
+bool ListReader::getVec(int index, float out[4]) const { const ListReaderImpl* r=static_cast<const ListReaderImpl*>(m_impl); ValueRef v=r->list->GetValue(index); if(!v) return false; ReadVec(v,out); return v.IsVector(); }
 bool ListReader::getVec(int index, float* out, int dimension) const { return m_impl && ReadVecN(static_cast<const ListReaderImpl*>(m_impl)->list->GetValue(index),out,dimension); }
-bool ListReader::getMap(int index, MapReader& out) const { const ListReaderImpl* r=static_cast<const ListReaderImpl*>(m_impl); VarInfo* v=r->list->GetValue(index); if(!v||v->GetType()!=VAR_MAP||!v->_tbl) return false; r->mpool->push_back(MapReaderImpl{r->w,v->_tbl,r->mpool,r->lpool}); out=NeoScriptInternal::mapR(&r->mpool->back()); return true; }
-bool ListReader::getList(int index, ListReader& out) const { const ListReaderImpl* r=static_cast<const ListReaderImpl*>(m_impl); VarInfo* v=r->list->GetValue(index); if(!v||v->GetType()!=VAR_LIST||!v->_lst) return false; r->lpool->push_back(ListReaderImpl{r->w,v->_lst,r->mpool,r->lpool}); out=NeoScriptInternal::listR(&r->lpool->back()); return true; }
-bool ListReader::getArray(int index, ArrayView& out) const { const ListReaderImpl* r=static_cast<const ListReaderImpl*>(m_impl); VarInfo* v=r->list->GetValue(index); if(!v||v->GetType()!=VAR_ARRAY||!v->_array) return false; out=NeoScriptInternal::arrayV(v->_array); return true; }
+bool ListReader::getMap(int index, MapReader& out) const { const ListReaderImpl* r=static_cast<const ListReaderImpl*>(m_impl); ValueRef v=r->list->GetValue(index); if(!v||v.GetType()!=VAR_MAP||!v->_tbl) return false; r->mpool->push_back(MapReaderImpl{r->w,v->_tbl,r->mpool,r->lpool}); out=NeoScriptInternal::mapR(&r->mpool->back()); return true; }
+bool ListReader::getList(int index, ListReader& out) const { const ListReaderImpl* r=static_cast<const ListReaderImpl*>(m_impl); ValueRef v=r->list->GetValue(index); if(!v||v.GetType()!=VAR_LIST||!v->_lst) return false; r->lpool->push_back(ListReaderImpl{r->w,v->_lst,r->mpool,r->lpool}); out=NeoScriptInternal::listR(&r->lpool->back()); return true; }
+bool ListReader::getArray(int index, ArrayView& out) const { const ListReaderImpl* r=static_cast<const ListReaderImpl*>(m_impl); ValueRef v=r->list->GetValue(index); if(!v||v.GetType()!=VAR_ARRAY||!v->_array) return false; out=NeoScriptInternal::arrayV(v->_array); return true; }
 
 ArrayElementType ArrayView::elementType() const
 {
@@ -1728,14 +1730,14 @@ bool ArrayView::getVec(int index, float out[4]) const
     if (!out) return false;
     std::fill_n(out, 4, 0.0f);
     if (!a || !a->VectorDimension() || !a->IsValidIndex(index)) return false;
-    a->VectorValues()[index].CopyVectorComponents(out);
+    a->VectorAt(index).CopyVectorComponents(out);
     return true;
 }
 bool ArrayView::getVec(int index, float* out, int dimension) const
 {
     auto* a=static_cast<const ArrayInfo*>(m_impl);
     if (!out || dimension < 2 || dimension > 4 || !a || a->VectorDimension() < dimension || !a->IsValidIndex(index)) return false;
-    return ReadVecN(a->VectorValues() + index, out, dimension);
+    return ReadVecN(a->VectorAt(index), out, dimension);
 }
 bool ArrayView::setVec(int index, const float* components, int dimension) const
 {
@@ -1758,7 +1760,7 @@ static void InvFinish(void* p, uint64_t seq)
     {
         i->armedSeq = 0;                                     // 내가 arm 이었으면 해제
         // invoke 없이 파괴된 경우: 쌓아둔 인자는 VM 참조(문자열/맵)를 들고 있으므로 여기서 반납.
-        // (vector::clear 는 VarInfo 참조를 풀지 않는다 → 누수)
+        // (vector::clear 는 BoundaryValue 참조를 풀지 않는다 → 누수)
         if (!i->callArgs.empty() && i->worker) { i->worker->ReleaseArgs(i->callArgs); i->callArgs.clear(); }
         ClearCallClosure(i);
     }
@@ -1771,12 +1773,12 @@ static bool InvArmed(void* p, uint64_t seq)
 {
     return p && seq && Inv(p)->armedSeq == seq;
 }
-static VarInfo* InvReturn(void* p, uint64_t seq)
+static ValueRef InvReturn(void* p, uint64_t seq)
 {
     if (!p) return nullptr;
     InstanceRec* i = Inv(p);
     return i->pendingSeq == seq && i->hostCallPending && i->callStatus == RunStatus::Completed
-        ? i->worker->GetReturnVar() : nullptr;
+        ? (i->pendingBegin == NeoHostCallBegin::Nested ? &i->nestedReturn : i->worker->GetReturnVar()) : nullptr;
 }
 Invocation::operator bool() const noexcept { return InvArmed(m_impl, m_seq); }
 
@@ -1807,7 +1809,7 @@ Invocation& Invocation::argObject(ObjectType type, void* userData)
         InstanceRec* i = Inv(m_impl);
         const RegisteredObject* ro = static_cast<const RegisteredObject*>(NeoScriptInternal::objImpl(type));
         i->callArgs.emplace_back();
-        VarInfo* pVar = &i->callArgs.back();
+        ValueRef pVar = &i->callArgs.back();
         if (ro && i->runtime && i->worker->ResetVarType(pVar, VAR_FP_NATIVE))
         {
             auto bind = i->runtime->AcquireNestedBinding(i->handle, ro, userData);
@@ -1834,18 +1836,19 @@ RunStatus Invocation::invoke()
     const int timeoutMs = inst->callTimeoutMs;
     const uint32_t budget = inst->callBudget;
     // 재진입 호출도 같은 준비 공간을 쓰므로 현재 호출 인자는 별도로 보관한다.
-    std::vector<VarInfo> args;
+    std::vector<BoundaryValue> args;
     args.swap(inst->callArgs);
     if (!inst->spareCallArgs.empty())
     {
         inst->callArgs.swap(inst->spareCallArgs.back());
         inst->spareCallArgs.pop_back();
     }
-    VarInfo closure = inst->callClosure;
-    inst->callClosure = VarInfo();
+    BoundaryValue closure = inst->callClosure;
+    inst->callClosure = BoundaryValue();
     NeoHostCallBegin begin = w->BeginHostCall();
     const bool nested = begin == NeoHostCallBegin::Nested;
     int execStatus = NEOEXEC_ERROR;
+    BoundaryValue completedResult;
     if (begin == NeoHostCallBegin::Acquired || nested)
     {
         if (nested && (timeoutMs >= 0 || budget > 0))
@@ -1860,7 +1863,7 @@ RunStatus Invocation::invoke()
                 w->SetInstructionBudget(budget);
             }
             if (nested) w->BeginNestedScriptCall();
-            execStatus = w->RunHostCall(fid, args, closure.GetType() == VAR_CLOSURE ? &closure : nullptr);
+            execStatus = w->RunHostCall(fid, args, closure.GetType() == VAR_CLOSURE ? &closure : nullptr, &completedResult);
             if (nested) w->EndNestedScriptCall();
         }
     }
@@ -1910,6 +1913,8 @@ RunStatus Invocation::invoke()
     }
     // 외부에 남은 자식 호출의 반환 대여를 닫고 바깥 호출에 반환 소유권을 준다.
     inst->runtime->FlushPendingCall(inst);
+    if (nested && execStatus == NEOEXEC_COMPLETED) w->Var_Move(&inst->nestedReturn, &completedResult);
+    w->Var_Release(&completedResult);
     if (begin == NeoHostCallBegin::Acquired || nested)
     {
         inst->hostCallPending = true;
@@ -1926,36 +1931,36 @@ const Error& Invocation::error() const
     return m_impl && Inv(m_impl)->resultSeq == m_seq ? Inv(m_impl)->callError : empty;   // InstanceRec 소유 스냅샷(비파괴)
 }
 
-ValueType Invocation::retType() const { VarInfo* v=InvReturn(m_impl,m_seq); return v?VarTypeToValueType(v):ValueType::None; }
-int64_t Invocation::retInt() const { VarInfo* v=InvReturn(m_impl,m_seq); return v?Inv(m_impl)->worker->PopInt(v):0; }
-double Invocation::retFloat() const { VarInfo* v=InvReturn(m_impl,m_seq); return v?static_cast<double>(Inv(m_impl)->worker->PopFloat(v)):0.0f; }
-bool Invocation::retBool() const { VarInfo* v=InvReturn(m_impl,m_seq); return v && Inv(m_impl)->worker->PopBool(v); }
+ValueType Invocation::retType() const { ValueRef v=InvReturn(m_impl,m_seq); return v?VarTypeToValueType(v):ValueType::None; }
+int64_t Invocation::retInt() const { ValueRef v=InvReturn(m_impl,m_seq); return v?Inv(m_impl)->worker->PopInt(v):0; }
+double Invocation::retFloat() const { ValueRef v=InvReturn(m_impl,m_seq); return v?static_cast<double>(Inv(m_impl)->worker->PopFloat(v)):0.0f; }
+bool Invocation::retBool() const { ValueRef v=InvReturn(m_impl,m_seq); return v && Inv(m_impl)->worker->PopBool(v); }
 StringView Invocation::retString() const {
-    VarInfo* v=InvReturn(m_impl,m_seq);
+    ValueRef v=InvReturn(m_impl,m_seq);
     if (!v) return StringView();
-    if (v->GetType()==VAR_STRING) return StringView(v->_str->_str);
+    if (v.GetType()==VAR_STRING) return StringView(v->_str->_str);
     const char* text=Inv(m_impl)->worker->PopString(v); return StringView(text?text:"");
 }
 void Invocation::retVec(float out[4]) const { ReadVec(InvReturn(m_impl,m_seq), out); }
 bool Invocation::retVec(float* out, int dimension) const { return ReadVecN(InvReturn(m_impl,m_seq),out,dimension); }
 bool Invocation::retMap(MapReader& out) const
 {
-    if(!m_impl) return false; InstanceRec* i=Inv(m_impl); VarInfo* rv=InvReturn(m_impl,m_seq);
-    if(!rv||rv->GetType()!=VAR_MAP||!rv->_tbl) return false;
+    if(!m_impl) return false; InstanceRec* i=Inv(m_impl); ValueRef rv=InvReturn(m_impl,m_seq);
+    if(!rv||rv.GetType()!=VAR_MAP||!rv->_tbl) return false;
     i->readMapPool.push_back(MapReaderImpl{ i->worker, rv->_tbl, &i->readMapPool, &i->readListPool });
     out = NeoScriptInternal::mapR(&i->readMapPool.back()); return true;
 }
 bool Invocation::retList(ListReader& out) const
 {
-    if(!m_impl) return false; InstanceRec* i=Inv(m_impl); VarInfo* rv=InvReturn(m_impl,m_seq);
-    if(!rv||rv->GetType()!=VAR_LIST||!rv->_lst) return false;
+    if(!m_impl) return false; InstanceRec* i=Inv(m_impl); ValueRef rv=InvReturn(m_impl,m_seq);
+    if(!rv||rv.GetType()!=VAR_LIST||!rv->_lst) return false;
     i->readListPool.push_back(ListReaderImpl{ i->worker, rv->_lst, &i->readMapPool, &i->readListPool });
     out = NeoScriptInternal::listR(&i->readListPool.back()); return true;
 }
 bool Invocation::retArray(ArrayView& out) const
 {
-    if(!m_impl) return false; VarInfo* rv=InvReturn(m_impl,m_seq);
-    if(!rv||rv->GetType()!=VAR_ARRAY||!rv->_array) return false;
+    if(!m_impl) return false; ValueRef rv=InvReturn(m_impl,m_seq);
+    if(!rv||rv.GetType()!=VAR_ARRAY||!rv->_array) return false;
     out = NeoScriptInternal::arrayV(rv->_array); return true;
 }
 
@@ -1976,7 +1981,7 @@ CallResult Invocation::invokeR()
         InstanceRec* i = Inv(m_impl);
         // Completed 일 때만 반환 슬롯을 스냅샷한다. 실패면 CallResult 는 기본값(type None, 0/빈) 유지 →
         // asInt()==0 / asString()=="" 등 접근자의 무효값이 나온다(실패했는데 이전 성공 호출 값이 새는 것 방지).
-        VarInfo* rv = (r.status == RunStatus::Completed) ? InvReturn(m_impl,m_seq) : nullptr;
+        ValueRef rv = (r.status == RunStatus::Completed) ? InvReturn(m_impl,m_seq) : nullptr;
         if (rv)
         {
             ValueType vt = VarTypeToValueType(rv);
@@ -1984,13 +1989,13 @@ CallResult Invocation::invokeR()
                 NeoScriptInternal::setResult(r, vt, 0, nullptr, StringView(rv->_str->_str));
             else
             {
-                const VarInfo* vector = nullptr; int64_t iv = 0; double scalar = 0;
+                ValueRef vector = nullptr; int64_t iv = 0; double scalar = 0;
                 switch (vt)
                 {
                 case ValueType::Bool:  iv = i->worker->PopBool(rv) ? 1 : 0; scalar = static_cast<double>(iv); break;
                 case ValueType::Int:   iv = i->worker->PopInt(rv);          scalar = static_cast<double>(iv); break;
                 case ValueType::Float: scalar = i->worker->PopFloat(rv); iv = NeoFloatToInt(scalar); break;
-                case ValueType::Vec2: case ValueType::Vec3: case ValueType::Vec4: vector = rv; scalar = rv->VectorComponent(0); break;
+                case ValueType::Vec2: case ValueType::Vec3: case ValueType::Vec4: vector = rv; scalar = rv.VectorComponent(0); break;
                 default: break; // None/Map/List → 스칼라 없음
                 }
                 NeoScriptInternal::setResult(r, vt, iv, vector, StringView(), scalar);
@@ -2009,8 +2014,8 @@ RunStatus Invocation::invokeReadMapImpl(void* ctx, void(*cb)(void*, MapReader))
     {
         InstanceRec* i = Inv(m_impl);
         // 실패(Completed 아님)면 콜백을 호출하지 않는다(반환 슬롯에 남은 이전 성공 호출의 map 누출 방지).
-        VarInfo* rv = (st == RunStatus::Completed) ? InvReturn(m_impl,m_seq) : nullptr;
-        if (cb && rv && rv->GetType() == VAR_MAP && rv->_tbl)
+        ValueRef rv = (st == RunStatus::Completed) ? InvReturn(m_impl,m_seq) : nullptr;
+        if (cb && rv && rv.GetType() == VAR_MAP && rv->_tbl)
         {
             i->readMapPool.clear(); i->readListPool.clear();
             i->readMapPool.push_back(MapReaderImpl{ i->worker, rv->_tbl, &i->readMapPool, &i->readListPool });
@@ -2028,8 +2033,8 @@ RunStatus Invocation::invokeReadListImpl(void* ctx, void(*cb)(void*, ListReader)
     {
         InstanceRec* i = Inv(m_impl);
         // 실패(Completed 아님)면 콜백을 호출하지 않는다(반환 슬롯에 남은 이전 성공 호출의 list 누출 방지).
-        VarInfo* rv = (st == RunStatus::Completed) ? InvReturn(m_impl,m_seq) : nullptr;
-        if (cb && rv && rv->GetType() == VAR_LIST && rv->_lst)
+        ValueRef rv = (st == RunStatus::Completed) ? InvReturn(m_impl,m_seq) : nullptr;
+        if (cb && rv && rv.GetType() == VAR_LIST && rv->_lst)
         {
             i->readMapPool.clear(); i->readListPool.clear();
             i->readListPool.push_back(ListReaderImpl{ i->worker, rv->_lst, &i->readMapPool, &i->readListPool });
@@ -2046,8 +2051,8 @@ RunStatus Invocation::invokeReadArrayImpl(void* ctx, void(*cb)(void*, ArrayView)
     if (m_impl)
     {
         InstanceRec* i = Inv(m_impl);
-        VarInfo* rv = (st == RunStatus::Completed) ? InvReturn(m_impl,m_seq) : nullptr;
-        if (cb && rv && rv->GetType() == VAR_ARRAY && rv->_array)
+        ValueRef rv = (st == RunStatus::Completed) ? InvReturn(m_impl,m_seq) : nullptr;
+        if (cb && rv && rv.GetType() == VAR_ARRAY && rv->_array)
             cb(ctx, NeoScriptInternal::arrayV(rv->_array));
         if (i->pendingSeq == m_seq) i->runtime->FlushPendingCall(i);
     }
@@ -2090,7 +2095,7 @@ static bool MethodTrampoline(INeoVMWorker* N, void* pUserData, const VMString* p
     CallContext ctx = NeoScriptInternal::ctx(&impl);
     return b->obj->method(ctx, VmName(pStr));
 }
-static bool PropertyTrampoline(INeoVMWorker* N, void* pUserData, const VMString* pStr, VarInfo* p, bool get)
+static bool PropertyTrampoline(INeoVMWorker* N, void* pUserData, const VMString* pStr, ValueRef p, bool get)
 {
     ObjectBinding* b = static_cast<ObjectBinding*>(pUserData);
     if (!b || !b->obj || !b->obj->property) return false;
@@ -2273,36 +2278,36 @@ namespace NeoCoreBackend
 namespace
 {
 // 인자 범위만 점검한다. 타입은 정적 검사기가 보장하며 네이티브 호출 프레임은 기존 경로가 관리한다.
-const NeoScript::VarInfo& Argument(const NeoScript::CallContext& context, std::size_t index)
+NeoScript::ValueRef Argument(const NeoScript::CallContext& context, std::size_t index)
 {
     NeoScript::CallContextImpl* impl = NeoScript::NeoScriptInternal::ctxImpl(context);
     assert(impl != nullptr);
-    const NeoScript::VarInfo* value = NeoScript::CtxArgVar(impl, index);
+    const NeoScript::ValueRef value = NeoScript::CtxArgVar(impl, index);
     assert(value != nullptr);
-    return *value;
+    return value;
 }
 }
 
 std::int64_t ReadInt(const NeoScript::CallContext& context, std::size_t index)
 {
-    return Argument(context, index)._int;
+    return Argument(context, index)->_int;
 }
 
 double ReadFloat(const NeoScript::CallContext& context, std::size_t index)
 {
-    return Argument(context, index)._float;
+    return Argument(context, index)->_float;
 }
 
 bool ReadBool(const NeoScript::CallContext& context, std::size_t index)
 {
-    return Argument(context, index)._bl;
+    return Argument(context, index)->_bl;
 }
 
 std::string ReadString(const NeoScript::CallContext& context, std::size_t index)
 {
-    const NeoScript::VarInfo& value = Argument(context, index);
-    assert(value._str != nullptr);
-    return value._str->_str;
+    const NeoScript::ValueRef value = Argument(context, index);
+    assert(value->_str != nullptr);
+    return value->_str->_str;
 }
 
 bool IsNull(const NeoScript::CallContext& context, std::size_t index)

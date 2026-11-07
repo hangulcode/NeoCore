@@ -152,33 +152,7 @@ enum LiteralKind
 	Literal_Float,
 };
 
-static SlotType CoreStorageType(const NeoCore::TypeRegistry& types, NeoCore::TypeId id)
-{
-    using NeoCore::TypeKind;
-    SlotType storage;
-    storage.typeId = id;
-    const NeoCore::TypeDesc& type = types.Get(id);
-    switch (type.kind)
-    {
-    case TypeKind::Int: storage.kind = SlotKind::Int; break;
-    case TypeKind::Float: storage.kind = SlotKind::Float; break;
-    case TypeKind::Bool: storage.kind = SlotKind::Bool; break;
-    case TypeKind::String: storage.kind = SlotKind::String; break;
-    case TypeKind::Vector2: storage.kind = SlotKind::Vector2; break;
-    case TypeKind::Vector3: storage.kind = SlotKind::Vector3; break;
-    case TypeKind::Vector4: case TypeKind::Quaternion: storage.kind = SlotKind::Vector4; break;
-    case TypeKind::Array: case TypeKind::Array32: storage.kind = SlotKind::Array; break;
-    case TypeKind::List: case TypeKind::Struct: storage.kind = SlotKind::List; break;
-    case TypeKind::Map: storage.kind = SlotKind::Map; break;
-    case TypeKind::Set: storage.kind = SlotKind::Set; break;
-    case TypeKind::Function: storage.kind = SlotKind::Function; break;
-    case TypeKind::Native: storage.kind = SlotKind::ObjectId; break;
-    case TypeKind::BuiltinObject: storage.kind = type.name == "AsyncRequest" ? SlotKind::Async : SlotKind::Native; break;
-    case TypeKind::Coroutine: storage.kind = SlotKind::Coroutine; break;
-    default: break;
-    }
-    return storage;
-}
+
 
 struct SOperand
 {
@@ -466,7 +440,7 @@ static bool TryStoreCallResult(CArchiveRdWC& ar, SFunctions& funs, int dest, SOp
         return true;
     }
     if (!IsCompileConstant(call->n1)) return false;
-    const VarInfo& name = funs._staticVars[StaticPoolIndex(call->n1)];
+    const BoundaryValue& name = funs._staticVars[StaticPoolIndex(call->n1)];
     if (name.GetType() != VAR_STRING ||
         CNeoVM::GetDefaultNativeIntrinsic(CNeoVM::FindDefaultNativeIndex(name._str->_str)) != NOP_VEC_MAKE)
         return false;
@@ -1734,7 +1708,8 @@ bool ParseFunctionArg(CArchiveRdWC& ar, SFunctions& funs, SLayerVar* pCurLayer)
 				int iArg = 1 + (int)funs._cur->_args.size();
 				CheckCompileRange("function arguments", iArg, 0, COMPILE_MAX_ARGUMENTS);
 				pCurLayer->AddLocalVar(tk2, iArg);
-				const SlotType storage = funs.FindDeclaredStorage(tk2);
+				const SlotType storage = static_cast<size_t>(iArg) <= funs._cur->_parameterStorage.size()
+                    ? funs._cur->_parameterStorage[iArg - 1] : funs.FindDeclaredStorage(tk2);
 				if (storage.kind != SlotKind::Boxed) funs._cur->_storage[iArg] = storage;
 				funs._cur->_debugVarNames[iArg] = tk2;
 				funs._cur->_args.insert(tk2);
@@ -2025,9 +2000,6 @@ bool ParseFunCall(SOperand& iResultStack, TK_TYPE tkTypePre, SFunctionInfo* pFun
 		// 모든 인자 평가가 끝난 뒤로 미룬다. 인자식이 그 자체로 함수 호출이면 내부 호출이
 		// 같은 호출-인자 윈도우를 재사용하므로, 즉시 복사할 경우 먼저 평가된 인자가 덮어써진다.
 		std::vector<SOperand> argOperands;
-		std::vector<int> argDefOffsets;  // 인자 결과를 만든 단일 op 의 오프셋 (융합 불가면 -1)
-		std::vector<bool> argMayClobberCallWindow;
-        std::vector<int> argCallCounts;  // 이 인자 평가 완료 시점의 call emit 카운트
 		while (true)
 		{
 			tkType2 = GetToken(ar, tk2);
@@ -2049,8 +2021,6 @@ bool ParseFunCall(SOperand& iResultStack, TK_TYPE tkTypePre, SFunctionInfo* pFun
                 const int thisArgEffects = (argsScanned && iParamCount < (int)argEffects.size()) ? argEffects[iParamCount] : EXPR_EFFECT_ALL;
                 int laterArgEffects = argsScanned ? 0 : EXPR_EFFECT_ALL;
                 for (size_t later = (size_t)iParamCount + 1; later < argEffects.size(); ++later) laterArgEffects |= argEffects[later];
-                argMayClobberCallWindow.push_back((thisArgEffects & EXPR_EFFECT_CALL) != 0);
-				int iCodeOffBefore = funs._cur->_code->GetBufferOffset();
 				iTempVar.Reset();
 				// 인자 식의 ParseJob 은 방금 훑은 이 인자의 비트를 그대로 쓴다(재스캔 생략).
 				funs._presetExprEffects = thisArgEffects;
@@ -2068,20 +2038,7 @@ bool ParseFunCall(SOperand& iResultStack, TK_TYPE tkTypePre, SFunctionInfo* pFun
 					SnapshotValue(iTempVar, ar, funs);
 				argOperands.push_back(iTempVar);
 
-				// 인자 식 전체가 "임시변수에 쓰는 단일 op" 로 끝났으면 나중에
-				// dest 를 호출-인자 슬롯으로 직접 패치할 수 있게 오프셋을 기억한다.
-				int iDefOffset = -1;
-				if (funs._cur->_iLastOPOffset == iCodeOffBefore &&
-					false == iTempVar.IsFun() &&
-					iTempVar._iArrayIndex == INVALID_ERROR_PARSEJOB &&
-					IsTempVar(iTempVar._iVar) &&
-					funs._cur->GetN(iCodeOffBefore, 0) == iTempVar._iVar &&
-					SFunctionInfo::IsRetargetableProducerOP(funs._cur->GetOP(iCodeOffBefore)))
-				{
-					iDefOffset = iCodeOffBefore;
-				}
-				argDefOffsets.push_back(iDefOffset);
-				argCallCounts.push_back(funs._cur->_callOpEmitCount);
+
 			}
 			CheckCompileRange("call arguments", (int64_t)iParamCount + 1, 0, COMPILE_MAX_ARGUMENTS);
 			iParamCount++;
@@ -2096,34 +2053,21 @@ bool ParseFunCall(SOperand& iResultStack, TK_TYPE tkTypePre, SFunctionInfo* pFun
 				break;
 		}
 
-		// 모든 인자 평가가 끝난 뒤, CALL 직전에 호출-인자 슬롯으로 복사한다.
-		int iFinalCallCount = funs._cur->_callOpEmitCount;
-		for (int i = 0; i < iParamCount; i++)
-		{
-			SOperand& arg = argOperands[i];
-			// 융합: 인자 producer 의 dest 를 호출-인자 슬롯으로 직접 패치하고 MOV 생략.
-			// 조건: 이후 인자들의 평가에 함수 호출이 없어야 함 — 호출은 같은 인자
-			// 윈도우를 재사용하므로 일찍 쓴 슬롯이 덮어써진다 (지연 복사의 이유).
-            bool laterMayClobber = false;
-            for (int later = i + 1; later < iParamCount; ++later)
-                laterMayClobber = laterMayClobber || argMayClobberCallWindow[later];
-            // Host getters/setters can use the call window without a CALL
-            // opcode. Preserve earlier values in temps until those finish.
-			if (argDefOffsets[i] != -1 && argCallCounts[i] == iFinalCallCount && !laterMayClobber)
-			{
-				funs._cur->SetN(argDefOffsets[i], 0, (s16)(COMPILE_CALLARG_VAR_BEGIN + 1 + i));
-				continue;
-			}
-			if (arg.IsFun())
-				funs._cur->Push_OP2(ar, NOP_FMOV1, COMPILE_CALLARG_VAR_BEGIN + 1 + i, arg._iVar, false, iCallLine);
-			else if (arg._iArrayIndex == INVALID_ERROR_PARSEJOB)
-			{
-				if (TryPushImmediate(ar, funs, COMPILE_CALLARG_VAR_BEGIN + 1 + i, arg, iCallLine) == false)
-					funs._cur->Push_OP2(ar, NOP_MOV, COMPILE_CALLARG_VAR_BEGIN + 1 + i, arg._iVar, arg.IsShort(), iCallLine);
-			}
-			else
-				ReadElement(arg, COMPILE_CALLARG_VAR_BEGIN + 1 + i, ar, funs);
-		}
+        // 호출 창은 모든 인자 평가가 끝난 뒤에만 선택한다. 다른 호출의 참조와 겹치지 않는다.
+        std::vector<int> callSources;
+        for (SOperand& argument : argOperands) callSources.push_back(argument.IsFun() ? -1 : argument._iVar);
+        funs._cur->PrepareCall(ar, callSources, iCallLine);
+        for (int i = 0; i < iParamCount; ++i)
+        {
+            SOperand& arg = argOperands[i];
+            if (arg.IsFun())
+            {
+                funs._cur->_calls.back().types[i].kind = SlotKind::Function;
+                funs._cur->Push_OP2(ar, NOP_FMOV1, COMPILE_CALLARG_VAR_BEGIN + 1 + i, arg._iVar, false, iCallLine);
+            }
+            else if (!TryPushImmediate(ar, funs, COMPILE_CALLARG_VAR_BEGIN + 1 + i, arg, iCallLine))
+                funs._cur->Push_OP2(ar, NOP_MOV, COMPILE_CALLARG_VAR_BEGIN + 1 + i, arg._iVar, arg.IsShort(), iCallLine);
+        }
 		if (pFun != NULL)
 		{
 			if(pFun->_funType == FUNT_BUILT_IN)
@@ -3382,14 +3326,13 @@ static bool EmitCoreIRCall(const NeoCore::IRNode& node, const std::string& name,
         producerOffsets.push_back(producer);
         callCounts.push_back(funs._cur->_callOpEmitCount);
     }
-    const int finalCalls = funs._cur->_callOpEmitCount;
+    std::vector<int> callSources;
+    for (const SOperand& argument : arguments) callSources.push_back(argument._iVar);
+    funs._cur->PrepareCall(ar, callSources, node.source.line);
     for (std::size_t i = 0; i < arguments.size(); ++i)
     {
         const int slot = COMPILE_CALLARG_VAR_BEGIN + 1 + static_cast<int>(i);
-        // 뒤 인자가 호출 창을 쓰지 않을 때만 기존 단일 생산자 융합을 유지한다.
-        if (producerOffsets[i] >= 0 && callCounts[i] == finalCalls && (laterEffects[i] & EXPR_EFFECT_CALL) == 0)
-            funs._cur->SetN(producerOffsets[i], 0, static_cast<s16>(slot));
-        else if (!TryPushImmediate(ar, funs, slot, arguments[i], node.source.line))
+        if (!TryPushImmediate(ar, funs, slot, arguments[i], node.source.line))
             funs._cur->Push_OP2(ar, NOP_MOV, slot, arguments[i]._iVar, arguments[i].IsShort(), node.source.line);
     }
     // 일반 변수의 최종 대입만 직접 반환한다. 디버그에서는 복귀와 대입 사이의 중단 위치를 유지한다.
@@ -3580,6 +3523,7 @@ static bool EmitCoreIRNodeImpl(std::size_t index, SOperand& result,
         fragment.m_pLoader = ar.m_pLoader;
         fragment.m_coreIntrinsicPrefix = ar.m_coreIntrinsicPrefix;
         fragment.m_coreTypedIR = ar.m_coreTypedIR;
+        fragment.m_coreExpectedType = node.typeId;
         fragment.m_coreIREffects = ar.m_coreIREffects;
         CArchiveRdWC::Cursor cursor = fragment.SaveCursor();
         cursor.line = node.source.line; cursor.column = node.source.column;
@@ -3599,7 +3543,7 @@ static bool EmitCoreIRNodeImpl(std::size_t index, SOperand& result,
         // 대입 경로와 같은 의미로 호출 인자·반환값에도 쓸 수 있다.
         const bool valid = end == TK_SEMICOLON && !result.IsInvalidValue() && !result.IsNone() &&
             GetToken(fragment, trailing) == TK_NONE && fragment.m_sErrorString.empty();
-        if (valid) MaterializeValue(result, fragment, funs);
+        if (valid) { result._storage = CoreStorageType(ar.m_coreTypedIR->types, node.typeId); MaterializeValue(result, fragment, funs); }
         ar.CopyErrorFrom(fragment);
         if (!valid && ar.m_sErrorString.empty()) SetCompileError(ar, "invalid typed IR expression fragment");
         return valid;
@@ -3725,6 +3669,7 @@ static bool EmitCoreIRNode(std::size_t index, SOperand& result,
     if (!EmitCoreIRNodeImpl(index, result, ar, funs, vars, destination)) return false;
     result._storage = CoreStorageType(ar.m_coreTypedIR->types,
         ar.m_coreTypedIR->nodes[index].typeId);
+    if (IsTempVar(result._iVar)) funs._cur->SetStorage(result._iVar, result._storage);
     return true;
 }
 
@@ -5766,7 +5711,7 @@ bool ParseForEach(CArchiveRdWC& ar, SFunctions& funs, SVars& vars)
 	// 채로 남는다. 로컬 슬롯은 호출 간에 정리되지 않으므로, 같은 슬롯 번호를 쓰는 다음 foreach
 	// 가 이를 "순회 중"으로 오인해 남은 offset 부터 이어가 버린다(같은 입력에 다른 결과).
 	// 루프당 1회 비용이라 반복 비용에는 영향이 없다.
-	funs._cur->Push_OP1(ar, NOP_VAR_CLEAR, iIterator);
+	funs._cur->Push_MOVI(ar, iMutationVersion, -1);
 
 	funs._cur->Push_JMP(ar, 0); // for Check 위치로 JMP(일단은 위치만 확보)
 	SJumpValue jmp1(funs._cur->_code->GetBufferOffset() - (sizeof(short) * 3), funs._cur->_code->GetBufferOffset());
@@ -7295,6 +7240,16 @@ bool ParseFunction(CArchiveRdWC& ar, SFunctions& funs, SVars& vars, std::string&
 		}
 		pF->_args.clear();
 	}
+    if (funType == FUNT_ANONYMOUS && ar.m_coreTypedIR && funs._cur)
+    {
+        const NeoCore::TypeDesc& signature = ar.m_coreTypedIR->types.Get(funs._cur->_returnStorage.typeId);
+        if (signature.kind == NeoCore::TypeKind::Function)
+        {
+            pF->_returnStorage = CoreStorageType(ar.m_coreTypedIR->types, signature.returnType);
+            for (NeoCore::TypeId parameter : signature.parameters)
+                pF->_parameterStorage.push_back(CoreStorageType(ar.m_coreTypedIR->types, parameter));
+        }
+    }
 	pF->_bodyParsed = true;
 	pF->_funType = funType;
 	funs._cur = pF;
@@ -7377,9 +7332,15 @@ bool Parse(CArchiveRdWC& ar, CNArchive&arw, bool putASM)
 
 	SVars	vars;
 	SFunctions funs;
+	funs._typedIR = ar.m_coreTypedIR;
 	if (ar.m_coreTypedIR)
 	{
 		using NeoCore::TypeKind;
+        for (const std::string& name : ar.m_coreTypedIR->nativeGlobals)
+        {
+            SlotType native; native.kind = SlotKind::Native;
+            funs._declaredStorage.emplace(name, native);
+        }
 		for (const NeoCore::IRStorageSymbol& symbol : ar.m_coreTypedIR->storageSymbols)
 		{
 			SlotType storage;
@@ -7437,6 +7398,12 @@ bool Parse(CArchiveRdWC& ar, CNArchive&arw, bool putASM)
 			const NeoGlobalSymbol& sym = ar.m_pGlobalSymbols->symbols[i];
 			if (sym.name == nullptr || sym.name[0] == 0)
 				continue;
+            // 이 테이블의 선언은 런타임에 등록한 네이티브 호출 객체다.
+            if (funs.FindDeclaredStorage(sym.name).kind == SlotKind::Boxed)
+            {
+                SlotType native; native.kind = SlotKind::Native;
+                funs._declaredStorage.emplace(sym.name, native);
+            }
 			if (-1 == AddLocalVarName(ar, funs, vars, sym.exported, false, sym.name, true))
 				return false; // 중복/예약어 등은 AddLocalVarName 이 에러 세팅
 			vars._hostGlobals.insert(sym.name);
@@ -7587,7 +7554,7 @@ CNeoVM* NeoVMSystem::CompileAndLoadRunVM(const NeoCompilerParam& param, const Ne
 	if(pVM == nullptr)
 		return nullptr;
 
-	std::vector<VarInfo> args;
+	std::vector<BoundaryValue> args;
 	static_cast<INeoVMWorker*>(pVM->GetMainWorker())->ExecuteTop(0, args);
 
 	return pVM;
