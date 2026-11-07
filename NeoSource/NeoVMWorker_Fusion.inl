@@ -2,6 +2,7 @@
 
 // 연산 목록은 그대로 두고, 자주 반복되는 두 연산의 분기를 C++ 인스턴스화로 없앤다.
 // 슬롯·상수·컨테이너 조합을 위한 별도 바이트코드는 추가하지 않는다.
+// 퓨전 단계의 피연산자와 중간값은 모두 payload다. 숫자 결과 슬롯은 참조를 가진 적이 없다.
 #define NEOCORE_FUSION_ARRAY_GET(TYPE, ELEMENT) \
         case NOP_ARRAY_##TYPE##_GET: NEOCORE_FUSION_FAULT_LOCATION(); \
             if (!CheckTypedArrayReceiver(left)) return false; \
@@ -19,26 +20,19 @@
 #define NEOCORE_FUSION_SECOND(OP) case OP: return SelectFusionPair<First, OP>(plan);
 #define NEOCORE_FUSION_FIRST(OP) case OP: plan.execute = FusionPairExecutor<OP>(second, plan); break;
 
-// 컴파일 때 숫자 태그 유지가 증명된 목적지에만 값 부분을 갱신한다.
-NEOS_FORCEINLINE static void FusionUpdate(ValueRef value, NS_INT number)
-{ assert(value.GetType() == VAR_INT); value->_int = number; }
-NEOS_FORCEINLINE static void FusionUpdate(ValueRef value, NS_FLOAT number)
-{ assert(value.GetType() == VAR_FLOAT); value->_float = number; }
-NEOS_FORCEINLINE void FusionArithmeticStore(ValueRef value, NS_INT number, bool update)
-{ if (update) FusionUpdate(value, number); else StoreNumberInt(value, number); }
-NEOS_FORCEINLINE void FusionArithmeticStore(ValueRef value, NS_FLOAT number, bool update)
-{ if (update) FusionUpdate(value, number); else StoreNumberFloat(value, number); }
+NEOS_FORCEINLINE static void FusionArithmeticStore(VarInfo* value, NS_INT number) { value->_int = number; }
+NEOS_FORCEINLINE static void FusionArithmeticStore(VarInfo* value, NS_FLOAT number) { value->_float = number; }
 
 template<OperationCode Operation>
-NEOS_FORCEINLINE bool ExecuteFusionStep(const ProgramFusion& plan, unsigned i, ValueRef* bases,
+NEOS_FORCEINLINE bool ExecuteFusionStep(const ProgramFusion& plan, unsigned i, VarInfo* const* bases,
     const SVMOperation* code, const SVMOperation*& next)
 {
         const SVMOperation& op = plan.operations[i];
         const ProgramFusion::Address* address = plan.addresses[i];
-        ValueRef receiver = bases[address[0].base] + address[0].slot;
-        ValueRef left = bases[address[1].base] + address[1].slot;
-        ValueRef right = bases[address[2].base] + address[2].slot;
-        ValueRef value = bases[address[3].base] + address[3].slot;
+        VarInfo* receiver = bases[address[0].base] + address[0].slot;
+        VarInfo* left = bases[address[1].base] + address[1].slot;
+        VarInfo* right = bases[address[2].base] + address[2].slot;
+        VarInfo* value = bases[address[3].base] + address[3].slot;
         bool jump = false;
         // 실패할 수 있는 연산만 원래 IP를 기록한다. 성공한 그룹은 끝에서 한 번 이동한다.
 #define NEOCORE_FUSION_FAULT_LOCATION() (_pCodeCurrent = code + i + 1)
@@ -50,36 +44,36 @@ NEOS_FORCEINLINE bool ExecuteFusionStep(const ProgramFusion& plan, unsigned i, V
         case NOP_I64_ARITH:
             switch (static_cast<ArithmeticOp>(sub))
             {
-            case ArithmeticOp::Add: FusionArithmeticStore(value, NeoIntAdd(left->_int, right->_int), ((plan.update & ~plan.elide) & (1u << i)) != 0); break;
-            case ArithmeticOp::Sub: FusionArithmeticStore(value, NeoIntSub(left->_int, right->_int), ((plan.update & ~plan.elide) & (1u << i)) != 0); break;
-            case ArithmeticOp::Mul: FusionArithmeticStore(value, NeoIntMul(left->_int, right->_int), ((plan.update & ~plan.elide) & (1u << i)) != 0); break;
+            case ArithmeticOp::Add: FusionArithmeticStore(value, NeoIntAdd(left->_int, right->_int)); break;
+            case ArithmeticOp::Sub: FusionArithmeticStore(value, NeoIntSub(left->_int, right->_int)); break;
+            case ArithmeticOp::Mul: FusionArithmeticStore(value, NeoIntMul(left->_int, right->_int)); break;
             case ArithmeticOp::Div: NEOCORE_FUSION_FAULT_LOCATION();
                 if (!CheckIntegerDivision(left->_int, right->_int)) return false;
-                FusionArithmeticStore(value, left->_int / right->_int, ((plan.update & ~plan.elide) & (1u << i)) != 0); break;
+                FusionArithmeticStore(value, left->_int / right->_int); break;
             case ArithmeticOp::Mod: NEOCORE_FUSION_FAULT_LOCATION();
                 if (!CheckIntegerDivision(left->_int, right->_int)) return false;
-                FusionArithmeticStore(value, left->_int % right->_int, ((plan.update & ~plan.elide) & (1u << i)) != 0); break;
-            case ArithmeticOp::BitAnd: FusionArithmeticStore(value, left->_int & right->_int, ((plan.update & ~plan.elide) & (1u << i)) != 0); break;
-            case ArithmeticOp::BitOr: FusionArithmeticStore(value, left->_int | right->_int, ((plan.update & ~plan.elide) & (1u << i)) != 0); break;
-            case ArithmeticOp::BitXor: FusionArithmeticStore(value, left->_int ^ right->_int, ((plan.update & ~plan.elide) & (1u << i)) != 0); break;
+                FusionArithmeticStore(value, left->_int % right->_int); break;
+            case ArithmeticOp::BitAnd: FusionArithmeticStore(value, left->_int & right->_int); break;
+            case ArithmeticOp::BitOr: FusionArithmeticStore(value, left->_int | right->_int); break;
+            case ArithmeticOp::BitXor: FusionArithmeticStore(value, left->_int ^ right->_int); break;
             case ArithmeticOp::ShiftLeft: NEOCORE_FUSION_FAULT_LOCATION();
                 if (!CheckShiftCount(right->_int)) return false;
-                FusionArithmeticStore(value, NeoShiftLeft(left->_int, right->_int), ((plan.update & ~plan.elide) & (1u << i)) != 0); break;
+                FusionArithmeticStore(value, NeoShiftLeft(left->_int, right->_int)); break;
             case ArithmeticOp::ShiftRight: NEOCORE_FUSION_FAULT_LOCATION();
                 if (!CheckShiftCount(right->_int)) return false;
-                FusionArithmeticStore(value, NeoShiftRight(left->_int, right->_int), ((plan.update & ~plan.elide) & (1u << i)) != 0); break;
-            case ArithmeticOp::Neg: FusionArithmeticStore(value, NeoIntNeg(left->_int), ((plan.update & ~plan.elide) & (1u << i)) != 0); break;
+                FusionArithmeticStore(value, NeoShiftRight(left->_int, right->_int)); break;
+            case ArithmeticOp::Neg: FusionArithmeticStore(value, NeoIntNeg(left->_int)); break;
             default: NEOCORE_FUSION_FAULT_LOCATION(); SetError(RTE_UNKNOWN_OP); return false;
             }
             break;
         case NOP_F64_ARITH:
             switch (static_cast<ArithmeticOp>(sub))
             {
-            case ArithmeticOp::Add: FusionArithmeticStore(value, left->_float + right->_float, ((plan.update & ~plan.elide) & (1u << i)) != 0); break;
-            case ArithmeticOp::Sub: FusionArithmeticStore(value, left->_float - right->_float, ((plan.update & ~plan.elide) & (1u << i)) != 0); break;
-            case ArithmeticOp::Mul: FusionArithmeticStore(value, left->_float * right->_float, ((plan.update & ~plan.elide) & (1u << i)) != 0); break;
-            case ArithmeticOp::Div: FusionArithmeticStore(value, left->_float / right->_float, ((plan.update & ~plan.elide) & (1u << i)) != 0); break;
-            case ArithmeticOp::Neg: FusionArithmeticStore(value, -left->_float, ((plan.update & ~plan.elide) & (1u << i)) != 0); break;
+            case ArithmeticOp::Add: FusionArithmeticStore(value, left->_float + right->_float); break;
+            case ArithmeticOp::Sub: FusionArithmeticStore(value, left->_float - right->_float); break;
+            case ArithmeticOp::Mul: FusionArithmeticStore(value, left->_float * right->_float); break;
+            case ArithmeticOp::Div: FusionArithmeticStore(value, left->_float / right->_float); break;
+            case ArithmeticOp::Neg: FusionArithmeticStore(value, -left->_float); break;
             default: NEOCORE_FUSION_FAULT_LOCATION(); SetError(RTE_UNKNOWN_OP); return false;
             }
             break;
@@ -154,8 +148,6 @@ NEOS_FORCEINLINE bool ExecuteFusionStep(const ProgramFusion& plan, unsigned i, V
         NEOCORE_FUSION_ARRAY_STORE(F32, Float32)
         default: NEOCORE_FUSION_FAULT_LOCATION(); SetError(RTE_UNKNOWN_OP); return false;
         }
-        // 임시 저장을 생략해도 원래 슬롯의 참조 해제 시점은 지킨다.
-        if ((plan.elide & (1u << i)) && !(plan.update & (1u << i))) Var_Release(GetVarPtr_L(op.n1));
         if (jump) next += op.n1;
 #undef NEOCORE_FUSION_FAULT_LOCATION
     return true;
@@ -163,9 +155,9 @@ NEOS_FORCEINLINE bool ExecuteFusionStep(const ProgramFusion& plan, unsigned i, V
 
 static NEOS_NOINLINE void ExecuteTypedFusion(CNeoVMWorker* worker, const ProgramFusion& plan)
 {
-    BoundaryValue values[ProgramFusion::MaxSteps];
+    VarInfo values[ProgramFusion::MaxSteps];
     // 상수 영역이 비어 있어도 기준 주소만 구한다. 0번 원소를 조회하지 않는다.
-    ValueRef bases[] = { worker->m_pVarGlobal_Pointer, worker->m_pVarStack_Pointer, values };
+    VarInfo* const bases[] = { worker->m_pVarGlobal_Pointer, worker->m_pVarStack_Pointer, values };
     const SVMOperation* code = reinterpret_cast<const SVMOperation*>(worker->_pCodeBegin) + plan.start;
     const SVMOperation* next = code + plan.count;
     for (unsigned i = 0; i < plan.count; ++i)
@@ -176,9 +168,9 @@ static NEOS_NOINLINE void ExecuteTypedFusion(CNeoVMWorker* worker, const Program
 template<OperationCode First, OperationCode Second>
 static NEOS_NOINLINE void ExecuteTypedFusionPair(CNeoVMWorker* worker, const ProgramFusion& plan)
 {
-    BoundaryValue values[ProgramFusion::MaxSteps];
+    VarInfo values[ProgramFusion::MaxSteps];
     // 상수 영역이 비어 있어도 기준 주소만 구한다. 0번 원소를 조회하지 않는다.
-    ValueRef bases[] = { worker->m_pVarGlobal_Pointer, worker->m_pVarStack_Pointer, values };
+    VarInfo* const bases[] = { worker->m_pVarGlobal_Pointer, worker->m_pVarStack_Pointer, values };
     const SVMOperation* code = reinterpret_cast<const SVMOperation*>(worker->_pCodeBegin) + plan.start;
     const SVMOperation* next = code + plan.count;
     for (unsigned i = 0; i < plan.count; i += 2)
@@ -189,21 +181,12 @@ static NEOS_NOINLINE void ExecuteTypedFusionPair(CNeoVMWorker* worker, const Pro
     worker->_pCodeCurrent = next;
 }
 
-// 두 숫자 연산만 있는 지역 슬롯 그룹은 범용 BoundaryValue 작업 배열을 만들지 않는다.
-// 중간값은 C++ 숫자로 전달하되, 원래 목적지의 참조 해제와 사용자 변수 쓰기는 유지한다.
-NEOS_FORCEINLINE static NS_INT FusionNumber(ValueRef value, NS_INT*) { return value->_int; }
-NEOS_FORCEINLINE static NS_FLOAT FusionNumber(ValueRef value, NS_FLOAT*) { return value->_float; }
-// 참조 해제가 필요한 목적지는 그룹 전체를 기존 실행기로 보낸 뒤 이 경로에 들어온다.
-NEOS_FORCEINLINE static void FusionStore(ValueRef value, NS_INT number)
-{
-    assert(!value.IsAllocType());
-    value.SetType(VAR_INT); value->_int = number;
-}
-NEOS_FORCEINLINE static void FusionStore(ValueRef value, NS_FLOAT number)
-{
-    assert(!value.IsAllocType());
-    value.SetType(VAR_FLOAT); value->_float = number;
-}
+// 두 숫자 연산만 있는 지역 슬롯 그룹은 임시 payload 배열을 만들지 않는다.
+// 중간값은 C++ 숫자로 전달하되, 사용자 변수 쓰기는 유지한다.
+NEOS_FORCEINLINE static NS_INT FusionNumber(const VarInfo* value, NS_INT*) { return value->_int; }
+NEOS_FORCEINLINE static NS_FLOAT FusionNumber(const VarInfo* value, NS_FLOAT*) { return value->_float; }
+NEOS_FORCEINLINE static void FusionStore(VarInfo* value, NS_INT number) { value->_int = number; }
+NEOS_FORCEINLINE static void FusionStore(VarInfo* value, NS_FLOAT number) { value->_float = number; }
 
 template<OperationCode Operation>
 NEOS_FORCEINLINE bool FusionArithmetic(NS_INT left, NS_INT right, NS_INT& result)
@@ -262,16 +245,9 @@ NEOS_FORCEINLINE static bool FusionArithmeticCanFail()
 template<OperationCode First, OperationCode Second, typename Number>
 static NEOS_NOINLINE void ExecuteScalarFusionPair(CNeoVMWorker* worker, const ProgramFusion& plan)
 {
-    ValueRef stack = worker->m_pVarStack_Pointer;
+    VarInfo* stack = worker->m_pVarStack_Pointer;
     const SVMOperation& first = plan.operations[0];
     const SVMOperation& second = plan.operations[1];
-    // 원래 해제 순서를 보존하며, 흔한 숫자 경로에는 해제 호출용 레지스터 보관을 남기지 않는다.
-    if ((!(plan.update & 1) && !IsFixedArithmetic(first) && stack[first.n1].IsAllocType()) ||
-        (!(plan.update & 2) && !IsFixedArithmetic(second) && stack[second.n1].IsAllocType()))
-    {
-        ExecuteTypedFusionPair<First, Second>(worker, plan);
-        return;
-    }
     const SVMOperation* code = reinterpret_cast<const SVMOperation*>(worker->_pCodeBegin) + plan.start;
     Number middle, result;
     const Number left = FusionNumber(stack + plan.addresses[0][1].slot, static_cast<Number*>(nullptr));
@@ -279,9 +255,8 @@ static NEOS_NOINLINE void ExecuteScalarFusionPair(CNeoVMWorker* worker, const Pr
         FusionNumber(stack + plan.addresses[0][2].slot, static_cast<Number*>(nullptr));
     if (FusionArithmeticCanFail<First>()) worker->_pCodeCurrent = code + 1;
     if (!worker->FusionArithmetic<First>(left, right, middle)) return;
-    if (plan.elide & 1) { if (!(plan.update & 1)) stack[first.n1].ClearType(); }
-    else if (plan.update & 1) FusionUpdate(stack + first.n1, middle);
-    else worker->FusionStore(stack + first.n1, middle);
+    // 생략된 임시는 숫자 슬롯이라 쓰지 않아도 남는 참조가 없다.
+    if (!(plan.elide & 1)) FusionStore(stack + first.n1, middle);
     // 두 연산 사이에는 호출·컨테이너 저장이 없으므로 같은 슬롯의 결과를 직접 전달할 수 있다.
     const Number nextLeft = plan.addresses[1][1].base == 2 ? middle :
         FusionNumber(stack + plan.addresses[1][1].slot, static_cast<Number*>(nullptr));
@@ -289,9 +264,7 @@ static NEOS_NOINLINE void ExecuteScalarFusionPair(CNeoVMWorker* worker, const Pr
         plan.addresses[1][2].base == 2 ? middle : FusionNumber(stack + plan.addresses[1][2].slot, static_cast<Number*>(nullptr));
     if (FusionArithmeticCanFail<Second>()) worker->_pCodeCurrent = code + 2;
     if (!worker->FusionArithmetic<Second>(nextLeft, nextRight, result)) return;
-    if (plan.elide & 2) { if (!(plan.update & 2)) stack[second.n1].ClearType(); }
-    else if (plan.update & 2) FusionUpdate(stack + second.n1, result);
-    else worker->FusionStore(stack + second.n1, result);
+    if (!(plan.elide & 2)) FusionStore(stack + second.n1, result);
     worker->_pCodeCurrent = code + 2;
 }
 

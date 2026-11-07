@@ -92,10 +92,10 @@ inline bool FusionMayReadAfter(const std::vector<SVMOperation>& code, int begin,
         unsigned reads = io.reads, writes = io.writes;
         if (!io.supported)
         {
-            switch (op.op == NOP_SLOT_COPY ? static_cast<OperationCode>(NOP_MOV) : op.Code())
+            switch (op.op == NOP_MOV || op.op == NOP_LOADK || op.op == NOP_VAR_CLEAR ? static_cast<OperationCode>(op.op) : op.Code())
             {
-            case NOP_MOV: reads = 2; writes = 1; break;
-            case NOP_MOVI: case NOP_MOVF: case NOP_LOADK: case NOP_VAR_CLEAR: writes = 1; break;
+            case NOP_MOV: reads = IsImmediateMove(op) ? 0 : 2; writes = 1; break;
+            case NOP_LOADK: case NOP_VAR_CLEAR: writes = 1; break;
             case NOP_JMP: break;
             case NOP_JMP_FALSE: case NOP_JMP_TRUE: reads = 2; break;
             case OP_JMP_EQUAL2: case OP_JMP_LESS: case OP_JMP_LESS_EQ: case OP_JMP_NEQUAL:
@@ -206,8 +206,6 @@ inline std::vector<ProgramFusion> BuildTypedFusions(const std::vector<SVMOperati
         const int begin = function._codePtr / sizeof(SVMOperation);
         const auto next = std::upper_bound(starts.begin(), starts.end(), begin);
         const int end = next == starts.end() ? static_cast<int>(code.size()) : *next;
-        const int temporaryBegin = 1 + function._argsCount + function._localVarCount;
-        const int temporaryEnd = temporaryBegin + function._localTempMax;
         for (int at = begin; at < end;)
         {
             ProgramFusion plan; plan.start = at;
@@ -232,7 +230,8 @@ inline std::vector<ProgramFusion> BuildTypedFusions(const std::vector<SVMOperati
             for (unsigned i = 0; i < plan.count; ++i)
             {
                 const SVMOperation& op = plan.operations[i];
-                if (FusionOperation(op).writes != 1 || !FusionLocal(op, 0) || op.n1 < temporaryBegin || op.n1 >= temporaryEnd) continue;
+                // 임시 슬롯 여부는 컴파일러가 배치표에 기록한다. 번호 구간으로 추정하지 않는다.
+                if (FusionOperation(op).writes != 1 || !FusionLocal(op, 0) || !function.IsTemporarySlot(op.n1)) continue;
                 bool overwritten = false;
                 for (unsigned n = i + 1; n < plan.count; ++n)
                     if (FusionOperation(plan.operations[n]).writes == 1 && FusionLocal(plan.operations[n], 0) &&

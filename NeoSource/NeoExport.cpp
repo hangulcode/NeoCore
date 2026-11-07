@@ -29,7 +29,30 @@ static const char* g_sExportCompileErrors[ECE_COUNT] =
 	"Invalid variable type while writing bytecode (%d)",
 };
 
-u8 ChangeIndex(int staticCount, int localCount, int curFunStatkSize, SVMOperation& op, int argIndex)
+// 함수 프레임의 최종 슬롯 배치. 컴파일 중 번호(지역 1.., 임시 10000..)를 소유 슬롯이
+// 인자 바로 뒤에 연속으로 오는 실행 번호로 바꾼다. 숫자 슬롯은 그 뒤에 놓인다.
+struct FrameLayout
+{
+	int localAddCount = 0;
+	std::vector<short> perm;   // 컴파일 프레임 번호 -> 실행 프레임 번호
+	std::vector<u8> slotInfo;  // 실행 프레임 번호 -> 정책 | 임시 표시
+	int ownedCount = 0;
+};
+
+// 컴파일 중 번호를 재배치 전 프레임 번호로 바꾼다. 임시는 지역 뒤에 이어진다.
+static int CompileFrameSlot(int value, int localCount)
+{
+	return value >= COMPILE_LOCALTMP_VAR_BEGIN ? value - COMPILE_LOCALTMP_VAR_BEGIN + localCount : value;
+}
+
+static short PermuteFrameSlot(const FrameLayout* layout, int frameSlot)
+{
+	if (layout != nullptr && frameSlot > 0 && frameSlot < static_cast<int>(layout->perm.size()))
+		return layout->perm[frameSlot];
+	return CompileShort("frame slot", frameSlot);
+}
+
+u8 ChangeIndex(int staticCount, int localCount, int curFunStatkSize, SVMOperation& op, int argIndex, const FrameLayout* layout = nullptr)
 {
 	short* n = nullptr;
 	if (argIndex == 1)		{ n = &op.n1; }
@@ -67,25 +90,138 @@ u8 ChangeIndex(int staticCount, int localCount, int curFunStatkSize, SVMOperatio
 			*n = (*n - COMPILE_STATIC_VAR_BEGIN);
 			return 0;
 		}
-		*n = CompileShort("temporary stack slot", *n - COMPILE_LOCALTMP_VAR_BEGIN + localCount);
+		*n = PermuteFrameSlot(layout, CompileShort("temporary stack slot", *n - COMPILE_LOCALTMP_VAR_BEGIN + localCount));
 		if (argIndex == 1) return NEOS_ARG_N1_LOCAL;
 		else if (argIndex == 2) return NEOS_ARG_N2_LOCAL;
 		else if (argIndex == 3) return NEOS_ARG_N3_LOCAL;
 	}
+	*n = PermuteFrameSlot(layout, *n);
 	if (argIndex == 1) return NEOS_ARG_N1_LOCAL;
 	else if (argIndex == 2) return NEOS_ARG_N2_LOCAL;
 	else if (argIndex == 3) return NEOS_ARG_N3_LOCAL;
 	return 0;
 }
 
-static bool ChangeRangeOperand(int staticCount, int localCount, int curFunStatkSize, short& operand)
+static bool ChangeRangeOperand(int staticCount, int localCount, int curFunStatkSize, short& operand, const FrameLayout* layout)
 {
 	SVMOperation temp;
 	memset(&temp, 0, sizeof(temp));
 	temp.n1 = operand;
-	const bool isLocal = (ChangeIndex(staticCount, localCount, curFunStatkSize, temp, 1) & NEOS_ARG_N1_LOCAL) != 0;
+	const bool isLocal = (ChangeIndex(staticCount, localCount, curFunStatkSize, temp, 1, layout) & NEOS_ARG_N1_LOCAL) != 0;
 	operand = temp.n1;
 	return isLocal;
+}
+
+// 연속 슬롯 묶음(for/foreach 숨은 지역, 집계 명령의 창)은 한 블록으로 움직인다.
+// 묶음 안에 소유 슬롯이 하나라도 있으면 묶음 전체가 소유 구간에 놓인다.
+static void CollectFrameGroups(SFunctions& funs, SFunctionInfo& fi, std::vector<int>& groupOf, std::vector<int>& groupSize)
+{
+	const int localCount = fi._localVarCount;
+	const int frameCount = static_cast<int>(groupOf.size());
+	auto AddGroup = [&](int first, int count)
+	{
+		if (first <= 0 || count <= 1 || first + count > frameCount) return;
+		const int id = static_cast<int>(groupSize.size());
+		groupSize.push_back(count);
+		for (int i = 0; i < count; ++i) groupOf[first + i] = id;
+	};
+	CNArchive arRead((u8*)funs._codeFinal.GetData() + fi._iCode_Begin, fi._iCode_Size);
+	arRead.SetPointer(0, SEEK_SET);
+	SVMOperation v;
+	while (arRead.GetBufferOffset() < arRead.GetBufferSize())
+	{
+		arRead.Read(&v, sizeof(v));
+		if (v.op == NOP_JMP_FOR)
+		{
+			if (v.n2 > 0 && v.n2 < COMPILE_LOCALTMP_VAR_BEGIN) AddGroup(v.n2, 4);
+			continue;
+		}
+		if (v.op == NOP_JMP_FOREACH)
+		{
+			if (v.n3 > 0 && v.n3 < COMPILE_LOCALTMP_VAR_BEGIN) AddGroup(v.n3, 4);
+			continue;
+		}
+		const AggregateOpInfo* aggregate = GetAggregateOpInfo(v.Code());
+		if (aggregate != nullptr && aggregate->shape == AggregateOpShape::Window &&
+			v.n2 > 0 && v.n2 < COMPILE_STATIC_VAR_BEGIN)
+			AddGroup(CompileFrameSlot(v.n2, localCount), aggregate->arity);
+	}
+}
+
+static FrameLayout BuildFrameLayout(SFunctions& funs, SFunctionInfo& fi)
+{
+	FrameLayout layout;
+	const int argCount = static_cast<int>(fi._args.size());
+	const int localCount = fi._localVarCount;
+	const int frameCount = 1 + argCount + localCount + fi._localTempMax;
+	layout.localAddCount = frameCount;
+	std::vector<StoragePolicy> policy(frameCount, StoragePolicy::Boxed);
+	std::vector<u8> temporary(frameCount, 0);
+	policy[0] = PolicyOf(fi._returnStorage.kind);
+	for (int slot = 1 + argCount + localCount; slot < frameCount; ++slot) temporary[slot] = 1;
+	for (const auto& entry : fi._storage)
+	{
+		if (entry.first <= 0 || entry.first >= COMPILE_STATIC_VAR_BEGIN) continue;
+		const int frameSlot = CompileFrameSlot(entry.first, localCount);
+		if (frameSlot > 0 && frameSlot < frameCount) policy[frameSlot] = PolicyOf(entry.second.kind);
+	}
+	// 인자 슬롯의 종류는 서명이 정한다. 저장표에 없더라도 소유 여부를 알 수 있다.
+	for (int i = 0; i < argCount && i < static_cast<int>(fi._parameterStorage.size()); ++i)
+		if (policy[1 + i] == StoragePolicy::Boxed) policy[1 + i] = PolicyOf(fi._parameterStorage[i].kind);
+
+	std::vector<int> groupOf(frameCount, -1), groupSize;
+	CollectFrameGroups(funs, fi, groupOf, groupSize);
+
+	struct Block { int first; int count; bool owned; int order; };
+	std::vector<Block> blocks;
+	for (int slot = 1 + argCount; slot < frameCount;)
+	{
+		Block block;
+		block.first = slot;
+		block.count = groupOf[slot] >= 0 ? groupSize[groupOf[slot]] : 1;
+		if (slot + block.count > frameCount) block.count = frameCount - slot;
+		block.owned = false;
+		block.order = 16;
+		for (int i = 0; i < block.count; ++i)
+		{
+			const StoragePolicy p = policy[slot + i];
+			if (p != StoragePolicy::Payload)
+			{
+				block.owned = true;
+				block.order = (std::min)(block.order, static_cast<int>(p));
+			}
+		}
+		blocks.push_back(block);
+		slot += block.count;
+	}
+	// 소유 블록은 정책 순, 그 안에서는 원래 순서를 유지한다. 숫자 블록은 원래 순서 그대로 뒤에 둔다.
+	std::stable_sort(blocks.begin(), blocks.end(), [](const Block& a, const Block& b)
+	{
+		if (a.owned != b.owned) return a.owned;
+		if (a.owned && a.order != b.order) return a.order < b.order;
+		return false;
+	});
+
+	layout.perm.assign(frameCount, 0);
+	layout.slotInfo.assign(frameCount, 0);
+	for (int slot = 0; slot <= argCount && slot < frameCount; ++slot)
+	{
+		layout.perm[slot] = static_cast<short>(slot);
+		layout.slotInfo[slot] = static_cast<u8>(policy[slot]);
+	}
+	int next = 1 + argCount;
+	for (const Block& block : blocks)
+	{
+		for (int i = 0; i < block.count; ++i)
+		{
+			const int from = block.first + i;
+			layout.perm[from] = static_cast<short>(next);
+			layout.slotInfo[next] = static_cast<u8>(static_cast<u8>(policy[from]) | (temporary[from] ? SLOT_INFO_TEMPORARY : 0));
+			++next;
+		}
+		if (block.owned) layout.ownedCount += block.count;
+	}
+	return layout;
 }
 struct STempDebug
 {
@@ -105,7 +241,11 @@ std::string GetFunctionName(SFunctions& funs, short nID)
 
 #include "NeoStorageCompiler.inl"
 
-void WriteFun(CArchiveRdWC& arText, CNArchive& ar, SFunctions& funs, SFunctionInfo& fi, SVars& vars, std::map<int, SFunctionTableForWriter>& funPos, std::vector< debug_info>& debugInfo)
+// 내보내기가 종류를 정하지 못해 범용 복사를 남긴 명령 수. 테스트와 진단이 읽는다.
+static int g_exportGenericCopies = 0;
+int ExportGenericCopyCount() { return g_exportGenericCopies; }
+
+void WriteFun(CArchiveRdWC& arText, CNArchive& ar, SFunctions& funs, SFunctionInfo& fi, SVars& vars, std::map<int, SFunctionTableForWriter>& funPos, std::vector< debug_info>& debugInfo, const FrameLayout& layout)
 {
 	int iOPCount = 0;
 
@@ -127,13 +267,16 @@ void WriteFun(CArchiveRdWC& arText, CNArchive& ar, SFunctions& funs, SFunctionIn
 	CheckCompileRange("function stack slots", curFunStatkSize, 0, SHRT_MAX);
 	for (const auto& entry : fi._storage)
 	{
+		if (entry.first <= 0 || entry.first >= COMPILE_STATIC_VAR_BEGIN) continue;
 		SlotLayout slot;
-		slot.slot = CompileShort("storage slot", entry.first >= COMPILE_LOCALTMP_VAR_BEGIN
-			? entry.first - COMPILE_LOCALTMP_VAR_BEGIN + fi._localVarCount : entry.first);
+		slot.slot = PermuteFrameSlot(&layout, CompileFrameSlot(entry.first, fi._localVarCount));
 		slot.typeId = entry.second.typeId;
 		slot.kind = entry.second.kind;
 		fun._storage.push_back(slot);
 	}
+	std::sort(fun._storage.begin(), fun._storage.end(), [](const SlotLayout& a, const SlotLayout& b) { return a.slot < b.slot; });
+	fun._slotInfo = layout.slotInfo;
+	fun._ownedCount = layout.ownedCount;
 
 	funPos[fi._funID] = fun;
 
@@ -152,6 +295,41 @@ void WriteFun(CArchiveRdWC& arText, CNArchive& ar, SFunctions& funs, SFunctionIn
 	SVMOperation v;
 	memset(&v, 0, sizeof(v));
 
+	// 호출 창 슬롯의 종류는 PREPARE_CALL이 고른 호출 계획이 정한다. 다음 PREPARE_CALL까지 유지되므로
+	// 호출 뒤의 반환 슬롯 읽기도 같은 계획으로 해석한다.
+	const CompileCallStorage* activeCall = nullptr;
+	auto KindOf = [&](int n) -> SlotKind
+	{
+		if (n == -1) return SlotKind::Boxed;
+		if (n == STACK_POS_RETURN || n == COMPILE_CALLARG_VAR_BEGIN)
+			return activeCall ? activeCall->returnType.kind : SlotKind::Boxed;
+		if (n > COMPILE_CALLARG_VAR_BEGIN)
+		{
+			const int argument = n - COMPILE_CALLARG_VAR_BEGIN - 1;
+			return activeCall && argument < static_cast<int>(activeCall->types.size()) ? activeCall->types[argument].kind : SlotKind::Boxed;
+		}
+		if (n <= COMPILE_GLOBAL_VAR_BEGIN)
+		{
+			const auto found = vars._globalStorage.find(n);
+			return found == vars._globalStorage.end() ? SlotKind::Boxed : found->second.kind;
+		}
+		if (IsCompileConstant(n))
+		{
+			const int index = StaticPoolIndex(n);
+			if (index < 0 || index >= static_cast<int>(funs._staticVars.size())) return SlotKind::Boxed;
+			switch (funs._staticVars[index].GetType())
+			{
+			case VAR_INT: return SlotKind::Int;
+			case VAR_FLOAT: return SlotKind::Float;
+			case VAR_BOOL: return SlotKind::Bool;
+			case VAR_STRING: return SlotKind::String;
+			default: return SlotKind::Boxed;
+			}
+		}
+		const auto found = fi._storage.find(n);
+		return found == fi._storage.end() ? SlotKind::Boxed : found->second.kind;
+	};
+
 	while (arRead.GetBufferOffset() < arRead.GetBufferSize())
 	{
 		if (arText._debug)
@@ -162,9 +340,12 @@ void WriteFun(CArchiveRdWC& arText, CNArchive& ar, SFunctions& funs, SFunctionIn
 		}
 		arRead.Read(&v, sizeof(v));
 		u8 argFlag = v.argFlag;
-		const auto& storage = v.n1 <= COMPILE_GLOBAL_VAR_BEGIN ? vars._globalStorage : fi._storage;
-		const auto destination = storage.find(v.n1);
-		const SlotKind destinationKind = destination == storage.end() ? SlotKind::Boxed : destination->second.kind;
+		// 종류는 명령 번호를 바꾸기 전의 컴파일 번호로 찾는다.
+		const bool immediateMove = IsImmediateMove(v);
+		const bool slotMove = v.op == NOP_MOV && !immediateMove;
+		const SlotKind destinationKind = KindOf(v.n1);
+		const SlotKind sourceKind = slotMove ? KindOf(v.n2) : SlotKind::Boxed;
+		const bool sourceIsCallResult = slotMove && (v.n2 == STACK_POS_RETURN || v.n2 == COMPILE_CALLARG_VAR_BEGIN);
 
 		iOPCount++;
 
@@ -174,22 +355,24 @@ void WriteFun(CArchiveRdWC& arText, CNArchive& ar, SFunctions& funs, SFunctionIn
 		switch (v.Code())
 		{
 
-		case NOP_PREPARE_CALL: break;
+		case NOP_PREPARE_CALL:
+			if (v.n1 >= 0 && static_cast<std::size_t>(v.n1) < fi._calls.size()) activeCall = &fi._calls[v.n1];
+			break;
 		case NOP_MOV:
 		case NOP_LOG_NOT:
-			argFlag |= ChangeIndex(staticCount, localCount, curFunStatkSize, v, 1);
+			argFlag |= ChangeIndex(staticCount, localCount, curFunStatkSize, v, 1, &layout);
 
-			argFlag |= ChangeIndex(staticCount, localCount, curFunStatkSize, v, 2);
+			argFlag |= ChangeIndex(staticCount, localCount, curFunStatkSize, v, 2, &layout);
 			break;
 
-		case NOP_MOVI:
-		case NOP_MOVF:
+		case OP_MOV_IMM_INT:
+		case OP_MOV_IMM_FLOAT:
 		case NOP_LOADK:
-			argFlag |= ChangeIndex(staticCount, localCount, curFunStatkSize, v, 1);
+			argFlag |= ChangeIndex(staticCount, localCount, curFunStatkSize, v, 1, &layout);
 			break;
 
 		case NOP_VAR_CLEAR:
-			argFlag |= ChangeIndex(staticCount, localCount, curFunStatkSize, v, 1);
+			argFlag |= ChangeIndex(staticCount, localCount, curFunStatkSize, v, 1, &layout);
 
 			break;
 
@@ -200,9 +383,9 @@ void WriteFun(CArchiveRdWC& arText, CNArchive& ar, SFunctions& funs, SFunctionIn
 		case OP_EQUAL2:	// ==
 		case OP_NEQUAL:	// !=
 		case NOP_STR_ADD: // ..
-			argFlag |= ChangeIndex(staticCount, localCount, curFunStatkSize, v, 1);
-			argFlag |= ChangeIndex(staticCount, localCount, curFunStatkSize, v, 2);
-			argFlag |= ChangeIndex(staticCount, localCount, curFunStatkSize, v, 3);
+			argFlag |= ChangeIndex(staticCount, localCount, curFunStatkSize, v, 1, &layout);
+			argFlag |= ChangeIndex(staticCount, localCount, curFunStatkSize, v, 2, &layout);
+			argFlag |= ChangeIndex(staticCount, localCount, curFunStatkSize, v, 3, &layout);
 
 			break;
 
@@ -211,7 +394,7 @@ void WriteFun(CArchiveRdWC& arText, CNArchive& ar, SFunctions& funs, SFunctionIn
 			break;
 		case NOP_JMP_FALSE:
 		case NOP_JMP_TRUE:
-			argFlag |= ChangeIndex(staticCount, localCount, curFunStatkSize, v, 2);
+			argFlag |= ChangeIndex(staticCount, localCount, curFunStatkSize, v, 2, &layout);
 			break;
 
 		case OP_JMP_GREAT:		// >
@@ -220,61 +403,61 @@ void WriteFun(CArchiveRdWC& arText, CNArchive& ar, SFunctions& funs, SFunctionIn
 		case OP_JMP_LESS_EQ:	// <=
 		case OP_JMP_EQUAL2:	// ==
 		case OP_JMP_NEQUAL:	// !=
-			argFlag |= ChangeIndex(staticCount, localCount, curFunStatkSize, v, 2);
-			argFlag |= ChangeIndex(staticCount, localCount, curFunStatkSize, v, 3);
+			argFlag |= ChangeIndex(staticCount, localCount, curFunStatkSize, v, 2, &layout);
+			argFlag |= ChangeIndex(staticCount, localCount, curFunStatkSize, v, 3, &layout);
 
 			break;
 		case NOP_JMP_FOR:	// 
-			argFlag |= ChangeIndex(staticCount, localCount, curFunStatkSize, v, 2);
-			argFlag |= ChangeIndex(staticCount, localCount, curFunStatkSize, v, 3);
+			argFlag |= ChangeIndex(staticCount, localCount, curFunStatkSize, v, 2, &layout);
+			argFlag |= ChangeIndex(staticCount, localCount, curFunStatkSize, v, 3, &layout);
 
 			break;
 		case NOP_JMP_FOREACH:	//
-			argFlag |= ChangeIndex(staticCount, localCount, curFunStatkSize, v, 2);
-			argFlag |= ChangeIndex(staticCount, localCount, curFunStatkSize, v, 3);
+			argFlag |= ChangeIndex(staticCount, localCount, curFunStatkSize, v, 2, &layout);
+			argFlag |= ChangeIndex(staticCount, localCount, curFunStatkSize, v, 3, &layout);
 
 			break;
 		case NOP_SWITCH:	// n1 = switch table index (변환 금지), n2 = 조건식 위치
-			argFlag |= ChangeIndex(staticCount, localCount, curFunStatkSize, v, 2);
+			argFlag |= ChangeIndex(staticCount, localCount, curFunStatkSize, v, 2, &layout);
 			break;
 		case NOP_TOSTRING:
 		case NOP_TOINT:
 		case NOP_TOFLOAT:
 		case NOP_TOSIZE:
-			argFlag |= ChangeIndex(staticCount, localCount, curFunStatkSize, v, 1);
-			argFlag |= ChangeIndex(staticCount, localCount, curFunStatkSize, v, 2);
+			argFlag |= ChangeIndex(staticCount, localCount, curFunStatkSize, v, 1, &layout);
+			argFlag |= ChangeIndex(staticCount, localCount, curFunStatkSize, v, 2, &layout);
 
 			break;
 		case NOP_SLEEP:
-			argFlag |= ChangeIndex(staticCount, localCount, curFunStatkSize, v, 2);
+			argFlag |= ChangeIndex(staticCount, localCount, curFunStatkSize, v, 2, &layout);
 			break;
 
 		case NOP_FMOV1:
-			argFlag |= ChangeIndex(staticCount, localCount, curFunStatkSize, v, 1);
+			argFlag |= ChangeIndex(staticCount, localCount, curFunStatkSize, v, 1, &layout);
 			break;
 		case NOP_FMOV2:
-			argFlag |= ChangeIndex(staticCount, localCount, curFunStatkSize, v, 1);
+			argFlag |= ChangeIndex(staticCount, localCount, curFunStatkSize, v, 1, &layout);
 
-			argFlag |= ChangeIndex(staticCount, localCount, curFunStatkSize, v, 2);
+			argFlag |= ChangeIndex(staticCount, localCount, curFunStatkSize, v, 2, &layout);
 			break;
 
 		case NOP_CALL:
-			argFlag |= ChangeIndex(staticCount, localCount, curFunStatkSize, v, 3);
+			argFlag |= ChangeIndex(staticCount, localCount, curFunStatkSize, v, 3, &layout);
 			break;
 		case NOP_PTRCALL:
-			argFlag |= ChangeIndex(staticCount, localCount, curFunStatkSize, v, 1);
-			argFlag |= ChangeIndex(staticCount, localCount, curFunStatkSize, v, 2);
+			argFlag |= ChangeIndex(staticCount, localCount, curFunStatkSize, v, 1, &layout);
+			argFlag |= ChangeIndex(staticCount, localCount, curFunStatkSize, v, 2, &layout);
 			break;
 		case NOP_PTRCALL2:
-			argFlag |= ChangeIndex(staticCount, localCount, curFunStatkSize, v, 1);
-			argFlag |= ChangeIndex(staticCount, localCount, curFunStatkSize, v, 3);
+			argFlag |= ChangeIndex(staticCount, localCount, curFunStatkSize, v, 1, &layout);
+			argFlag |= ChangeIndex(staticCount, localCount, curFunStatkSize, v, 3, &layout);
 			break;
 		case NOP_NATIVECALL: // 컴파일에 나오지 않고, LoadVM 에서 NOP_PTRCALL2 인경우 System 함수이름을 찾어서 함수 Index 화
-			argFlag |= ChangeIndex(staticCount, localCount, curFunStatkSize, v, 3);
+			argFlag |= ChangeIndex(staticCount, localCount, curFunStatkSize, v, 3, &layout);
 			break;
 		case NOP_RETURN:
 			v.n2 = CompileShort("return frame layout", fi._funID);
-			argFlag |= ChangeIndex(staticCount, localCount, curFunStatkSize, v, 1);
+			argFlag |= ChangeIndex(staticCount, localCount, curFunStatkSize, v, 1, &layout);
 			if((argFlag & NEOS_ARG_N1_LOCAL) && v.n1 == 0)
 				argFlag |= NEOS_OP_CALL_NORESULT;
 			break;
@@ -282,22 +465,22 @@ void WriteFun(CArchiveRdWC& arText, CNArchive& ar, SFunctions& funs, SFunctionIn
 		//	//ar << optype;
 		//	break;
 		case NOP_TABLE_ALLOC:
-			argFlag |= ChangeIndex(staticCount, localCount, curFunStatkSize, v, 1);
+			argFlag |= ChangeIndex(staticCount, localCount, curFunStatkSize, v, 1, &layout);
 			//ar << optype << v.n1;
 			break;
 		case NOP_CLT_READ:
 		case NOP_CLT_MOV:
 
-				argFlag |= ChangeIndex(staticCount, localCount, curFunStatkSize, v, 1);
+				argFlag |= ChangeIndex(staticCount, localCount, curFunStatkSize, v, 1, &layout);
 
-			argFlag |= ChangeIndex(staticCount, localCount, curFunStatkSize, v, 2);
+			argFlag |= ChangeIndex(staticCount, localCount, curFunStatkSize, v, 2, &layout);
 
-				argFlag |= ChangeIndex(staticCount, localCount, curFunStatkSize, v, 3);
+				argFlag |= ChangeIndex(staticCount, localCount, curFunStatkSize, v, 3, &layout);
 
 			break;
 
 		case NOP_LIST_ALLOC:
-			argFlag |= ChangeIndex(staticCount, localCount, curFunStatkSize, v, 1);
+			argFlag |= ChangeIndex(staticCount, localCount, curFunStatkSize, v, 1, &layout);
 			//ar << optype << v.n1;
 			break;
 /*		case NOP_LIST_MOV:
@@ -307,13 +490,13 @@ void WriteFun(CArchiveRdWC& arText, CNArchive& ar, SFunctions& funs, SFunctionIn
 		case NOP_LIST_MUL2:
 		case NOP_LIST_DIV2:
 		case NOP_LIST_PERSENT2:
-			argFlag |= ChangeIndex(staticCount, localCount, curFunStatkSize, v, 1);
-			argFlag |= ChangeIndex(staticCount, localCount, curFunStatkSize, v, 2);
-			argFlag |= ChangeIndex(staticCount, localCount, curFunStatkSize, v, 3);
+			argFlag |= ChangeIndex(staticCount, localCount, curFunStatkSize, v, 1, &layout);
+			argFlag |= ChangeIndex(staticCount, localCount, curFunStatkSize, v, 2, &layout);
+			argFlag |= ChangeIndex(staticCount, localCount, curFunStatkSize, v, 3, &layout);
 
 			break;*/
 		case NOP_CHANGE_INT:
-			argFlag |= ChangeIndex(staticCount, localCount, curFunStatkSize, v, 1);
+			argFlag |= ChangeIndex(staticCount, localCount, curFunStatkSize, v, 1, &layout);
 			break;
 		case NOP_YIELD:
 			break;
@@ -330,19 +513,19 @@ void WriteFun(CArchiveRdWC& arText, CNArchive& ar, SFunctions& funs, SFunctionIn
 				if (range._ownerFunction == fi._funID)
 				{
 					range._flags &= ~(NEOS_RANGE_LOWER_LOCAL | NEOS_RANGE_UPPER_LOCAL);
-					if (ChangeRangeOperand(staticCount, localCount, curFunStatkSize, range._lower))
+					if (ChangeRangeOperand(staticCount, localCount, curFunStatkSize, range._lower, &layout))
 						range._flags |= NEOS_RANGE_LOWER_LOCAL;
-					if (ChangeRangeOperand(staticCount, localCount, curFunStatkSize, range._upper))
+					if (ChangeRangeOperand(staticCount, localCount, curFunStatkSize, range._upper, &layout))
 						range._flags |= NEOS_RANGE_UPPER_LOCAL;
 				}
 			}
-			argFlag |= ChangeIndex(staticCount, localCount, curFunStatkSize, v, 2);
+			argFlag |= ChangeIndex(staticCount, localCount, curFunStatkSize, v, 2, &layout);
 			break;
 		}
 		case NOP_CLT_WRITE_REF:
-            argFlag |= ChangeIndex(staticCount, localCount, curFunStatkSize, v, 1);
-            argFlag |= ChangeIndex(staticCount, localCount, curFunStatkSize, v, 2);
-            argFlag |= ChangeIndex(staticCount, localCount, curFunStatkSize, v, 3);
+            argFlag |= ChangeIndex(staticCount, localCount, curFunStatkSize, v, 1, &layout);
+            argFlag |= ChangeIndex(staticCount, localCount, curFunStatkSize, v, 2, &layout);
+            argFlag |= ChangeIndex(staticCount, localCount, curFunStatkSize, v, 3, &layout);
             break;
 		case NOP_ERROR:
 			break;
@@ -355,7 +538,7 @@ void WriteFun(CArchiveRdWC& arText, CNArchive& ar, SFunctions& funs, SFunctionIn
 				const unsigned slots = typed ? typed->slots : aggregate->Slots();
 				for (unsigned n = 0; n < 3; ++n)
 					if (slots & (1u << n))
-						argFlag |= ChangeIndex(staticCount, localCount, curFunStatkSize, v, static_cast<int>(n + 1));
+						argFlag |= ChangeIndex(staticCount, localCount, curFunStatkSize, v, static_cast<int>(n + 1), &layout);
 			}
 			else
 			{
@@ -376,27 +559,51 @@ void WriteFun(CArchiveRdWC& arText, CNArchive& ar, SFunctions& funs, SFunctionIn
         if (outgoing >= 0) stackSlotCount = (std::max)(stackSlotCount, curFunStatkSize + outgoing + 1);
         PackArithmeticUpdate(v);
 		// 저장형은 이름이나 실행 중 태그가 아니라 프런트엔드 계약과 임시 슬롯 배치로 결정한다.
+		// 복사·해제 정책은 명령의 하위 4비트에 실어 VM이 실행 중 배치표를 읽지 않게 한다.
+		const StoragePolicy destinationPolicy = PolicyOf(destinationKind);
 		if ((v.op == NOP_I64_ARITH && destinationKind == SlotKind::Int) ||
 			(v.op == NOP_F64_ARITH && destinationKind == SlotKind::Float))
 			v.op = v.op == NOP_I64_ARITH ? NOP_I64_FIXED : NOP_F64_FIXED;
-		else if (v.op == NOP_MOV && destinationKind >= SlotKind::Int && destinationKind < SlotKind::Function)
-			v.SetCode(MakeOperation(NOP_SLOT_COPY, static_cast<unsigned>(destinationKind)));
-		else if ((v.op == NOP_MOVI && destinationKind == SlotKind::Int) || (v.op == NOP_MOVF && destinationKind == SlotKind::Float))
-			v.argFlag |= NEOS_OP_MODIFIER;
+		else if (slotMove)
+		{
+			const StoragePolicy sourcePolicy = PolicyOf(sourceKind);
+			if (destinationPolicy != StoragePolicy::Boxed && sourcePolicy == destinationPolicy)
+			{
+				v.argFlag = static_cast<u8>((v.argFlag & ~NEOS_OP_SUB_MASK) | static_cast<u8>(destinationPolicy));
+				// 호출 결과는 창 슬롯에 남지 않는다. 참조 증감 없이 소유권을 옮기고 원본을 비운다.
+				if (sourceIsCallResult && PolicyOwns(destinationPolicy)) v.argFlag |= NEOS_OP_MODIFIER;
+			}
+			else
+			{
+				v.argFlag = static_cast<u8>((v.argFlag & ~NEOS_OP_SUB_MASK) | MOV_SUB_BOXED);
+				++g_exportGenericCopies;
+			}
+		}
+		else if (immediateMove)
+		{
+			if (destinationPolicy != StoragePolicy::Payload) ++g_exportGenericCopies;
+		}
+		else if (v.op == NOP_LOADK || v.op == NOP_VAR_CLEAR)
+		{
+			if (destinationPolicy == StoragePolicy::Boxed) ++g_exportGenericCopies;
+			v.argFlag = static_cast<u8>((v.argFlag & ~NEOS_OP_SUB_MASK) | static_cast<u8>(destinationPolicy));
+		}
+		else if (v.op == NOP_CHANGE_INT && destinationKind == SlotKind::Int)
+		{
+			// 정수 슬롯은 태그가 없어 바꿀 것이 없다. 점프 거리를 지키려고 빈 명령으로 둔다.
+			memset(&v, 0, sizeof(v));
+			v.SetCode(NOP_NONE);
+		}
 		ar << v;
 	}
-    std::size_t typedSlot = 0;
-    for (int i = 1; i < stackSlotCount; ++i)
-    {
-        SlotKind kind = SlotKind::Boxed;
-        if (typedSlot < fun._storage.size() && fun._storage[typedSlot].slot == i)
-            kind = fun._storage[typedSlot++].kind;
-        if (kind == SlotKind::Int || kind == SlotKind::Float || kind == SlotKind::Bool ||
-            kind == SlotKind::Vector2 || kind == SlotKind::ObjectId || kind == SlotKind::Iterator) continue;
-        SlotCleanup cleanup;
-        cleanup.slot = CompileShort("cleanup slot", i); cleanup.kind = kind;
-        fun._cleanup.push_back(cleanup);
-    }
+	// 디버그 변수 이름도 실행 번호를 따른다.
+	{
+		std::map<int, std::string> names;
+		for (const auto& item : fi._debugVarNames)
+			names[item.first > 0 && item.first < COMPILE_STATIC_VAR_BEGIN
+				? PermuteFrameSlot(&layout, CompileFrameSlot(item.first, localCount)) : item.first] = item.second;
+		fi._debugVarNames.swap(names);
+	}
 	funPos[fi._funID] = std::move(fun);
 	int iNewCodeEnd = ar.GetBufferOffset();
 	fi._iCode_Begin = iNewCodeBegin;
@@ -826,10 +1033,41 @@ bool Write(CArchiveRdWC& arText, CNArchive& ar, SFunctions& funs, SVars& vars)
         return false;
     }
 
+	// 모든 함수의 프레임 배치를 먼저 정한다. 캡처는 부모 프레임(원본)과 익명 함수 프레임(지역)을
+	// 각각의 배치로 바꿔야 하므로 코드를 쓰기 전에 두 배치가 모두 있어야 한다.
+	std::map<int, FrameLayout> layouts;
+	for (SFunctionInfo* fi : funs._funSequence)
+		layouts[fi->_funID] = BuildFrameLayout(funs, *fi);
+	{
+		std::map<int, SFunctionInfo*> parents;
+		const u8* code = static_cast<const u8*>(funs._codeFinal.GetData());
+		for (SFunctionInfo* fi : funs._funSequence)
+			for (int offset = fi->_iCode_Begin; offset < fi->_iCode_Begin + fi->_iCode_Size; offset += sizeof(SVMOperation))
+			{
+				SVMOperation op;
+				memcpy(&op, code + offset, sizeof(op));
+				if (op.Code() == NOP_FMOV1) parents[op.n2] = fi;
+				else if (op.Code() == NOP_FMOV2) parents[op.n3] = fi;
+			}
+		for (SFunctionInfo* fi : funs._funSequence)
+		{
+			if (fi->_captures.empty()) continue;
+			const auto parent = parents.find(fi->_funID);
+			const FrameLayout* parentLayout = parent == parents.end() ? nullptr : &layouts[parent->second->_funID];
+			const int parentLocals = parent == parents.end() ? 0 : parent->second->_localVarCount;
+			const FrameLayout& own = layouts[fi->_funID];
+			for (SClosureCapture& capture : fi->_captures)
+			{
+				capture._sourceSlot = PermuteFrameSlot(parentLayout, CompileFrameSlot(capture._sourceSlot, parentLocals));
+				capture._localSlot = PermuteFrameSlot(&own, CompileFrameSlot(capture._localSlot, fi->_localVarCount));
+			}
+		}
+	}
+
 	for (auto it = funs._funSequence.begin(); it != funs._funSequence.end(); it++)
 	{
 		SFunctionInfo* fi = (*it);
-		WriteFun(arText, ar, funs, *fi, vars, funPos, debugInfo);
+		WriteFun(arText, ar, funs, *fi, vars, funPos, debugInfo, layouts[fi->_funID]);
 	}
 
 
@@ -930,9 +1168,11 @@ bool Write(CArchiveRdWC& arText, CNArchive& ar, SFunctions& funs, SVars& vars)
         ar.WriteCount(static_cast<u32>(item.second._storage.size()));
         for (const SlotLayout& slot : item.second._storage)
             ar << slot.slot << slot.kind << slot.typeId;
-        ar.WriteCount(static_cast<u32>(item.second._cleanup.size()));
-        for (const SlotCleanup& slot : item.second._cleanup)
-            ar << slot.slot << slot.kind;
+        // 소유 슬롯 수와 슬롯별 정책·임시 표시. 로더는 저장표와 대조해 검증만 한다.
+        ar.WriteCount(static_cast<u32>(item.second._ownedCount));
+        ar.WriteCount(static_cast<u32>(item.second._slotInfo.size()));
+        if (!item.second._slotInfo.empty())
+            ar.Write(item.second._slotInfo.data(), static_cast<int>(item.second._slotInfo.size()));
     }
     ar.WriteCount(static_cast<u32>(header._iGlobalVarCount));
     for (int index = -header._iGlobalVarCount - 1; index <= -2; ++index)
@@ -971,7 +1211,9 @@ bool Write(CArchiveRdWC& arText, CNArchive& ar, SFunctions& funs, SVars& vars)
             function._argsCount = item.second._argsCount;
             function._localTempMax = item.second._localTempMax;
             function._localVarCount = item.second._localVarCount;
+            function._localAddCount = 1 + function._argsCount + function._localVarCount + function._localTempMax;
             function._storage = item.second._storage;
+            function._slotInfo = item.second._slotInfo;
             functions.push_back(function);
         }
         std::vector<std::vector<int>> targets;

@@ -47,11 +47,26 @@ class CNeoVMWorker::NativeFrameScope
 	const int _sp;
 	const int _max;
 	const int _breaking;
+	const int _function;
+	const CallStoragePlan* const _plan;
 	bool _restored = false;
 public:
 	explicit NativeFrameScope(CNeoVMWorker& worker)
 		: _worker(worker), _context(worker.m_pCur), _stack(worker.m_pVarStack_Base),
-		_sp(worker._iSP_Vars), _max(worker._iSP_VarsMax), _breaking(worker.m_iBreakingCallStack) {}
+		_sp(worker._iSP_Vars), _max(worker._iSP_VarsMax), _breaking(worker.m_iBreakingCallStack),
+		_function(worker._functionIndex), _plan(worker._activePlan)
+	{
+		// 네이티브가 스크립트를 다시 부르면 이 프레임과 호출 창은 콜스택에 없다.
+		// 오류 정리가 소유 슬롯을 찾도록 컨텍스트에 기록하고, 복원 때 걷어낸다.
+		if (_context != nullptr)
+		{
+			SNativeFrame& record = _context->m_sNativeFrames.push_back();
+			record._iSP_Vars = _sp;
+			record._functionIndex = _function;
+			record._window = _max;
+			record._plan = _plan;
+		}
+	}
 	bool IsCurrent() const
 	{
 		return _worker.m_pCur == _context && _worker.m_pVarStack_Base == _stack;
@@ -62,10 +77,16 @@ public:
 		_restored = true;
 		// 중첩 호출이 실행 컨텍스트를 폐기했다면 이전 스택과 레지스터를 되살리지 않는다.
 		if (!IsCurrent()) return;
+		// 오류 정리가 먼저 비웠을 수 있다.
+		if (_context != nullptr && _context->m_sNativeFrames.size() > 0) _context->m_sNativeFrames.pop_back();
 		_worker._iSP_Vars = _sp;
 		_worker.SetStackPointer(_sp);
 		_worker._iSP_VarsMax = _max;
 		_worker.m_iBreakingCallStack = _breaking;
+		// 중첩 스크립트 호출이 바꾼 프레임 배치와 호출 창 계획을 되돌린다.
+		if (_function >= 0) _worker.SelectFunction(_function);
+		else _worker._functionIndex = -1;
+		_worker._activePlan = _plan;
 	}
 	~NativeFrameScope() { Restore(); }
 };
@@ -135,13 +156,14 @@ CNeoVMWorker::~CNeoVMWorker()
 	// 정지 상태로 남은(retain 된) 최상위 실행 컨텍스트를 풀로 반납.
 	if (m_pMainCtx != nullptr)
 		ReleaseExecution();
+	Var_Release(&m_sTestCallResult);
 
 	if (_pProgram && m_pVarGlobal_Pointer)
 	{
 		for (const SlotLayout& slot : _pProgram->globalStorage)
-			ReleaseStorageValue(m_pVarGlobal_Pointer + slot.slot, slot.kind);
+			ReleaseByPolicy(m_pVarGlobal_Pointer + slot.slot, PolicyOf(slot.kind));
 		for (int i = -1; i < _pProgram->header._iStaticVarCount; ++i)
-			Var_Release(m_pVarGlobal_Pointer + i);
+			Var_Release(ValueRef(m_pVarGlobal_Pointer + i, m_pGlobalTypes[i]));
 	}
 	m_sVarGlobal.clear();
 	m_pVarGlobal_Pointer = nullptr;
@@ -366,7 +388,7 @@ int CNeoVMWorker::ToSize(ValueRef v1)
 	}
 	return 0;
 }
-void CNeoVMWorker::Call(FunctionPtr* fun, int n2, ValueRef pReturnValue)
+void CNeoVMWorker::Call(FunctionPtr* fun, int n2, VarInfo* pReturnValue, bool keepResult)
 {
 	if (!EnsureStackRange(_iSP_VarsMax, n2))
 		return;
@@ -380,9 +402,11 @@ void CNeoVMWorker::Call(FunctionPtr* fun, int n2, ValueRef pReturnValue)
 		return;
 	}
 	NativeFrameScope frame(*this);
+	const CallStoragePlan* plan = _activePlan;
 
 	_iSP_Vars = _iSP_VarsMax;
 	SetStackPointer(_iSP_Vars);
+	VarInfo* window = m_pVarStack_Pointer;
 
 	if ((*fun->_fn)(this, fun, n2) < 0)
 	{
@@ -395,7 +419,17 @@ void CNeoVMWorker::Call(FunctionPtr* fun, int n2, ValueRef pReturnValue)
 			SetError(RTE_CALL_ARG_COUNT);
 		return;
 	}
+	if (!frame.IsCurrent())
+		return;
+	// 창은 호출이 끝나면 비어 있어야 한다. 결과는 소유권째 옮기고 인자는 계획의 정책으로 놓는다.
+	// 결과를 뒤따르는 MOV가 가져가는 호출은 창 0번만 남긴다.
+	if (plan != nullptr)
+	{
+		if (pReturnValue != nullptr) TakeByPolicy(pReturnValue, window, static_cast<StoragePolicy>(plan->policies[0]));
+		ReleaseCallWindow(*plan, window, pReturnValue == nullptr && !keepResult);
+	}
 	frame.Restore();
+	_activePlan = nullptr;
 }
 
 // CNeoVMWorker::Call(int,int,int) 는 NeoVMWorker_Move.inl 로 옮겼다(핫패스 인라인 실험).
@@ -427,20 +461,14 @@ bool CNeoVMWorker::Init(const NeoLoadVMParam* vparam, CNeoVMProgram* pProgram, i
 	const int iMaxVar = pProgram->GetGlobalSlotCount();
 	m_sVarGlobal.clear();
 	m_sVarGlobal.resize(iMaxVar);
-	m_pVarGlobal_Pointer = ValueRef(m_sVarGlobal.data() + pProgram->ConstantBase(), pProgram->globalTypes.data() + pProgram->ConstantBase());
-	for (const SlotLayout& item : pProgram->globalStorage)
-		if (item.IsNumber())
-		{
-			m_pVarGlobal_Pointer[item.slot].SetType(item.kind == SlotKind::Int ? VAR_INT :
-				item.kind == SlotKind::Float ? VAR_FLOAT : VAR_BOOL);
-			m_pVarGlobal_Pointer[item.slot]->_int = 0;
-		}
+	m_pVarGlobal_Pointer = m_sVarGlobal.data() + pProgram->ConstantBase();
+	m_pGlobalTypes = pProgram->globalTypes.data() + pProgram->ConstantBase();
+	// 전역은 모두 0(숫자 0, null 참조)에서 시작한다. 선언 초기화는 전역 초기화 함수가 한다.
 
 	for (int i = 0; i < staticCount; i++)
 	{
 		const SStaticConst& sc = pProgram->staticValues[i];
-		ValueRef vi = m_pVarGlobal_Pointer[i];
-		vi.SetType(sc._type);
+		ValueRef vi(m_pVarGlobal_Pointer + i, sc._type);
 		switch (sc._type)
 		{
 		case VAR_INT:
@@ -573,7 +601,7 @@ std::string CNeoVMWorker::FormatStackTrace(int currentOpIndex)
 				trace += argName;
 				trace += ":";
 				if (varIndex >= 0 && varIndex < (int)m_pVarStack_Base->size())
-					trace += GetDataType((*m_pVarStack_Base)[varIndex].GetType());
+					trace += GetDataType(ValueRef(&(*m_pVarStack_Base)[varIndex], fun._slotTypes[1 + argIndex]).GetType());
 				else
 					trace += "out_of_range";
 			}
@@ -804,19 +832,104 @@ void CNeoVMWorker::SetErrorFormat(const char* fmt, ...)
 void CNeoVMWorker::BindContext(CoroutineInfo* ctx)
 {
 	m_pCur = ctx;
+	ctx->_program = _pProgram;
 	SetVarStackBase(&ctx->m_sVarStack);
 	m_pCallStack = &ctx->m_sCallStack;
 	m_pClosureCallStack = &ctx->m_sClosureCallStack;
 	m_pVarStack_Pointer = &(*m_pVarStack_Base)[0];
 }
 
-// 반납 전, 사용된 스택 슬롯[0..usedMax)의 BoundaryValue 참조를 정리 (DeadCoroutine 과 동일 패턴).
-void CNeoVMWorker::CleanupContextVars(CoroutineInfo* ctx, int usedMax)
+// 컨텍스트의 모든 프레임이 소유한 참조를 정책으로 해제하고 사용 구간을 0으로 채운다.
+// 실행 중인 컨텍스트는 호출자가 먼저 _info를 저장해야 한다(ReleaseExecution, StopCoroutine).
+void CNeoVMWorker::ReleaseContextFrames(CoroutineInfo* ctx)
 {
-	ValueStack& s = ctx->m_sVarStack;
-	if (usedMax > (int)s.size()) usedMax = (int)s.size();
-	for (int i = 0; i < usedMax; i++)
-		Var_Release(&s[i]);
+	if (ctx == nullptr) return;
+	ctx->_program = _pProgram;
+	ForEachContextFrameSlot(ctx, [this](VarInfo* slot, VAR_TYPE type)
+	{
+		const StoragePolicy policy = PolicyOfType(type);
+		if (PolicyOwns(policy)) ReleaseByPolicy(slot, policy);
+	});
+	int usedMax = ctx->_info._iSP_Vars_Max2;
+	if (usedMax < ctx->_info._iSP_Vars + 1) usedMax = ctx->_info._iSP_Vars + 1;
+	if (usedMax > (int)ctx->m_sVarStack.size()) usedMax = (int)ctx->m_sVarStack.size();
+	if (usedMax > 0) memset(ctx->m_sVarStack.data(), 0, sizeof(VarInfo) * usedMax);
+	ctx->_info._functionIndex = -1;
+	ctx->_info._activePlan = nullptr;
+	// 프레임 기록은 더 이상 유효한 슬롯을 가리키지 않는다.
+	ctx->m_sCallStack.clear();
+	ctx->m_sNativeFrames.clear();
+}
+
+void CNeoVMWorker::ReleaseCallWindow(const CallStoragePlan& plan, VarInfo* window, bool includeResult)
+{
+	for (std::size_t i = includeResult ? 0 : 1; i < plan.policies.size(); ++i)
+	{
+		const StoragePolicy policy = static_cast<StoragePolicy>(plan.policies[i]);
+		if (PolicyOwns(policy)) ReleaseByPolicy(window + i, policy);
+		else window[i]._int = 0;
+	}
+}
+
+// 함수 슬롯 payload: 0은 null, 홀수는 이름 함수 번호, 짝수는 클로저 포인터다.
+static NEOS_FORCEINLINE ClosureInfo* CallableClosure(const VarInfo* slot)
+{
+	return slot->_int != 0 && (slot->_int & 1) == 0 ? slot->_closure : nullptr;
+}
+
+void CNeoVMWorker::ReleaseByPolicy(VarInfo* slot, StoragePolicy policy)
+{
+	CNeoVM* vm = GetVM();
+	switch (policy)
+	{
+	case StoragePolicy::Payload:
+	case StoragePolicy::Boxed: return;
+	case StoragePolicy::String: ReleaseKnownStorage<VAR_STRING>(vm, ValueRef(slot, VAR_STRING)); return;
+	case StoragePolicy::Vec: ReleaseKnownStorage<VAR_VEC3>(vm, ValueRef(slot, VAR_VEC3)); return;
+	case StoragePolicy::Native: ReleaseKnownStorage<VAR_FP_NATIVE>(vm, ValueRef(slot, VAR_FP_NATIVE)); return;
+	case StoragePolicy::Array: ReleaseKnownStorage<VAR_ARRAY>(vm, ValueRef(slot, VAR_ARRAY)); return;
+	case StoragePolicy::Map: ReleaseKnownStorage<VAR_MAP>(vm, ValueRef(slot, VAR_MAP)); return;
+	case StoragePolicy::List: ReleaseKnownStorage<VAR_LIST>(vm, ValueRef(slot, VAR_LIST)); return;
+	case StoragePolicy::Set: ReleaseKnownStorage<VAR_SET>(vm, ValueRef(slot, VAR_SET)); return;
+	case StoragePolicy::Coroutine: ReleaseKnownStorage<VAR_COROUTINE>(vm, ValueRef(slot, VAR_COROUTINE)); return;
+	case StoragePolicy::Async: ReleaseKnownStorage<VAR_ASYNC>(vm, ValueRef(slot, VAR_ASYNC)); return;
+	case StoragePolicy::Module: Var_Release(ValueRef(slot, VAR_MODULE)); return;
+	case StoragePolicy::Callable:
+		if (CallableClosure(slot) != nullptr) Var_Release(ValueRef(slot, VAR_CLOSURE));
+		slot->_int = 0;
+		return;
+	}
+}
+
+void CNeoVMWorker::CopyByPolicy(VarInfo* target, const VarInfo* source, StoragePolicy policy)
+{
+	CNeoVM* vm = GetVM();
+	VarInfo* from = const_cast<VarInfo*>(source);
+	switch (policy)
+	{
+	case StoragePolicy::Payload:
+	case StoragePolicy::Boxed: *target = *source; return;
+	case StoragePolicy::String: CopyKnownStorage<VAR_STRING>(vm, ValueRef(target, VAR_STRING), ValueRef(from, VAR_STRING)); return;
+	case StoragePolicy::Vec: CopyKnownStorage<VAR_VEC3>(vm, ValueRef(target, VAR_VEC3), ValueRef(from, VAR_VEC3)); return;
+	case StoragePolicy::Native: CopyKnownStorage<VAR_FP_NATIVE>(vm, ValueRef(target, VAR_FP_NATIVE), ValueRef(from, VAR_FP_NATIVE)); return;
+	case StoragePolicy::Array: CopyKnownStorage<VAR_ARRAY>(vm, ValueRef(target, VAR_ARRAY), ValueRef(from, VAR_ARRAY)); return;
+	case StoragePolicy::Map: CopyKnownStorage<VAR_MAP>(vm, ValueRef(target, VAR_MAP), ValueRef(from, VAR_MAP)); return;
+	case StoragePolicy::List: CopyKnownStorage<VAR_LIST>(vm, ValueRef(target, VAR_LIST), ValueRef(from, VAR_LIST)); return;
+	case StoragePolicy::Set: CopyKnownStorage<VAR_SET>(vm, ValueRef(target, VAR_SET), ValueRef(from, VAR_SET)); return;
+	case StoragePolicy::Coroutine: CopyKnownStorage<VAR_COROUTINE>(vm, ValueRef(target, VAR_COROUTINE), ValueRef(from, VAR_COROUTINE)); return;
+	case StoragePolicy::Async: CopyKnownStorage<VAR_ASYNC>(vm, ValueRef(target, VAR_ASYNC), ValueRef(from, VAR_ASYNC)); return;
+	case StoragePolicy::Module: Move(ValueRef(target, VAR_MODULE), ValueRef(from, VAR_MODULE)); return;
+	case StoragePolicy::Callable:
+	{
+		// 새 참조를 먼저 잡아 자기 대입과 별칭을 안전하게 처리한다.
+		const VarInfo copy = *source;
+		ClosureInfo* closure = CallableClosure(&copy);
+		if (closure != nullptr) ++closure->_refCount;
+		ReleaseByPolicy(target, StoragePolicy::Callable);
+		*target = copy;
+		return;
+	}
+	}
 }
 
 template <typename Container>
@@ -866,87 +979,45 @@ NEOS_FORCEINLINE void CNeoVMWorker::CopyKnownStorage(CNeoVM* vm, ValueRef target
     *target = copy;
 }
 
-void CNeoVMWorker::ReleaseStorageValue(ValueRef value, SlotKind kind)
+// 호스트가 준 태그 있는 값을 피호출자의 인자 슬롯에 넣는다. 선언 타입과 다른 값은 거부한다.
+bool CNeoVMWorker::StoreArgument(const SFunctionTable& fun, int base, int index, ValueRef value)
 {
-    switch (kind)
-    {
-    case SlotKind::Boxed: Var_Release(value); break;
-    case SlotKind::Int: case SlotKind::Float: case SlotKind::Bool: break;
-    case SlotKind::String: ReleaseKnownStorage<VAR_STRING>(GetVM(), value); break;
-    case SlotKind::Vector2: break;
-    case SlotKind::Vector3: ReleaseKnownStorage<VAR_VEC3>(GetVM(), value); break;
-    case SlotKind::Vector4: ReleaseKnownStorage<VAR_VEC4>(GetVM(), value); break;
-    case SlotKind::Native: ReleaseKnownStorage<VAR_FP_NATIVE>(GetVM(), value); break;
-    case SlotKind::Array: ReleaseKnownStorage<VAR_ARRAY>(GetVM(), value); break;
-    case SlotKind::Map: ReleaseKnownStorage<VAR_MAP>(GetVM(), value); break;
-    case SlotKind::List: ReleaseKnownStorage<VAR_LIST>(GetVM(), value); break;
-    case SlotKind::Set: ReleaseKnownStorage<VAR_SET>(GetVM(), value); break;
-    case SlotKind::Coroutine: ReleaseKnownStorage<VAR_COROUTINE>(GetVM(), value); break;
-    case SlotKind::Async: ReleaseKnownStorage<VAR_ASYNC>(GetVM(), value); break;
-    case SlotKind::ObjectId: break;
-    case SlotKind::Function: Var_Release(value); break;
-    case SlotKind::Iterator: break;
-    }
-}
-
-NEOS_NOINLINE void CNeoVMWorker::CopyStorageReference(ValueRef target, ValueRef source, SlotKind kind)
-{
-    switch (kind)
-    {
-    case SlotKind::String: CopyKnownStorage<VAR_STRING>(GetVM(), target, source); break;
-    case SlotKind::Vector2: *target = *source; break;
-    case SlotKind::Vector3: CopyKnownStorage<VAR_VEC3>(GetVM(), target, source); break;
-    case SlotKind::Vector4: CopyKnownStorage<VAR_VEC4>(GetVM(), target, source); break;
-    case SlotKind::Native: CopyKnownStorage<VAR_FP_NATIVE>(GetVM(), target, source); break;
-    case SlotKind::Array: CopyKnownStorage<VAR_ARRAY>(GetVM(), target, source); break;
-    case SlotKind::Map: CopyKnownStorage<VAR_MAP>(GetVM(), target, source); break;
-    case SlotKind::List: CopyKnownStorage<VAR_LIST>(GetVM(), target, source); break;
-    case SlotKind::Set: CopyKnownStorage<VAR_SET>(GetVM(), target, source); break;
-    case SlotKind::Coroutine: CopyKnownStorage<VAR_COROUTINE>(GetVM(), target, source); break;
-    case SlotKind::Async: CopyKnownStorage<VAR_ASYNC>(GetVM(), target, source); break;
-    case SlotKind::ObjectId:
-        // 엔진 객체는 소유 포인터가 아닌 ID다. 유효성 조회는 호스트 접근 때 수행한다.
-        assert((target.GetType() == VAR_NONE || target.GetType() == VAR_INT) &&
-            (source.GetType() == VAR_NONE || source.GetType() == VAR_INT));
-        *target = *source;
-        break;
-    default: assert(false); break;
-    }
-}
-
-void CNeoVMWorker::PrepareCallStorage(int planIndex)
-{
-    const int owner = m_pVarStack_Base->Function(_iSP_Vars);
-    assert(owner >= 0);
-    const SFunctionTable& function = Functions()[owner];
-    const CallStoragePlan& plan = function._calls[planIndex];
-    // 앞 호출의 미소비 반환값만 남을 수 있다. 깊은 프레임까지 기존 배치로 먼저 정리한다.
-    for (int i = _iSP_VarsMax; i < _iSP_Vars_Max2; ++i) Var_Release(GetStackFromBase(i));
-    m_pVarStack_Base->Bind(_iSP_Vars, plan.frameTypes, owner);
-    SetStackPointer(_iSP_Vars);
-    for (std::size_t i = 0; i < plan.types.size(); ++i)
-        m_pVarStack_Base->values[_iSP_VarsMax + i]._int = 0;
-}
-
-void CNeoVMWorker::PrepareFunctionStorage(const SFunctionTable& function, int base, bool argumentsReady)
-{
-    // 인자 창은 호출자가 채웠다. 새 지역 프레임은 소유 슬롯만 비우고 숫자 값은 선언에서 쓴다.
-    for (int i = argumentsReady ? base + function._argsCount + 1 : base; i < _iSP_Vars_Max2; ++i) Var_Release(GetStackFromBase(i));
-    m_pVarStack_Base->Bind(base, function._slotTypes, static_cast<int>(&function - Functions().data()));
-    ValueRef slots = m_pVarStack_Base->At(base);
-    for (const SlotCleanup& item : function._cleanup)
-        if (item.slot > function._argsCount && item.slot < function._localAddCount)
-            slots[item.slot].ClearType();
-    SetStackPointer(base);
-}
-
-void CNeoVMWorker::ReleaseFunctionStorage(const SFunctionTable& function, int base)
-{
-    for (const SlotCleanup& item : function._cleanup)
-        if (item.slot < function._localAddCount)
-            ReleaseStorageValue(m_pVarStack_Base->At(base + item.slot), item.kind);
-    for (int i = base + function._localAddCount; i < _iSP_Vars_Max2; ++i)
-        Var_Release(GetStackFromBase(i));
+	VarInfo* slot = &(*m_pVarStack_Base)[base + 1 + index];
+	const VAR_TYPE declared = fun._slotTypes[1 + index];
+	const VAR_TYPE actual = value ? value.GetType() : VAR_NONE;
+	if (declared == VAR_NONE)
+	{
+		// 종류를 정하지 못한 인자 슬롯은 payload만 받는다. 참조는 소유권을 나눌 수 없다.
+		if (actual >= VAR_STRING) return false;
+		if (value) *slot = *value.Data(); else slot->_int = 0;
+		return true;
+	}
+	ValueRef target(slot, declared);
+	switch (declared)
+	{
+	case VAR_INT:
+		if (actual == VAR_INT) slot->_int = value->_int;
+		else if (actual == VAR_FLOAT) slot->_int = NeoFloatToInt(value->_float);
+		else return false;
+		return true;
+	case VAR_FLOAT:
+		if (actual == VAR_FLOAT) slot->_float = value->_float;
+		else if (actual == VAR_INT) slot->_float = static_cast<NS_FLOAT>(value->_int);
+		else return false;
+		return true;
+	case VAR_BOOL:
+		if (actual != VAR_BOOL) return false;
+		slot->_int = 0; slot->_bl = value->_bl;
+		return true;
+	default:
+		break;
+	}
+	// 참조·벡터·함수값: null 또는 같은 타입만 받는다. 함수 슬롯은 이름 함수와 클로저를 모두 받는다.
+	const bool callable = declared == ValueRef::CallableStorageType() && (actual == VAR_FUN || actual == VAR_CLOSURE);
+	const bool objectId = declared == ValueRef::ObjectIdStorageType() && actual == VAR_INT;
+	if (actual != VAR_NONE && actual != declared && !callable && !objectId) return false;
+	Move(target, value);
+	return true;
 }
 
 void CNeoVMWorker::ReleaseDetachedClosureWithoutSync(ClosureInfo*& closure)
@@ -1020,6 +1091,15 @@ void CNeoVMWorker::UnwindActiveClosures()
 		}
 		m_pClosureCallStack->clear();
 	}
+	// 캡처를 보관함으로 돌린 뒤, 아직 남은 모든 프레임의 소유 슬롯을 정책으로 해제한다.
+	// 콜스택을 지우면 프레임 배치를 다시 찾을 수 없으므로 반드시 그 전에 한다.
+	if (m_pCur != nullptr)
+	{
+		m_pCur->_info = *(CoroutineBase*)this;
+		ReleaseContextFrames(m_pCur);
+		_functionIndex = -1;
+		_activePlan = nullptr;
+	}
 	if (m_pCallStack != nullptr)
 		m_pCallStack->clear();
 	if (m_pCur != nullptr)
@@ -1069,21 +1149,10 @@ void CNeoVMWorker::ReleaseExecution(bool discardParkedClosuresWithoutSync)
 		if (context != m_pMainCtx && context != activeCoroutine) DeadCoroutine(context);
 	if (m_pMainCtx != nullptr && m_pPool != nullptr)
 	{
-		// 정상 완료 시 m_pCur == m_pMainCtx 이며 high-water 는 워커의 _iSP_Vars_Max2.
-		int usedMax;
-		if (m_pCur == m_pMainCtx)
-		{
-			usedMax = _iSP_Vars_Max2;
-			// 호스트 Invocation은 GC() 가 _iSP_Vars_Max2 를 _iSP_Vars 로 줄이고 리턴 슬롯[_iSP_Vars]을
-			// 남긴다. GC 는 그 위를 이미 해제했으므로 리턴 슬롯까지 포함해 정리하면 컨텍스트가 완전히 clean.
-			if (usedMax < _iSP_Vars + 1)
-				usedMax = _iSP_Vars + 1;
-		}
-		else
-		{
-			usedMax = m_pMainCtx->_info._iSP_Vars_Max2;
-		}
-		CleanupContextVars(m_pMainCtx, usedMax);
+		// 정상 완료 시 m_pCur == m_pMainCtx 이며 레지스터는 위에서 _info 로 저장됐다.
+		// 남은 프레임(최상위 반환 슬롯 포함)을 정책으로 해제하고 사용 구간을 비운다.
+		ReleaseContextFrames(m_pMainCtx);
+		m_pMainCtx->m_sCallStack.clear();
 		m_pPool->Release(m_pMainCtx);
 	}
 	if (activeCoroutine != nullptr)
@@ -1359,6 +1428,10 @@ int CNeoVMWorker::RunHostCall(int iFunctionID, std::vector<BoundaryValue>& _args
 		const int nativeBase = _iSP_Vars;
 		const int nativeMax = _iSP_VarsMax;
 		const int nativeHighWater = _iSP_Vars_Max2;
+		// 네이티브를 부른 스크립트 프레임과 창은 네이티브 호출 범위가 컨텍스트에 기록했다.
+		// 자식 프레임은 그 위(nativeHighWater)에서 시작하므로 겹치지 않는다.
+		const int nativeFunction = _functionIndex;
+		const CallStoragePlan* nativePlan = _activePlan;
 		// Validate before detaching the parent or touching its stack frame.
 		if (closureValue != nullptr && (closureValue.GetType() != VAR_CLOSURE ||
 			closureValue->_closure == nullptr || closureValue->_closure->_funIndex != iFunctionID ||
@@ -1380,6 +1453,8 @@ int CNeoVMWorker::RunHostCall(int iFunctionID, std::vector<BoundaryValue>& _args
 			_iSP_VarsMax = nativeMax;
 			_iSP_Vars_Max2 = nativeHighWater;
 			SetStackPointer(nativeBase);
+			if (nativeFunction >= 0) SelectFunction(nativeFunction);
+			_activePlan = nativePlan;
 			m_pActiveClosure = outerClosure;
 			return NEOEXEC_ERROR;
 		}
@@ -1409,13 +1484,16 @@ int CNeoVMWorker::RunHostCall(int iFunctionID, std::vector<BoundaryValue>& _args
 		}
 		if (ok && isNestedScriptCall)
 		{
+			// 자식 프레임은 RET가 정리했고 결과만 반환 슬롯에 남았다. 복사한 뒤 슬롯을 비운다.
 			if (completedResult) Move(completedResult, GetReturnVar());
-			for (int i = nativeHighWater; i < _iSP_Vars_Max2; ++i)
-				Var_Release(GetStackFromBase(i));
+			ReleaseByPolicy(m_pVarStack_Pointer, Functions()[iFunctionID].SlotPolicy(0));
+			m_pVarStack_Pointer->_int = 0;
 			_iSP_Vars = nativeBase;
 			_iSP_VarsMax = nativeMax;
 			_iSP_Vars_Max2 = nativeHighWater;
 			SetStackPointer(nativeBase);
+			if (nativeFunction >= 0) SelectFunction(nativeFunction);
+			_activePlan = nativePlan;
 			SetCodePtr(returnCodePtr);
 		}
 		// sleep/debugger로 정지한 closure는 실행 컨텍스트와 함께 active 환경도
@@ -1469,7 +1547,10 @@ bool	CNeoVMWorker::Setup(int iFunctionID, std::vector<BoundaryValue>& _args)
 		return false;
 	if (!EnsureStackRange(_iSP_Vars, fun._stackSlotCount - 1))
 		return false;
-	PrepareFunctionStorage(fun, _iSP_Vars);
+	// 호스트 진입 프레임은 깨끗한 구간에서 시작한다. 인자 슬롯도 비운 뒤 채운다.
+	memset(&(*m_pVarStack_Base)[_iSP_Vars], 0, sizeof(VarInfo) * fun._localAddCount);
+	EnterFrame(iFunctionID, _iSP_Vars);
+	_activePlan = nullptr;
 
 	SetCodePtr(fun._codePtr);
 
@@ -1479,14 +1560,13 @@ bool	CNeoVMWorker::Setup(int iFunctionID, std::vector<BoundaryValue>& _args)
 	if (_iSP_Vars_Max2 < _iSP_Vars + fun._stackSlotCount)
 		_iSP_Vars_Max2 = _iSP_Vars + fun._stackSlotCount;
 
-	if (iArgs > fun._argsCount)
-		iArgs = fun._argsCount;
-
-	int iCur;
-	for (iCur = 0; iCur < iArgs; iCur++)
-		Move(&(*m_pVarStack_Base)[1 + _iSP_Vars + iCur], &_args[iCur]);
-	for (; iCur < fun._argsCount; iCur++)
-		Var_Release(&(*m_pVarStack_Base)[1 + _iSP_Vars + iCur]);
+	for (int iCur = 0; iCur < iArgs; iCur++)
+		if (!StoreArgument(fun, _iSP_Vars, iCur, &_args[iCur]))
+		{
+			LeaveFrame(fun, _iSP_Vars);
+			SetError(RTE_CALL_ARG_TYPE);
+			return false;
+		}
 
 	return true;
 }
@@ -1984,6 +2064,13 @@ void CNeoVMWorker::DebugGetFrameVariables(int frameId, std::vector<NeoDebugVaria
 	int total = 1 + frame.argsCount + frame.localCount + frame.tempCount;
 	auto itFunNames = _pProgram->debugVarNames.find(frame.functionId);
 	bool hasDebugVarNames = itFunNames != _pProgram->debugVarNames.end();
+	// 태그 없는 슬롯은 프레임 함수의 배치표가 타입을 준다. 창 슬롯과 범위 밖은 알 수 없는 값으로 본다.
+	const SFunctionTable* layout = frame.functionId >= 0 && frame.functionId < (int)Functions().size()
+		? &Functions()[frame.functionId] : nullptr;
+	auto slotType = [&](int slot) -> VAR_TYPE
+	{
+		return layout != nullptr && slot < (int)layout->_slotTypes.size() ? layout->_slotTypes[slot] : VAR_NONE;
+	};
 	for (int i = 0; i < total && budget.nodes > 0; ++i)
 	{
 		int stackIndex = base + i;
@@ -2015,7 +2102,7 @@ void CNeoVMWorker::DebugGetFrameVariables(int frameId, std::vector<NeoDebugVaria
 		}
 
 		var.stackIndex = stackIndex;
-		NeoDebugFormatValue(&(*m_pVarStack_Base)[stackIndex], var, budget);
+		NeoDebugFormatValue(ValueRef(&(*m_pVarStack_Base)[stackIndex], slotType(i)), var, budget);
 		if (i == 0 && var.type == "none")
 			continue;
 		vars.push_back(var);
@@ -2031,7 +2118,7 @@ void CNeoVMWorker::DebugGetFrameVariables(int frameId, std::vector<NeoDebugVaria
 			NeoDebugVariable var;
 			var.name = budget.Text(it->second);
 			var.stackIndex = globalIndex;
-			NeoDebugFormatValue(NEOS_GLOBAL_VAR(globalIndex), var, budget);
+			NeoDebugFormatValue(GetVarPtr_G(static_cast<short>(globalIndex)), var, budget);
 			vars.push_back(var);
 		}
 	}
@@ -2169,14 +2256,14 @@ void CNeoVMWorker::JumpAsyncMsg()
 		case NOP_ARRAY_##NAME##_SET: TypedArraySet<NeoArrayElementType::ELEMENT>(OP); break; \
 		case NOP_ARRAY_##NAME##_APPEND: TypedArrayAppend<NeoArrayElementType::ELEMENT>(OP); break;
 #define NEOCORE_SCALAR_CONTAINER_DISPATCH(OWNER, INDEX, TYPE, TAG) \
-        case NOP_##OWNER##_##TYPE##_LOAD: ScalarContainerLoad<INDEX, TAG>(GetVarPtrF1(OP), GetVarPtr2(OP), GetVarPtr3(OP)); break; \
-        case NOP_##OWNER##_##TYPE##_STORE: ScalarContainerStore<INDEX, TAG>(GetVarPtrF1(OP), GetVarPtr2(OP), GetVarPtr3(OP)); break;
+        case NOP_##OWNER##_##TYPE##_LOAD: ScalarContainerLoad<INDEX, TAG>(GetVarRawF1(OP), GetVarRaw2(OP), GetVarRaw3(OP)); break; \
+        case NOP_##OWNER##_##TYPE##_STORE: ScalarContainerStore<INDEX, TAG>(GetVarRawF1(OP), GetVarRaw2(OP), GetVarRaw3(OP)); break;
 #define NEOCORE_SCALAR_OWNER_DISPATCH(OWNER, INDEX) \
         NEOCORE_SCALAR_CONTAINER_DISPATCH(OWNER, INDEX, I64, VAR_INT) \
         NEOCORE_SCALAR_CONTAINER_DISPATCH(OWNER, INDEX, F64, VAR_FLOAT) \
         NEOCORE_SCALAR_CONTAINER_DISPATCH(OWNER, INDEX, BOOL, VAR_BOOL)
 #define NEOCORE_SCALAR_ARRAY_STORE(TYPE, ELEMENT) \
-        case NOP_ARRAY_##TYPE##_STORE: ScalarArrayStore<NeoArrayElementType::ELEMENT>(GetVarPtrF1(OP), GetVarPtr2(OP), GetVarPtr3(OP)); break;
+        case NOP_ARRAY_##TYPE##_STORE: ScalarArrayStore<NeoArrayElementType::ELEMENT>(GetVarRawF1(OP), GetVarRaw2(OP), GetVarRaw3(OP)); break;
 
 template<bool TIMEOUT, bool DEBUG>
 bool	CNeoVMWorker::RunInternal(int iBreakingCallStack)
@@ -2223,6 +2310,8 @@ bool	CNeoVMWorker::RunInternal(int iBreakingCallStack)
 				m_bSliceExpired = true;
 				break;
 			}
+			// 디버거 정지로 반환하면 이 지역 계수는 버려지므로 여기서 미리 줄여도 결과가 같다.
+			if (countInstructions && remainingInstructions != 0) --remainingInstructions;
 			if (m_iTimeout >= 0 && --m_op_process <= 0)
 			{
 				m_op_process = m_iCheckOpCount;
@@ -2246,55 +2335,27 @@ bool	CNeoVMWorker::RunInternal(int iBreakingCallStack)
 				return true;
 		}
 
-		if (TIMEOUT && countInstructions && remainingInstructions != 0) --remainingInstructions;
 		const SVMOperation& OP = *GetOP();
 		switch (OP.op)
 		{
-			case NOP_MOV:           Move(GetVarPtrF1(OP), GetVarPtr2(OP)); break;
-		case NOP_MOV_L:         Move(GetVarPtr_L(OP.n1), GetVarPtr_L(OP.n2)); break;
-		case NOP_MOVI:
-			if (OP.argFlag & NEOS_OP_MODIFIER) StoreArithmeticInt<true>(GetVarPtrF1(OP), OP.n23);
-			else MoveI(GetVarPtrF1(OP), OP.n23);
-			break;
-		case NOP_MOVI_L:
-			if (OP.argFlag & NEOS_OP_MODIFIER) StoreArithmeticInt<true>(GetVarPtr_L(OP.n1), OP.n23);
-			else MoveI(GetVarPtr_L(OP.n1), OP.n23);
-			break;
-		case NOP_MOVF:
-		case NOP_MOVF_L:
-		{
-			ValueRef target = OP.op == NOP_MOVF_L ? GetVarPtr_L(OP.n1) : GetVarPtrF1(OP);
-			if (OP.argFlag & NEOS_OP_MODIFIER)
-			{
-				float value; std::memcpy(&value, &OP.n23, sizeof(value));
-				StoreArithmeticFloat<true>(target, value);
-			}
-			else MoveF(target, OP.n23);
-			break;
-		}
+		case NOP_MOV:           handle_MOV(OP); break;
 		case NOP_LOADK:         handle_LOADK_cold(OP); break;
 		case NOP_LOG_NOT:       handle_LOG_NOT_cold(OP); break;
-		case NOP_VAR_CLEAR:     Var_Release(GetVarPtrF1(OP)); break;
+		case NOP_VAR_CLEAR:     handle_VAR_CLEAR(OP); break;
 		case NOP_COMPARE: handle_COMPARE(OP); break;
 		case NOP_JMP:           SetCodeIncPtr(OP.n1); break;
-		case NOP_JMP_FALSE:
-        {
-            ValueRef condition = GetVarPtr2(OP);
-            assert(condition.GetType() == VAR_BOOL);
-            if (!condition->_bl) SetCodeIncPtr(OP.n1);
-            break;
-        }
-		case NOP_JMP_TRUE:
-        {
-            ValueRef condition = GetVarPtr2(OP);
-            assert(condition.GetType() == VAR_BOOL);
-            if (condition->_bl) SetCodeIncPtr(OP.n1);
-            break;
-        }
+		// 조건은 컴파일러가 bool로 확정했다. payload만 읽는다.
+		case NOP_JMP_FALSE:     if (!GetVarRaw2(OP)->_bl) SetCodeIncPtr(OP.n1); break;
+		case NOP_JMP_TRUE:      if (GetVarRaw2(OP)->_bl) SetCodeIncPtr(OP.n1); break;
 		case NOP_JMP_COMPARE: handle_JMP_COMPARE(OP); break;
 		case NOP_JMP_COMPARE_L: handle_JMP_COMPARE_L(OP); break;
-		case NOP_JMP_FOR:       if (For(GetVarPtr_L(OP.n2))) SetCodeIncPtr(OP.n1); break;
-		case NOP_JMP_FOREACH:   if (ForEach(GetVarPtr2(OP), GetVarPtr3(OP), (OP.argFlag & NEOS_OP_FOREACH_TWOVAR) != 0)) SetCodeIncPtr(OP.n1); break;
+		case NOP_JMP_FOR:       if (For(GetVarRaw_L(OP.n2))) SetCodeIncPtr(OP.n1); break;
+		case NOP_JMP_FOREACH:
+			// 키·값·반복자·버전 슬롯은 n3부터 연속이다. 값 슬롯은 자기 선언 타입의 뷰로 넘긴다.
+			if (ForEach(GetVarPtr2(OP), GetVarPtr3(OP),
+				(OP.argFlag & NEOS_ARG_N3_LOCAL) ? GetVarPtr_L(OP.n3 + 1) : GetVarPtr_G(OP.n3 + 1),
+				(OP.argFlag & NEOS_OP_FOREACH_TWOVAR) != 0)) SetCodeIncPtr(OP.n1);
+			break;
 		case NOP_SWITCH:        handle_SWITCH(OP); break;
 
 		case NOP_STR_ADD:       handle_STR_ADD(OP); break;
@@ -2353,19 +2414,6 @@ bool	CNeoVMWorker::RunInternal(int iBreakingCallStack)
 		case NOP_JMP_F64_COMPARE: handle_JMP_F64_COMPARE(OP); break;
 		case NOP_I64_FIXED: handle_I64_ARITH<true>(OP); break;
 		case NOP_F64_FIXED: handle_F64_ARITH<true>(OP); break;
-		case NOP_SLOT_COPY:
-		{
-			ValueRef target = GetVarPtrF1(OP);
-			ValueRef source = GetVarPtr2(OP);
-			switch (static_cast<SlotKind>(OP.argFlag & NEOS_OP_SUB_MASK))
-			{
-			case SlotKind::Int: assert(source.GetType() == VAR_INT); StoreArithmeticInt<true>(target, source->_int); break;
-			case SlotKind::Float: assert(source.GetType() == VAR_FLOAT); StoreArithmeticFloat<true>(target, source->_float); break;
-			case SlotKind::Bool: assert(target.GetType() == VAR_BOOL && source.GetType() == VAR_BOOL); target->_bl = source->_bl; break;
-			default: CopyStorageReference(target, source, static_cast<SlotKind>(OP.argFlag & NEOS_OP_SUB_MASK)); break;
-			}
-			break;
-		}
 		case NOP_V2_MAKE: TypedVectorMake<2>(OP); break;
 		case NOP_V2_GET: TypedVectorGet<2>(OP); break;
 		case NOP_V2_SET: TypedVectorSet<2>(OP); break;
@@ -2387,8 +2435,8 @@ bool	CNeoVMWorker::RunInternal(int iBreakingCallStack)
 		NEOCORE_ARRAY_DISPATCH(I32, Int32)
 		NEOCORE_ARRAY_DISPATCH(F32, Float32)
 		case NOP_ARRAY_LEN:
-            if (CheckTypedArrayReceiver(GetVarPtr2(OP)))
-                StoreNumberInt(GetVarPtrF1(OP), GetVarPtr2(OP)->_array->_count);
+            if (CheckTypedArrayReceiver(GetVarRaw2(OP)))
+                StoreNumberInt(GetVarRawF1(OP), GetVarRaw2(OP)->_array->_count);
             break;
 		case NOP_ARRAY_RESIZE: TypedArrayResize(OP); break;
 		case NOP_ARRAY_RESERVE: TypedArrayReserve(OP); break;
@@ -2420,7 +2468,7 @@ bool	CNeoVMWorker::RunInternal(int iBreakingCallStack)
             break;
         }
         case NOP_EXTEND: SetError("cannot execute an extension slot"); break;
-		case NOP_PREPARE_CALL: PrepareCallStorage(OP.n1); break;
+		case NOP_PREPARE_CALL: SelectCallPlan(OP.n1); break;
 		case NOP_NONE:          handle_NONE(OP); break;
 		case NOP_ERROR:
 			handle_ERROR(OP);
@@ -2445,12 +2493,8 @@ void	CNeoVMWorker::DeadCoroutine(CoroutineInfo* pCI)
     if (!m_sDebugLineSkips.empty()) PruneDebugLineSkips(pCI, -1);
 	DrainCoroutineClosures(pCI);
 	pCI->_state = COROUTINE_STATE_DEAD;
-	int iSP_Vars_Max2 = pCI->_info._iSP_Vars_Max2;
-	ValueStack& sVarStack = pCI->m_sVarStack;
-	if (iSP_Vars_Max2 > (int)sVarStack.size())
-		iSP_Vars_Max2 = (int)sVarStack.size();
-	for (int i = 0; i < iSP_Vars_Max2; i++)
-		Var_Release(&(sVarStack)[i]);
+	// 저장된 프레임 배치로 소유 슬롯을 해제하고 사용 구간을 비운다.
+	ReleaseContextFrames(pCI);
 
 	pCI->_info.ClearSP();
 	pCI->m_sAsyncWaitReturnStack.clear();
@@ -2526,6 +2570,14 @@ bool CNeoVMWorker::StopCoroutine(bool doDead)
 
 		*pThis = m_pCur->_info;
 		SetStackPointer(_iSP_Vars);
+		RestoreFrameTables();
+		// 이 컨텍스트가 coroutine.resume으로 넘겨 둔 호출 창을 이제 놓는다. 창이 잡은 코루틴
+		// 참조 덕분에 임시 코루틴도 전환 동안 살아 있었다. 결과 슬롯은 호출자가 가져간다.
+		if (_activePlan != nullptr)
+		{
+			ReleaseCallWindow(*_activePlan, GetStackFromBase(_iSP_VarsMax), false);
+			_activePlan = nullptr;
+		}
 	}
 	return true;
 }
@@ -2551,6 +2603,7 @@ bool CNeoVMWorker::StartCoroutione(int argSP_Vars, int n3)
 		CoroutineInfo* pPre = m_pCur;
 
 		m_pCur = m_pRegisterActive;
+		m_pCur->_program = _pProgram;
 		m_pCur->_state = COROUTINE_STATE_RUNNING;
 		m_pCur->_sub_state = COROUTINE_SUB_NORMAL;
 		SetVarStackBase(&m_pCur->m_sVarStack);
@@ -2566,13 +2619,18 @@ bool CNeoVMWorker::StartCoroutione(int argSP_Vars, int n3)
 			const SFunctionTable& fun = Functions()[m_pCur->_fun_index];
 			if (!EnsureStackRange(0, fun._stackSlotCount - 1))
 				return false;
-			PrepareFunctionStorage(fun, 0);
-			for (int i = 0; i < fun._argsCount; i++)
+			// 새 컨텍스트의 프레임 구간을 비우고 배치를 고른다. 인자는 부모의 호출 창에서 복사한다.
+			// 부모 창은 부모가 다시 실행될 때 놓는다(StopCoroutine).
+			memset(&m_pCur->m_sVarStack[0], 0, sizeof(VarInfo) * fun._localAddCount);
+			EnterFrame(m_pCur->_fun_index, 0);
+			_activePlan = nullptr;
+			const CallStoragePlan* resumePlan = pPre->_info._activePlan;
+			for (int i = 0; i < fun._argsCount && i < iResumeParamCount; i++)
 			{
-				if (i < iResumeParamCount)
-					Move(&m_pCur->m_sVarStack[i + 1], &pPre->m_sVarStack[i + argSP_Vars + 2]);
-				else
-					Var_Release(&m_pCur->m_sVarStack[i + 1]); // Zero index return value
+				const VAR_TYPE given = resumePlan != nullptr && 2 + i < (int)resumePlan->types.size()
+					? resumePlan->types[2 + i] : VAR_NONE;
+				Move(ValueRef(&m_pCur->m_sVarStack[i + 1], fun._slotTypes[1 + i]),
+					ValueRef(&pPre->m_sVarStack[i + argSP_Vars + 2], given));
 			}
 			SetCodePtr(fun._codePtr);
 			_iSP_Vars = 0;// iSP_VarsMax;
@@ -2585,7 +2643,7 @@ bool CNeoVMWorker::StartCoroutione(int argSP_Vars, int n3)
 					closure->_captures.size() != fun._captures.size())
 					return false;
 				for (size_t i = 0; i < fun._captures.size(); ++i)
-					Move(&m_pCur->m_sVarStack[fun._captures[i].second], closure->Capture(i));
+					Move(GetVarPtr_L(fun._captures[i].second), closure->Capture(i));
 				++closure->_refCount;
 				m_pActiveClosure = closure;
 				m_pCur->_activeClosure = closure;
@@ -2595,6 +2653,7 @@ bool CNeoVMWorker::StartCoroutione(int argSP_Vars, int n3)
 		else
 		{
 			*pThis = m_pCur->_info;
+			RestoreFrameTables();
 		}
 		SetStackPointer(_iSP_Vars);
 	}
@@ -2603,6 +2662,8 @@ bool CNeoVMWorker::StartCoroutione(int argSP_Vars, int n3)
 }
 
 
+// 네이티브 안에서 스크립트 함수를 동기 호출한다. 자식 프레임은 네이티브 창 위(_iSP_Vars_Max2)에 두어
+// 네이티브가 아직 읽는 창 인자를 덮지 않는다. 결과는 워커 보관함으로 옮겨 돌려준다.
 ValueRef CNeoVMWorker::testCall(int iFID, ValueRef args, int argc)
 {
 	if (_isInitialized == false || !CheckNestedCallDepth())
@@ -2611,54 +2672,18 @@ ValueRef CNeoVMWorker::testCall(int iFID, ValueRef args, int argc)
 	const SFunctionTable& fun = Functions()[iFID];
 	if (argc != fun._argsCount)
 		return nullptr;
-	if (!EnsureStackRange(_iSP_VarsMax, fun._stackSlotCount - 1))
+	const int base = _iSP_Vars_Max2;
+	if (!EnsureStackRange(base, fun._stackSlotCount - 1))
 		return nullptr;
-
-	int save_Code = GetCodeptr();
-	int save_iSP_Vars = _iSP_Vars;
-	int save__iSP_VarsMax = _iSP_VarsMax;
 	ActiveClosureIsolation activeClosureIsolation(m_pActiveClosure);
-
-	SetCodePtr(fun._codePtr);
-
-//	_iSP_Vars = 0;// _header._iStaticVarCount;
-	_iSP_Vars = _iSP_VarsMax;
-	SetStackPointer(_iSP_Vars);
-	PrepareFunctionStorage(fun, _iSP_Vars);
-	_iSP_VarsMax = _iSP_Vars + fun._localAddCount;
-	if (_iSP_Vars_Max2 < _iSP_Vars + fun._stackSlotCount)
-		_iSP_Vars_Max2 = _iSP_Vars + fun._stackSlotCount;
-
-	//_iSP_Vars_Max2 = iSP_VarsMax;
-
-	if (argc > fun._argsCount)
-		argc = fun._argsCount;
-
-	int iCur;
-	for (iCur = 0; iCur < argc; iCur++)
-		Move(&(*m_pVarStack_Base)[1 + _iSP_Vars + iCur], &args[iCur]);
-	for (; iCur < fun._argsCount; iCur++)
-		Var_Release(&(*m_pVarStack_Base)[1 + _iSP_Vars + iCur]);
-
-	++m_iDebugSuppressCount;
-	const bool ok = Run();
-	--m_iDebugSuppressCount;
-	// 예외로 남은 자식 클로저를 부모 프레임 복원 전에 동기화하고 실행 참조를 반납한다.
-	if (!ok) UnwindActiveClosures();
-
-//	_read(&(*m_pVarStack)[_iSP_Vars], *r);
-	ValueRef r = &(*m_pVarStack_Base)[_iSP_Vars];
-
-	// 실패한 자식 호출의 오류 트랩은 호스트가 실패를 삼켜도 유지한다.
-	SetCodePtr(ok ? save_Code : 0);
-	_iSP_Vars = save_iSP_Vars;
-	_iSP_VarsMax = save__iSP_VarsMax;
-	SetStackPointer(_iSP_Vars);
-
-	//GC();
-	
-	_isInitialized = true;
-	return ok ? r : nullptr;
+	bool ok = BeginTestCall(fun, iFID, base, args, argc);
+	if (ok)
+	{
+		++m_iDebugSuppressCount;
+		ok = Run();
+		--m_iDebugSuppressCount;
+	}
+	return FinishTestCall(fun, base, ok);
 }
 
 ValueRef CNeoVMWorker::testCall(ValueRef function, ValueRef args, int argc)
@@ -2680,47 +2705,79 @@ ValueRef CNeoVMWorker::testCall(ValueRef function, ValueRef args, int argc)
 	if (closure->_funIndex < 0 || closure->_funIndex >= (int)Functions().size())
 		return nullptr;
 	const SFunctionTable& fun = Functions()[closure->_funIndex];
+	const int base = _iSP_Vars_Max2;
 	if (argc != fun._argsCount || closure->_captures.size() != fun._captures.size() ||
-		!EnsureStackRange(_iSP_VarsMax, fun._stackSlotCount - 1))
+		!EnsureStackRange(base, fun._stackSlotCount - 1))
 		return nullptr;
-
-	const int save_Code = GetCodeptr();
-	const int save_iSP_Vars = _iSP_Vars;
-	const int save__iSP_VarsMax = _iSP_VarsMax;
 	ActiveClosureIsolation activeClosureIsolation(m_pActiveClosure);
-
-	SetCodePtr(fun._codePtr);
-	_iSP_Vars = _iSP_VarsMax;
-	SetStackPointer(_iSP_Vars);
-	PrepareFunctionStorage(fun, _iSP_Vars);
-	_iSP_VarsMax = _iSP_Vars + fun._localAddCount;
-	if (_iSP_Vars_Max2 < _iSP_Vars + fun._stackSlotCount)
-		_iSP_Vars_Max2 = _iSP_Vars + fun._stackSlotCount;
-
-	for (int i = 0; i < argc; ++i)
-		Move(&(*m_pVarStack_Base)[1 + _iSP_Vars + i], &args[i]);
-	for (size_t i = 0; i < fun._captures.size(); ++i)
-		Move(GetVarPtr_L(fun._captures[i].second), closure->Capture(i));
-
-	++closure->_refCount; // RET/ERROR가 Sync 후 반납한다.
-	m_pActiveClosure = closure;
-	++m_iDebugSuppressCount;
-	const bool ok = Run();
-	--m_iDebugSuppressCount;
-	// 예외로 남은 자식 클로저를 부모 프레임 복원 전에 동기화하고 실행 참조를 반납한다.
-	if (!ok) UnwindActiveClosures();
-
-	ValueRef result = &(*m_pVarStack_Base)[_iSP_Vars];
-	// 실패한 자식 호출의 오류 트랩은 호스트가 실패를 삼켜도 유지한다.
-	SetCodePtr(ok ? save_Code : 0);
-	_iSP_Vars = save_iSP_Vars;
-	_iSP_VarsMax = save__iSP_VarsMax;
-	SetStackPointer(_iSP_Vars);
-	_isInitialized = true;
-	return ok ? result : nullptr;
+	bool ok = BeginTestCall(fun, closure->_funIndex, base, args, argc);
+	if (ok)
+	{
+		for (size_t i = 0; i < fun._captures.size(); ++i)
+			Move(GetVarPtr_L(fun._captures[i].second), closure->Capture(i));
+		++closure->_refCount; // RET/ERROR가 Sync 후 반납한다.
+		m_pActiveClosure = closure;
+		++m_iDebugSuppressCount;
+		ok = Run();
+		--m_iDebugSuppressCount;
+	}
+	return FinishTestCall(fun, base, ok);
 }
 
-void CNeoVMWorker::CallFunctionValue(int functionIndex, int argumentCount)
+// 부모 레지스터를 보관함에 두고 자식 프레임을 연다. 인자 타입이 맞지 않으면 오류로 끝낸다.
+bool CNeoVMWorker::BeginTestCall(const SFunctionTable& fun, int functionIndex, int base, ValueRef args, int argc)
+{
+	m_sTestCallParent._code = GetCodeptr();
+	m_sTestCallParent._iSP_Vars = _iSP_Vars;
+	m_sTestCallParent._iSP_VarsMax = _iSP_VarsMax;
+	m_sTestCallParent._iSP_Vars_Max2 = _iSP_Vars_Max2;
+	m_sTestCallParent._functionIndex = _functionIndex;
+	m_sTestCallParent._plan = _activePlan;
+
+	SetCodePtr(fun._codePtr);
+	_iSP_Vars = base;
+	SetStackPointer(_iSP_Vars);
+	memset(&(*m_pVarStack_Base)[base], 0, sizeof(VarInfo) * fun._localAddCount);
+	EnterFrame(functionIndex, base);
+	_activePlan = nullptr;
+	_iSP_VarsMax = base + fun._localAddCount;
+	if (_iSP_Vars_Max2 < base + fun._stackSlotCount)
+		_iSP_Vars_Max2 = base + fun._stackSlotCount;
+	for (int i = 0; i < argc; ++i)
+		if (!StoreArgument(fun, base, i, args[i]))
+		{
+			SetError(RTE_CALL_ARG_TYPE);
+			return false;
+		}
+	return true;
+}
+
+ValueRef CNeoVMWorker::FinishTestCall(const SFunctionTable& fun, int base, bool ok)
+{
+	// 예외로 남은 자식 클로저를 부모 프레임 복원 전에 동기화하고 실행 참조를 반납한다.
+	if (!ok) UnwindActiveClosures();
+	// 결과 슬롯은 자식 프레임의 것이다. 소유권을 보관함으로 옮기고 슬롯을 비운다.
+	Var_Release(&m_sTestCallResult);
+	if (ok)
+	{
+		VarInfo* slot = &(*m_pVarStack_Base)[base];
+		m_sTestCallResult = BoundaryFromSlot(slot, fun._resultType);
+		slot->_int = 0;
+	}
+	// 실패한 자식 호출의 오류 트랩은 호스트가 실패를 삼켜도 유지한다.
+	SetCodePtr(ok ? m_sTestCallParent._code : 0);
+	_iSP_Vars = m_sTestCallParent._iSP_Vars;
+	_iSP_VarsMax = m_sTestCallParent._iSP_VarsMax;
+	_iSP_Vars_Max2 = m_sTestCallParent._iSP_Vars_Max2;
+	SetStackPointer(_iSP_Vars);
+	_functionIndex = m_sTestCallParent._functionIndex;
+	RestoreFrameTables();
+	_activePlan = m_sTestCallParent._plan;
+	_isInitialized = true;
+	return ok ? ValueRef(&m_sTestCallResult) : ValueRef(nullptr);
+}
+
+void CNeoVMWorker::CallFunctionValue(int functionIndex, int argumentCount, int returnValueIndex)
 {
 	if (functionIndex < 0 || functionIndex >= (int)Functions().size())
 	{
@@ -2732,7 +2789,7 @@ void CNeoVMWorker::CallFunctionValue(int functionIndex, int argumentCount)
 		SetError(RTE_CALL_ARG_COUNT);
 		return;
 	}
-	Call(functionIndex, argumentCount);
+	Call(functionIndex, argumentCount, returnValueIndex);
 }
 
 void CNeoVMWorker::Call(ClosureInfo* closure, int n2, int returnValueIndex)
@@ -2756,12 +2813,14 @@ void CNeoVMWorker::Call(ClosureInfo* closure, int n2, int returnValueIndex)
 		return;
 	}
 
+	// 저장되는 프레임은 호출자다. 오류 정리와 디버거가 _functionIndex로 배치를 찾는다.
 #if _DEBUG
 	SCallStack callStack;
 	callStack._ReturnIP = (u32)GetCodeptr();
 	callStack._iSP_Vars = _iSP_Vars;
 	callStack._iSP_VarsMax = _iSP_VarsMax;
 	callStack._iReturnValueIndex = returnValueIndex;
+	callStack._functionIndex = _functionIndex;
 	if (m_pActiveClosure != nullptr)
 		callStack._ReturnIP |= FLAG_CLOSURE;
 	m_pCallStack->push_back(callStack);
@@ -2771,6 +2830,7 @@ void CNeoVMWorker::Call(ClosureInfo* closure, int n2, int returnValueIndex)
 	callStack._iSP_Vars = _iSP_Vars;
 	callStack._iSP_VarsMax = _iSP_VarsMax;
 	callStack._iReturnValueIndex = returnValueIndex;
+	callStack._functionIndex = _functionIndex;
 	if (m_pActiveClosure != nullptr)
 		callStack._ReturnIP |= FLAG_CLOSURE;
 #endif
@@ -2787,7 +2847,9 @@ void CNeoVMWorker::Call(ClosureInfo* closure, int n2, int returnValueIndex)
 	SetCodePtr(fun._codePtr);
 	_iSP_Vars = _iSP_VarsMax;
 	SetStackPointer(_iSP_Vars);
-	PrepareFunctionStorage(fun, _iSP_Vars, true);
+	// 인자는 호출자가 창에 넣었고 이제 피호출자 프레임의 것이다. 창 계획은 소비됐다.
+	EnterFrame(closure->_funIndex, _iSP_Vars);
+	_activePlan = nullptr;
 	_iSP_VarsMax = _iSP_Vars + fun._localAddCount;
 	if (_iSP_Vars_Max2 < _iSP_Vars + fun._stackSlotCount)
 		_iSP_Vars_Max2 = _iSP_Vars + fun._stackSlotCount;
@@ -2844,7 +2906,7 @@ void CNeoVMWorker::SyncClosureAtFrame(ClosureInfo* closure, int stackBase, Value
 	bool mayContainContainerChild = false;
 	for (size_t i = 0; i < fun._captures.size(); ++i)
 	{
-		ValueRef source = &(*varStack)[stackBase + fun._captures[i].second];
+		ValueRef source(&(*varStack)[stackBase + fun._captures[i].second], fun._slotTypes[fun._captures[i].second]);
 		// 반환값으로 아직 사용될 슬롯만 복사로 남긴다. 나머지 캡처 슬롯은 호출
 		// 프레임이 끝난 뒤 쓰이지 않으므로 보관함에 소유권을 넘긴다.
 		if (source.IsContainerType())
@@ -2859,7 +2921,7 @@ void CNeoVMWorker::SyncClosureAtFrame(ClosureInfo* closure, int stackBase, Value
 		closure->_cycleState._mayContainContainerChild = true;
 }
 
-bool CNeoVMWorker::CallNative(FunctionPtrNative functionPtrNative, void* pUserData, StringInfo* pStr, int n3, ValueRef pRet)
+bool CNeoVMWorker::CallNative(FunctionPtrNative functionPtrNative, void* pUserData, StringInfo* pStr, int n3, VarInfo* pRet, bool keepResult)
 {
 	Neo_NativeFunction func = functionPtrNative._func;
 	if (func == nullptr)
@@ -2870,9 +2932,11 @@ bool CNeoVMWorker::CallNative(FunctionPtrNative functionPtrNative, void* pUserDa
 	if (!EnsureStackRange(_iSP_VarsMax, n3))
 		return false;
 	NativeFrameScope frame(*this);
+	const CallStoragePlan* plan = _activePlan;
+	CoroutineInfo* context = m_pCur;
 	_iSP_Vars = _iSP_VarsMax;
 	SetStackPointer(_iSP_Vars);
-	if (_iSP_Vars_Max2 < _iSP_VarsMax + 1 + n3) // ??????? 이렇게 하면 맞나? 흠...
+	if (_iSP_Vars_Max2 < _iSP_VarsMax + 1 + n3)
 		_iSP_Vars_Max2 = _iSP_VarsMax + 1 + n3;
 
 	bool nativeResult = (func)(this, pUserData, pStr, n3);
@@ -2887,19 +2951,21 @@ bool CNeoVMWorker::CallNative(FunctionPtrNative functionPtrNative, void* pUserDa
 			SetErrorFormat(RTE_CALL_NAMED, pStr ? pStr->_str.c_str() : "<unknown>");
 		return false;
 	}
+	// 결과는 소유권째 목적지로 옮긴다. 결과를 쓰지 않는 호출만 창 0번도 함께 놓는다.
+	VarInfo* window = m_pVarStack_Pointer;
+	const int argSP_Vars = _iSP_Vars;
+	const bool includeResult = pRet == nullptr && !keepResult;
 	if (pRet != nullptr)
-		Move(pRet, m_pVarStack_Pointer);
-
-	int argSP_Vars = _iSP_Vars;
+		TakeByPolicy(pRet, window, plan != nullptr ? static_cast<StoragePolicy>(plan->policies[0]) : StoragePolicy::Boxed);
 	frame.Restore();
 	if (m_pRegisterActive != nullptr)
 	{
 		switch(m_pRegisterActive->_sub_state)
 		{
 			case COROUTINE_SUB_START:
-				if (!StartCoroutione(argSP_Vars, n3))
-					return false;
-				break;
+				// 부모 창은 부모가 다시 실행될 때 놓는다(StopCoroutine). 창이 잡은 코루틴 참조가
+				// 전환 동안 살아 있어야 임시 코루틴도 안전하다.
+				return StartCoroutione(argSP_Vars, n3);
 			case COROUTINE_SUB_CLOSE:
 				switch (m_pRegisterActive->_state)
 				{
@@ -2931,28 +2997,36 @@ bool CNeoVMWorker::CallNative(FunctionPtrNative functionPtrNative, void* pUserDa
 				break;
 		}
 	}
-
+	// 컨텍스트가 바뀌었으면 창은 저장된 계획으로 그 컨텍스트가 놓는다.
+	if (m_pCur == context && plan != nullptr)
+	{
+		ReleaseCallWindow(*plan, window, includeResult);
+		_activePlan = nullptr;
+	}
 	return true;
 }
-bool CNeoVMWorker::CallDefaultNativeByIndex(int nativeIndex, int n3, ValueRef pRet)
+bool CNeoVMWorker::CallDefaultNativeByIndex(int nativeIndex, int n3, VarInfo* pRet)
 {
 	if (!EnsureStackRange(_iSP_VarsMax, n3))
 		return false;
     // 스택 범위 검사는 유지한다. 등록된 숫자 함수의 인자 계약은 컴파일러가 보증한다.
-    // 정수와 실수 모두 허용하는 내부 명령이므로 두 숫자 표현의 선택은 남긴다.
+    // 정수와 실수 모두 허용하는 내부 명령이므로 두 숫자 표현의 선택은 호출 계획이 준다.
     if (n3 == 1)
     {
         CNeoVM::ScalarNativeFunction scalar = CNeoVM::GetDefaultNativeScalar(nativeIndex);
-        ValueRef argument = m_pVarStack_Base->data() + _iSP_VarsMax + 1;
         if (scalar)
         {
+            const ValueRef argument(m_pVarStack_Base->data() + _iSP_VarsMax + 1, PlanType(1));
             assert(argument.IsNumber());
             const NS_FLOAT value = scalar(argument.GetFloatNumber());
             if (pRet) StoreNumberFloat(pRet, value);
+            _activePlan = nullptr;
             return true;
         }
     }
 	NativeFrameScope frame(*this);
+	const CallStoragePlan* plan = _activePlan;
+	CoroutineInfo* context = m_pCur;
 	_iSP_Vars = _iSP_VarsMax;
 	SetStackPointer(_iSP_Vars);
 	if (_iSP_Vars_Max2 < _iSP_VarsMax + 1 + n3)
@@ -2970,19 +3044,19 @@ bool CNeoVMWorker::CallDefaultNativeByIndex(int nativeIndex, int n3, ValueRef pR
 			SetErrorFormat(RTE_CALL_NAMED, CNeoVM::GetDefaultNativeName(nativeIndex));
 		return false;
 	}
+	// 결과는 소유권째 목적지로 옮긴다. 결과를 쓰지 않는 호출은 창 0번도 함께 놓는다.
+	VarInfo* window = m_pVarStack_Pointer;
+	const int argSP_Vars = _iSP_Vars;
 	if (pRet != nullptr)
-		Move(pRet, m_pVarStack_Pointer);
-
-	int argSP_Vars = _iSP_Vars;
+		TakeByPolicy(pRet, window, plan != nullptr ? static_cast<StoragePolicy>(plan->policies[0]) : StoragePolicy::Boxed);
 	frame.Restore();
 	if (m_pRegisterActive != nullptr)
 	{
 		switch(m_pRegisterActive->_sub_state)
-		{ 
+		{
 			case COROUTINE_SUB_START:
-				if (!StartCoroutione(argSP_Vars, n3))
-					return false;
-				break;
+				// 부모 창은 부모가 다시 실행될 때 놓는다(StopCoroutine).
+				return StartCoroutione(argSP_Vars, n3);
 			case COROUTINE_SUB_CLOSE:
 				switch (m_pRegisterActive->_state)
 				{
@@ -3014,7 +3088,12 @@ bool CNeoVMWorker::CallDefaultNativeByIndex(int nativeIndex, int n3, ValueRef pR
 				break;
 		}
 	}
-
+	// 컨텍스트가 바뀌었으면 창은 저장된 계획으로 그 컨텍스트가 놓는다.
+	if (m_pCur == context && plan != nullptr)
+	{
+		ReleaseCallWindow(*plan, window, pRet == nullptr);
+		_activePlan = nullptr;
+	}
 	return true;
 }
 bool CNeoVMWorker::PropertyNative(FunctionPtrNative functionPtrNative, void* pUserData, StringInfo* pStr, ValueRef pRet, bool get, int* deferredTransferFrame)
@@ -3042,10 +3121,7 @@ bool CNeoVMWorker::PropertyNative(FunctionPtrNative functionPtrNative, void* pUs
 	if (!frame.IsCurrent())
 		return false;
 	int argSP_Vars = _iSP_Vars;
-	// 반환값은 호출자의 pRet에 있다. 호스트 프레임과 중첩 호출의 임시 값은 먼저
-	// 해제한 뒤 상한을 복원해야 반복 접근 시 슬롯 누적과 참조 누수가 모두 없다.
-	for (int i = hostBase; i < _iSP_Vars_Max2; ++i)
-		Var_Release(GetStackFromBase(i));
+	// 반환값은 호출자의 pRet에 있다. 호스트 프레임은 소유 슬롯을 남기지 않으므로 상한만 되돌린다.
 	_iSP_Vars_Max2 = hostBase;
 	frame.Restore();
 	if (nativeResult == false)

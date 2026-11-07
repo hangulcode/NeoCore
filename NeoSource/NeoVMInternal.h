@@ -151,12 +151,9 @@ typedef u8	ArgFlag;
 
 enum eNOperation : OpType
 {
+	// 모든 복사·즉값 저장은 이 명령 하나다. 하위 4비트가 복사·해제 정책(0~11), 즉값 int32(12),
+	// 즉값 float32(13), 미확정 복사(15)를 고른다. 즉값은 n23에 실린다.
 	NOP_MOV,
-	NOP_MOV_L,
-	NOP_MOVI,
-	NOP_MOVI_L,
-	NOP_MOVF,
-	NOP_MOVF_L,
 	// 32-bit constant index, 16-bit destination: still exactly eight bytes.
 	// The destination flag selects local/global storage; no separate _L opcode is needed.
 	NOP_LOADK,
@@ -244,10 +241,9 @@ enum eNOperation : OpType
     NOP_F64_COMPARE,
     NOP_JMP_I64_COMPARE,
     NOP_JMP_F64_COMPARE,
-    // 목적지 저장형이 고정된 산술·복사. 타입별 임시 슬롯 배치 후 컴파일러만 선택한다.
+    // 목적지 저장형이 고정된 산술. 타입별 임시 슬롯 배치 후 컴파일러만 선택한다.
     NOP_I64_FIXED,
     NOP_F64_FIXED,
-    NOP_SLOT_COPY,
 #define NEOCORE_AGGREGATE_ENUM(op, name, suffix, arity, shape, dimension, controlMax) op,
 	NEOCORE_AGGREGATE_PRIMARY_OPS(NEOCORE_AGGREGATE_ENUM)
     NOP_V2_ARITH,
@@ -282,6 +278,14 @@ constexpr eNOperation PrimaryOperation(OperationCode code)
 { return static_cast<eNOperation>(code & 0xff); }
 constexpr u8 OperationSubCode(OperationCode code)
 { return static_cast<u8>(code >> 8); }
+
+// NOP_MOV의 세부 코드. 0~11은 StoragePolicy, 아래 둘은 즉값, 15는 종류를 정하지 못한 복사다.
+// 소유 정책에 NEOS_OP_MODIFIER가 붙으면 참조 증감 없이 원본의 소유권을 옮기고 원본을 비운다.
+static const unsigned MOV_SUB_IMMEDIATE_INT = 12;
+static const unsigned MOV_SUB_IMMEDIATE_FLOAT = 13;
+static const unsigned MOV_SUB_BOXED = 15;
+constexpr OperationCode OP_MOV_IMM_INT = MakeOperation(NOP_MOV, 12u);
+constexpr OperationCode OP_MOV_IMM_FLOAT = MakeOperation(NOP_MOV, 13u);
 
 constexpr OperationCode OP_GREAT = MakeOperation(NOP_COMPARE, ComparisonOp::Greater);
 constexpr OperationCode OP_JMP_GREAT = MakeOperation(NOP_JMP_COMPARE, ComparisonOp::Greater);
@@ -404,6 +408,11 @@ static_assert(sizeof(SVMOperation) == 8, "NeoScript instructions must remain eig
 
 inline bool IsFixedArithmetic(const SVMOperation& op)
 { return op.op == NOP_I64_FIXED || op.op == NOP_F64_FIXED; }
+inline bool IsImmediateMove(const SVMOperation& op)
+{
+    const unsigned sub = op.argFlag & NEOS_OP_SUB_MASK;
+    return op.op == NOP_MOV && (sub == MOV_SUB_IMMEDIATE_INT || sub == MOV_SUB_IMMEDIATE_FLOAT);
+}
 inline OperationCode ArithmeticMeaning(OperationCode op)
 {
     return MakeOperation(PrimaryOperation(op) == NOP_I64_FIXED ? NOP_I64_ARITH :
@@ -447,9 +456,13 @@ struct SCallStack
 	u32		_ReturnIP;
 	// >= 0: 절대 실행 스택 인덱스, -1: 명시적 목적지 없음(기본 반환 임시 슬롯 사용),
 	// <= -2: opcode와 같은 전역 음수 오프셋. 상수 0 포인터에 그대로 더해 복원한다.
+	// RETURN_DISCARD: 결과를 쓰지 않는다(함수값 호출문). 피호출자가 정리한다.
 	// 물리 배열 인덱스로 재인코딩하지 않으며, 상수 개수와 무관하다.
 	int	 _iReturnValueIndex = -1;
+	// 저장된(호출자) 프레임의 함수 번호. 오류 정리와 디버거가 프레임 배치를 찾는 열쇠다.
+	int	 _functionIndex = -1;
 };
+static const int RETURN_DISCARD = (std::numeric_limits<int>::min)();
 
 static constexpr u32 FLAG_CLOSURE = 1u << 31;  // 호출자가 closure였음 → 보조스택에서 복원
 static constexpr u32 FLAG_ASYNCWAIT = 1u << 30; // async 콜백 프레임 → wait() 반환슬롯 복원
@@ -501,6 +514,17 @@ enum ASYNC_COMMAND
 
 
 
+struct CallStoragePlan;
+// 네이티브가 실행되는 동안 네이티브를 부른 스크립트 프레임과 그 호출 창은 콜스택에 없다.
+// 네이티브 호출 범위가 이 기록을 남겨, 중첩 스크립트 호출의 오류 정리가 그 프레임의 소유 슬롯과
+// 창을 찾을 수 있게 한다. 프로퍼티 접근에서는 대기 중인 호출 창(있다면)을 가리킨다.
+struct SNativeFrame
+{
+	int		_iSP_Vars = 0;        // 네이티브를 부른 스크립트 프레임의 base
+	int		_functionIndex = -1;  // 그 프레임의 함수 번호
+	int		_window = 0;          // 호출 창의 base
+	const CallStoragePlan* _plan = nullptr; // 창의 계획. 없으면 창을 보지 않는다
+};
 struct CoroutineBase
 {
 	int			_iSP_Vars;
@@ -508,11 +532,17 @@ struct CoroutineBase
 	int			_iSP_VarsMax;
 	// 코드는 CNeoVMProgram 이 소유하는 불변 이미지다. IP 는 읽기 전용 포인터.
 	const SVMOperation* _pCodeCurrent;
+	// 현재 프레임의 함수 번호. 슬롯 정책·디버거·오류 정리가 이 번호로 배치를 찾는다.
+	int			_functionIndex;
+	// PREPARE_CALL이 고른 호출 창 계획. 네이티브 호출의 인자 타입과 오류 정리가 쓴다.
+	const CallStoragePlan* _activePlan;
 	void ClearSP()
 	{
 		_iSP_Vars = 0;
 		_iSP_Vars_Max2 = 0;
 		_iSP_VarsMax = 0;
+		_functionIndex = -1;
+		_activePlan = nullptr;
 	}
 };
 
@@ -523,57 +553,27 @@ struct AsyncResumeInfo
 	bool		returnValue = false;
 };
 
-// 호출 깊이별로 불변 프레임 배치만 선택한다. 개별 슬롯에는 태그를 저장하지 않는다.
+// 실행 스택은 태그 없는 payload 배열이다. 슬롯의 종류는 콜스택의 함수 번호와
+// 프로그램의 프레임 배치표(SFunctionTable::_slotTypes/_slotInfo)에서 찾는다.
 class ValueStack
 {
 public:
-    struct Range { int base; const VAR_TYPE* types; int count; int function; };
     std::vector<VarInfo> values;
-    std::vector<Range> ranges;
-    ValueRef At(int index) const
-    {
-        for (std::size_t i = ranges.size(); i > 0; --i)
-        {
-            const Range& range = ranges[i - 1];
-            if (index >= range.base)
-                return index < range.base + range.count
-                    ? ValueRef(const_cast<VarInfo*>(values.data()) + index, range.types + index - range.base)
-                    : ValueRef(const_cast<VarInfo*>(values.data()) + index, VAR_NONE);
-        }
-        return ValueRef(const_cast<VarInfo*>(values.data()) + index, VAR_NONE);
-    }
-    ValueRef::Element operator[](std::size_t index) const { return *At(static_cast<int>(index)); }
-    struct Offset
-    {
-        ValueStack* stack;
-        ValueRef operator+(int offset) const { return stack->At(offset); }
-        operator ValueRef() const { return stack->At(0); }
-    };
-    Offset data() { Offset view = {this}; return view; }
+    VarInfo& operator[](std::size_t index) { return values[index]; }
+    const VarInfo& operator[](std::size_t index) const { return values[index]; }
+    VarInfo* data() { return values.data(); }
     std::size_t size() const { return values.size(); }
     std::size_t capacity() const { return values.capacity(); }
     void resize(std::size_t size) { values.resize(size); }
-    int Function(int base) const
-    { for (std::size_t i = ranges.size(); i > 0; --i) if (ranges[i - 1].base == base) return ranges[i - 1].function; return -1; }
-    void Bind(int base, const std::vector<VAR_TYPE>& types, int function = -1)
-    {
-        while (!ranges.empty() && ranges.back().base >= base) ranges.pop_back();
-        Range range = {base, types.data(), static_cast<int>(types.size()), function};
-        ranges.push_back(range);
-    }
-    void Select(int base, const std::vector<VAR_TYPE>& types)
-    {
-        for (std::size_t i = ranges.size(); i > 0; --i)
-            if (ranges[i - 1].base == base)
-            { ranges[i - 1].types = types.data(); ranges[i - 1].count = static_cast<int>(types.size()); return; }
-        Bind(base, types);
-    }
 };
 
+class CNeoVMProgram;
 struct CoroutineInfo : AllocBase
 {
 	//	int	_CoroutineID;
 	int	_fun_index;
+	// 이 컨텍스트의 프레임 배치를 가진 프로그램. 워커 밖(순환 수집·풀 반납)에서 스택을 정리할 때 쓴다.
+	const CNeoVMProgram* _program = nullptr;
 	// coroutine.create가 받은 호출 가능 값. VAR_CLOSURE면 캡처 보관함의 소유권도 가진다.
 	BoundaryValue	_function;
 	// yield로 컨텍스트를 바꿀 때 현재 값-캡처 프레임 보유분을 함께 옮긴다.
@@ -590,6 +590,8 @@ struct CoroutineInfo : AllocBase
 	SimpleVector<SCallStack>	m_sCallStack;
 	SimpleVector<SClosureCallState>	m_sClosureCallStack;
 	SimpleVector<SAsyncWaitReturnState>	m_sAsyncWaitReturnStack;
+	// 실행 중인 네이티브 호출마다 하나. 네이티브가 끝나면 걷어낸다.
+	SimpleVector<SNativeFrame>	m_sNativeFrames;
 
 	// 파괴 재진입 방지와 순환 후보 intrusive FIFO 링크. 실행 스택의 저장 경로가
 	// 여러 곳에 분산돼 있어 대여 시 _mayContainContainerChild는 보수적으로 true로 둔다.
@@ -673,8 +675,9 @@ struct NeoExecContextPool
 		p->m_sClosureCallStack.clear();
 		p->m_sAsyncWaitReturnStack.reserve(8);
 		p->m_sAsyncWaitReturnStack.clear();
-		p->m_sVarStack.ranges.clear();
-        p->m_sVarStack.ranges.reserve(1000);
+		p->m_sNativeFrames.reserve(8);
+		p->m_sNativeFrames.clear();
+		p->_program = nullptr;
 		p->m_sVarStack.resize(_varStackSize);
 		if (cold)
 		{
@@ -687,7 +690,6 @@ struct NeoExecContextPool
 	// 반납 전 사용 슬롯의 BoundaryValue 참조 정리는 호출측(워커)이 수행한다(Var_Release 가 워커 멤버라서).
 	void Release(NeoExecContext* p)
 	{
-		p->m_sVarStack.ranges.clear();
 		_pool.Confer(p);
 	}
 
@@ -701,6 +703,7 @@ struct NeoExecContextPool
 			n += (long long)p->m_sCallStack.capacity() * sizeof(SCallStack);
 			n += (long long)p->m_sClosureCallStack.capacity() * sizeof(SClosureCallState);
 			n += (long long)p->m_sAsyncWaitReturnStack.capacity() * sizeof(SAsyncWaitReturnState);
+			n += (long long)p->m_sNativeFrames.capacity() * sizeof(SNativeFrame);
 			n += (long long)p->m_sAsyncResumeCodePtrs.capacity() * sizeof(AsyncResumeInfo);
 		}
 		return n;
@@ -772,7 +775,7 @@ struct ClosureInfo : AllocBase
 	std::vector<VarInfo> _captures;
 	// 프로그램보다 오래 살아 있는 호스트 보유 클로저도 불변 배치의 수명을 공유한다.
 	std::shared_ptr<const std::vector<VAR_TYPE>> _captureTypes;
-	ValueRef Capture(size_t index) { return ValueRef(_captures.data() + index, _captureTypes->data() + index); }
+	ValueRef Capture(size_t index) { return ValueRef(_captures.data() + index, (*_captureTypes)[index]); }
 	CycleState<ClosureInfo> _cycleState;
 	ClosureInfo*	_livePrev = nullptr;
 	ClosureInfo*	_liveNext = nullptr;
@@ -796,7 +799,8 @@ NEOS_FORCEINLINE void Move_DestNoRelease(ValueRef v1, ValueRef v2)
 	case VAR_INT: v1->_int = v2->_int; break;
 	case VAR_FLOAT: v1->_float = v2->_float; break;
 	case VAR_BOOL: v1->_bl = v2->_bl; break;
-	case VAR_NONE: break;
+	// 고정 슬롯의 null은 payload 0이다. 태그만 지우면 이전 포인터가 남는다.
+	case VAR_NONE: v1->_int = 0; break;
 	case VAR_FUN: v1.SetFunctionIndex(v2.FunctionIndex()); break;
 	case VAR_FUN_NATIVE: v1->_funPtr = v2->_funPtr; break;
 	case VAR_VEC:

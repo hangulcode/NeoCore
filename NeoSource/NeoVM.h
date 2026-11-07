@@ -446,23 +446,22 @@ public:
 
 
 // 함수의 고정 슬롯이나 컨테이너 원소를 빌려 쓰는 뷰. 값 자체에는 태그를 쓰지 않는다.
+// 경계 전용 뷰: 태그 있는 경계 값(BoundaryValue)이나 선언 타입이 고정된 슬롯을 같은 API로 다룬다.
+// 인터프리터 핫 패스는 이 뷰를 만들지 않고 VarInfo*와 명령에 실린 정책만 쓴다.
 class ValueRef
 {
     VarInfo* value_ = nullptr;
+    VAR_TYPE* boundary_ = nullptr; // 경계 값의 태그. 없으면 fixed_가 선언 타입이다.
     VAR_TYPE fixed_ = VAR_NONE;
-    VAR_TYPE* boundary_ = nullptr;
-    int stride_ = sizeof(VarInfo);
-    const VAR_TYPE* layout_ = nullptr;
 public:
     ValueRef() {}
     ValueRef(std::nullptr_t) {}
-    ValueRef(BoundaryValue* value)
-        : value_(value), fixed_(VAR_NONE), boundary_(value ? &value->_type : nullptr), stride_(sizeof(BoundaryValue)) {}
+    ValueRef(BoundaryValue* value) : value_(value), boundary_(value ? &value->_type : nullptr) {}
     ValueRef(const BoundaryValue* value) : ValueRef(const_cast<BoundaryValue*>(value)) {}
     ValueRef(VarInfo* value, VAR_TYPE type) : value_(value), fixed_(type) {}
-    ValueRef(VarInfo* value, const VAR_TYPE* layout) : value_(value), layout_(layout) {}
     VarInfo* operator->() const { return value_; }
     VarInfo* Data() const { return value_; }
+    bool IsBoundary() const { return boundary_ != nullptr; }
     explicit operator bool() const { return value_ != nullptr; }
     bool operator!() const { return value_ == nullptr; }
     bool operator==(ValueRef other) const { return value_ == other.value_; }
@@ -471,21 +470,19 @@ public:
     bool operator>(ValueRef other) const { return value_ > other.value_; }
     bool operator<=(ValueRef other) const { return value_ <= other.value_; }
     bool operator>=(ValueRef other) const { return value_ >= other.value_; }
+    // 경계 값 배열은 16바이트 보폭, 고정 슬롯 배열은 같은 선언 타입의 8바이트 보폭으로 움직인다.
     ValueRef operator+(std::ptrdiff_t n) const
     {
         if (!value_) { assert(n == 0); return *this; }
-        if (boundary_) return ValueRef(reinterpret_cast<BoundaryValue*>(reinterpret_cast<char*>(value_) + n * stride_));
-        return layout_ ? ValueRef(value_ + n, layout_ + n) : ValueRef(value_ + n, fixed_);
-    }
-    // VM의 고정 슬롯은 경계 값과 보폭을 매번 판별할 필요가 없다.
-    NEOS_FORCEINLINE ValueRef SlotOffset(std::ptrdiff_t n) const
-    {
-        assert(value_ && !boundary_ && layout_);
-        return ValueRef(value_ + n, layout_ + n);
+        if (boundary_) return ValueRef(static_cast<BoundaryValue*>(value_) + n);
+        return ValueRef(value_ + n, fixed_);
     }
     ValueRef operator-(std::ptrdiff_t n) const { return *this + -n; }
     std::ptrdiff_t operator-(ValueRef other) const
-    { return (reinterpret_cast<char*>(value_) - reinterpret_cast<char*>(other.value_)) / stride_; }
+    {
+        if (boundary_) return static_cast<BoundaryValue*>(value_) - static_cast<BoundaryValue*>(other.value_);
+        return value_ - other.value_;
+    }
     ValueRef& operator+=(std::ptrdiff_t n) { *this = *this + n; return *this; }
     ValueRef& operator-=(std::ptrdiff_t n) { return *this += -n; }
     ValueRef& operator++() { return *this += 1; }
@@ -503,7 +500,7 @@ public:
         if (DeclaredType() == CallableStorageType()) value_->_int = static_cast<NS_INT>((NS_UINT(index) << 1) | 1);
         else { value_->_int = 0; value_->_fun_index = index; }
     }
-    VAR_TYPE DeclaredType() const { return boundary_ ? *boundary_ : layout_ ? *layout_ : fixed_; }
+    VAR_TYPE DeclaredType() const { return boundary_ ? *boundary_ : fixed_; }
     VAR_TYPE GetType() const
     {
         const VAR_TYPE type = DeclaredType();
@@ -568,6 +565,9 @@ inline ValueRef::Element ValueRef::operator*() const { return Element(*this); }
 inline ValueRef::Element ValueRef::operator[](std::ptrdiff_t n) const { return Element(*this + n); }
 inline BoundaryValue::BoundaryValue(ValueRef value) : VarInfo(*value.Data()), _type(value.GetType())
 { if (_type == VAR_FUN) { _int = 0; _fun_index = value.FunctionIndex(); } }
+// 고정 슬롯(선언 타입 payload)을 함수 슬롯 표현까지 풀어 경계 값으로 복사한다.
+inline BoundaryValue BoundaryFromSlot(const VarInfo* slot, VAR_TYPE declared)
+{ return BoundaryValue(ValueRef(const_cast<VarInfo*>(slot), declared)); }
 inline ValueRef BoundaryValue::operator&() { return ValueRef(this); }
 inline ValueRef BoundaryValue::operator&() const { return ValueRef(this); }
 inline bool ValueRef::GetVec2(float out[2]) const { BoundaryValue v(*this); return v.GetVec2(out); }

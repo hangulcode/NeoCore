@@ -776,7 +776,7 @@ void DirectDestinationStructure(IRuntime& runtime, bool debug)
             if(std::strcmp(test.name,"Call")==0 && (operation.op==NOP_CALL || operation.op==NOP_CALL_L))
                 Check(debug?operation.n3!=1:operation.n3==1,"script return uses the argument destination only outside debug mode");
             if(std::strcmp(test.name,"Store")==0)
-                Check(operation.op!=NOP_MOV && operation.op!=NOP_MOV_L,"pure list store has no snapshot MOV");
+                Check(operation.op!=NOP_MOV || IsImmediateMove(operation),"pure list store has no snapshot MOV");
         }
     }
     program->Release();

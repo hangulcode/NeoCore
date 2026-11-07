@@ -215,9 +215,11 @@ class StorageCompiler
         }
         switch (op.op)
         {
-        case NOP_MOV: Copy(function, op.n1, op.n2); break;
-        case NOP_MOVI: Bind(function, op.n1, integer); break;
-        case NOP_MOVF: Bind(function, op.n1, number); break;
+        case NOP_MOV:
+            if ((op.argFlag & NEOS_OP_SUB_MASK) == MOV_SUB_IMMEDIATE_INT) Bind(function, op.n1, integer);
+            else if ((op.argFlag & NEOS_OP_SUB_MASK) == MOV_SUB_IMMEDIATE_FLOAT) Bind(function, op.n1, number);
+            else Copy(function, op.n1, op.n2);
+            break;
         case NOP_LOADK: Bind(function, op.n1, Get(function, StaticCompileIndex(op.n23))); break;
         case NOP_LOG_NOT: Bind(function, op.n1, boolean); Bind(function, op.n2, boolean); break;
         case NOP_JMP_FOR:

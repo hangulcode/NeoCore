@@ -696,11 +696,17 @@ void CNeoVM::FreeCoroutine(ValueRef d)
 	// 공유 풀로 반납하기 전에 컨텍스트의 스택 참조를 정리한다.
 	// 완료(DeadCoroutine)를 거친 코루틴은 _iSP_Vars_Max2 가 0 이라 무해하지만,
 	// yield 된 채 버려진 코루틴은 live ref 가 남아있어 정리하지 않으면 다른 VM 재사용 시 손상된다.
-	int n = pCI->_info._iSP_Vars_Max2;
-	ValueStack& s = pCI->m_sVarStack;
-	if (n > (int)s.size()) n = (int)s.size();
-	for (int i = 0; i < n; i++)
-		Var_Release(&s[i]);
+	// 저장된 프레임 배치(콜스택·네이티브 기록·현재 프레임·호출 창)로 소유 슬롯을 찾아 해제하고
+	// 사용 구간을 비운다. 태그가 없으므로 슬롯을 훑어서는 참조를 찾을 수 없다.
+	ForEachContextFrameSlot(pCI, [this](VarInfo* slot, VAR_TYPE type) { Var_Release(ValueRef(slot, type)); });
+	{
+		int n = pCI->_info._iSP_Vars_Max2;
+		ValueStack& s = pCI->m_sVarStack;
+		if (n > (int)s.size()) n = (int)s.size();
+		if (n > 0) memset(s.data(), 0, sizeof(VarInfo) * n);
+	}
+	pCI->m_sCallStack.clear();
+	pCI->m_sNativeFrames.clear();
 	// coroutine이 일반 함수 안에서 yield하면 부모 closure의 실행 참조는 여기로
 	// 옮겨진다. 풀 반납 전 반드시 풀어야 다음 Acquire의 clear()가 소유권을 잃지 않는다.
 	for (int i = 0; i < (int)pCI->m_sClosureCallStack.size(); ++i)
@@ -1479,14 +1485,11 @@ void CNeoVM::VisitCycleContainerChildren(BoundaryValue source, Visitor visitor)
 	case VAR_COROUTINE:
 	{
 		CoroutineInfo* coroutine = source._cor;
-		int count = coroutine->_info._iSP_Vars_Max2;
-		if (count < 0) count = 0;
-		if (count > (int)coroutine->m_sVarStack.size()) count = (int)coroutine->m_sVarStack.size();
-		for (int i = 0; i < count; ++i)
+		ForEachContextFrameSlot(coroutine, [&](VarInfo* slot, VAR_TYPE type)
 		{
-			BoundaryValue value = coroutine->m_sVarStack[i];
+			BoundaryValue value(ValueRef(slot, type));
 			if (value.IsContainerType()) visitor(value.GetType(), GetContainerObject(value));
-		}
+		});
 		BoundaryValue function = coroutine->_function;
 		if (function.IsContainerType()) visitor(function.GetType(), GetContainerObject(function));
 		if (coroutine->_activeClosure) visitor(VAR_CLOSURE, coroutine->_activeClosure);
@@ -1502,7 +1505,7 @@ void CNeoVM::VisitCycleContainerChildren(BoundaryValue source, Visitor visitor)
 		CNeoVMWorker* worker = (CNeoVMWorker*)source._module;
 		for (std::size_t i = 0; i < worker->m_sVarGlobal.size(); ++i)
         {
-            BoundaryValue value(ValueRef(worker->m_sVarGlobal.data() + i, worker->_pProgram->globalTypes.data() + i));
+            BoundaryValue value(ValueRef(worker->m_sVarGlobal.data() + i, worker->_pProgram->globalTypes[i]));
 			if (value.IsContainerType()) visitor(value.GetType(), GetContainerObject(value));
 		}
 		break;
@@ -1853,11 +1856,12 @@ int CNeoVM::CollectUnreachableCycleCandidates(size_t rootBudget)
 		case VAR_COROUTINE:
 		{
 			CoroutineInfo* coroutine = owner._cor;
-			int count = coroutine->_info._iSP_Vars_Max2;
-			if (count < 0) count = 0;
-			if (count > (int)coroutine->m_sVarStack.size()) count = (int)coroutine->m_sVarStack.size();
-			for (int i = 0; i < count; ++i)
-				{ BoundaryValue value = coroutine->m_sVarStack[i]; releaseVar(value); coroutine->m_sVarStack[i].ClearType(); }
+			ForEachContextFrameSlot(coroutine, [&](VarInfo* slot, VAR_TYPE type)
+			{
+				BoundaryValue value(ValueRef(slot, type));
+				releaseVar(value);
+				slot->_int = 0;
+			});
 			releaseVar(coroutine->_function);
 			if (coroutine->_activeClosure)
 			{
@@ -1884,7 +1888,7 @@ int CNeoVM::CollectUnreachableCycleCandidates(size_t rootBudget)
 			CNeoVMWorker* worker = (CNeoVMWorker*)owner._module;
 			for (std::size_t i = 0; i < worker->m_sVarGlobal.size(); ++i)
             {
-                ValueRef slot(worker->m_sVarGlobal.data() + i, worker->_pProgram->globalTypes.data() + i);
+                ValueRef slot(worker->m_sVarGlobal.data() + i, worker->_pProgram->globalTypes[i]);
                 BoundaryValue value(slot);
                 releaseVar(value);
                 slot.ClearType();

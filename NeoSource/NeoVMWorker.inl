@@ -38,21 +38,14 @@ NEOS_FORCEINLINE bool CNeoVMWorker::EnsureStackRange(int base, int lastOffset)
 }
 
 
-NEOS_FORCEINLINE void CNeoVMWorker::MoveI(ValueRef v1, int v)
+// 즉값은 숫자 슬롯에만 쓴다(로더가 검증). payload만 쓴다.
+NEOS_FORCEINLINE void CNeoVMWorker::MoveI(VarInfo* v1, int v)
 {
-	if (v1.IsAllocType())
-		Var_ReleaseAlloc(v1);
-
-	v1.SetType(VAR_INT);
 	v1->_int = v;
 }
 
-NEOS_FORCEINLINE void CNeoVMWorker::MoveF(ValueRef v1, int bits)
+NEOS_FORCEINLINE void CNeoVMWorker::MoveF(VarInfo* v1, int bits)
 {
-	if (v1.IsAllocType())
-		Var_ReleaseAlloc(v1);
-
-	v1.SetType(VAR_FLOAT);
 	float immediate;
 	std::memcpy(&immediate, &bits, sizeof(immediate));
 	v1->_float = static_cast<NS_FLOAT>(immediate);
@@ -165,7 +158,7 @@ NEOS_FORCEINLINE void CNeoVMWorker::CltInsert(ValueRef pClt, ValueRef pKey, Valu
 NEOS_NOINLINE void CNeoVMWorker::CommitRefVector(ValueRef value)
 {
 	const SVMOperation& owner = _pCodeCurrent[-2];
-	CltInsert(GetVarPtrF1(owner), GetVarPtr2(owner), value);
+	CltInsert(GetVarPtr1(owner), GetVarPtr2(owner), value);
 }
 
 NEOS_NOINLINE void CNeoVMWorker::CltInsertRare(ValueRef pClt, ValueRef pKey, ValueRef pValue)
@@ -554,14 +547,6 @@ NEOS_NOINLINE bool CNeoVMWorker::CheckIntegerDivisionOverflow(NS_INT dividend)
 	return true;
 }
 
-NEOS_FORCEINLINE void CNeoVMWorker::DivI64(ValueRef r, ValueRef left, ValueRef right)
-{
-	// 목적지가 입력과 같은 슬롯이어도 오류 검사와 계산을 끝낸 뒤 결과를 저장한다.
-	const NS_INT dividend = left->_int, divisor = right->_int;
-	if (CheckIntegerDivision(dividend, divisor))
-		StoreNumberInt(r, dividend / divisor);
-}
-
 NEOS_FORCEINLINE bool CNeoVMWorker::CheckShiftCount(NS_INT count)
 {
 	if (static_cast<NS_UINT>(count) < 64) return true;
@@ -675,12 +660,9 @@ NEOS_NOINLINE bool CNeoVMWorker::CompareGERare(ValueRef v1, ValueRef v2, bool re
 	return false;
 }
 
-NEOS_FORCEINLINE bool CNeoVMWorker::For(ValueRef pCur)
+NEOS_FORCEINLINE bool CNeoVMWorker::For(VarInfo* slots)
 {
     // 범위 반복의 네 슬롯은 컴파일러가 int로 확정한다. 핫패스에서는 페이로드만 접근한다.
-    assert(pCur.GetType() == VAR_INT && pCur[1].GetType() == VAR_INT &&
-        pCur[2].GetType() == VAR_INT && pCur[3].GetType() == VAR_INT);
-    VarInfo* slots = pCur.Data();
     slots[0]._int = slots[1]._int;
     const NS_INT step = slots[3]._int;
     if (step == 1)
@@ -690,10 +672,10 @@ NEOS_FORCEINLINE bool CNeoVMWorker::For(ValueRef pCur)
         ++slots[1]._int;
         return true;
     }
-    return ForRare(pCur, step);
+    return ForRare(slots, step);
 }
 // 드문 경로: step<0(역방향) 과 step==0(에러). 인라인하지 않아 For 의 hot path 를 작게 유지한다.
-NEOS_NOINLINE bool CNeoVMWorker::ForRare(ValueRef pCur, NS_INT step)
+NEOS_NOINLINE bool CNeoVMWorker::ForRare(VarInfo* pCur, NS_INT step)
 {
 	if (step == 0)
 	{
@@ -702,28 +684,29 @@ NEOS_NOINLINE bool CNeoVMWorker::ForRare(ValueRef pCur, NS_INT step)
 	}
 	if (step > 0)
 	{
-		if (pCur->_int < pCur[2]->_int)
+		if (pCur->_int < pCur[2]._int)
 		{
-			const NS_INT next = pCur[1]->_int > NS_INT_MAX - step ? NS_INT_MAX : pCur[1]->_int + step;
-			pCur[1]->_int = next >= pCur[2]->_int ? pCur[2]->_int : next;
+			const NS_INT next = pCur[1]._int > NS_INT_MAX - step ? NS_INT_MAX : pCur[1]._int + step;
+			pCur[1]._int = next >= pCur[2]._int ? pCur[2]._int : next;
 			return true;
 		}
 		return false;
 	}
-	if (pCur->_int > pCur[2]->_int)           // 역방향은 비교 방향이 반대
+	if (pCur->_int > pCur[2]._int)           // 역방향은 비교 방향이 반대
 	{
-		const NS_INT next = pCur[1]->_int < NS_INT_MIN - step ? NS_INT_MIN : pCur[1]->_int + step;
-		pCur[1]->_int = next <= pCur[2]->_int ? pCur[2]->_int : next;
+		const NS_INT next = pCur[1]._int < NS_INT_MIN - step ? NS_INT_MIN : pCur[1]._int + step;
+		pCur[1]._int = next <= pCur[2]._int ? pCur[2]._int : next;
 		return true;
 	}
 	return false;
 }
 // foreach 의 드문 컨테이너. string/set 순회는 스크립트에서 거의 안 쓰이는데 본문이 커서
 // 디스패치 루프만 키운다 — CltInsert/PTRCALL 과 같은 fast/rare 분리다.
+// 반복자·버전 슬롯은 소유권이 없는 payload다. 컴파일러가 key 뒤에 value/iterator/version을 연속 배치한다.
 NEOS_NOINLINE bool CNeoVMWorker::ForEachRare(ValueRef pClt, ValueRef pKey, bool bTwoVar)
 {
-	ValueRef pIterator = pKey + 2;
-	ValueRef pMutationVersion = pKey + 3;
+	VarInfo* pIterator = pKey.Data() + 2;
+	VarInfo* pMutationVersion = pKey.Data() + 3;
 
 	switch (pClt.GetType())
 	{
@@ -731,19 +714,18 @@ NEOS_NOINLINE bool CNeoVMWorker::ForEachRare(ValueRef pClt, ValueRef pKey, bool 
 	{
 		if (bTwoVar)
 		{
-			pIterator.ClearType();
+			pIterator->_int = 0;
 			SetError(RTE_FOREACH_STRING_TWOVAR);
 			return false;
 		}
 		std::string* str = &pClt->_str->_str;
 		if (pMutationVersion->_int == -1)
 		{
-			Var_Release(pIterator);
 			if (0 < (int)str->length())
 			{
+				pIterator->_int = 0;
 				pIterator->_it._iStringOffset = 0;
-				pIterator.SetType(VAR_ITERATOR);
-                Var_SetInt(pMutationVersion, 0);
+				pMutationVersion->_int = 0;
 			}
 			else
 				return false;
@@ -756,7 +738,7 @@ NEOS_NOINLINE bool CNeoVMWorker::ForEachRare(ValueRef pClt, ValueRef pKey, bool 
 		}
 		else
 		{
-			pIterator.ClearType();
+			pIterator->_int = 0;
 			return false;
 		}
 		break;
@@ -766,29 +748,26 @@ NEOS_NOINLINE bool CNeoVMWorker::ForEachRare(ValueRef pClt, ValueRef pKey, bool 
 		// set 도 값만 순회한다. foreach(var k, v in set) 는 미지원.
 		if (bTwoVar)
 		{
-			pIterator.ClearType();
+			pIterator->_int = 0;
 			SetError(RTE_FOREACH_SET_TWOVAR);
 			return false;
 		}
 		SetInfo* set = pClt->_set;
 		if (pMutationVersion->_int == -1)
 		{
-			Var_Release(pIterator);
 			if (0 < set->GetCount())
 			{
 				pIterator->_it = set->FirstNode();
-				pIterator.SetType(VAR_ITERATOR);
-				Var_SetInt(pMutationVersion, static_cast<NS_INT>(set->_mutationVersion));
+				pMutationVersion->_int = static_cast<NS_INT>(set->_mutationVersion);
 			}
 			else
 				return false;
 		}
 		else
 		{
-			assert(pMutationVersion.GetType() == VAR_INT);
 			if ((u32)pMutationVersion->_int != set->_mutationVersion)
 			{
-				pIterator.ClearType();
+				pIterator->_int = 0;
 				SetError(RTE_FOREACH_MODIFIED);
 				return false;
 			}
@@ -803,7 +782,7 @@ NEOS_NOINLINE bool CNeoVMWorker::ForEachRare(ValueRef pClt, ValueRef pKey, bool 
 		}
 		else
 		{
-			pIterator.ClearType();
+			pIterator->_int = 0;
 			return false;
 		}
 		break;
@@ -815,12 +794,11 @@ NEOS_NOINLINE bool CNeoVMWorker::ForEachRare(ValueRef pClt, ValueRef pKey, bool 
 	return false;
 }
 
-NEOS_FORCEINLINE bool CNeoVMWorker::ForEach(ValueRef pClt, ValueRef pKey, bool bTwoVar)
+NEOS_FORCEINLINE bool CNeoVMWorker::ForEach(ValueRef pClt, ValueRef pKey, ValueRef pValue, bool bTwoVar)
 {
-	ValueRef pValue = pKey + 1;
-	ValueRef pIterator = pKey + 2;
+	VarInfo* pIterator = pKey.Data() + 2;
 	// 컴파일러가 foreach마다 key/value/iterator/version 슬롯을 연속 배치한다.
-	ValueRef pMutationVersion = pKey + 3;
+	VarInfo* pMutationVersion = pKey.Data() + 3;
 
 	switch (pClt.GetType())
 	{
@@ -830,29 +808,27 @@ NEOS_FORCEINLINE bool CNeoVMWorker::ForEach(ValueRef pClt, ValueRef pKey, bool b
 		// append/resize처럼 길이나 저장 위치를 바꾸는 연산은 다음 단계에서 거부한다.
 		if (bTwoVar)
 		{
-			pIterator.ClearType();
+			pIterator->_int = 0;
 			SetError(RTE_FOREACH_ARRAY_TWOVAR);
 			return false;
 		}
 		ArrayInfo* array = pClt->_array;
 		if (pMutationVersion->_int == -1)
 		{
-			Var_Release(pIterator);
 			if (array->_count > 0)
 			{
+				pIterator->_int = 0;
 				pIterator->_it._iListOffset = 0;
-				pIterator.SetType(VAR_ITERATOR);
-				Var_SetInt(pMutationVersion, static_cast<NS_INT>(array->_mutationVersion));
+				pMutationVersion->_int = static_cast<NS_INT>(array->_mutationVersion);
 			}
 			else
 				return false;
 		}
 		else
 		{
-			assert(pMutationVersion.GetType() == VAR_INT);
 			if ((u32)pMutationVersion->_int != array->_mutationVersion)
 			{
-				pIterator.ClearType();
+				pIterator->_int = 0;
 				SetError(RTE_FOREACH_MODIFIED);
 				return false;
 			}
@@ -864,7 +840,7 @@ NEOS_FORCEINLINE bool CNeoVMWorker::ForEach(ValueRef pClt, ValueRef pKey, bool b
 			ArrayReadValue(this, array, pIterator->_it._iListOffset, pKey);
 			return true;
 		}
-		pIterator.ClearType();
+		pIterator->_int = 0;
 		return false;
 	}
 	case VAR_MAP:
@@ -872,22 +848,19 @@ NEOS_FORCEINLINE bool CNeoVMWorker::ForEach(ValueRef pClt, ValueRef pKey, bool b
 		MapInfo* tbl = pClt->_tbl;
 		if (pMutationVersion->_int == -1)
 		{
-			Var_Release(pIterator);
 			if (0 < tbl->GetCount())
 			{
 				pIterator->_it = tbl->FirstNode();
-				pIterator.SetType(VAR_ITERATOR);
-				Var_SetInt(pMutationVersion, static_cast<NS_INT>(tbl->_mutationVersion));
+				pMutationVersion->_int = static_cast<NS_INT>(tbl->_mutationVersion);
 			}
 			else
 				return false;
 		}
 		else
 		{
-			assert(pMutationVersion.GetType() == VAR_INT);
 			if ((u32)pMutationVersion->_int != tbl->_mutationVersion)
 			{
-				pIterator.ClearType();
+				pIterator->_int = 0;
 				SetError(RTE_FOREACH_MODIFIED);
 				return false;
 			}
@@ -903,7 +876,7 @@ NEOS_FORCEINLINE bool CNeoVMWorker::ForEach(ValueRef pClt, ValueRef pKey, bool b
 		}
 		else
 		{
-			pIterator.ClearType();
+			pIterator->_int = 0;
 			return false;
 		}
 		break;
@@ -913,29 +886,27 @@ NEOS_FORCEINLINE bool CNeoVMWorker::ForEach(ValueRef pClt, ValueRef pKey, bool b
 		// list 는 값만 순회한다. foreach(var k, v in list) 는 미지원.
 		if (bTwoVar)
 		{
-			pIterator.ClearType();
+			pIterator->_int = 0;
 			SetError(RTE_FOREACH_LIST_TWOVAR);
 			return false;
 		}
 		ListInfo* lst = pClt->_lst;
 		if (pMutationVersion->_int == -1)
 		{
-			Var_Release(pIterator);
 			if (0 < lst->GetCount())
 			{
+				pIterator->_int = 0;
 				pIterator->_it._iListOffset = 0;
-				pIterator.SetType(VAR_ITERATOR);
-				Var_SetInt(pMutationVersion, static_cast<NS_INT>(lst->_mutationVersion));
+				pMutationVersion->_int = static_cast<NS_INT>(lst->_mutationVersion);
 			}
 			else
 				return false;
 		}
 		else
 		{
-			assert(pMutationVersion.GetType() == VAR_INT);
 			if ((u32)pMutationVersion->_int != lst->_mutationVersion)
 			{
-				pIterator.ClearType();
+				pIterator->_int = 0;
 				SetError(RTE_FOREACH_MODIFIED);
 				return false;
 			}
@@ -950,7 +921,7 @@ NEOS_FORCEINLINE bool CNeoVMWorker::ForEach(ValueRef pClt, ValueRef pKey, bool b
 		}
 		else
 		{
-			pIterator.ClearType();
+			pIterator->_int = 0;
 			return false;
 		}
 		break;

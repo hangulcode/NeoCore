@@ -19,7 +19,7 @@ NEOS_FORCEINLINE void ConcatenateStrings(ValueRef result, ValueRef first, ValueR
 }
 
 NEOS_NOINLINE bool handle_STR_ADD(const SVMOperation& OP) {
-    ConcatenateStrings(GetVarPtrF1(OP), GetVarPtr2(OP), GetVarPtr3(OP));
+    ConcatenateStrings(GetVarPtr1(OP), GetVarPtr2(OP), GetVarPtr3(OP));
     return false;
 }
 
@@ -29,43 +29,41 @@ NEOS_NOINLINE bool handle_STR_ADD_L(const SVMOperation& OP) {
 }
 
 NEOS_NOINLINE bool handle_TOSTRING(const SVMOperation& OP) {
-    Var_SetStringA(GetVarPtrF1(OP), ToString(GetVarPtr2(OP)));
+    Var_SetStringA(GetVarPtr1(OP), ToString(GetVarPtr2(OP)));
     return false;
 }
 
-// 숫자는 공통 변환의 타입 분기를 피한다. 참조형 목적지는 저장 도우미가 해제하고, 다른 입력 타입은 기존 규칙을 따른다.
-NEOS_FORCEINLINE void ConvertToInt(ValueRef dst, ValueRef src) {
+// 숫자는 공통 변환의 타입 분기를 피한다. 목적지는 숫자 슬롯이라 payload만 쓴다.
+NEOS_FORCEINLINE void ConvertToInt(VarInfo* dst, ValueRef src) {
     const VAR_TYPE type = src.GetType();
-    const NS_INT result = type == VAR_INT ? src->_int :
+    dst->_int = type == VAR_INT ? src->_int :
         type == VAR_FLOAT ? NeoFloatToInt(src->_float) : ToInt(src);
-    StoreNumberInt(dst, result);
 }
-NEOS_FORCEINLINE void ConvertToFloat(ValueRef dst, ValueRef src) {
+NEOS_FORCEINLINE void ConvertToFloat(VarInfo* dst, ValueRef src) {
     const VAR_TYPE type = src.GetType();
-    const NS_FLOAT result = type == VAR_INT ? static_cast<NS_FLOAT>(src->_int) :
+    dst->_float = type == VAR_INT ? static_cast<NS_FLOAT>(src->_int) :
         type == VAR_FLOAT ? src->_float : ToFloat(src);
-    StoreNumberFloat(dst, result);
 }
 
 NEOS_FORCEINLINE bool handle_TOINT(const SVMOperation& OP) {
-    ConvertToInt(GetVarPtrF1(OP), GetVarPtr2(OP));
+    ConvertToInt(GetVarRawF1(OP), GetVarPtr2(OP));
     return false;
 }
 
 // _L 변형: 오퍼랜드가 전부 로컬인 것이 프로그램 빌드 시(PatchLocalOps) 확정된 op.
 // argFlag 비트 테스트 없이 스택 베이스로 직행한다(test+cmov 제거).
 NEOS_FORCEINLINE bool handle_TOINT_L(const SVMOperation& OP) {
-    ConvertToInt(GetVarPtr_L(OP.n1), GetVarPtr_L(OP.n2));
+    ConvertToInt(GetVarRaw_L(OP.n1), GetVarPtr_L(OP.n2));
     return false;
 }
 
 NEOS_FORCEINLINE bool handle_TOFLOAT(const SVMOperation& OP) {
-    ConvertToFloat(GetVarPtrF1(OP), GetVarPtr2(OP));
+    ConvertToFloat(GetVarRawF1(OP), GetVarPtr2(OP));
     return false;
 }
 
 NEOS_NOINLINE bool handle_TOSIZE(const SVMOperation& OP) {
-    Var_SetInt(GetVarPtrF1(OP), ToSize(GetVarPtr2(OP)));
+    GetVarRawF1(OP)->_int = ToSize(GetVarPtr2(OP));
     return false;
 }
 
@@ -95,7 +93,8 @@ NEOS_NOINLINE void set_script_closure_value(ValueRef dst, int functionIndex) {
     bool mayContainContainerChild = false;
     for (size_t i = 0; i < fun._captures.size(); ++i)
     {
-        ValueRef source = GetVarPtr_L(fun._captures[i].first);
+        // 원본 슬롯의 종류는 캡처 배치표가 준다. 부모 프레임 슬롯이라 현재 함수 표와 같다.
+        ValueRef source(GetVarRaw_L(fun._captures[i].first), (*fun._captureTypes)[i]);
         if (source.IsContainerType())
             mayContainContainerChild = true;
         Move(closure->Capture(i), source);
@@ -122,14 +121,14 @@ NEOS_FORCEINLINE void set_script_function_value(ValueRef dst, int functionIndex)
 }
 
 NEOS_NOINLINE bool handle_FMOV1(const SVMOperation& OP) {
-    set_script_function_value(GetVarPtrF1(OP), OP.n2);
+    set_script_function_value(GetVarPtr1(OP), OP.n2);
     return false;
 }
 
 NEOS_NOINLINE bool handle_FMOV2(const SVMOperation& OP) {
     BoundaryValue fun;
     set_script_function_value(&fun, OP.n3);
-    CltInsert(GetVarPtrF1(OP), GetVarPtr2(OP), &fun);
+    CltInsert(GetVarPtr1(OP), GetVarPtr2(OP), &fun);
     Var_Release(&fun);
     return false;
 }
@@ -161,6 +160,9 @@ NEOS_FORCEINLINE bool handle_CALL_L(const SVMOperation& OP) {
 // pFunName 은 원본과 같이 분기 안에서 늦게 뽑는다(n2 == -1 센티널 보호).
 NEOS_NOINLINE bool handle_PTRCALL_native(const SVMOperation& OP, ValueRef pVar1, ValueRef pFunNamePre) {
     short n3 = OP.n3;
+    // 결과를 쓰지 않는 호출문은 창에 남는 결과를 바로 해제한다. 쓰는 호출은 뒤따르는 MOV가 가져간다.
+    const bool keepResult = (OP.argFlag & NEOS_OP_CALL_NORESULT) == 0;
+    const int discard = keepResult ? -1 : RETURN_DISCARD;
     if ((OP.argFlag & NEOS_ARG_N2_LOCAL) == 0 && OP.n2 == -1) {
         SetErrorUnsupport(g_sNeoRuntimeErrors[RTE_CALL_VALUE], pVar1);
         return false;
@@ -170,15 +172,15 @@ NEOS_NOINLINE bool handle_PTRCALL_native(const SVMOperation& OP, ValueRef pVar1,
     {
     case VAR_STRING:
         pFunName = pFunNamePre ? pFunNamePre : GetVarPtr2(OP);
-        CallNative(GetVM()->_funLib_String, std::addressof(pVar1), pFunName->_str, n3);
+        CallNative(GetVM()->_funLib_String, std::addressof(pVar1), pFunName->_str, n3, nullptr, keepResult);
         break;
     case VAR_FP_NATIVE:
         pFunName = pFunNamePre ? pFunNamePre : GetVarPtr2(OP);
-        CallNative(pVar1->_fpNative->_fun, pVar1->_fpNative->_pUserData, pFunName->_str, n3);
+        CallNative(pVar1->_fpNative->_fun, pVar1->_fpNative->_pUserData, pFunName->_str, n3, nullptr, keepResult);
         break;
     case VAR_ARRAY:
         pFunName = pFunNamePre ? pFunNamePre : GetVarPtr2(OP);
-        CallNative(GetVM()->_funLib_Array, std::addressof(pVar1), pFunName->_str, n3);
+        CallNative(GetVM()->_funLib_Array, std::addressof(pVar1), pFunName->_str, n3, nullptr, keepResult);
         break;
     case VAR_MAP:
     {
@@ -191,29 +193,29 @@ NEOS_NOINLINE bool handle_PTRCALL_native(const SVMOperation& OP, ValueRef pVar1,
 
             if (pVarMeta.GetType() == VAR_FUN)
             {
-                CallFunctionValue(pVarMeta.FunctionIndex(), n3);
+                CallFunctionValue(pVarMeta.FunctionIndex(), n3, discard);
                 break;
             }
             if (pVarMeta.GetType() == VAR_CLOSURE)
             {
-                Call(pVarMeta->_closure, n3);
+                Call(pVarMeta->_closure, n3, discard);
                 break;
             }
         }
-        CallNative(GetVM()->_funLib_Map, std::addressof(pVar1), pFunName->_str, n3);
+        CallNative(GetVM()->_funLib_Map, std::addressof(pVar1), pFunName->_str, n3, nullptr, keepResult);
         break;
     }
     case VAR_LIST:
         pFunName = pFunNamePre ? pFunNamePre : GetVarPtr2(OP);
-        CallNative(GetVM()->_funLib_List, std::addressof(pVar1), pFunName->_str, n3);
+        CallNative(GetVM()->_funLib_List, std::addressof(pVar1), pFunName->_str, n3, nullptr, keepResult);
         break;
     case VAR_SET:
         pFunName = pFunNamePre ? pFunNamePre : GetVarPtr2(OP);
-        CallNative(GetVM()->_funLib_Set, std::addressof(pVar1), pFunName->_str, n3);
+        CallNative(GetVM()->_funLib_Set, std::addressof(pVar1), pFunName->_str, n3, nullptr, keepResult);
         break;
     case VAR_ASYNC:
         pFunName = pFunNamePre ? pFunNamePre : GetVarPtr2(OP);
-        CallNative(GetVM()->_funLib_Async, std::addressof(pVar1), pFunName->_str, n3);
+        CallNative(GetVM()->_funLib_Async, std::addressof(pVar1), pFunName->_str, n3, nullptr, keepResult);
         break;
     default:
         // 함수값 호출(n2=-1)은 이름 슬롯이 없다. 멤버 호출만 이름을 읽는다.
@@ -235,23 +237,24 @@ NEOS_NOINLINE bool handle_PTRCALL_native(const SVMOperation& OP, ValueRef pVar1,
 // 스크립트/네이티브 함수값을 바로 부르는 세 경우만 인라인에 남긴다. 각 두 줄이라
 // 디스패치 루프를 거의 키우지 않으면서, 호출당 분기 하나로 끝난다.
 NEOS_FORCEINLINE bool handle_PTRCALL_impl(const SVMOperation& OP, ValueRef pVar1, ValueRef pFunNamePre) {
+    const int discard = (OP.argFlag & NEOS_OP_CALL_NORESULT) ? RETURN_DISCARD : -1;
     switch (pVar1.GetType())
     {
     case VAR_FUN:
         if ((OP.argFlag & NEOS_ARG_N2_LOCAL) == 0 && -1 == OP.n2) {
-            CallFunctionValue(pVar1.FunctionIndex(), OP.n3);
+            CallFunctionValue(pVar1.FunctionIndex(), OP.n3, discard);
             return false;
         }
         break;
     case VAR_FUN_NATIVE:
         if ((OP.argFlag & NEOS_ARG_N2_LOCAL) == 0 && -1 == OP.n2) {
-            Call(pVar1->_funPtr, OP.n3);
+            Call(pVar1->_funPtr, OP.n3, nullptr, discard == -1);
             return false;
         }
         break;
     case VAR_CLOSURE:
         if ((OP.argFlag & NEOS_ARG_N2_LOCAL) == 0 && -1 == OP.n2) {
-            Call(pVar1->_closure, OP.n3);
+            Call(pVar1->_closure, OP.n3, discard);
             return false;
         }
         break;
@@ -262,7 +265,7 @@ NEOS_FORCEINLINE bool handle_PTRCALL_impl(const SVMOperation& OP, ValueRef pVar1
 }
 
 NEOS_FORCEINLINE bool handle_PTRCALL(const SVMOperation& OP) {
-    return handle_PTRCALL_impl(OP, GetVarPtrF1(OP), nullptr);
+    return handle_PTRCALL_impl(OP, GetVarPtr1(OP), nullptr);
 }
 
 NEOS_FORCEINLINE bool handle_PTRCALL_L(const SVMOperation& OP) {
@@ -270,11 +273,11 @@ NEOS_FORCEINLINE bool handle_PTRCALL_L(const SVMOperation& OP) {
     return handle_PTRCALL_impl(OP, GetVarPtr_L(OP.n1), GetVarPtr_L(OP.n2));
 }
 
-// 본문 공용. pRet 은 NORESULT 를 이미 반영한 반환 슬롯(없으면 nullptr).
-NEOS_FORCEINLINE bool handle_PTRCALL2_impl(short n2, ValueRef pFunName, ValueRef pRet) {
+// 본문 공용. pRet 은 NORESULT 를 이미 반영한 반환 슬롯(없으면 nullptr = 결과를 버린다).
+NEOS_FORCEINLINE bool handle_PTRCALL2_impl(short n2, ValueRef pFunName, VarInfo* pRet) {
     if (pFunName.GetType() == VAR_STRING)
     {
-        CallNative(GetVM()->_funLib_Default, nullptr, pFunName->_str, n2, pRet);
+        CallNative(GetVM()->_funLib_Default, nullptr, pFunName->_str, n2, pRet, false);
     }
 
     if (_iSP_Vars_Max2 < _iSP_VarsMax + (1 + n2))
@@ -283,38 +286,44 @@ NEOS_FORCEINLINE bool handle_PTRCALL2_impl(short n2, ValueRef pFunName, ValueRef
 }
 
 NEOS_FORCEINLINE bool handle_PTRCALL2(const SVMOperation& OP) {
-    return handle_PTRCALL2_impl(OP.n2, GetVarPtrF1(OP),
-        (OP.argFlag & NEOS_OP_CALL_NORESULT) ? nullptr : GetVarPtr3(OP));
+    return handle_PTRCALL2_impl(OP.n2, GetVarPtr1(OP),
+        (OP.argFlag & NEOS_OP_CALL_NORESULT) ? nullptr : GetVarRaw3(OP));
 }
 
 NEOS_FORCEINLINE bool handle_PTRCALL2_L(const SVMOperation& OP) {
     return handle_PTRCALL2_impl(OP.n2, GetVarPtr_L(OP.n1),
-        (OP.argFlag & NEOS_OP_CALL_NORESULT) ? nullptr : GetVarPtr_L(OP.n3));
+        (OP.argFlag & NEOS_OP_CALL_NORESULT) ? nullptr : GetVarRaw_L(OP.n3));
 }
 
 NEOS_FORCEINLINE bool handle_NATIVECALL(const SVMOperation& OP) {
     short n2 = OP.n2;
-    CallDefaultNativeByIndex(OP.n1, n2, (OP.argFlag & NEOS_OP_CALL_NORESULT) ? nullptr : GetVarPtr3(OP));
+    CallDefaultNativeByIndex(OP.n1, n2, (OP.argFlag & NEOS_OP_CALL_NORESULT) ? nullptr : GetVarRaw3(OP));
 
     if (_iSP_Vars_Max2 < _iSP_VarsMax + (1 + n2))
         _iSP_Vars_Max2 = _iSP_VarsMax + (1 + n2);
     return false;
 }
 
-// 본문 공용. pSrc = 반환값 슬롯(NORESULT 면 nullptr).
-NEOS_FORCEINLINE bool handle_RETURN_impl(ValueRef pSrc, int functionIndex) {
+// 반환값을 목적지로 옮긴다. 지역 원본은 소유권을 넘기고(참조 증감 없음), 전역 원본은 복사한다.
+NEOS_FORCEINLINE void StoreReturnValue(VarInfo* destination, VarInfo* source, bool sourceLocal, StoragePolicy policy) {
+    if (source == nullptr) return;
+    if (!PolicyOwns(policy)) { destination->_int = source->_int; return; }
+    if (sourceLocal) TakeByPolicy(destination, source, policy);
+    else CopyByPolicy(destination, source, policy);
+}
+
+// 본문 공용. pSrc = 반환값 슬롯(NORESULT 면 nullptr). 결과를 먼저 옮긴 뒤 프레임의 소유 슬롯을 해제한다.
+NEOS_FORCEINLINE bool handle_RETURN_impl(VarInfo* pSrc, bool sourceLocal, int functionIndex) {
+    const SFunctionTable& fun = Functions()[functionIndex];
+    const StoragePolicy resultPolicy = fun.SlotPolicy(0);
     if (m_iBreakingCallStack == (int)m_pCallStack->size())
     {
 		// 최상위/코루틴 시작 closure는 호출 프레임이 없으므로 active 상태로 판별한다.
 		if (m_pActiveClosure != nullptr)
-			FinishClosureReturn(pSrc);
+			FinishClosureReturn(ValueRef(pSrc, VAR_NONE));
 
-        if (pSrc == nullptr)
-            Var_Release(m_pVarStack_Pointer); // Clear
-        else
-            Move(m_pVarStack_Pointer, pSrc);
-
-        ReleaseFunctionStorage(Functions()[functionIndex], _iSP_Vars);
+        StoreReturnValue(m_pVarStack_Pointer, pSrc, sourceLocal, resultPolicy);
+        LeaveFrame(fun, _iSP_Vars);
 
         if (m_iBreakingCallStack == 0 && !IsNativeScriptCallActive() && IsMainCoroutine(m_pCur) == false)
         {
@@ -328,27 +337,25 @@ NEOS_FORCEINLINE bool handle_RETURN_impl(ValueRef pSrc, int functionIndex) {
     const SCallStack callStack = m_pCallStack->pop_back();
 	const u32 returnIP = callStack._ReturnIP;
 	if (m_pActiveClosure != nullptr)
-		FinishClosureReturn(pSrc);
+		FinishClosureReturn(ValueRef(pSrc, VAR_NONE));
 
-    if (callStack._iReturnValueIndex != -1)
+    if (callStack._iReturnValueIndex == RETURN_DISCARD)
     {
-        ValueRef pReturnValue = (callStack._iReturnValueIndex >= 0)
+        // 결과를 쓰지 않는 호출문. 지역 결과는 프레임 정리가 해제한다.
+    }
+    else if (callStack._iReturnValueIndex != -1)
+    {
+        VarInfo* pReturnValue = (callStack._iReturnValueIndex >= 0)
             ? &(*m_pVarStack_Base)[callStack._iReturnValueIndex]
             : m_pVarGlobal_Pointer + callStack._iReturnValueIndex;
-        if (pSrc == nullptr)
-            Var_Release(pReturnValue); // Clear
-        else
-            Move(pReturnValue, pSrc);
+        StoreReturnValue(pReturnValue, pSrc, sourceLocal, resultPolicy);
     }
     else
     {
-        if (pSrc == nullptr)
-            Var_Release(m_pVarStack_Pointer); // Clear
-        else
-            Move(m_pVarStack_Pointer, pSrc);
+        StoreReturnValue(m_pVarStack_Pointer, pSrc, sourceLocal, resultPolicy);
     }
 
-    ReleaseFunctionStorage(Functions()[functionIndex], _iSP_Vars);
+    LeaveFrame(fun, _iSP_Vars);
 
     if (returnIP & FLAG_ASYNCWAIT)
     {
@@ -365,6 +372,7 @@ NEOS_FORCEINLINE bool handle_RETURN_impl(ValueRef pSrc, int functionIndex) {
 	_iSP_Vars = callStack._iSP_Vars;
 	SetStackPointer(_iSP_Vars);
 	_iSP_VarsMax = callStack._iSP_VarsMax;
+	SelectFunction(callStack._functionIndex);
 	if (returnIP & FLAG_CLOSURE)
 	{
 		SClosureCallState& state = m_pClosureCallStack->pop_back();
@@ -376,21 +384,22 @@ NEOS_FORCEINLINE bool handle_RETURN_impl(ValueRef pSrc, int functionIndex) {
 }
 
 NEOS_FORCEINLINE bool handle_RETURN(const SVMOperation& OP) {
-    return handle_RETURN_impl((OP.argFlag & NEOS_OP_CALL_NORESULT) ? nullptr : GetVarPtrF1(OP), OP.n2);
+    if (OP.argFlag & NEOS_OP_CALL_NORESULT) return handle_RETURN_impl(nullptr, false, OP.n2);
+    return handle_RETURN_impl(GetVarRawF1(OP), (OP.argFlag & NEOS_ARG_N1_LOCAL) != 0, OP.n2);
 }
 
 NEOS_FORCEINLINE bool handle_RETURN_L(const SVMOperation& OP) {
     // NORESULT 면 슬롯을 안 뽑으므로 PatchLocalOps 가 _L 로 바꾸지 않는다.
-    return handle_RETURN_impl(GetVarPtr_L(OP.n1), OP.n2);
+    return handle_RETURN_impl(GetVarRaw_L(OP.n1), true, OP.n2);
 }
 
 NEOS_NOINLINE bool handle_TABLE_ALLOC(const SVMOperation& OP) {
-    Var_SetTable(GetVarPtrF1(OP), GetVM()->TableAlloc(OP.n23));
+    Var_SetTable(GetVarPtr1(OP), GetVM()->TableAlloc(OP.n23));
     return false;
 }
 
 NEOS_FORCEINLINE bool handle_CLT_READ(const SVMOperation& OP) {
-    CltRead(GetVarPtrF1(OP), GetVarPtr2(OP), GetVarPtr3(OP));
+    CltRead(GetVarPtr1(OP), GetVarPtr2(OP), GetVarPtr3(OP));
     return false;
 }
 
@@ -403,7 +412,7 @@ NEOS_FORCEINLINE bool handle_CLT_READ_L(const SVMOperation& OP) {
 // 키는 워커별 static 슬롯에서 매번 읽고 FindString도 매번 수행한다. 따라서 맵 수정이나
 // 풀 재사용 뒤의 value 포인터를 보관하는 inline cache와 달리 수명/무효화 상태가 없다.
 NEOS_FORCEINLINE bool handle_CLT_READ_STATIC_STRING(const SVMOperation& OP) {
-    ValueRef pClt = GetVarPtrF1(OP);
+    ValueRef pClt = GetVarPtr1(OP);
     ValueRef pKey = GetVarPtr_G(OP.n2);
     ValueRef pValue = GetVarPtr3(OP);
     if (pClt.GetType() == VAR_MAP) {
@@ -421,7 +430,7 @@ NEOS_FORCEINLINE bool handle_CLT_READ_STATIC_STRING(const SVMOperation& OP) {
 }
 
 NEOS_FORCEINLINE bool handle_CLT_MOV(const SVMOperation& OP) {
-    CltInsert(GetVarPtrF1(OP), GetVarPtr2(OP), GetVarPtr3(OP), &OP);
+    CltInsert(GetVarPtr1(OP), GetVarPtr2(OP), GetVarPtr3(OP), &OP);
     return false;
 }
 
@@ -443,7 +452,7 @@ NEOS_NOINLINE void WriteStoredVector(ValueRef target, ValueRef temp) {
 // ordinary write to normal dispatch, including after a suspended native getter.
 NEOS_NOINLINE void handle_CLT_WRITE_REF(const SVMOperation& OP) {
     ValueRef temp = GetVarPtr3(OP);
-    ValueRef owner = GetVarPtrF1(OP);
+    ValueRef owner = GetVarPtr1(OP);
     ValueRef key = GetVarPtr2(OP);
     ValueRef target = nullptr;
     if (owner.GetType() == VAR_LIST)
@@ -476,7 +485,7 @@ NEOS_NOINLINE void handle_CLT_WRITE_REF(const SVMOperation& OP) {
 
 
 NEOS_NOINLINE bool handle_LIST_ALLOC(const SVMOperation& OP) {
-    Var_SetList(GetVarPtrF1(OP), GetVM()->ListAlloc(OP.n23));
+    Var_SetList(GetVarPtr1(OP), GetVM()->ListAlloc(OP.n23));
     return false;
 }
 
@@ -485,13 +494,17 @@ NEOS_NOINLINE bool handle_LIST_ALLOC_L(const SVMOperation& OP) {
     return false;
 }
 
+// 정수 슬롯은 내보내기가 이 명령을 빈 명령으로 바꾼다. 남는 것은 실수 슬롯의 정수 변환뿐이다.
+NEOS_FORCEINLINE void ChangeSlotToInt(VarInfo* slot, VAR_TYPE declared) {
+    if (declared == VAR_FLOAT) slot->_int = NeoFloatToInt(slot->_float);
+}
 NEOS_FORCEINLINE bool handle_CHANGE_INT(const SVMOperation& OP) {
-    ChangeNumber(GetVarPtrF1(OP));
+    ChangeSlotToInt(GetVarRawF1(OP), SlotType1(OP));
     return false;
 }
 
 NEOS_FORCEINLINE bool handle_CHANGE_INT_L(const SVMOperation& OP) {
-    ChangeNumber(GetVarPtr_L(OP.n1));
+    ChangeSlotToInt(GetVarRaw_L(OP.n1), SlotType_L(OP.n1));
     return false;
 }
 
@@ -532,21 +545,19 @@ NEOS_NOINLINE bool handle_IDLE(const SVMOperation& OP) {
 			// Continue the loop so RunInternal reports the VM error.
             return false;
         }
-        // 비동기 완료 콜백의 void(bool, string) 계약은 고정이다. 인자를 쓰기 전에 배치를 선택한다.
-        static const std::vector<VAR_TYPE> callbackTypes = {VAR_NONE, VAR_BOOL, VAR_STRING};
-        for (int i = _iSP_VarsMax; i < _iSP_Vars_Max2; ++i) Var_Release(GetStackFromBase(i));
-        m_pVarStack_Base->Bind(_iSP_VarsMax, callbackTypes);
-        for (int i = 0; i < 3; ++i) m_pVarStack_Base->values[_iSP_VarsMax + i]._int = 0;
+        // 비동기 완료 콜백의 void(bool, string) 계약은 고정이다. 호출 창은 비어 있으므로 바로 쓴다.
+        VarInfo* window = GetStackFromBase(_iSP_VarsMax);
+        for (int i = 0; i < 3; ++i) window[i]._int = 0;
         _iSP_Vars_Max2 = (std::max)(_iSP_Vars_Max2, _iSP_VarsMax + 3);
-        Var_SetBool(GetStackFromBase(_iSP_VarsMax + 1), p->_success);
-        Var_SetStringA(GetStackFromBase(_iSP_VarsMax + 2), p->_resultValue);
+        window[1]._bl = p->_success;
+        Var_SetStringA(ValueRef(window + 2, VAR_STRING), p->_resultValue);
 		BoundaryValue callback;
 		Move_DestNoRelease(&callback, &p->_callback);
 		const int callStackSize = m_pCallStack->size();
 		if (callback.GetType() == VAR_CLOSURE)
-			Call(callback._closure, 2);
+			Call(callback._closure, 2, RETURN_DISCARD);
 		else
-			Call(callback._fun_index, 2);
+			Call(callback._fun_index, 2, RETURN_DISCARD);
         if (resumeInfo.pReturnValue != nullptr && m_pCallStack->size() == callStackSize + 1)
         {
             SAsyncWaitReturnState& state = m_pCur->m_sAsyncWaitReturnStack.push_back();
@@ -576,12 +587,15 @@ NEOS_NOINLINE bool handle_VEC_MAKE(const SVMOperation& OP) {
     }
     // 함수 진입에서 인자 영역까지 스택 범위와 해제 상한을 확정한다.
     // 인자와 목적지가 겹쳐도 값을 보존하도록 새 벡터를 완성한 뒤 대상에 연결한다.
-    ValueRef args = GetStackFromBase(_iSP_VarsMax + 1);
+    // 인자의 숫자 종류(int/float)는 호출 계획이 준다.
+    VarInfo* args = GetStackFromBase(_iSP_VarsMax + 1);
     float tmp[4] = {};   // n 개만 쓰고 n 개만 복사한다
     for (int i = 0; i < n; ++i) {
-        assert(args[i].IsNumber());
-        tmp[i] = NeoNarrowFloat32(args[i].GetFloatNumber());
+        ValueRef argument(args + i, PlanType(1 + i));
+        assert(argument.IsNumber());
+        tmp[i] = NeoNarrowFloat32(argument.GetFloatNumber());
     }
+    _activePlan = nullptr;
     if (OP.argFlag & NEOS_OP_CALL_NORESULT) return false;
     // 2성분은 직접 저장하고, 3·4성분은 단독 소유 저장소를 재사용한다.
     StoreVector(GetVarPtr3(OP), n, tmp[0], tmp[1], tmp[2], tmp[3]);
@@ -657,7 +671,7 @@ NEOS_NOINLINE bool handle_ERROR(const SVMOperation& OP) {
 
     _isErrorOPIndex = 0;
 	// 오류 unwind는 정상 return을 거치지 않는다. 현재/부모 closure의 캡처 슬롯을
-	// 먼저 동기화하고 실행 보유분을 모두 놓는다.
+	// 먼저 동기화하고 실행 보유분을 모두 놓은 뒤, 모든 프레임의 소유 슬롯을 정책으로 해제한다.
 	UnwindActiveClosures();
     _iSP_Vars = 0;
     SetStackPointer(_iSP_Vars);
@@ -665,16 +679,53 @@ NEOS_NOINLINE bool handle_ERROR(const SVMOperation& OP) {
     return true; // Exit RunInternal
 }
 
+// 정책이 실린 복사. 하위 4비트가 정책 또는 즉값 종류다. 호출 결과는 MODIFIER로 소유권만 옮긴다.
+NEOS_FORCEINLINE void handle_MOV(const SVMOperation& OP) {
+    const unsigned sub = OP.argFlag & NEOS_OP_SUB_MASK;
+    VarInfo* target = GetVarRawF1(OP);
+    switch (sub)
+    {
+    case static_cast<unsigned>(StoragePolicy::Payload):
+        target->_int = GetVarRaw2(OP)->_int;
+        return;
+    case MOV_SUB_IMMEDIATE_INT:
+        target->_int = OP.n23;
+        return;
+    case MOV_SUB_IMMEDIATE_FLOAT:
+        MoveF(target, OP.n23);
+        return;
+    case MOV_SUB_BOXED:
+        // 종류를 정하지 못한 복사. 배치표의 선언 타입으로 경계 복사를 한다.
+        Move(GetVarPtr1(OP), GetVarPtr2(OP));
+        return;
+    default:
+        if (OP.argFlag & NEOS_OP_MODIFIER) TakeByPolicy(target, GetVarRaw2(OP), static_cast<StoragePolicy>(sub));
+        else CopyByPolicy(target, GetVarRaw2(OP), static_cast<StoragePolicy>(sub));
+        return;
+    }
+}
+
 // 실행 빈도가 낮은 opcode 의 핸들러. 디스패치 루프(RunInternal)는 타임아웃×디버그로 네 벌 생성되고 한 벌이
 // 50 KB 를 넘어 uop 캐시를 벗어나므로, 드문 핸들러는 본문을 밖으로 빼 핫 루프를 작게 유지한다.
 // 선정 근거: 벤치·smoke 의 동적 opcode 계측과 게임 프로젝트 스크립트 101개의 정적 opcode 빈도(둘 다 0.1% 미만인 것만).
 // 비트·시프트 연산과 2-피연산자 산술은 계측에서는 드물었지만 xorshift 류 난수·해시 코드가 op 마다 호출을
 // 치러 느려졌으므로(실측) 루프 안으로 되돌렸다. 여기 남은 것은 비교→bool, 논리 점프, LOADK 류다.
-NEOS_NOINLINE void handle_LOADK_cold(const SVMOperation& OP) { Move(GetVarPtrF1(OP), m_pVarGlobal_Pointer + OP.n23); }
-NEOS_NOINLINE void handle_LOG_NOT_cold(const SVMOperation& OP) { StoreNumberBool(GetVarPtrF1(OP), !GetVarPtr2(OP)->_bl); }
-NEOS_NOINLINE void handle_GREAT_cold(const SVMOperation& OP) { Var_SetBool(GetVarPtrF1(OP), CompareGR(GetVarPtr2(OP), GetVarPtr3(OP))); }
-NEOS_NOINLINE void handle_GREAT_EQ_cold(const SVMOperation& OP) { Var_SetBool(GetVarPtrF1(OP), CompareGE(GetVarPtr2(OP), GetVarPtr3(OP))); }
-NEOS_NOINLINE void handle_LESS_cold(const SVMOperation& OP) { Var_SetBool(GetVarPtrF1(OP), CompareGR(GetVarPtr3(OP), GetVarPtr2(OP), true)); }
-NEOS_NOINLINE void handle_LESS_EQ_cold(const SVMOperation& OP) { Var_SetBool(GetVarPtrF1(OP), CompareGE(GetVarPtr3(OP), GetVarPtr2(OP), true)); }
-NEOS_NOINLINE void handle_EQUAL2_cold(const SVMOperation& OP) { Var_SetBool(GetVarPtrF1(OP), CompareEQ(GetVarPtr2(OP), GetVarPtr3(OP))); }
-NEOS_NOINLINE void handle_NEQUAL_cold(const SVMOperation& OP) { Var_SetBool(GetVarPtrF1(OP), !CompareEQ(GetVarPtr2(OP), GetVarPtr3(OP))); }
+// 상수 복사. 목적지 정책이 하위 4비트에 있다. 문자열 상수는 참조를 나눠 가진다.
+NEOS_NOINLINE void handle_LOADK_cold(const SVMOperation& OP) {
+    const StoragePolicy policy = static_cast<StoragePolicy>(OP.argFlag & NEOS_OP_SUB_MASK);
+    if (policy == StoragePolicy::Boxed) Move(GetVarPtr1(OP), GetVarPtr_G(static_cast<short>(OP.n23)));
+    else CopyByPolicy(GetVarRawF1(OP), m_pVarGlobal_Pointer + OP.n23, policy);
+}
+// 참조 슬롯 비우기. 정책이 하위 4비트에 있다.
+NEOS_FORCEINLINE void handle_VAR_CLEAR(const SVMOperation& OP) {
+    const StoragePolicy policy = static_cast<StoragePolicy>(OP.argFlag & NEOS_OP_SUB_MASK);
+    if (policy == StoragePolicy::Boxed) Var_Release(GetVarPtr1(OP));
+    else { VarInfo* slot = GetVarRawF1(OP); ReleaseByPolicy(slot, policy); slot->_int = 0; }
+}
+NEOS_NOINLINE void handle_LOG_NOT_cold(const SVMOperation& OP) { StoreNumberBool(GetVarRawF1(OP), !GetVarRaw2(OP)->_bl); }
+NEOS_NOINLINE void handle_GREAT_cold(const SVMOperation& OP) { StoreNumberBool(GetVarRawF1(OP), CompareGR(GetVarPtr2(OP), GetVarPtr3(OP))); }
+NEOS_NOINLINE void handle_GREAT_EQ_cold(const SVMOperation& OP) { StoreNumberBool(GetVarRawF1(OP), CompareGE(GetVarPtr2(OP), GetVarPtr3(OP))); }
+NEOS_NOINLINE void handle_LESS_cold(const SVMOperation& OP) { StoreNumberBool(GetVarRawF1(OP), CompareGR(GetVarPtr3(OP), GetVarPtr2(OP), true)); }
+NEOS_NOINLINE void handle_LESS_EQ_cold(const SVMOperation& OP) { StoreNumberBool(GetVarRawF1(OP), CompareGE(GetVarPtr3(OP), GetVarPtr2(OP), true)); }
+NEOS_NOINLINE void handle_EQUAL2_cold(const SVMOperation& OP) { StoreNumberBool(GetVarRawF1(OP), CompareEQ(GetVarPtr2(OP), GetVarPtr3(OP))); }
+NEOS_NOINLINE void handle_NEQUAL_cold(const SVMOperation& OP) { StoreNumberBool(GetVarRawF1(OP), !CompareEQ(GetVarPtr2(OP), GetVarPtr3(OP))); }

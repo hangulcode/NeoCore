@@ -43,7 +43,7 @@ struct SVarWrapper
 // 있으므로, 컴파일러가 이 플래그만 실어 보내고 미지원 판정/에러는 ForEach 런타임에서 한다.
 
 
-#define NEOS_GLOBAL_VAR(idx) (m_pVarGlobal_Pointer.SlotOffset(idx))
+#define NEOS_GLOBAL_VAR(idx) (m_pVarGlobal_Pointer + (idx))
 
 class mRND 
 {
@@ -254,7 +254,26 @@ private:
 	// 대여할 때 한 번만 resize 되고 실행 중에는 절대 커지지 않으므로(EnsureStackRange 는
 	// 넘치면 에러를 낼 뿐 늘리지 않는다) 베이스가 바뀔 때만 갱신하면 된다.
 	int						m_iVarStackSize;
-	ValueRef				m_pVarStack_Pointer;
+	VarInfo*				m_pVarStack_Pointer;
+	// 현재 프레임 함수의 슬롯 타입·정책 표. SelectFunction이 _functionIndex와 함께 바꾼다.
+	// 종류가 필요한 범용 명령만 읽고, 타입별 명령은 payload만 다룬다.
+	const VAR_TYPE*			m_pSlotTypes = nullptr;
+	const u8*				m_pSlotInfo = nullptr;
+	const VAR_TYPE*			m_pGlobalTypes = nullptr;
+	NEOS_FORCEINLINE void SelectFunction(int index)
+	{
+		_functionIndex = index;
+		const SFunctionTable& fun = _pProgram->functions[index];
+		m_pSlotTypes = fun._slotTypes.data();
+		m_pSlotInfo = fun._slotInfo.data();
+	}
+	// 저장된 레지스터(_info)를 되살린 뒤 배치표를 함수 번호에 맞춘다.
+	NEOS_FORCEINLINE void RestoreFrameTables()
+	{
+		if (_functionIndex >= 0) SelectFunction(_functionIndex);
+		else { m_pSlotTypes = nullptr; m_pSlotInfo = nullptr; }
+	}
+	NEOS_FORCEINLINE const SFunctionTable& CurrentFunction() const { return _pProgram->functions[_functionIndex]; }
 
 	// 둘이 어긋나면 스택 범위 검사가 조용히 틀리므로 항상 함께 바꾼다.
 	NEOS_FORCEINLINE void SetVarStackBase(ValueStack* p)
@@ -270,7 +289,7 @@ private:
 	ClosureInfo* m_pActiveClosure = nullptr;
 
 	std::vector<VarInfo>*	m_pVarGlobal;
-	ValueRef m_pVarGlobal_Pointer;
+	VarInfo* m_pVarGlobal_Pointer;
 
 	std::list< CoroutineInfo*> m_sCoroutines;
 
@@ -280,14 +299,66 @@ private:
 	CoroutineInfo* m_pRegisterActive = nullptr;
 
 	void    BindContext(CoroutineInfo* ctx);            // 컨텍스트를 활성 스택으로 바인딩
-	void    CleanupContextVars(CoroutineInfo* ctx, int usedMax);  // 반납 전 BoundaryValue 참조 정리
-    void PrepareCallStorage(int plan);
-    void PrepareFunctionStorage(const SFunctionTable& function, int base, bool argumentsReady = false);
-    void ReleaseFunctionStorage(const SFunctionTable& function, int base);
-    void ReleaseStorageValue(ValueRef value, SlotKind kind);
-    void CopyStorageReference(ValueRef target, ValueRef source, SlotKind kind);
+	// 컨텍스트의 모든 프레임(콜스택 + 현재 프레임 + 대기 중인 호출 창)이 소유한 참조를 정책으로 해제하고
+	// 사용 구간을 0으로 채운다. 태그 없는 스택의 유일한 일괄 정리 경로다.
+	void    ReleaseContextFrames(CoroutineInfo* ctx);
+    // PREPARE_CALL: 호출 창 계획을 고르고 창을 비운다. 창에는 앞 호출(피호출자 프레임)의 숫자 payload가
+    // 남아 있을 수 있고, 소유 참조는 RET·네이티브 복귀가 이미 놓았다. 정책 복사는 비운 창에만 쓴다.
+    // 함수 진입의 스택 범위 검사가 이 함수의 모든 창까지 포함하므로 여기서는 다시 검사하지 않는다.
+    NEOS_FORCEINLINE void SelectCallPlan(int plan)
+    {
+        const CallStoragePlan& selected = CurrentFunction()._calls[plan];
+        _activePlan = &selected;
+        VarInfo* window = m_pVarStack_Base->data() + _iSP_VarsMax;
+        const std::size_t count = selected.types.size();
+        assert(_iSP_VarsMax + static_cast<int>(count) <= m_iVarStackSize);
+        for (std::size_t i = 0; i < count; ++i) window[i]._int = 0;
+    }
+    // 프레임 진입: 소유 슬롯 구간을 0으로 채우고 함수 배치를 고른다. 숫자 슬롯은 선언이 초기화한다.
+    NEOS_FORCEINLINE void EnterFrame(int functionIndex, int base)
+    {
+        const SFunctionTable& fun = _pProgram->functions[functionIndex];
+        if (fun._ownedCount)
+            memset(&(*m_pVarStack_Base)[base + 1 + fun._argsCount], 0, sizeof(VarInfo) * fun._ownedCount);
+        SelectFunction(functionIndex);
+    }
+    // 프레임 종료: 인자와 소유 슬롯 구간만 정책으로 해제한다. 숫자 슬롯은 보지 않는다.
+    NEOS_FORCEINLINE void LeaveFrame(const SFunctionTable& fun, int base)
+    {
+        const u8* info = fun._slotInfo.data();
+        VarInfo* slots = &(*m_pVarStack_Base)[base];
+        for (int i = 1; i < fun._releaseCount; ++i)
+        {
+            const StoragePolicy policy = SlotInfoPolicy(info[i]);
+            if (policy != StoragePolicy::Payload) ReleaseByPolicy(slots + i, policy);
+        }
+    }
+    // 창 슬롯을 계획의 정책으로 놓는다. 네이티브 호출이 끝난 뒤와 코루틴 복귀가 쓴다.
+    void ReleaseCallWindow(const CallStoragePlan& plan, VarInfo* window, bool includeResult);
+    // 정책 기반 소유 전달. 태그를 읽지 않고 명령·배치표가 준 정책만 쓴다.
+    void ReleaseByPolicy(VarInfo* slot, StoragePolicy policy);
+    void CopyByPolicy(VarInfo* target, const VarInfo* source, StoragePolicy policy);
+    NEOS_FORCEINLINE void TakeByPolicy(VarInfo* target, VarInfo* source, StoragePolicy policy)
+    {
+        // 원본은 소유권을 넘기고 비워진다. 같은 슬롯이면 할 일이 없다.
+        if (target == source) return;
+        if (PolicyOwns(policy)) ReleaseByPolicy(target, policy);
+        *target = *source;
+        source->_int = 0;
+    }
     template <VAR_TYPE Type> void ReleaseKnownStorage(CNeoVM* vm, ValueRef value);
     template <VAR_TYPE Type> void CopyKnownStorage(CNeoVM* vm, ValueRef target, ValueRef source);
+    // 호출 계획의 반환 타입. 네이티브와 호스트가 반환 슬롯을 읽고 쓸 때 쓴다.
+    NEOS_FORCEINLINE VAR_TYPE PlanType(int index) const
+    {
+        if (_activePlan == nullptr || index < 0 || index >= static_cast<int>(_activePlan->types.size())) return VAR_NONE;
+        return _activePlan->types[index];
+    }
+    NEOS_FORCEINLINE StoragePolicy PlanPolicy(int index) const
+    {
+        if (_activePlan == nullptr || index < 0 || index >= static_cast<int>(_activePlan->policies.size())) return StoragePolicy::Boxed;
+        return static_cast<StoragePolicy>(_activePlan->policies[index]);
+    }
 	// 이미 무효가 된 프레임의 closure는 sync하지 않는다. 실행 보유분만 반납한다.
 	void    ReleaseDetachedClosureWithoutSync(ClosureInfo*& closure);
 	// 오류로 실행을 폐기할 때, 컨텍스트의 실행 보유 closure 참조를 write-back
@@ -337,24 +408,44 @@ private:
 	//BoundaryValue _intA1;
 	//BoundaryValue _intA2, _intA3;
 	BoundaryValue _funA3;
+	// testCall 결과 보관함. 자식 프레임의 반환 슬롯에서 소유권을 옮겨 호출한 네이티브가 읽는다.
+	BoundaryValue m_sTestCallResult;
 
-	NEOS_FORCEINLINE ValueRef GetVarPtrF1(const SVMOperation& OP)
+	// 피연산자 payload. 타입별 명령은 이것만 쓴다.
+	NEOS_FORCEINLINE VarInfo* GetVarRawF1(const SVMOperation& OP)
 	{
-		if (OP.argFlag & NEOS_ARG_N1_LOCAL) return GetVarPtr_L(OP.n1);
+		if (OP.argFlag & NEOS_ARG_N1_LOCAL) return GetVarRaw_L(OP.n1);
 		return NEOS_GLOBAL_VAR(OP.n1);
 	}
-	NEOS_FORCEINLINE ValueRef GetVarPtr2(const SVMOperation& OP)
+	NEOS_FORCEINLINE VarInfo* GetVarRaw2(const SVMOperation& OP)
 	{
-		if (OP.argFlag & NEOS_ARG_N2_LOCAL) return GetVarPtr_L(OP.n2);
+		if (OP.argFlag & NEOS_ARG_N2_LOCAL) return GetVarRaw_L(OP.n2);
 		return NEOS_GLOBAL_VAR(OP.n2);
 	}
-	NEOS_FORCEINLINE ValueRef GetVarPtr3(const SVMOperation& OP)
+	NEOS_FORCEINLINE VarInfo* GetVarRaw3(const SVMOperation& OP)
 	{
-		if (OP.argFlag & NEOS_ARG_N3_LOCAL) return GetVarPtr_L(OP.n3);
+		if (OP.argFlag & NEOS_ARG_N3_LOCAL) return GetVarRaw_L(OP.n3);
 		return NEOS_GLOBAL_VAR(OP.n3);
 	}
-	NEOS_FORCEINLINE ValueRef GetVarPtr_L(short n) { return m_pVarStack_Pointer.SlotOffset(n); }
-	NEOS_FORCEINLINE ValueRef GetVarPtr_G(short n) { return NEOS_GLOBAL_VAR(n); }
+	NEOS_FORCEINLINE VarInfo* GetVarRaw_L(short n) { return m_pVarStack_Pointer + n; }
+	NEOS_FORCEINLINE VarInfo* GetVarRaw_G(short n) { return NEOS_GLOBAL_VAR(n); }
+
+	// 피연산자의 선언 타입·정책. 종류가 필요한 범용 명령만 배치표를 읽는다.
+	NEOS_FORCEINLINE VAR_TYPE SlotType_L(short n) const { return m_pSlotTypes[n]; }
+	NEOS_FORCEINLINE VAR_TYPE SlotType_G(short n) const { return m_pGlobalTypes[n]; }
+	NEOS_FORCEINLINE VAR_TYPE SlotType1(const SVMOperation& OP) const { return (OP.argFlag & NEOS_ARG_N1_LOCAL) ? SlotType_L(OP.n1) : SlotType_G(OP.n1); }
+	NEOS_FORCEINLINE VAR_TYPE SlotType2(const SVMOperation& OP) const { return (OP.argFlag & NEOS_ARG_N2_LOCAL) ? SlotType_L(OP.n2) : SlotType_G(OP.n2); }
+	NEOS_FORCEINLINE VAR_TYPE SlotType3(const SVMOperation& OP) const { return (OP.argFlag & NEOS_ARG_N3_LOCAL) ? SlotType_L(OP.n3) : SlotType_G(OP.n3); }
+	NEOS_FORCEINLINE StoragePolicy SlotPolicy_L(short n) const { return SlotInfoPolicy(m_pSlotInfo[n]); }
+	NEOS_FORCEINLINE StoragePolicy SlotPolicy_G(short n) const { return PolicyOfType(m_pGlobalTypes[n]); }
+	NEOS_FORCEINLINE StoragePolicy SlotPolicy1(const SVMOperation& OP) const { return (OP.argFlag & NEOS_ARG_N1_LOCAL) ? SlotPolicy_L(OP.n1) : SlotPolicy_G(OP.n1); }
+	NEOS_FORCEINLINE StoragePolicy SlotPolicy3(const SVMOperation& OP) const { return (OP.argFlag & NEOS_ARG_N3_LOCAL) ? SlotPolicy_L(OP.n3) : SlotPolicy_G(OP.n3); }
+	// 경계 API(컬렉션·네이티브·변환)로 넘길 때만 선언 타입을 붙인 뷰를 만든다.
+	NEOS_FORCEINLINE ValueRef GetVarPtr_L(short n) { return ValueRef(m_pVarStack_Pointer + n, m_pSlotTypes[n]); }
+	NEOS_FORCEINLINE ValueRef GetVarPtr_G(short n) { return ValueRef(m_pVarGlobal_Pointer + n, m_pGlobalTypes[n]); }
+	NEOS_FORCEINLINE ValueRef GetVarPtr1(const SVMOperation& OP) { return (OP.argFlag & NEOS_ARG_N1_LOCAL) ? GetVarPtr_L(OP.n1) : GetVarPtr_G(OP.n1); }
+	NEOS_FORCEINLINE ValueRef GetVarPtr2(const SVMOperation& OP) { return (OP.argFlag & NEOS_ARG_N2_LOCAL) ? GetVarPtr_L(OP.n2) : GetVarPtr_G(OP.n2); }
+	NEOS_FORCEINLINE ValueRef GetVarPtr3(const SVMOperation& OP) { return (OP.argFlag & NEOS_ARG_N3_LOCAL) ? GetVarPtr_L(OP.n3) : GetVarPtr_G(OP.n3); }
 
 	NEOS_FORCEINLINE void SetStackPointer(int n) { m_pVarStack_Pointer = &(*m_pVarStack_Base)[n]; }
 	// base부터 lastOffset까지(반환값 슬롯은 offset 0) 접근 가능한지 확인한다.
@@ -387,22 +478,24 @@ public:
 	}
 	void Move(ValueRef v1, ValueRef v2);
 	void MoveTake(ValueRef v1, ValueRef v2);
-	void MoveI(ValueRef v1, int v);
-	void MoveF(ValueRef v1, int bits);
+	void MoveI(VarInfo* v1, int v);
+	void MoveF(VarInfo* v1, int bits);
 
 
 	void Swap(ValueRef v1, ValueRef v2);
 private:
 
-	// 산술 결과 저장. 대입 대상이 숫자/none 이면 바로 쓰고, 참조형이면 분리 함수에서 놓는다.
-	// 해제 코드를 핫 경로에 인라인하면 MSVC 가 저장 블록을 멀리 흩어 놓아 실수 산술이 느려졌다(dumpbin 확인).
+	// 숫자 저장. 컴파일러가 목적지를 숫자 슬롯으로 확정했으므로 payload만 쓴다.
+	// 경계 뷰 버전은 태그 있는 값(컬렉션 원소·네이티브)용이다.
+	NEOS_FORCEINLINE void StoreNumberInt(VarInfo* r, NS_INT v) { r->_int = v; }
+	NEOS_FORCEINLINE void StoreNumberFloat(VarInfo* r, NS_FLOAT v) { r->_float = v; }
+	NEOS_FORCEINLINE void StoreNumberBool(VarInfo* r, bool v) { r->_int = 0; r->_bl = v; }
 	void StoreNumberInt(ValueRef r, NS_INT v);
 	void StoreNumberFloat(ValueRef r, NS_FLOAT v);
 	void StoreNumberBool(ValueRef r, bool v);
 	NEOS_NOINLINE void ReleaseBeforeNumber(ValueRef r);
 	bool CheckIntegerDivision(NS_INT dividend, NS_INT divisor);
 	bool CheckIntegerDivisionOverflow(NS_INT dividend);
-	void DivI64(ValueRef r, ValueRef left, ValueRef right);
 	bool CheckShiftCount(NS_INT count);
 
 
@@ -414,17 +507,19 @@ private:
 	NEOS_NOINLINE bool CompareEQRare(ValueRef v1, ValueRef v2);
 	NEOS_NOINLINE bool CompareGRRare(ValueRef v1, ValueRef v2, bool reverseDiagnostic);
 	NEOS_NOINLINE bool CompareGERare(ValueRef v1, ValueRef v2, bool reverseDiagnostic);
-	bool For(ValueRef v1);
-	bool ForRare(ValueRef v1, NS_INT step);   // step != 1 (일반 양수 스텝·역방향·0) — For 의 인라인 본문을 step==1 로만 유지
+	bool For(VarInfo* v1);
+	bool ForRare(VarInfo* v1, NS_INT step);   // step != 1 (일반 양수 스텝·역방향·0) — For 의 인라인 본문을 step==1 로만 유지
 	// bTwoVar: foreach(var k, v in ...) 형태(컴파일러가 op argFlag 로 전달).
 	// list 는 2변수 순회를 지원하지 않으므로 런타임에 여기서 에러를 낸다.
-	bool ForEach(ValueRef v1, ValueRef v2, bool bTwoVar);
+	// pKey/pValue는 선언 타입을 붙인 슬롯 뷰다. 반복자·버전 슬롯은 pKey 뒤 두 payload다.
+	bool ForEach(ValueRef v1, ValueRef pKey, ValueRef pValue, bool bTwoVar);
 	// string/set 순회와 미지원 타입. 본문이 커서 디스패치 루프 밖으로 뺀다.
-	bool ForEachRare(ValueRef v1, ValueRef v2, bool bTwoVar);
+	bool ForEachRare(ValueRef v1, ValueRef pKey, bool bTwoVar);
 	int Sleep(int iTimeout, ValueRef v1);
-	void Call(FunctionPtr* fun, int n2, ValueRef pReturnValue = nullptr);
+	// pReturnValue: 결과를 받을 슬롯. nullptr이고 keepResult면 뒤따르는 MOV가 창 0번에서 가져간다.
+	void Call(FunctionPtr* fun, int n2, VarInfo* pReturnValue = nullptr, bool keepResult = true);
 	void Call(int n1, int n2, int returnValueIndex = -1);
-	void CallFunctionValue(int functionIndex, int argumentCount);
+	void CallFunctionValue(int functionIndex, int argumentCount, int returnValueIndex = -1);
 	void Call(ClosureInfo* closure, int n2, int returnValueIndex = -1);
 	// return 값 슬롯은 Sync 뒤에도 caller가 읽으므로 보존한다. 나머지 캡처
 	// 슬롯은 closure 보관함으로 소유권을 넘긴다.
@@ -434,8 +529,10 @@ private:
 	NEOS_NOINLINE void FinishClosureReturn(ValueRef keepOnStack);
 	void DrainCoroutineClosures(CoroutineInfo* pCI); // close/cancel 시 실행 보유 closure를 동기화·반납
 
-	bool CallNative(FunctionPtrNative functionPtrNative, void* pUserData, StringInfo *pStr, int n3, ValueRef pRet = nullptr);
-	bool CallDefaultNativeByIndex(int nativeIndex, int n3, ValueRef pRet = nullptr);
+	// pRet: 결과를 받을 슬롯(정책은 호출 계획의 반환 정책). nullptr이고 keepResult면 뒤따르는 MOV가
+	// 창 0번에서 가져가고, 둘 다 아니면 결과도 창과 함께 놓는다.
+	bool CallNative(FunctionPtrNative functionPtrNative, void* pUserData, StringInfo *pStr, int n3, VarInfo* pRet = nullptr, bool keepResult = true);
+	bool CallDefaultNativeByIndex(int nativeIndex, int n3, VarInfo* pRet = nullptr);
 	bool PropertyNative(FunctionPtrNative functionPtrNative, void* pUserData, StringInfo* pStr, ValueRef pRet, bool get,
         int* deferredTransferFrame = nullptr);
     bool FinishPropertyTransfer(int argSP_Vars);
@@ -467,23 +564,27 @@ private:
 	//}
 
 public:
-//	virtual ValueRef GetReturnVar() { return &(*m_pVarStack_Base)[_iSP_Vars]; }
-	virtual ValueRef GetReturnVar() override { return m_pVarStack_Pointer; }
+	// 네이티브·호스트가 보는 반환·인자 슬롯. 타입은 호출 계획(네이티브) 또는 현재 함수의 반환 타입(최상위)이 준다.
+	virtual ValueRef GetReturnVar() override { return ValueRef(m_pVarStack_Pointer, ReturnSlotType()); }
 	virtual ValueRef GetStackVar(int idx) override{ return GetStack (idx); }
 	virtual bool ResetVarType(ValueRef p, VAR_TYPE type, int capa) override;
 
+	// 프레임은 반환할 때 자기 소유 참조를 모두 해제하므로 쓸어낼 것이 없다. 스크래치 상한만 되돌린다.
 	virtual void GC() override
 	{
-		for (int i = _iSP_Vars + 1; i < _iSP_Vars_Max2; i++)
-			Var_Release(&(*m_pVarStack_Base)[i]);
 		_iSP_Vars_Max2 = _iSP_Vars;
 	}
 
-	NEOS_FORCEINLINE ValueRef GetStack(int idx) { return m_pVarStack_Pointer + idx; }
-	NEOS_FORCEINLINE ValueRef GetStackFromBase(int idx) { return &(*m_pVarStack_Base)[idx]; }
+	NEOS_FORCEINLINE VAR_TYPE ReturnSlotType() const
+	{
+		if (_activePlan != nullptr) return _activePlan->types[0];
+		return _functionIndex >= 0 ? _pProgram->functions[_functionIndex]._resultType : VAR_NONE;
+	}
+	NEOS_FORCEINLINE ValueRef GetStack(int idx) { return ValueRef(m_pVarStack_Pointer + idx, idx == 0 ? ReturnSlotType() : PlanType(idx)); }
+	NEOS_FORCEINLINE VarInfo* GetStackFromBase(int idx) { return &(*m_pVarStack_Base)[idx]; }
 
 	template<typename T>
-	T read(int idx) { T r; _read(m_pVarStack_Pointer + idx, r); return r; }
+	T read(int idx) { T r; _read(GetStack(idx), r); return r; }
 
 
 
@@ -495,12 +596,27 @@ public:
 		int idx = _pProgram->FindGlobalVar(name);
 		if (!_pProgram->IsGlobalVariable(idx))
 			return nullptr;
-		return NEOS_GLOBAL_VAR(idx);
+		return GetVarPtr_G(static_cast<short>(idx));
 	}
 
 	ValueRef testCall(int iFID, ValueRef args, int argc);
 	ValueRef testCall(ValueRef function, ValueRef args, int argc);
+	// testCall이 보관하는 부모(네이티브) 레지스터. 자식 Run이 끝나면 되돌린다.
+	struct STestCallParent
+	{
+		int _code = 0;
+		int _iSP_Vars = 0;
+		int _iSP_VarsMax = 0;
+		int _iSP_Vars_Max2 = 0;
+		int _functionIndex = -1;
+		const CallStoragePlan* _plan = nullptr;
+	};
+	STestCallParent m_sTestCallParent;
+	bool BeginTestCall(const SFunctionTable& fun, int functionIndex, int base, ValueRef args, int argc);
+	ValueRef FinishTestCall(const SFunctionTable& fun, int base, bool ok);
 	bool StartCoroutione(int argSP_Vars, int n3);
+	// 호스트가 준 태그 있는 인자를 피호출자 인자 슬롯에 정책대로 넣는다. 타입이 맞지 않으면 false.
+	bool StoreArgument(const SFunctionTable& fun, int base, int index, ValueRef value);
 
 	void SetError(const char* pErrMsg);
 	void RememberErrorLocation();

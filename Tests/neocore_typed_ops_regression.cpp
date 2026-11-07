@@ -861,13 +861,14 @@ static void SubOperationImages(IRuntime* runtime)
     {
         const SVMOperation& op=operations[i];
         sawFor |= op.op==NOP_JMP_FOR; sawForeach |= op.op==NOP_JMP_FOREACH;
-        sawImmediate |= op.op==NOP_MOVF;
+        sawImmediate |= op.Code()==OP_MOV_IMM_FLOAT;
         for(unsigned sub=0;sub<16;++sub)
         {
             const OperationCode code=MakeOperation(op.op,sub);
             const bool known=GetTypedOpInfo(code)||GetAggregateOpInfo(code)||
-                (op.op==NOP_SLOT_COPY ? sub>=static_cast<unsigned>(SlotKind::Int) &&
-                    sub<static_cast<unsigned>(SlotKind::Function) :
+                (op.op==NOP_MOV ? sub<=static_cast<unsigned>(StoragePolicy::Callable) ||
+                    sub==MOV_SUB_IMMEDIATE_INT || sub==MOV_SUB_IMMEDIATE_FLOAT || sub==MOV_SUB_BOXED :
+                    (op.op==NOP_LOADK||op.op==NOP_VAR_CLEAR) ? sub<=static_cast<unsigned>(StoragePolicy::Callable) || sub==MOV_SUB_BOXED :
                     (op.op==NOP_COMPARE||op.op==NOP_JMP_COMPARE) ? sub<6 : sub==0);
             if(known)continue;
             auto malformed=bytes;

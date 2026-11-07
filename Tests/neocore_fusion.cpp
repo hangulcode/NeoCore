@@ -84,10 +84,9 @@ void Compare(IRuntime& runtime,const std::string& source,const std::string& labe
             for(int i=0;i<plan.start;++i) {
                 SVMOperation op={};
                 std::memcpy(&op,image.data()+sizeof(SNeoVMHeader)+i*sizeof(op),sizeof(op));
-                if((op.Code()==NOP_MOV || (op.op==NOP_SLOT_COPY &&
-                    (op.argFlag&NEOS_OP_SUB_MASK)==static_cast<u8>(SlotKind::String))) &&
+                if(op.op==NOP_MOV && !IsImmediateMove(op) &&
+                    (op.argFlag&NEOS_OP_SUB_MASK)==static_cast<u8>(StoragePolicy::String) &&
                     FusionLocal(op,0) && !FusionLocal(op,1)) {
-                    op.SetCode(NOP_MOV);
                     op.n1=target;
                     std::memcpy(image.data()+sizeof(SNeoVMHeader)+i*sizeof(op),&op,sizeof(op));
                     injected=true;break;
@@ -153,7 +152,7 @@ void Compare(IRuntime& runtime,const std::string& source,const std::string& labe
 void CheckNormalizationLiveness() {
     std::vector<SVMOperation> code(3);
     code[0].SetCode(NOP_CHANGE_INT); code[0].argFlag=NEOS_ARG_N1_LOCAL; code[0].n1=3;
-    code[1].SetCode(NOP_MOVI); code[1].argFlag=NEOS_ARG_N1_LOCAL; code[1].n1=4;
+    code[1].SetCode(OP_MOV_IMM_INT); code[1].argFlag|=NEOS_ARG_N1_LOCAL; code[1].n1=4;
     code[2].SetCode(NOP_RETURN); code[2].argFlag=NEOS_OP_CALL_NORESULT;
     std::vector<std::vector<int>> targets;
     Check(!FusionMayReadAfter(code,0,3,0,4,targets),"unrelated integer normalization does not keep a temporary alive");

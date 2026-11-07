@@ -29,10 +29,12 @@ former inline representation avoided. Smaller slots alone do not prove a speedup
 
 The program owns immutable frame, global and outgoing-call layouts. Captures
 retain a shared immutable layout, so their ownership information survives the
-creating frame. `ValueRef` is a borrowed view over a payload and its layout; it is
-not stored in each VM slot. For a fixed slot, `SetType` checks the contract in
-Debug and never writes a type tag. Typed numeric instructions access the payload
-directly.
+creating frame. `ValueRef` is a borrowed boundary view over a payload and one
+declared type (`VarInfo*` plus `VAR_TYPE`, or a tagged `BoundaryValue`); it is
+not stored in each VM slot and the interpreter's hot paths do not construct it.
+Typed instructions take `VarInfo*` operands (`GetVarRaw*`); only generic bridge
+operations, collections and natives build the typed view (`GetVarPtr*`). For a
+fixed slot, `SetType` checks the contract in Debug and never writes a type tag.
 
 Null owning references use a zero pointer, and null host objects use a zero ID.
 Numeric bits are never inspected as an ownership state. A function slot uses the
@@ -42,11 +44,23 @@ language type.
 
 ## Compiler and call layouts
 
-Image version 0161 carries `SLOT` layouts, function result storage and `CALL`
-plans. A slot layout entry occupies 8 bytes; a cleanup entry occupies 4 bytes.
-Programs share these arrays across instances and recursive calls. The loader
-validates serialized plans rather than deciding new storage optimizations.
-Older images must be recompiled and host libraries rebuilt.
+Image version 0162 carries `SLOT` layouts, function result storage, `CALL`
+plans, and one slot-info byte per frame slot (low nibble: storage policy; bit 4:
+temporary). The exporter permutes each frame so that owning slots form one
+contiguous block immediately after the arguments, grouped by policy, with numeric
+slots after them; `for`/`foreach` hidden slots and aggregate windows move as a
+block. A frame therefore releases only `[1, 1 + args + owned)` on return, and the
+image carries no separate cleanup list. Programs share these arrays across
+instances and recursive calls. The loader validates serialized plans and slot info
+rather than deciding new storage optimizations. Older images must be recompiled
+and host libraries rebuilt.
+
+Copy and clear instructions carry their storage policy in the low four bits of
+`argFlag`: `MOV` (twelve policies, two immediate forms, and a boxed fallback that
+the exporter counts), `LOADK` and `VAR_CLEAR`. A `MOV` from a call result with the
+modifier bit transfers ownership instead of copying. The exporter resolves
+call-window slot kinds from the active `PREPARE_CALL` plan, so window writes are
+policy copies rather than generic moves.
 
 The compiler assigns separate compatible temporary slots and emits fixed
 integer/float arithmetic, copies and immediate stores. Those instructions write
@@ -55,18 +69,25 @@ not initialized again in the frame prologue. Reference locals start empty.
 Arguments retain the values installed by the caller.
 
 `PREPARE_CALL` selects the compiler-produced outgoing window after argument
-expressions have finished. Nested argument calls therefore cannot overwrite
-already evaluated arguments. The caller copies arguments into that window;
-script entry then selects the callee's fixed layout without clearing those
-arguments. Async dispatch similarly selects its fixed `void(bool,string)`
+expressions have finished and zeroes its slots. Nested argument calls therefore
+cannot overwrite already evaluated arguments, and a stale numeric payload left by
+an earlier callee frame can never be mistaken for an owned pointer. The caller
+copies arguments into that window; script entry then clears only the callee's
+owned block and selects its fixed layout without clearing the arguments. The
+callee releases the arguments and its owned block when it returns, so the window
+is empty again except for a result the caller takes. Natives release their
+window by plan after returning; `coroutine.resume` leaves the parent's window in
+place until the parent runs again, which keeps a temporary coroutine alive while
+it executes. Async dispatch similarly selects its fixed `void(bool,string)`
 callback window before writing the completion values. Named and captured
 callbacks use the same argument contract.
 
-The runtime tracks active frame ranges in a reusable vector. Ordinary local
-access uses a cached contiguous layout view rather than a frame search. Frame
-range capacity can grow with call depth; there is no new type-plan allocation
-on each call. Transitional cleanup of outgoing windows and exceptional paths
-still traverses the relevant storage views.
+The runtime keeps no per-frame range table. The current function index and the
+program's slot tables are VM registers; each call-stack entry records the
+caller's function index. Cancellation, errors and context release enumerate the
+saved frames (call stack, frames recorded by active native calls, the current
+frame and any pending window) through the program's layouts to release owned
+slots, then zero the used stack range. There is no high-water sweep.
 
 Copy/store instructions encode their storage policy at compilation. Owned copies
 retain the new pointer before releasing the old pointer. Host object IDs have a
@@ -124,11 +145,13 @@ constants and other instances' globals are not part of instance cleanup.
 
 ## Current migration status (2026-11-07)
 
-The eight-byte payload and compiler-owned frame/call layouts are implemented.
-The opcode-family, general fusion and in-place arithmetic changes are retained.
+The eight-byte payload, compiler-owned frame/call layouts, the owned-slot prefix,
+policy-carrying copy instructions and frame-walk cleanup are implemented. The
+opcode-family, general fusion and in-place arithmetic changes are retained.
 List/map/set entry storage and some generic bridge operations remain transitional,
-as described above. No performance claim is made for this storage migration
-without a fresh paired benchmark.
+as described above. Property hosts no longer sweep their scratch window; a host
+getter or setter must not leave owned values in VM stack slots. No performance
+claim is made for this storage migration without a fresh paired benchmark.
 
 ## Validation
 

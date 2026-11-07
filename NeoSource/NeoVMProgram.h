@@ -79,16 +79,88 @@ inline VAR_TYPE StorageValueType(SlotKind kind)
         kind == SlotKind::Function ? ValueRef::CallableStorageType() :
         kind == SlotKind::Iterator ? VAR_ITERATOR : types[static_cast<unsigned>(kind)];
 }
-struct SlotCleanup
+
+// 복사·해제 정책. 언어 타입이 아니라 VM이 슬롯 payload를 다루는 방식이다.
+// argFlag 하위 4비트(NEOS_OP_SUB_MASK)에 실리므로 16개 안에 들어야 한다.
+// Payload는 참조 카운트가 없는 8바이트 값, 나머지는 해제 경로가 다른 소유 참조다.
+enum class StoragePolicy : u8
 {
-    short slot = 0;
-    SlotKind kind = SlotKind::Boxed;
+    Payload = 0, String, Vec, Native, Array, Map, List, Set, Coroutine, Async, Module, Callable,
+    Boxed = 15 // 컴파일러가 종류를 정하지 못한 슬롯. 해제할 수 없으므로 디버그 빌드에서 검출한다.
 };
+static_assert(static_cast<unsigned>(StoragePolicy::Boxed) <= NEOS_OP_SUB_MASK, "Storage policies must fit the sub-operation");
+inline StoragePolicy PolicyOf(SlotKind kind)
+{
+    switch (kind)
+    {
+    case SlotKind::Boxed: return StoragePolicy::Boxed;
+    case SlotKind::Int: case SlotKind::Float: case SlotKind::Bool: case SlotKind::Vector2:
+    case SlotKind::ObjectId: case SlotKind::Iterator: return StoragePolicy::Payload;
+    case SlotKind::String: return StoragePolicy::String;
+    case SlotKind::Vector3: case SlotKind::Vector4: return StoragePolicy::Vec;
+    case SlotKind::Native: return StoragePolicy::Native;
+    case SlotKind::Array: return StoragePolicy::Array;
+    case SlotKind::Map: return StoragePolicy::Map;
+    case SlotKind::List: return StoragePolicy::List;
+    case SlotKind::Set: return StoragePolicy::Set;
+    case SlotKind::Coroutine: return StoragePolicy::Coroutine;
+    case SlotKind::Async: return StoragePolicy::Async;
+    case SlotKind::Function: return StoragePolicy::Callable;
+    }
+    return StoragePolicy::Boxed;
+}
+inline StoragePolicy PolicyOfType(VAR_TYPE type)
+{
+    switch (type)
+    {
+    case VAR_STRING: return StoragePolicy::String;
+    case VAR_VEC3: case VAR_VEC4: return StoragePolicy::Vec;
+    case VAR_FP_NATIVE: return StoragePolicy::Native;
+    case VAR_ARRAY: return StoragePolicy::Array;
+    case VAR_MAP: return StoragePolicy::Map;
+    case VAR_LIST: return StoragePolicy::List;
+    case VAR_SET: return StoragePolicy::Set;
+    case VAR_COROUTINE: return StoragePolicy::Coroutine;
+    case VAR_ASYNC: return StoragePolicy::Async;
+    case VAR_MODULE: return StoragePolicy::Module;
+    case VAR_CLOSURE: case VAR_FUN: return StoragePolicy::Callable;
+    default: break;
+    }
+    if (type == ValueRef::CallableStorageType()) return StoragePolicy::Callable;
+    return StoragePolicy::Payload;
+}
+// 정책이 참조 카운트를 소유하는가. Payload와 Boxed는 해제 대상이 아니다.
+inline bool PolicyOwns(StoragePolicy policy)
+{ return policy != StoragePolicy::Payload && policy != StoragePolicy::Boxed; }
+inline const char* StoragePolicyName(StoragePolicy policy)
+{
+    switch (policy)
+    {
+    case StoragePolicy::Payload: return "payload";
+    case StoragePolicy::String: return "string";
+    case StoragePolicy::Vec: return "vec";
+    case StoragePolicy::Native: return "native";
+    case StoragePolicy::Array: return "array";
+    case StoragePolicy::Map: return "map";
+    case StoragePolicy::List: return "list";
+    case StoragePolicy::Set: return "set";
+    case StoragePolicy::Coroutine: return "coroutine";
+    case StoragePolicy::Async: return "async";
+    case StoragePolicy::Module: return "module";
+    case StoragePolicy::Callable: return "callable";
+    case StoragePolicy::Boxed: return "boxed";
+    }
+    return "?";
+}
+// 함수 슬롯 정보 바이트: 하위 4비트 정책, 비트 4 임시 슬롯.
+static const u8 SLOT_INFO_POLICY_MASK = 0x0f;
+static const u8 SLOT_INFO_TEMPORARY = 0x10;
+inline StoragePolicy SlotInfoPolicy(u8 info) { return static_cast<StoragePolicy>(info & SLOT_INFO_POLICY_MASK); }
 
 struct CallStoragePlan
 {
-    std::vector<VAR_TYPE> types; // 반환값과 순서가 확정된 인자
-    std::vector<VAR_TYPE> frameTypes; // 호출자 지역 배치 뒤에 인자 창을 붙인 불변 보기
+    std::vector<VAR_TYPE> types; // [0] 반환값, [1..] 순서가 확정된 인자
+    std::vector<u8> policies;    // types와 같은 순서의 복사·해제 정책
 };
 
 struct SFunctionTable
@@ -106,10 +178,18 @@ struct SFunctionTable
 	std::vector<std::pair<short, short>> _captures;
     std::shared_ptr<const std::vector<VAR_TYPE>> _captureTypes;
     std::vector<SlotLayout> _storage;
-    std::vector<SlotCleanup> _cleanup;
     std::vector<CallStoragePlan> _calls;
+    // 프레임 슬롯 [0, _stackSlotCount)의 선언 타입. 창 슬롯은 VAR_NONE이다.
     std::vector<VAR_TYPE> _slotTypes;
+    // 프레임 슬롯 [0, _localAddCount)의 정책·임시 표시. 0번은 반환값 정책이다.
+    std::vector<u8> _slotInfo;
+    // 소유 슬롯은 인자 뒤에 연속으로 놓인다. 반환 정리는 [1, _releaseCount)만 돈다.
+    int _ownedCount = 0;
+    int _releaseCount = 1;
     VAR_TYPE _resultType = VAR_NONE;
+    NEOS_FORCEINLINE StoragePolicy SlotPolicy(int slot) const { return SlotInfoPolicy(_slotInfo[slot]); }
+    NEOS_FORCEINLINE bool IsTemporarySlot(int slot) const
+    { return slot >= 0 && slot < static_cast<int>(_slotInfo.size()) && (_slotInfo[slot] & SLOT_INFO_TEMPORARY) != 0; }
 };
 
 // static(상수) 슬롯 1개. BoundaryValue 가 아니라 원시 값으로 들고 있는다.
@@ -269,6 +349,47 @@ public:
 		return (*it).second;
 	}
 };
+
+// 컨텍스트가 소유할 수 있는 슬롯의 열거. 호출자가 저장한 프레임(콜스택), 실행 중인 네이티브가
+// 기록한 프레임과 창, 저장된 현재 프레임(_info), 대기 중인 호출 창 순서로 (슬롯 포인터, 선언 타입)을
+// 넘긴다. 태그 없는 스택에서 소유 참조를 찾는 유일한 방법이며, 실행 중인 컨텍스트는 먼저 _info를
+// 저장해야 한다. 프레임은 [base, base + _releaseCount)만 본다. 숫자 슬롯은 소유하지 않는다.
+template<typename Visitor>
+inline void ForEachContextFrameSlot(CoroutineInfo* ctx, Visitor visitor)
+{
+    const CNeoVMProgram* program = ctx->_program;
+    if (program == nullptr) return;
+    VarInfo* stack = ctx->m_sVarStack.data();
+    const int stackSize = static_cast<int>(ctx->m_sVarStack.size());
+    const std::vector<SFunctionTable>& functions = program->functions;
+    auto frame = [&](int base, int functionIndex)
+    {
+        if (functionIndex < 0 || functionIndex >= static_cast<int>(functions.size()) || base < 0) return;
+        const SFunctionTable& fun = functions[functionIndex];
+        for (int i = 0; i < fun._releaseCount && base + i < stackSize; ++i)
+        {
+            const VAR_TYPE type = fun._slotTypes[i];
+            if (type == VAR_NONE) continue;
+            visitor(stack + base + i, type);
+        }
+    };
+    auto window = [&](int base, const CallStoragePlan* plan)
+    {
+        if (plan == nullptr || base < 0) return;
+        for (std::size_t i = 0; i < plan->types.size() && base + static_cast<int>(i) < stackSize; ++i)
+            if (plan->types[i] != VAR_NONE) visitor(stack + base + i, plan->types[i]);
+    };
+    for (int i = 0; i < ctx->m_sCallStack.size(); ++i)
+        frame(ctx->m_sCallStack[i]._iSP_Vars, ctx->m_sCallStack[i]._functionIndex);
+    for (int i = 0; i < ctx->m_sNativeFrames.size(); ++i)
+    {
+        const SNativeFrame& native = ctx->m_sNativeFrames[i];
+        frame(native._iSP_Vars, native._functionIndex);
+        window(native._window, native._plan);
+    }
+    frame(ctx->_info._iSP_Vars, ctx->_info._functionIndex);
+    window(ctx->_info._iSP_VarsMax, ctx->_info._activePlan);
+}
 
 // opcode별 어셈블리 표기는 이 공통 포맷터만 사용한다. 컴파일러와 런타임은
 // 각각 자기 심볼 표를 operand/function resolver로 공급한다.

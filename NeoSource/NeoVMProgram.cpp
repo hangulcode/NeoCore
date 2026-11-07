@@ -642,18 +642,15 @@ bool CNeoVMProgram::Load(CNArchive& ar, std::string* err)
                         throw ImageLoadError{"Invalid function storage slot"};
                     previous = slot.slot;
                 }
-                if (!ReadCount(ar, slots) || slots >= static_cast<u32>(function._stackSlotCount))
-                    throw ImageLoadError{"Invalid function cleanup count"};
-                RequireImageCount(ar, slots, 3, "Truncated function cleanup layout");
-                function._cleanup.resize(slots);
-                previous = 0;
-                for (SlotCleanup& slot : function._cleanup)
-                {
-                    ReadRequired(ar, slot.slot); ReadRequired(ar, slot.kind);
-                    if (slot.slot <= previous || slot.slot >= function._stackSlotCount || slot.kind > SlotKind::Iterator)
-                        throw ImageLoadError{"Invalid function cleanup slot"};
-                    previous = slot.slot;
-                }
+                u32 owned = 0, infoCount = 0;
+                if (!ReadCount(ar, owned) || !ReadCount(ar, infoCount) || infoCount != static_cast<u32>(function._localAddCount) ||
+                    owned > infoCount)
+                    throw ImageLoadError{"Invalid function slot layout"};
+                RequireImageCount(ar, infoCount, 1, "Truncated function slot layout");
+                function._slotInfo.resize(infoCount);
+                if (infoCount && ar.Read(function._slotInfo.data(), static_cast<int>(infoCount)) == 0)
+                    throw ImageLoadError{"Truncated function slot layout"};
+                function._ownedCount = static_cast<int>(owned);
             }
             if (!ReadCount(ar, count) || count != static_cast<u32>(header._iGlobalVarCount))
                 throw ImageLoadError{"Invalid global storage count"};
@@ -684,11 +681,13 @@ bool CNeoVMProgram::Load(CNArchive& ar, std::string* err)
                     if (result > SlotKind::Iterator || !ReadCount(ar, args) || args > SHRT_MAX)
                         throw ImageLoadError{"Invalid call signature"};
                     call.types.push_back(StorageValueType(result));
+                    call.policies.push_back(static_cast<u8>(PolicyOf(result)));
                     for (u32 arg = 0; arg < args; ++arg)
                     {
                         SlotKind kind; ReadRequired(ar, kind);
                         if (kind > SlotKind::Iterator) throw ImageLoadError{"Invalid call argument storage"};
                         call.types.push_back(StorageValueType(kind));
+                        call.policies.push_back(static_cast<u8>(PolicyOf(kind)));
                     }
                 }
             }
@@ -745,14 +744,10 @@ bool CNeoVMProgram::Load(CNArchive& ar, std::string* err)
     for (int i = 0; i < header._iStaticVarCount; ++i) globalTypes[ConstantBase() + i] = staticValues[i]._type;
     for (SFunctionTable& function : functions)
     {
-        function._slotTypes.assign(function._localAddCount, VAR_NONE);
+        // 창 슬롯은 호출 계획이 타입을 주므로 프레임 표에서는 VAR_NONE이다.
+        function._slotTypes.assign(function._stackSlotCount, VAR_NONE);
         function._slotTypes[0] = function._resultType;
         for (const SlotLayout& slot : function._storage) function._slotTypes[slot.slot] = StorageValueType(slot.kind);
-        for (CallStoragePlan& call : function._calls)
-        {
-            call.frameTypes = function._slotTypes;
-            call.frameTypes.insert(call.frameTypes.end(), call.types.begin(), call.types.end());
-        }
         if (!function._captures.empty())
         {
             std::shared_ptr<std::vector<VAR_TYPE>> types(new std::vector<VAR_TYPE>);
@@ -765,21 +760,33 @@ bool CNeoVMProgram::Load(CNArchive& ar, std::string* err)
             }
             function._captureTypes = types;
         }
-        std::size_t typed = 0, cleanup = 0;
         // 로더는 컴파일러의 정리 계획을 검증할 뿐 새 최적화를 선택하지 않는다.
-        for (int i = 1; i < function._stackSlotCount; ++i)
+        // 슬롯 정책은 저장표의 종류와 일치해야 하고, 소유 슬롯은 인자 뒤 연속 구간 안에만 있어야 한다.
+        if (static_cast<int>(function._slotInfo.size()) != function._localAddCount)
+        { SetLoadError(err, "Missing function slot layout"); return false; }
+        const int ownedEnd = 1 + function._argsCount + function._ownedCount;
+        if (ownedEnd > function._localAddCount) { SetLoadError(err, "Invalid function owned range"); return false; }
+        std::size_t typed = 0;
+        for (int i = 0; i < function._localAddCount; ++i)
         {
             SlotKind kind = SlotKind::Boxed;
             if (typed < function._storage.size() && function._storage[typed].slot == i)
                 kind = function._storage[typed++].kind;
-            if (kind == SlotKind::Int || kind == SlotKind::Float || kind == SlotKind::Bool ||
-                kind == SlotKind::Vector2 || kind == SlotKind::ObjectId || kind == SlotKind::Iterator) continue;
-            if (cleanup >= function._cleanup.size() || function._cleanup[cleanup].slot != i ||
-                function._cleanup[cleanup].kind != kind)
-            { SetLoadError(err, "Incomplete function cleanup layout"); return false; }
-            ++cleanup;
+            const StoragePolicy policy = SlotInfoPolicy(function._slotInfo[i]);
+            if (i == 0)
+            {
+                if (policy != PolicyOfType(function._resultType) && policy != StoragePolicy::Boxed)
+                { SetLoadError(err, "Invalid function result policy"); return false; }
+                continue;
+            }
+            if (policy != PolicyOf(kind) && !(kind == SlotKind::Boxed && i <= function._argsCount))
+            { SetLoadError(err, "Invalid function slot policy"); return false; }
+            if ((function._slotInfo[i] & ~(SLOT_INFO_POLICY_MASK | SLOT_INFO_TEMPORARY)) != 0)
+            { SetLoadError(err, "Invalid function slot flags"); return false; }
+            if (i >= ownedEnd && policy != StoragePolicy::Payload)
+            { SetLoadError(err, "Owned slot outside the owned range"); return false; }
         }
-        if (cleanup != function._cleanup.size()) { SetLoadError(err, "Invalid function cleanup layout"); return false; }
+        function._releaseCount = ownedEnd;
     }
 	// range jump은 descriptor를 반드시 참조해야 한다. descriptor의 local slot은 해당
 	// opcode를 소유한 함수 프레임 기준이고, global slot은 상수 0 기준 signed offset이다.
@@ -863,15 +870,47 @@ bool CNeoVMProgram::VerifyCode(const std::vector<int>& owners, std::string* err)
         int argumentCount = -1;
         bool jump = false, terminal = false;
         const bool noResult = (op.argFlag & NEOS_OP_CALL_NORESULT) != 0;
-        const bool fixedCopy = op.op == NOP_SLOT_COPY;
-        const OperationCode checkedCode = fixedCopy ? NOP_MOV : op.Code();
-        if (fixedCopy || IsFixedArithmetic(op) || ((op.op == NOP_MOVI || op.op == NOP_MOVF) && (op.argFlag & NEOS_OP_MODIFIER)))
+        const bool immediateMove = IsImmediateMove(op);
+        const bool fixedCopy = op.op == NOP_MOV && !immediateMove;
+        const OperationCode checkedCode = (op.op == NOP_MOV || op.op == NOP_LOADK || op.op == NOP_VAR_CLEAR)
+            ? static_cast<OperationCode>(op.op) : op.Code();
+        if (IsFixedArithmetic(op))
         {
             const SlotKind actual = FindSlotKind((op.argFlag & L1) ? fun._storage : globalStorage, op.n1);
-            const SlotKind expected = fixedCopy ? static_cast<SlotKind>(op.argFlag & NEOS_OP_SUB_MASK) :
-                op.op == NOP_F64_FIXED || op.op == NOP_MOVF ? SlotKind::Float : SlotKind::Int;
-            if (expected < SlotKind::Int || expected >= SlotKind::Function || actual != expected)
-                return reject("Invalid fixed storage destination");
+            const SlotKind expected = op.op == NOP_F64_FIXED ? SlotKind::Float : SlotKind::Int;
+            if (actual != expected) return reject("Invalid fixed storage destination");
+        }
+        if (immediateMove)
+        {
+            // 즉값은 숫자 슬롯에만 쓴다. 소유 참조 슬롯에 payload를 덮어쓰는 이미지는 거부한다.
+            const SlotKind actual = FindSlotKind((op.argFlag & L1) ? fun._storage : globalStorage, op.n1);
+            const SlotKind expected = (op.argFlag & NEOS_OP_SUB_MASK) == MOV_SUB_IMMEDIATE_FLOAT ? SlotKind::Float : SlotKind::Int;
+            if (actual != expected && actual != SlotKind::Boxed) return reject("Invalid immediate destination");
+            if (op.argFlag & NEOS_OP_MODIFIER) return reject("Invalid immediate flags");
+        }
+        // 정책을 실은 복사·해제는 목적지(와 원본)의 선언 정책과 같아야 한다. 창 슬롯은 호출 계획이 정한다.
+        if (fixedCopy || op.op == NOP_LOADK || op.op == NOP_VAR_CLEAR)
+        {
+            const StoragePolicy policy = static_cast<StoragePolicy>(op.argFlag & NEOS_OP_SUB_MASK);
+            if (static_cast<unsigned>(policy) > static_cast<unsigned>(StoragePolicy::Callable) && policy != StoragePolicy::Boxed)
+                return reject("Invalid storage policy");
+            auto SlotPolicyOf = [&](short slot, bool local) -> StoragePolicy
+            {
+                if (!local) return slot >= 0 ? PolicyOfType(staticValues[slot < header._iStaticVarCount ? slot : 0]._type)
+                    : PolicyOf(FindSlotKind(globalStorage, slot));
+                if (slot >= 0 && slot < fun._localAddCount) return fun.SlotPolicy(slot);
+                return StoragePolicy::Boxed; // 창 슬롯: 호출 계획이 정한다.
+            };
+            if (policy != StoragePolicy::Boxed)
+            {
+                const StoragePolicy destination = SlotPolicyOf(op.n1, (op.argFlag & L1) != 0);
+                if (destination != StoragePolicy::Boxed && destination != policy) return reject("Invalid storage policy destination");
+                if (fixedCopy)
+                {
+                    const StoragePolicy source = SlotPolicyOf(op.n2, (op.argFlag & L2) != 0);
+                    if (source != StoragePolicy::Boxed && source != policy) return reject("Invalid storage policy source");
+                }
+            }
         }
         switch (checkedCode)
         {
@@ -879,9 +918,7 @@ bool CNeoVMProgram::VerifyCode(const std::vector<int>& owners, std::string* err)
             if (op.argFlag || op.n1 < 0 || static_cast<std::size_t>(op.n1) >= fun._calls.size() || op.n23)
                 return reject("Invalid call preparation");
             break;
-        case NOP_MOV: slots = 3; writes = 1; break;
-        case NOP_MOVI:
-        case NOP_MOVF: slots = writes = 1; break;
+        case NOP_MOV: slots = immediateMove ? 1 : 3; writes = 1; break;
         case NOP_LOADK:
             slots = writes = 1;
             if (op.n23 < 0 || op.n23 >= header._iStaticVarCount) return reject("Invalid constant operand");
@@ -991,8 +1028,10 @@ bool CNeoVMProgram::VerifyCode(const std::vector<int>& owners, std::string* err)
                 return reject("Invalid global operand");
         }
         // 고정 숫자 슬롯에 다른 타입을 쓰는 이미지는 실행 전에 거부한다.
-        if (checkedCode == NOP_MOV || checkedCode == NOP_LOADK)
+        if (fixedCopy || checkedCode == NOP_LOADK)
         {
+            if (fixedCopy && (op.argFlag & NEOS_OP_MODIFIER) && !PolicyOwns(static_cast<StoragePolicy>(op.argFlag & NEOS_OP_SUB_MASK)))
+                return reject("Invalid ownership transfer copy");
             const SlotKind target = FindSlotKind((op.argFlag & L1) ? fun._storage : globalStorage, op.n1);
             if (target >= SlotKind::Int && target <= SlotKind::Bool)
             {
@@ -1099,9 +1138,9 @@ void CNeoVMProgram::PatchStaticStringReads()
 }
 
 // 오퍼랜드를 전부 로컬 스택에서 뽑는 op 를 _L 변형으로 바꾼다.
-// 판정 기준은 "VM 이 실제로 GetVarPtr* 로 페치하는 슬롯"이며, 점프 offset / 인자 수 /
+// 판정 기준은 "VM 이 실제로 GetVarRaw* 로 페치하는 슬롯"이며, 점프 offset / 인자 수 /
 // 함수 인덱스 / 즉값처럼 변수 참조가 아닌 필드는 검사 대상이 아니다.
-// NOP_JMP(페치 0개)와 NOP_JMP_FOR(이미 GetVarPtr_L 고정)은 _L 이 원본과 동일해 치환하지 않는다.
+// NOP_JMP(페치 0개)와 NOP_JMP_FOR(이미 GetVarRaw_L 고정)은 _L 이 원본과 동일해 치환하지 않는다.
 bool CNeoVMProgram::PatchLocalOps(std::string* err)
 {
 	const u8 L1 = NEOS_ARG_N1_LOCAL, L2 = NEOS_ARG_N2_LOCAL, L3 = NEOS_ARG_N3_LOCAL;
@@ -1117,13 +1156,6 @@ bool CNeoVMProgram::PatchLocalOps(std::string* err)
 		switch (op.Code())
 		{
 
-		case NOP_MOV:          if ((f & (L1|L2)) == (L1|L2)) to = NOP_MOV_L;        break;
-		case NOP_MOVI:         if (f & L1) to = NOP_MOVI_L;                         break;
-		case NOP_MOVF:
-			if (f & L1) to = NOP_MOVF_L;
-			break;
-		case NOP_MOVF_L:
-			break;
 		case OP_JMP_EQUAL2:   if ((f & (L2|L3)) == (L2|L3)) to = OP_JMP_EQUAL2_L;   break;
 		case NOP_STR_ADD:      if ((f & (L1|L2|L3)) == (L1|L2|L3)) to = NOP_STR_ADD_L; break;
 
@@ -1201,9 +1233,6 @@ static OperationCode NormalizeLocalOp(OperationCode op, bool* outIsLocal)
 	OperationCode base = op;
 	switch (op)
 	{
-	case NOP_MOV_L:          base = NOP_MOV;          break;
-	case NOP_MOVI_L:         base = NOP_MOVI;         break;
-	case NOP_MOVF_L:         base = NOP_MOVF;         break;
 	case OP_JMP_EQUAL2_L:   base = OP_JMP_EQUAL2;   break;
 	case NOP_STR_ADD_L:      base = NOP_STR_ADD;      break;
 	case NOP_TOINT_L:        base = NOP_TOINT;        break;
@@ -1242,10 +1271,12 @@ bool FormatDebugOperation(const DebugInstructionFormatContext& context, std::str
 	SVMOperation v = *context.operation;
 	bool isLocalVariant = false;
 	v.SetCode(NormalizeLocalOp((OperationCode)v.Code(), &isLocalVariant));
-	const bool fixedCopy = v.op == NOP_SLOT_COPY;
-	const bool fixedStore = fixedCopy || IsFixedArithmetic(v) ||
-		((v.op == NOP_MOVI || v.op == NOP_MOVF) && (v.argFlag & NEOS_OP_MODIFIER));
-	if (fixedCopy) v.SetCode(NOP_MOV);
+	const bool fixedStore = IsFixedArithmetic(v);
+	// MOV·LOADK·CLR은 하위 4비트에 정책이나 즉값 종류를 싣는다. 표기 뒤에 정책 이름을 붙인다.
+	const unsigned storageSub = v.argFlag & NEOS_OP_SUB_MASK;
+	const bool storageOp = v.op == NOP_MOV || v.op == NOP_LOADK || v.op == NOP_VAR_CLEAR;
+	const bool immediateMove = IsImmediateMove(v);
+	if (storageOp) v.SetCode(static_cast<OperationCode>(v.op));
 
 	// 원본 WriteFunLog 의 지역 상수 그대로.
 	const int OpFlagByteChars = 2;
@@ -1255,21 +1286,25 @@ bool FormatDebugOperation(const DebugInstructionFormatContext& context, std::str
 	switch (v.Code())
 	{
 	case NOP_MOV:
-		byteCount = OpFlagByteChars + 2 * 2;
-		outAssembly = FormatAsm("%s %s = %s", fixedCopy ? "COPY" : "MOV ", context.operand(1).c_str(), context.operand(2).c_str());
+		if (storageSub == MOV_SUB_IMMEDIATE_INT)
+		{
+			byteCount = OpFlagByteChars + 2 * 3;
+			outAssembly = FormatAsm("MOVI %s = %d", context.operand(1).c_str(), v.n23);
+		}
+		else if (storageSub == MOV_SUB_IMMEDIATE_FLOAT)
+		{
+			byteCount = OpFlagByteChars + 2 * 3;
+			float value;
+			std::memcpy(&value, &v.n23, sizeof(value));
+			outAssembly = FormatAsm("MOVF %s = %.17g", context.operand(1).c_str(), static_cast<double>(value));
+		}
+		else
+		{
+			byteCount = OpFlagByteChars + 2 * 2;
+			outAssembly = FormatAsm("MOV  %s = %s%s", context.operand(1).c_str(), context.operand(2).c_str(),
+				(v.argFlag & NEOS_OP_MODIFIER) ? " (take)" : "");
+		}
 		break;
-	case NOP_MOVI:
-		byteCount = OpFlagByteChars + 2 * 3;
-		outAssembly = FormatAsm("MOVI %s = %d", context.operand(1).c_str(), v.n23);
-		break;
-	case NOP_MOVF:
-	{
-		byteCount = OpFlagByteChars + 2 * 3;
-		float value;
-		std::memcpy(&value, &v.n23, sizeof(value));
-		outAssembly = FormatAsm("MOVF %s = %.17g", context.operand(1).c_str(), static_cast<double>(value));
-		break;
-	}
 	case NOP_LOADK:
 		byteCount = OpFlagByteChars + 2 * 3;
 		outAssembly = FormatAsm("LOADK %s = K[%d]", context.operand(1).c_str(), v.n23);
@@ -1457,6 +1492,10 @@ bool FormatDebugOperation(const DebugInstructionFormatContext& context, std::str
     case NOP_PREPARE_CALL:
         byteCount = OpFlagByteChars + 2;
         outAssembly = FormatAsm("PREPARE_CALL plan[%d]", v.n1); break;
+    case NOP_NONE:
+        // 정수 슬롯의 CHANGE_INT처럼 내보내기가 비운 명령. 실행은 건너뛴다.
+        byteCount = OpFlagByteChars;
+        outAssembly = FormatAsm("NONE"); break;
 	case NOP_ERROR:
 		outAssembly = FormatAsm("Begin");
 		break;
@@ -1548,6 +1587,11 @@ bool FormatDebugOperation(const DebugInstructionFormatContext& context, std::str
 	if (isLocalVariant)
 		outAssembly += "  ;L";
 	if (fixedStore) outAssembly += "  ;fixed";
+	if (storageOp && !immediateMove)
+	{
+		outAssembly += "  ;";
+		outAssembly += StoragePolicyName(static_cast<StoragePolicy>(storageSub));
+	}
 	return known;
 }
 

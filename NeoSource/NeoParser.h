@@ -260,7 +260,9 @@ struct SFunctionTableForWriter
 	int							_localVarCount;
 	std::vector<std::pair<short, short>> _captures;
     std::vector<SlotLayout> _storage;
-    std::vector<SlotCleanup> _cleanup;
+    // 프레임 슬롯 [0, localAddCount)의 정책·임시 표시. 소유 슬롯은 인자 뒤 연속 구간이다.
+    std::vector<u8> _slotInfo;
+    int _ownedCount = 0;
     std::vector<CompileCallStorage> _calls;
     SlotType _resultType;
 };
@@ -449,7 +451,7 @@ struct SFunctionInfo
 		switch (op)
 		{
 		case NOP_MOV:
-		case NOP_MOVF:
+		case OP_MOV_IMM_FLOAT:
 		case NOP_LOADK:
 		case NOP_LOG_NOT:
 		case NOP_VAR_CLEAR:
@@ -651,17 +653,23 @@ struct SFunctionInfo
 
 		Push_Flag(OperationSubCode(op), r, s, 0);
 	}
+	// 즉값 저장은 NOP_MOV의 세부 코드로 낸다. n23이 즉값이다.
+	void    Push_Immediate(unsigned sub, int a1, int a23)
+	{
+		ArgFlag arg = static_cast<ArgFlag>(sub);
+		_code->Write(&arg, sizeof(arg));
+		const short n1 = CompileShort("operand", a1);
+		_code->Write(&n1, sizeof(n1));
+		_code->Write(&a23, sizeof(a23));
+	}
 	void	Push_MOVI(CArchiveRdWC& ar, int r, int v, int iDebugLine = -1)
 	{
 		AddDebugData(ar, iDebugLine);
 		_iLastOPOffset = _code->GetBufferOffset();
 
-		OpType optype = PrimaryOperation(NOP_MOVI);
+		OpType optype = PrimaryOperation(NOP_MOV);
 		_code->Write(&optype, sizeof(optype));
-		//_code->Write(&r, sizeof(r));
-		//_code->Write(&s, sizeof(s));
-
-		Push_NoFlag(r, v);
+		Push_Immediate(MOV_SUB_IMMEDIATE_INT, r, v);
 	}
 	bool	Push_MOVF(CArchiveRdWC& ar, int r, NS_FLOAT v, int iDebugLine = -1)
 	{
@@ -672,11 +680,11 @@ struct SFunctionInfo
 		if (static_cast<NS_FLOAT>(immediate) != v || std::signbit(immediate) != std::signbit(v)) return false;
 		AddDebugData(ar, iDebugLine);
 		_iLastOPOffset = _code->GetBufferOffset();
-		OpType optype = PrimaryOperation(NOP_MOVF);
+		OpType optype = PrimaryOperation(NOP_MOV);
 		_code->Write(&optype, sizeof(optype));
 		int bits = 0;
 		std::memcpy(&bits, &immediate, sizeof(bits));
-		Push_NoFlag(r, bits);
+		Push_Immediate(MOV_SUB_IMMEDIATE_FLOAT, r, bits);
 		return true;
 	}
 	void	Push_OP1(CArchiveRdWC& ar, OperationCode op, int r)

@@ -40,12 +40,14 @@ NEOS_FORCEINLINE void CNeoVMWorker::Call(int n1, int n2, int returnValueIndex)
 	// 호출 스택을 push하거나 현재 프레임을 변경하기 전에 새 프레임 전체를 검증한다.
 	if (!EnsureStackRange(_iSP_VarsMax, fun._stackSlotCount - 1))
 		return;
+	// 저장되는 프레임은 호출자다. 오류 정리와 디버거가 _functionIndex로 배치를 찾는다.
 #if _DEBUG
 	SCallStack callStack;
 	callStack._ReturnIP = (u32)GetCodeptr();
 	callStack._iSP_Vars = _iSP_Vars;
 	callStack._iSP_VarsMax = _iSP_VarsMax;
 	callStack._iReturnValueIndex = returnValueIndex;
+	callStack._functionIndex = _functionIndex;
 	if (m_pActiveClosure != nullptr)
 		callStack._ReturnIP |= FLAG_CLOSURE;
 	m_pCallStack->push_back(callStack);
@@ -55,6 +57,7 @@ NEOS_FORCEINLINE void CNeoVMWorker::Call(int n1, int n2, int returnValueIndex)
 	callStack._iSP_Vars = _iSP_Vars;
 	callStack._iSP_VarsMax = _iSP_VarsMax;
 	callStack._iReturnValueIndex = returnValueIndex;
+	callStack._functionIndex = _functionIndex;
 	if (m_pActiveClosure != nullptr)
 		callStack._ReturnIP |= FLAG_CLOSURE;
 #endif
@@ -70,7 +73,9 @@ NEOS_FORCEINLINE void CNeoVMWorker::Call(int n1, int n2, int returnValueIndex)
 	SetCodePtr(fun._codePtr);
 	_iSP_Vars = _iSP_VarsMax;
 	SetStackPointer(_iSP_Vars);
-	PrepareFunctionStorage(fun, _iSP_Vars, true);
+	// 인자는 호출자가 창에 넣었고 이제 피호출자 프레임의 것이다. 창 계획은 소비됐다.
+	EnterFrame(n1, _iSP_Vars);
+	_activePlan = nullptr;
 	_iSP_VarsMax = _iSP_Vars + fun._localAddCount;
 	if (_iSP_Vars_Max2 < _iSP_Vars + fun._stackSlotCount)
 		_iSP_Vars_Max2 = _iSP_Vars + fun._stackSlotCount;
