@@ -180,9 +180,11 @@ compiler operations independently of VM opcode numbers.
 `NEOCORE_BUILD_TESTS` controls typed regressions, and `NEOCORE_BUILD_EXAMPLES`
 controls the typed game-host example. Enable `NEOCORE_BUILD_UNITY_BRIDGE` for the
 C ABI plugin and its checks. `NEOCORE_CONSOLE_HTTP` adds libcurl HTTPS transport
-to the console. `NEOCORE_ENABLE_IPO` (default on) turns on whole-program
+to the console. `NEOCORE_ENABLE_IPO` (default off) turns on whole-program
 optimization for optimized configurations (`/GL` + `/LTCG` with MSVC, `-flto` with
-GCC/Clang), the same setting as the native `.vcxproj` Release builds; toolchains
+GCC/Clang). It is off by default, as in the native `.vcxproj` Release builds, because
+link-time code generation relinks every test executable slowly; enable it for timed
+measurements and use the same setting for every build being compared. Toolchains
 without that support fall back to ordinary optimization with a status message.
 `NEOCORE_STATIC_CRT` links the static MSVC runtime (`/MT`, `/MTd`) like those
 native builds; it defaults on when NeoCore is the top-level project and off when a

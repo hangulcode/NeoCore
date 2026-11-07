@@ -30,10 +30,10 @@ endif()
 option(NEOCORE_BUILD_TESTS "Build NeoCore compiler, runtime and sample regressions" ${NEOCORE_DESKTOP_DEFAULT})
 option(NEOCORE_BUILD_EXAMPLES "Build the typed game-host example" ${NEOCORE_DESKTOP_DEFAULT})
 option(NEOCORE_BUILD_UNITY_BRIDGE "Build the typed NeoCore C ABI and Unity plugin" OFF)
-# 최적화 구성은 전체 프로그램 최적화(MSVC /GL + /LTCG, GCC/Clang -flto)를 켠다.
-# 네이티브 vcxproj Release 빌드와 같은 설정이며, VM 디스패치 루프의 코드 배치가 달라
-# 두 빌드의 측정값이 서로 달랐다. 지원하지 않는 툴체인은 메시지만 남기고 일반 최적화로 빌드한다.
-option(NEOCORE_ENABLE_IPO "Enable interprocedural (whole-program) optimization for optimized builds" ON)
+# 전체 프로그램 최적화(MSVC /GL + /LTCG, GCC/Clang -flto)는 기본으로 끈다. 실행 파일마다 코드 생성을
+# 링크 단계에서 다시 하므로 테스트 타깃이 많은 이 트리에서는 링크가 지나치게 오래 걸린다.
+# 측정이 필요하면 -DNEOCORE_ENABLE_IPO=ON 으로 켜고, 기준·시험 빌드를 같은 설정으로 맞춘다.
+option(NEOCORE_ENABLE_IPO "Enable interprocedural (whole-program) optimization for optimized builds" OFF)
 if(NEOCORE_ENABLE_IPO)
     include(CheckIPOSupported)
     check_ipo_supported(RESULT NEOCORE_IPO_SUPPORTED OUTPUT NEOCORE_IPO_MESSAGE LANGUAGES C CXX)
