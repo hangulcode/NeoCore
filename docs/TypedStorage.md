@@ -80,7 +80,10 @@ window by plan after returning; `coroutine.resume` leaves the parent's window in
 place until the parent runs again, which keeps a temporary coroutine alive while
 it executes. Async dispatch similarly selects its fixed `void(bool,string)`
 callback window before writing the completion values. Named and captured
-callbacks use the same argument contract.
+callbacks use the same argument contract. When the exporter folds a one-line
+global getter call into a policy copy, it also blanks that call's `PREPARE_CALL`
+so no plan stays selected, and a top-level return clears the selected plan
+before the host reads the result slot.
 
 The runtime keeps no per-frame range table. The current function index and the
 program's slot tables are VM registers; each call-stack entry records the

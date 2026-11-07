@@ -500,6 +500,9 @@ void WriteFun(CArchiveRdWC& arText, CNArchive& ar, SFunctions& funs, SFunctionIn
 			break;
 		case NOP_YIELD:
 			break;
+		case NOP_NONE:
+			// 접힌 getter 호출의 PREPARE_CALL 자리. 피연산자가 없다.
+			break;
 		case NOP_JMP_RANGE_INSIDE:
 		case NOP_JMP_RANGE_OUTSIDE:
 		{
@@ -982,6 +985,18 @@ static void FoldGlobalGetters(SFunctions& funs)
 			op.n2 = getter->second;
 			op.n3 = 0;
 			memcpy(code + offset, &op, sizeof(op));
+			// 인자가 없는 호출이라 창 계획을 고르는 PREPARE_CALL이 바로 앞에 있다. 호출이 사라졌으므로
+			// 같이 비운다. 남겨 두면 계획이 선택된 채로 남아 반환 슬롯 타입과 오류 정리가 어긋난다.
+			if (offset - static_cast<int>(sizeof(SVMOperation)) >= function->_iCode_Begin)
+			{
+				SVMOperation previous;
+				memcpy(&previous, code + offset - sizeof(SVMOperation), sizeof(previous));
+				if (previous.Code() == NOP_PREPARE_CALL)
+				{
+					previous.SetCode(NOP_NONE);
+					memcpy(code + offset - sizeof(SVMOperation), &previous, sizeof(previous));
+				}
+			}
 		}
 	}
 }

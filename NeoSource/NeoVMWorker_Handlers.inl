@@ -324,6 +324,8 @@ NEOS_FORCEINLINE bool handle_RETURN_impl(VarInfo* pSrc, bool sourceLocal, int fu
 
         StoreReturnValue(m_pVarStack_Pointer, pSrc, sourceLocal, resultPolicy);
         LeaveFrame(fun, _iSP_Vars);
+        // 호스트는 반환 슬롯 타입을 함수의 반환 타입으로 읽어야 한다. 남은 창 계획은 없어야 한다.
+        _activePlan = nullptr;
 
         if (m_iBreakingCallStack == 0 && !IsNativeScriptCallActive() && IsMainCoroutine(m_pCur) == false)
         {
