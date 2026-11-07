@@ -564,7 +564,7 @@ struct SFunctionInfo
     {
         CompileCallStorage plan; plan.sources = sources; plan.types.resize(sources.size());
         _calls.push_back(plan);
-        Push_OP(ar, NOP_PREPARE_CALL, CompileShort("call storage plan", _calls.size() - 1), 0, 0, line);
+        Push_OP(ar, NOP_PREPARE_CALL, CompileShort("call storage plan", static_cast<int>(_calls.size()) - 1), 0, 0, line);
     }
 	void	Push_Call(CArchiveRdWC& ar, OperationCode op, int fun, int args, int res, int iDebugLine = -1)
 	{
