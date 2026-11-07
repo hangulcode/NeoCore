@@ -70,6 +70,7 @@ u32 GetHashCode(VarInfo* p)
 	case VAR_FUN_NATIVE: return (u32)(uintptr_t)p->_funPtr;
 	case VAR_VEC:       return GetVectorHashCode(p);
 	case VAR_STRING:     return p->_str->GetHash();
+	case VAR_VEC3:
 	case VAR_VEC4:      return GetVectorHashCode(p);
 	// 컨테이너 키의 동등성은 저장소 포인터 동일성이다(ReferenceEquals 참조).
 	// 따라서 해시도 포인터 "값" 에서 나와야 한다 — 반드시 &p->_xxx 다.
@@ -164,6 +165,7 @@ static bool SetKeyEquals(SetNode& node, VarInfo* pKey, u32 hash)
 	case VAR_VEC:       return VectorValuesEqual(&data->key, pKey);
 	case VAR_STRING:
 		return data->key._str == pKey->_str;
+	case VAR_VEC3:
 	case VAR_VEC4:       return VectorValuesEqual(&data->key, pKey);
 	default:           return ReferenceEquals(&data->key, pKey);
 	}

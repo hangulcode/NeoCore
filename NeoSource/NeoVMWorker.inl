@@ -173,6 +173,7 @@ NEOS_NOINLINE void CNeoVMWorker::CltInsertRare(VarInfo* pClt, VarInfo* pKey, Var
 	switch (pClt->GetType())
 	{
 	case VAR_VEC:
+	case VAR_VEC3:
 	case VAR_VEC4:
 		// 가변 성분 쓰기: 인라인 값은 직접 수정하고 4성분 벡터만 COW로 분리한다.
 		assert(pKey->GetType() == VAR_INT && pValue->IsNumber());
@@ -401,6 +402,7 @@ NEOS_NOINLINE void CNeoVMWorker::CltReadRare(VarInfo* pClt, VarInfo* pKey, VarIn
 	switch (pClt->GetType())
 	{
 	case VAR_VEC:
+	case VAR_VEC3:
 	case VAR_VEC4:
 		assert(pKey->GetType() == VAR_INT);
 		{
@@ -606,6 +608,7 @@ NEOS_NOINLINE bool CNeoVMWorker::CompareEQRare(VarInfo* v1, VarInfo* v2)
 		if (v2->GetType() == VAR_STRING)
 			return v1->_str->_str == v2->_str->_str;
 		break;
+	case VAR_VEC3:
 	case VAR_VEC4:
 		return VectorValuesEqual(v1, v2);
 	default:

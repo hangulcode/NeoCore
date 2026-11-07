@@ -17,6 +17,8 @@ namespace NeoScript
 
 void	SetCompileError(const char*	lpszString, ...);
 
+void PrepareFusionExecution(ProgramFusion& plan) { CNeoVMWorker::ConfigureFusion(plan); }
+
 // 네이티브가 보조 스크립트 프레임을 직접 실행할 때, 호출자 람다의 캡처를
 // 자식 RET가 동기화하거나 반납하지 못하게 한다. 이 포인터는 실행 보유 참조를
 // 나타내므로 AddRef/Release 없이 실행 범위에서만 분리한다.
@@ -89,12 +91,12 @@ void INeoVMWorker::Var_SetVec3(VarInfo* d, float x, float y, float z)
 }
 void INeoVMWorker::Var_SetVec4(VarInfo* d, float x, float y, float z, float w)
 {
-	VecInfo* p = Vec4StoreFor(d);
+	VecInfo* p = VecStoreFor(d, 4);
 	p->v[0] = x; p->v[1] = y; p->v[2] = z; p->v[3] = w;
 }
 void INeoVMWorker::Var_SetQuat(VarInfo* d, float w, float x, float y, float z)
 {
-	VecInfo* p = Vec4StoreFor(d);
+	VecInfo* p = VecStoreFor(d, 4);
 	p->v[0] = w; p->v[1] = x; p->v[2] = y; p->v[3] = z;
 }
 
@@ -134,8 +136,13 @@ CNeoVMWorker::~CNeoVMWorker()
 	if (m_pMainCtx != nullptr)
 		ReleaseExecution();
 
-	for (int i = 0; i < (int)m_sVarGlobal.size(); i++)
-		Var_Release(&m_sVarGlobal[i]);
+	if (_pProgram && m_pVarGlobal_Pointer)
+	{
+		for (const SlotLayout& slot : _pProgram->globalStorage)
+			ReleaseStorageValue(m_pVarGlobal_Pointer + slot.slot, slot.kind);
+		for (int i = -1; i < _pProgram->header._iStaticVarCount; ++i)
+			Var_Release(m_pVarGlobal_Pointer + i);
+	}
 	m_sVarGlobal.clear();
 	m_pVarGlobal_Pointer = nullptr;
 
@@ -241,6 +248,7 @@ std::string CNeoVMWorker::ToString(VarInfo* v1)
 	}
 	case VAR_STRING:
 		return v1->_str->_str;
+	case VAR_VEC3:
 	case VAR_VEC4:
 	{
 		const int n = v1->VectorComponentCount();
@@ -340,6 +348,7 @@ int CNeoVMWorker::ToSize(VarInfo* v1)
 		return v1->VectorComponentCount();
 	case VAR_STRING: // UTF-8 문자 수(string.len()과 동일)
 		return v1->_str->_StringLen;
+	case VAR_VEC3:
 	case VAR_VEC4:
 		return v1->VectorComponentCount();
 	case VAR_FP_NATIVE:
@@ -419,6 +428,13 @@ bool CNeoVMWorker::Init(const NeoLoadVMParam* vparam, CNeoVMProgram* pProgram, i
 	m_sVarGlobal.clear();
 	m_sVarGlobal.resize(iMaxVar);
 	m_pVarGlobal_Pointer = m_sVarGlobal.data() + pProgram->ConstantBase();
+	for (const SlotLayout& item : pProgram->globalStorage)
+		if (item.IsNumber())
+		{
+			m_pVarGlobal_Pointer[item.slot].SetType(item.kind == SlotKind::Int ? VAR_INT :
+				item.kind == SlotKind::Float ? VAR_FLOAT : VAR_BOOL);
+			m_pVarGlobal_Pointer[item.slot]._int = 0;
+		}
 
 	for (int i = 0; i < staticCount; i++)
 	{
@@ -801,6 +817,127 @@ void CNeoVMWorker::CleanupContextVars(CoroutineInfo* ctx, int usedMax)
 	if (usedMax > (int)s.size()) usedMax = (int)s.size();
 	for (int i = 0; i < usedMax; i++)
 		Var_Release(&s[i]);
+}
+
+template <typename Container>
+static NEOS_FORCEINLINE void ReleaseStorageContainer(CNeoVM* vm, Container* pointer, VarInfo* value)
+{
+    if (--pointer->_refCount <= 0) vm->QueueContainerForDestroy(*value);
+    else if (pointer->_cycleState._mayContainContainerChild) vm->QueueContainerForCycleCheck(*value);
+}
+
+template <VAR_TYPE Type>
+NEOS_FORCEINLINE void CNeoVMWorker::ReleaseKnownStorage(CNeoVM* vm, VarInfo* value)
+{
+    // null 여부는 값의 상태다. 해제 함수 선택은 컴파일러가 정한 타입으로 고정된다.
+    assert(value->GetType() == VAR_NONE || value->GetType() == Type);
+    if (value->GetType() == VAR_NONE) return;
+    if (Type == VAR_STRING) { if (--value->_str->_refCount <= 0) vm->FreeString(value); }
+    else if (Type == VAR_VEC3 || Type == VAR_VEC4) { if (--value->_vec->_refCount <= 0) vm->FreeVec(value->_vec); }
+    else if (Type == VAR_FP_NATIVE) { if (--value->_fpNative->_refCount <= 0) vm->FreeFunctionProperty(value->_fpNative); }
+    else if (Type == VAR_ARRAY) { if (--value->_array->_refCount <= 0) vm->FreeArray(value->_array); }
+    else if (Type == VAR_MAP) ReleaseStorageContainer(vm, value->_tbl, value);
+    else if (Type == VAR_LIST) ReleaseStorageContainer(vm, value->_lst, value);
+    else if (Type == VAR_SET) ReleaseStorageContainer(vm, value->_set, value);
+    else if (Type == VAR_COROUTINE) ReleaseStorageContainer(vm, value->_cor, value);
+    else if (Type == VAR_ASYNC) ReleaseStorageContainer(vm, value->_async, value);
+    value->ClearType();
+}
+
+template <VAR_TYPE Type>
+NEOS_FORCEINLINE void CNeoVMWorker::CopyKnownStorage(CNeoVM* vm, VarInfo* target, const VarInfo* source)
+{
+    assert(source->GetType() == VAR_NONE || source->GetType() == Type);
+    // 먼저 새 참조를 보관하므로 자기 대입과 같은 객체를 가리키는 별칭도 안전하다.
+    const VarInfo copy = *source;
+    if (copy.GetType() != VAR_NONE)
+    {
+        if (Type == VAR_STRING) ++copy._str->_refCount;
+        else if (Type == VAR_VEC3 || Type == VAR_VEC4) ++copy._vec->_refCount;
+        else if (Type == VAR_FP_NATIVE) ++copy._fpNative->_refCount;
+        else if (Type == VAR_ARRAY) ++copy._array->_refCount;
+        else if (Type == VAR_MAP) ++copy._tbl->_refCount;
+        else if (Type == VAR_LIST) ++copy._lst->_refCount;
+        else if (Type == VAR_SET) ++copy._set->_refCount;
+        else if (Type == VAR_COROUTINE) ++copy._cor->_refCount;
+        else if (Type == VAR_ASYNC) ++copy._async->_refCount;
+    }
+    ReleaseKnownStorage<Type>(vm, target);
+    *target = copy;
+}
+
+void CNeoVMWorker::ReleaseStorageValue(VarInfo* value, SlotKind kind)
+{
+    switch (kind)
+    {
+    case SlotKind::Boxed: Var_Release(value); break;
+    case SlotKind::Int: case SlotKind::Float: case SlotKind::Bool: break;
+    case SlotKind::String: ReleaseKnownStorage<VAR_STRING>(GetVM(), value); break;
+    case SlotKind::Vector2: break;
+    case SlotKind::Vector3: ReleaseKnownStorage<VAR_VEC3>(GetVM(), value); break;
+    case SlotKind::Vector4: ReleaseKnownStorage<VAR_VEC4>(GetVM(), value); break;
+    case SlotKind::Native: ReleaseKnownStorage<VAR_FP_NATIVE>(GetVM(), value); break;
+    case SlotKind::Array: ReleaseKnownStorage<VAR_ARRAY>(GetVM(), value); break;
+    case SlotKind::Map: ReleaseKnownStorage<VAR_MAP>(GetVM(), value); break;
+    case SlotKind::List: ReleaseKnownStorage<VAR_LIST>(GetVM(), value); break;
+    case SlotKind::Set: ReleaseKnownStorage<VAR_SET>(GetVM(), value); break;
+    case SlotKind::Coroutine: ReleaseKnownStorage<VAR_COROUTINE>(GetVM(), value); break;
+    case SlotKind::Async: ReleaseKnownStorage<VAR_ASYNC>(GetVM(), value); break;
+    case SlotKind::ObjectId: break;
+    case SlotKind::Function: Var_Release(value); break;
+    }
+}
+
+NEOS_NOINLINE void CNeoVMWorker::CopyStorageReference(VarInfo* target, const VarInfo* source, SlotKind kind)
+{
+    switch (kind)
+    {
+    case SlotKind::String: CopyKnownStorage<VAR_STRING>(GetVM(), target, source); break;
+    case SlotKind::Vector2: *target = *source; break;
+    case SlotKind::Vector3: CopyKnownStorage<VAR_VEC3>(GetVM(), target, source); break;
+    case SlotKind::Vector4: CopyKnownStorage<VAR_VEC4>(GetVM(), target, source); break;
+    case SlotKind::Native: CopyKnownStorage<VAR_FP_NATIVE>(GetVM(), target, source); break;
+    case SlotKind::Array: CopyKnownStorage<VAR_ARRAY>(GetVM(), target, source); break;
+    case SlotKind::Map: CopyKnownStorage<VAR_MAP>(GetVM(), target, source); break;
+    case SlotKind::List: CopyKnownStorage<VAR_LIST>(GetVM(), target, source); break;
+    case SlotKind::Set: CopyKnownStorage<VAR_SET>(GetVM(), target, source); break;
+    case SlotKind::Coroutine: CopyKnownStorage<VAR_COROUTINE>(GetVM(), target, source); break;
+    case SlotKind::Async: CopyKnownStorage<VAR_ASYNC>(GetVM(), target, source); break;
+    case SlotKind::ObjectId:
+        // 엔진 객체는 소유 포인터가 아닌 ID다. 유효성 조회는 호스트 접근 때 수행한다.
+        assert((target->GetType() == VAR_NONE || target->GetType() == VAR_INT) &&
+            (source->GetType() == VAR_NONE || source->GetType() == VAR_INT));
+        *target = *source;
+        break;
+    default: assert(false); break;
+    }
+}
+
+void CNeoVMWorker::PrepareFunctionStorage(const SFunctionTable& function, int base)
+{
+    VarInfo* slots = m_pVarStack_Base->data() + base;
+    // 인자는 호출자가 이미 보관했다. 나머지 소유 슬롯은 초기화가 생략되거나 실패해도 비어 있어야 한다.
+    for (const SlotCleanup& item : function._cleanup)
+        if (item.slot > function._argsCount) Var_Release(&slots[item.slot]);
+    for (const SlotLayout& item : function._storage)
+    {
+        if (item.slot <= function._argsCount || (!item.IsNumber() &&
+            item.kind != SlotKind::Vector2 && item.kind != SlotKind::ObjectId)) continue;
+        VarInfo* slot = &slots[item.slot];
+        // 공유 스택에 남은 네이티브 인자도 프레임 진입에서 한 번만 반납한다. 숫자 값은 선언이 쓴다.
+        if (slot->IsAllocType()) Var_ReleaseAlloc(slot);
+        if (item.IsNumber())
+            slot->SetType(item.kind == SlotKind::Int ? VAR_INT : item.kind == SlotKind::Float ? VAR_FLOAT : VAR_BOOL);
+        else if (item.kind == SlotKind::ObjectId) slot->ClearType();
+    }
+}
+
+void CNeoVMWorker::ReleaseFunctionStorage(const SFunctionTable& function, int base)
+{
+    VarInfo* slots = m_pVarStack_Base->data() + base;
+    // 반환값(0번)은 호출자에게 남긴다. 소유권 목록에는 숫자·인라인 벡터가 들어 있지 않다.
+    for (const SlotCleanup& item : function._cleanup)
+        ReleaseStorageValue(&slots[item.slot], item.kind);
 }
 
 void CNeoVMWorker::ReleaseDetachedClosureWithoutSync(ClosureInfo*& closure)
@@ -1323,6 +1460,7 @@ bool	CNeoVMWorker::Setup(int iFunctionID, std::vector<VarInfo>& _args)
 		return false;
 	if (!EnsureStackRange(_iSP_Vars, fun._stackSlotCount - 1))
 		return false;
+	PrepareFunctionStorage(fun, _iSP_Vars);
 
 	SetCodePtr(fun._codePtr);
 
@@ -1548,6 +1686,7 @@ static void NeoDebugFormatValue(VarInfo* pVar, NeoDebugVariable& out, NeoDebugSn
 		out.type = "string";
 		out.value = pVar->_str ? budget.Text(pVar->_str->_str) : "";
 		break;
+	case VAR_VEC3:
 	case VAR_VEC4:
 	{
 		const int n = pVar->VectorComponentCount();
@@ -2015,6 +2154,21 @@ void CNeoVMWorker::JumpAsyncMsg()
 	m_pCur->m_sAsyncResumeCodePtrs.push_back(resume);
 	SetCodePtr(sizeof(SVMOperation));
 }
+#define NEOCORE_ARRAY_DISPATCH(NAME, ELEMENT) \
+		case NOP_ARRAY_##NAME##_NEW: TypedArrayNew<NeoArrayElementType::ELEMENT>(OP); break; \
+		case NOP_ARRAY_##NAME##_GET: TypedArrayGet<NeoArrayElementType::ELEMENT>(OP); break; \
+		case NOP_ARRAY_##NAME##_SET: TypedArraySet<NeoArrayElementType::ELEMENT>(OP); break; \
+		case NOP_ARRAY_##NAME##_APPEND: TypedArrayAppend<NeoArrayElementType::ELEMENT>(OP); break;
+#define NEOCORE_SCALAR_CONTAINER_DISPATCH(OWNER, INDEX, TYPE, TAG) \
+        case NOP_##OWNER##_##TYPE##_LOAD: ScalarContainerLoad<INDEX, TAG>(GetVarPtrF1(OP), GetVarPtr2(OP), GetVarPtr3(OP)); break; \
+        case NOP_##OWNER##_##TYPE##_STORE: ScalarContainerStore<INDEX, TAG>(GetVarPtrF1(OP), GetVarPtr2(OP), GetVarPtr3(OP)); break;
+#define NEOCORE_SCALAR_OWNER_DISPATCH(OWNER, INDEX) \
+        NEOCORE_SCALAR_CONTAINER_DISPATCH(OWNER, INDEX, I64, VAR_INT) \
+        NEOCORE_SCALAR_CONTAINER_DISPATCH(OWNER, INDEX, F64, VAR_FLOAT) \
+        NEOCORE_SCALAR_CONTAINER_DISPATCH(OWNER, INDEX, BOOL, VAR_BOOL)
+#define NEOCORE_SCALAR_ARRAY_STORE(TYPE, ELEMENT) \
+        case NOP_ARRAY_##TYPE##_STORE: ScalarArrayStore<NeoArrayElementType::ELEMENT>(GetVarPtrF1(OP), GetVarPtr2(OP), GetVarPtr3(OP)); break;
+
 template<bool TIMEOUT, bool DEBUG>
 bool	CNeoVMWorker::RunInternal(int iBreakingCallStack)
 {
@@ -2089,19 +2243,30 @@ bool	CNeoVMWorker::RunInternal(int iBreakingCallStack)
 		{
 		case NOP_MOV:           Move(GetVarPtrF1(OP), GetVarPtr2(OP)); break;
 		case NOP_MOV_L:         Move(GetVarPtr_L(OP.n1), GetVarPtr_L(OP.n2)); break;
-		case NOP_MOVI:          MoveI(GetVarPtrF1(OP), OP.n23); break;
-		case NOP_MOVI_L:        MoveI(GetVarPtr_L(OP.n1), OP.n23); break;
-		case NOP_MOVF:          MoveF(GetVarPtrF1(OP), OP.n23); break;
-		case NOP_MOVF_L:        MoveF(GetVarPtr_L(OP.n1), OP.n23); break;
+		case NOP_MOVI:
+			if (OP.argFlag & NEOS_OP_MODIFIER) StoreArithmeticInt<true>(GetVarPtrF1(OP), OP.n23);
+			else MoveI(GetVarPtrF1(OP), OP.n23);
+			break;
+		case NOP_MOVI_L:
+			if (OP.argFlag & NEOS_OP_MODIFIER) StoreArithmeticInt<true>(GetVarPtr_L(OP.n1), OP.n23);
+			else MoveI(GetVarPtr_L(OP.n1), OP.n23);
+			break;
+		case NOP_MOVF:
+		case NOP_MOVF_L:
+		{
+			VarInfo* target = OP.op == NOP_MOVF_L ? GetVarPtr_L(OP.n1) : GetVarPtrF1(OP);
+			if (OP.argFlag & NEOS_OP_MODIFIER)
+			{
+				float value; std::memcpy(&value, &OP.n23, sizeof(value));
+				StoreArithmeticFloat<true>(target, value);
+			}
+			else MoveF(target, OP.n23);
+			break;
+		}
 		case NOP_LOADK:         handle_LOADK_cold(OP); break;
 		case NOP_LOG_NOT:       handle_LOG_NOT_cold(OP); break;
 		case NOP_VAR_CLEAR:     Var_Release(GetVarPtrF1(OP)); break;
-		case NOP_GREAT:         handle_GREAT_cold(OP); break;
-		case NOP_GREAT_EQ:      handle_GREAT_EQ_cold(OP); break;
-		case NOP_LESS:          handle_LESS_cold(OP); break;
-		case NOP_LESS_EQ:       handle_LESS_EQ_cold(OP); break;
-		case NOP_EQUAL2:        handle_EQUAL2_cold(OP); break;
-		case NOP_NEQUAL:        handle_NEQUAL_cold(OP); break;
+		case NOP_COMPARE: handle_COMPARE(OP); break;
 		case NOP_JMP:           SetCodeIncPtr(OP.n1); break;
 		case NOP_JMP_FALSE:
         {
@@ -2117,18 +2282,8 @@ bool	CNeoVMWorker::RunInternal(int iBreakingCallStack)
             if (condition->_bl) SetCodeIncPtr(OP.n1);
             break;
         }
-		case NOP_JMP_GREAT:     if (((OP.argFlag & NEOS_OP_COMPARE_INVERT) == 0) == CompareGR(GetVarPtr2(OP), GetVarPtr3(OP))) SetComparisonJump(OP.n1); break;
-		case NOP_JMP_GREAT_L:   if (((OP.argFlag & NEOS_OP_COMPARE_INVERT) == 0) == CompareGR(GetVarPtr_L(OP.n2), GetVarPtr_L(OP.n3))) SetComparisonJump(OP.n1); break;
-		case NOP_JMP_GREAT_EQ:  if (((OP.argFlag & NEOS_OP_COMPARE_INVERT) == 0) == CompareGE(GetVarPtr2(OP), GetVarPtr3(OP))) SetComparisonJump(OP.n1); break;
-		case NOP_JMP_GREAT_EQ_L:if (((OP.argFlag & NEOS_OP_COMPARE_INVERT) == 0) == CompareGE(GetVarPtr_L(OP.n2), GetVarPtr_L(OP.n3))) SetComparisonJump(OP.n1); break;
-		case NOP_JMP_LESS:      if (((OP.argFlag & NEOS_OP_COMPARE_INVERT) == 0) == CompareGR(GetVarPtr3(OP), GetVarPtr2(OP), true)) SetComparisonJump(OP.n1); break;
-		case NOP_JMP_LESS_L:    if (((OP.argFlag & NEOS_OP_COMPARE_INVERT) == 0) == CompareGR(GetVarPtr_L(OP.n3), GetVarPtr_L(OP.n2), true)) SetComparisonJump(OP.n1); break;
-		case NOP_JMP_LESS_EQ:   if (((OP.argFlag & NEOS_OP_COMPARE_INVERT) == 0) == CompareGE(GetVarPtr3(OP), GetVarPtr2(OP), true)) SetComparisonJump(OP.n1); break;
-		case NOP_JMP_LESS_EQ_L: if (((OP.argFlag & NEOS_OP_COMPARE_INVERT) == 0) == CompareGE(GetVarPtr_L(OP.n3), GetVarPtr_L(OP.n2), true)) SetComparisonJump(OP.n1); break;
-		case NOP_JMP_EQUAL2:    if (true == CompareEQ(GetVarPtr2(OP), GetVarPtr3(OP))) SetCodeIncPtr(OP.n1); break;
-		case NOP_JMP_EQUAL2_L:  if (true == CompareEQ(GetVarPtr_L(OP.n2), GetVarPtr_L(OP.n3))) SetCodeIncPtr(OP.n1); break;
-		case NOP_JMP_NEQUAL:    if (false == CompareEQ(GetVarPtr2(OP), GetVarPtr3(OP))) SetCodeIncPtr(OP.n1); break;
-		case NOP_JMP_NEQUAL_L:  if (false == CompareEQ(GetVarPtr_L(OP.n2), GetVarPtr_L(OP.n3))) SetCodeIncPtr(OP.n1); break;
+		case NOP_JMP_COMPARE: handle_JMP_COMPARE(OP); break;
+		case NOP_JMP_COMPARE_L: handle_JMP_COMPARE_L(OP); break;
 		case NOP_JMP_FOR:       if (For(GetVarPtr_L(OP.n2))) SetCodeIncPtr(OP.n1); break;
 		case NOP_JMP_FOREACH:   if (ForEach(GetVarPtr2(OP), GetVarPtr3(OP), (OP.argFlag & NEOS_OP_FOREACH_TWOVAR) != 0)) SetCodeIncPtr(OP.n1); break;
 		case NOP_SWITCH:        handle_SWITCH(OP); break;
@@ -2180,57 +2335,40 @@ bool	CNeoVMWorker::RunInternal(int iBreakingCallStack)
 		case NOP_JMP_RANGE_OUTSIDE_L: if (IsRangeInside(OP, true) == false) SetComparisonJump(OP.n1); break;
 
 		case NOP_CLT_WRITE_REF: handle_CLT_WRITE_REF(OP); break;
-		case NOP_I64_ADD:       StoreNumberInt(GetVarPtrF1(OP), NeoIntAdd(GetVarPtr2(OP)->_int, GetVarPtr3(OP)->_int)); break;
-		case NOP_I64_SUB:       StoreNumberInt(GetVarPtrF1(OP), NeoIntSub(GetVarPtr2(OP)->_int, GetVarPtr3(OP)->_int)); break;
-		case NOP_I64_MUL:       StoreNumberInt(GetVarPtrF1(OP), NeoIntMul(GetVarPtr2(OP)->_int, GetVarPtr3(OP)->_int)); break;
-		case NOP_I64_DIV:       DivI64(GetVarPtrF1(OP), GetVarPtr2(OP), GetVarPtr3(OP)); break;
-		case NOP_I64_MOD:       TypedIntegerRemainder(OP); break;
-		case NOP_I64_AND:       StoreNumberInt(GetVarPtrF1(OP), GetVarPtr2(OP)->_int & GetVarPtr3(OP)->_int); break;
-		case NOP_I64_OR:        StoreNumberInt(GetVarPtrF1(OP), GetVarPtr2(OP)->_int | GetVarPtr3(OP)->_int); break;
-		case NOP_I64_XOR:       StoreNumberInt(GetVarPtrF1(OP), GetVarPtr2(OP)->_int ^ GetVarPtr3(OP)->_int); break;
-		case NOP_I64_SHL:       TypedIntegerShift<true>(OP); break;
-		case NOP_I64_SHR:       TypedIntegerShift<false>(OP); break;
-		case NOP_F64_ADD:       StoreNumberFloat(GetVarPtrF1(OP), GetVarPtr2(OP)->_float + GetVarPtr3(OP)->_float); break;
-		case NOP_F64_SUB:       StoreNumberFloat(GetVarPtrF1(OP), GetVarPtr2(OP)->_float - GetVarPtr3(OP)->_float); break;
-		case NOP_F64_MUL:       StoreNumberFloat(GetVarPtrF1(OP), GetVarPtr2(OP)->_float * GetVarPtr3(OP)->_float); break;
-		case NOP_F64_DIV:       StoreNumberFloat(GetVarPtrF1(OP), GetVarPtr2(OP)->_float / GetVarPtr3(OP)->_float); break;
-		case NOP_I64_NEG:       StoreNumberInt(GetVarPtrF1(OP), NeoIntNeg(GetVarPtr2(OP)->_int)); break;
-		case NOP_F64_NEG:       StoreNumberFloat(GetVarPtrF1(OP), -GetVarPtr2(OP)->_float); break;
-		case NOP_I64_TO_F64:    StoreNumberFloat(GetVarPtrF1(OP), static_cast<NS_FLOAT>(GetVarPtr2(OP)->_int)); break;
-		case NOP_F64_TO_I64:    StoreNumberInt(GetVarPtrF1(OP), NeoFloatToInt(GetVarPtr2(OP)->_float)); break;
-		case NOP_I64_EQ:        StoreNumberBool(GetVarPtrF1(OP), ((OP.argFlag & NEOS_OP_COMPARE_INVERT) == 0) == (GetVarPtr2(OP)->_int == GetVarPtr3(OP)->_int)); break;
-		case NOP_I64_LT:        StoreNumberBool(GetVarPtrF1(OP), ((OP.argFlag & NEOS_OP_COMPARE_INVERT) == 0) == (GetVarPtr2(OP)->_int < GetVarPtr3(OP)->_int)); break;
-		case NOP_I64_LE:        StoreNumberBool(GetVarPtrF1(OP), ((OP.argFlag & NEOS_OP_COMPARE_INVERT) == 0) == (GetVarPtr2(OP)->_int <= GetVarPtr3(OP)->_int)); break;
-		case NOP_F64_EQ:        StoreNumberBool(GetVarPtrF1(OP), ((OP.argFlag & NEOS_OP_COMPARE_INVERT) == 0) == (GetVarPtr2(OP)->_float == GetVarPtr3(OP)->_float)); break;
-		case NOP_F64_LT:        StoreNumberBool(GetVarPtrF1(OP), ((OP.argFlag & NEOS_OP_COMPARE_INVERT) == 0) == (GetVarPtr2(OP)->_float < GetVarPtr3(OP)->_float)); break;
-		case NOP_F64_LE:        StoreNumberBool(GetVarPtrF1(OP), ((OP.argFlag & NEOS_OP_COMPARE_INVERT) == 0) == (GetVarPtr2(OP)->_float <= GetVarPtr3(OP)->_float)); break;
-		case NOP_JMP_I64_EQ:    if (((OP.argFlag & NEOS_OP_COMPARE_INVERT) == 0) == (GetVarPtr2(OP)->_int == GetVarPtr3(OP)->_int)) SetComparisonJump(OP.n1); break;
-		case NOP_JMP_I64_LT:    if (((OP.argFlag & NEOS_OP_COMPARE_INVERT) == 0) == (GetVarPtr2(OP)->_int < GetVarPtr3(OP)->_int)) SetComparisonJump(OP.n1); break;
-		case NOP_JMP_I64_LE:    if (((OP.argFlag & NEOS_OP_COMPARE_INVERT) == 0) == (GetVarPtr2(OP)->_int <= GetVarPtr3(OP)->_int)) SetComparisonJump(OP.n1); break;
-		case NOP_JMP_F64_EQ:    if (((OP.argFlag & NEOS_OP_COMPARE_INVERT) == 0) == (GetVarPtr2(OP)->_float == GetVarPtr3(OP)->_float)) SetComparisonJump(OP.n1); break;
-		case NOP_JMP_F64_LT:    if (((OP.argFlag & NEOS_OP_COMPARE_INVERT) == 0) == (GetVarPtr2(OP)->_float < GetVarPtr3(OP)->_float)) SetComparisonJump(OP.n1); break;
-		case NOP_JMP_F64_LE:    if (((OP.argFlag & NEOS_OP_COMPARE_INVERT) == 0) == (GetVarPtr2(OP)->_float <= GetVarPtr3(OP)->_float)) SetComparisonJump(OP.n1); break;
-		// 큰 벡터·배열 본문은 밖에 두고 타입별 명령에서 고정 저장형 구현을 호출한다.
-#define NEOCORE_VECTOR_DISPATCH(D) \
-		case NOP_V##D##_MAKE: TypedVectorMake<D>(OP); break; \
-		case NOP_V##D##_ADD: TypedVectorArithmetic<D, 0>(OP); break; \
-		case NOP_V##D##_SUB: TypedVectorArithmetic<D, 1>(OP); break; \
-		case NOP_V##D##_MUL: TypedVectorArithmetic<D, 2>(OP); break; \
-		case NOP_V##D##_DIV: TypedVectorArithmetic<D, 3>(OP); break; \
-		case NOP_V##D##_GET: TypedVectorGet<D>(OP); break; \
-		case NOP_V##D##_SET: TypedVectorSet<D>(OP); break;
-		NEOCORE_VECTOR_DISPATCH(2)
-		NEOCORE_VECTOR_DISPATCH(3)
-		NEOCORE_VECTOR_DISPATCH(4)
-#undef NEOCORE_VECTOR_DISPATCH
+		case NOP_I64_ARITH: handle_I64_ARITH<false>(OP); break;
+		case NOP_F64_ARITH: handle_F64_ARITH<false>(OP); break;
+		case NOP_NUM_CONVERT: handle_NUM_CONVERT(OP); break;
+		case NOP_I64_COMPARE: handle_I64_COMPARE(OP); break;
+		case NOP_F64_COMPARE: handle_F64_COMPARE(OP); break;
+		case NOP_JMP_I64_COMPARE: handle_JMP_I64_COMPARE(OP); break;
+		case NOP_JMP_F64_COMPARE: handle_JMP_F64_COMPARE(OP); break;
+		case NOP_I64_FIXED: handle_I64_ARITH<true>(OP); break;
+		case NOP_F64_FIXED: handle_F64_ARITH<true>(OP); break;
+		case NOP_SLOT_COPY:
+		{
+			VarInfo* target = GetVarPtrF1(OP);
+			const VarInfo* source = GetVarPtr2(OP);
+			switch (static_cast<SlotKind>(OP.argFlag & NEOS_OP_SUB_MASK))
+			{
+			case SlotKind::Int: assert(source->GetType() == VAR_INT); StoreArithmeticInt<true>(target, source->_int); break;
+			case SlotKind::Float: assert(source->GetType() == VAR_FLOAT); StoreArithmeticFloat<true>(target, source->_float); break;
+			case SlotKind::Bool: assert(target->GetType() == VAR_BOOL && source->GetType() == VAR_BOOL); target->_bl = source->_bl; break;
+			default: CopyStorageReference(target, source, static_cast<SlotKind>(OP.argFlag & NEOS_OP_SUB_MASK)); break;
+			}
+			break;
+		}
+		case NOP_V2_MAKE: TypedVectorMake<2>(OP); break;
+		case NOP_V2_GET: TypedVectorGet<2>(OP); break;
+		case NOP_V2_SET: TypedVectorSet<2>(OP); break;
+		case NOP_V3_MAKE: TypedVectorMake<3>(OP); break;
+		case NOP_V3_GET: TypedVectorGet<3>(OP); break;
+		case NOP_V3_SET: TypedVectorSet<3>(OP); break;
+		case NOP_V4_MAKE: TypedVectorMake<4>(OP); break;
+		case NOP_V4_GET: TypedVectorGet<4>(OP); break;
+		case NOP_V4_SET: TypedVectorSet<4>(OP); break;
 		case NOP_CELL_NEW: TypedCellNew(OP); break;
 		case NOP_CELL_GET: TypedCellGet(OP); break;
 		case NOP_CELL_SET: TypedCellSet(OP); break;
-#define NEOCORE_ARRAY_DISPATCH(NAME, ELEMENT) \
-		case NOP_ARRAY_##NAME##_NEW: TypedArrayNew<NeoArrayElementType::ELEMENT>(OP); break; \
-		case NOP_ARRAY_##NAME##_GET: TypedArrayGet<NeoArrayElementType::ELEMENT>(OP); break; \
-		case NOP_ARRAY_##NAME##_SET: TypedArraySet<NeoArrayElementType::ELEMENT>(OP); break; \
-		case NOP_ARRAY_##NAME##_APPEND: TypedArrayAppend<NeoArrayElementType::ELEMENT>(OP); break;
 		NEOCORE_ARRAY_DISPATCH(I64, Int)
 		NEOCORE_ARRAY_DISPATCH(F64, Float)
 		NEOCORE_ARRAY_DISPATCH(BOOL, Bool)
@@ -2239,7 +2377,6 @@ bool	CNeoVMWorker::RunInternal(int iBreakingCallStack)
 		NEOCORE_ARRAY_DISPATCH(V4, Vector4)
 		NEOCORE_ARRAY_DISPATCH(I32, Int32)
 		NEOCORE_ARRAY_DISPATCH(F32, Float32)
-#undef NEOCORE_ARRAY_DISPATCH
 		case NOP_ARRAY_LEN:
             if (CheckTypedArrayReceiver(GetVarPtr2(OP)))
                 StoreNumberInt(GetVarPtrF1(OP), GetVarPtr2(OP)->_array->_count);
@@ -2256,16 +2393,24 @@ bool	CNeoVMWorker::RunInternal(int iBreakingCallStack)
 		case NOP_SET_STRING_CONTAINS: TypedSetOperation<true, 0>(OP); break;
 		case NOP_SET_STRING_ADD: TypedSetOperation<true, 1>(OP); break;
 		case NOP_SET_STRING_REMOVE: TypedSetOperation<true, 2>(OP); break;
-#define NEOCORE_MAP_COMPOUND_DISPATCH(KEY, STRING_KEY, VALUE) \
-		case NOP_MAP_##KEY##_##VALUE##_ADD: TypedMapCompound<STRING_KEY, NOP_##VALUE##_ADD>(OP); break; \
-		case NOP_MAP_##KEY##_##VALUE##_SUB: TypedMapCompound<STRING_KEY, NOP_##VALUE##_SUB>(OP); break; \
-		case NOP_MAP_##KEY##_##VALUE##_MUL: TypedMapCompound<STRING_KEY, NOP_##VALUE##_MUL>(OP); break; \
-		case NOP_MAP_##KEY##_##VALUE##_DIV: TypedMapCompound<STRING_KEY, NOP_##VALUE##_DIV>(OP); break;
-		NEOCORE_MAP_COMPOUND_DISPATCH(I64, false, I64)
-		NEOCORE_MAP_COMPOUND_DISPATCH(I64, false, F64)
-		NEOCORE_MAP_COMPOUND_DISPATCH(STRING, true, I64)
-		NEOCORE_MAP_COMPOUND_DISPATCH(STRING, true, F64)
-#undef NEOCORE_MAP_COMPOUND_DISPATCH
+        NEOCORE_SCALAR_OWNER_DISPATCH(LIST, 0)
+        NEOCORE_SCALAR_OWNER_DISPATCH(MAP_INT, 1)
+        NEOCORE_SCALAR_OWNER_DISPATCH(MAP_STR, 2)
+        NEOCORE_SCALAR_ARRAY_STORE(I64, Int)
+        NEOCORE_SCALAR_ARRAY_STORE(F64, Float)
+        NEOCORE_SCALAR_ARRAY_STORE(BOOL, Bool)
+        NEOCORE_SCALAR_ARRAY_STORE(I32, Int32)
+        NEOCORE_SCALAR_ARRAY_STORE(F32, Float32)
+		case NOP_V2_ARITH: handle_V2_ARITH(OP); break;
+		case NOP_V3_ARITH: handle_V3_ARITH(OP); break;
+		case NOP_V4_ARITH: handle_V4_ARITH(OP); break;
+        case NOP_FUSED:
+        {
+            const ProgramFusion& plan = _pProgram->fusions[static_cast<std::size_t>(OP.n23)];
+            plan.execute(this, plan);
+            break;
+        }
+        case NOP_EXTEND: SetError("cannot execute an extension slot"); break;
 		case NOP_NONE:          handle_NONE(OP); break;
 		case NOP_ERROR:
 			handle_ERROR(OP);
@@ -2277,6 +2422,11 @@ bool	CNeoVMWorker::RunInternal(int iBreakingCallStack)
 	}
 	return true;
 }
+
+#undef NEOCORE_ARRAY_DISPATCH
+#undef NEOCORE_SCALAR_ARRAY_STORE
+#undef NEOCORE_SCALAR_CONTAINER_DISPATCH
+#undef NEOCORE_SCALAR_OWNER_DISPATCH
 
 void	CNeoVMWorker::DeadCoroutine(CoroutineInfo* pCI)
 {
@@ -2406,6 +2556,7 @@ bool CNeoVMWorker::StartCoroutione(int argSP_Vars, int n3)
 			const SFunctionTable& fun = Functions()[m_pCur->_fun_index];
 			if (!EnsureStackRange(0, fun._stackSlotCount - 1))
 				return false;
+			PrepareFunctionStorage(fun, 0);
 			for (int i = 0; i < fun._argsCount; i++)
 			{
 				if (i < iResumeParamCount)
@@ -2463,6 +2614,7 @@ VarInfo* CNeoVMWorker::testCall(int iFID, VarInfo* args, int argc)
 //	_iSP_Vars = 0;// _header._iStaticVarCount;
 	_iSP_Vars = _iSP_VarsMax;
 	SetStackPointer(_iSP_Vars);
+	PrepareFunctionStorage(fun, _iSP_Vars);
 	_iSP_VarsMax = _iSP_Vars + fun._localAddCount;
 	if (_iSP_Vars_Max2 < _iSP_Vars + fun._stackSlotCount)
 		_iSP_Vars_Max2 = _iSP_Vars + fun._stackSlotCount;
@@ -2530,6 +2682,7 @@ VarInfo* CNeoVMWorker::testCall(VarInfo* function, VarInfo* args, int argc)
 	SetCodePtr(fun._codePtr);
 	_iSP_Vars = _iSP_VarsMax;
 	SetStackPointer(_iSP_Vars);
+	PrepareFunctionStorage(fun, _iSP_Vars);
 	_iSP_VarsMax = _iSP_Vars + fun._localAddCount;
 	if (_iSP_Vars_Max2 < _iSP_Vars + fun._stackSlotCount)
 		_iSP_Vars_Max2 = _iSP_Vars + fun._stackSlotCount;
@@ -2624,6 +2777,7 @@ void CNeoVMWorker::Call(ClosureInfo* closure, int n2, int returnValueIndex)
 	SetCodePtr(fun._codePtr);
 	_iSP_Vars = _iSP_VarsMax;
 	SetStackPointer(_iSP_Vars);
+	PrepareFunctionStorage(fun, _iSP_Vars);
 	_iSP_VarsMax = _iSP_Vars + fun._localAddCount;
 	if (_iSP_Vars_Max2 < _iSP_Vars + fun._stackSlotCount)
 		_iSP_Vars_Max2 = _iSP_Vars + fun._stackSlotCount;
@@ -2997,12 +3151,13 @@ std::string GetDataType(VAR_TYPE t)
 	case VAR_FUN_NATIVE:
 		return "fun";
 	case VAR_VEC:
-		// 성분 수는 VarInfo 에 있어 타입만으로는 알 수 없다. 에러 메시지용이라 총칭으로 충분하다.
+		// 진단에서는 저장 방식과 성분 수에 관계없이 벡터의 공통 이름을 쓴다.
 		return "vector";
 	case VAR_STRING:
 		return "string";
+	case VAR_VEC3:
 	case VAR_VEC4:
-		// 성분 수는 VarInfo 에 있어 타입만으로는 알 수 없다. 에러 메시지용이라 총칭으로 충분하다.
+		// 진단에서는 저장 방식과 성분 수에 관계없이 벡터의 공통 이름을 쓴다.
 		return "vector";
 	case VAR_FP_NATIVE:
 		return "native_object";

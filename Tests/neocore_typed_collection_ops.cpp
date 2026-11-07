@@ -1,4 +1,7 @@
-﻿#include "NeoCoreCompiler.h"
+﻿#if defined(_WIN32) && defined(_DEBUG)
+#include <crtdbg.h>
+#endif
+#include "NeoCoreCompiler.h"
 #include "NeoCoreHostBridge.h"
 #include "NeoScript.h"
 #include "NeoVMProgram.h"
@@ -76,7 +79,7 @@ Outcome Invoke(IRuntime& runtime, InstanceHandle instance, const char* name)
     return result;
 }
 
-std::vector<SVMOperation> Operations(const std::vector<uint8_t>& bytes)
+std::vector<SVMOperation> Operations(const std::vector<uint8_t>& bytes, bool expand = true)
 {
     std::vector<SVMOperation> result;
     if (bytes.size() < sizeof(SNeoVMHeader)) return result;
@@ -86,6 +89,16 @@ std::vector<SVMOperation> Operations(const std::vector<uint8_t>& bytes)
         static_cast<std::size_t>(header._iCodeSize) > bytes.size() - sizeof(header)) return result;
     result.resize(static_cast<std::size_t>(header._iCodeSize) / sizeof(SVMOperation));
     if (!result.empty()) std::memcpy(result.data(), bytes.data() + sizeof(header), header._iCodeSize);
+    if (expand)
+    {
+        CNeoVMProgram* program = CNeoVMProgram::Create(bytes.data(), static_cast<int>(bytes.size()));
+        if (program)
+        {
+            for (const auto& plan : program->fusions)
+                for (unsigned i = 0; i < plan.count; ++i) result[plan.start + i] = plan.operations[i];
+            program->Release();
+        }
+    }
     return result;
 }
 
@@ -180,20 +193,20 @@ void Compare(IRuntime& runtime, const char* source, const Outcome& expected, boo
     }
 }
 
-bool IsRuntimeCall(eNOperation op)
+bool IsRuntimeCall(OperationCode op)
 {
     return op == NOP_CALL || op == NOP_CALL_L || op == NOP_PTRCALL || op == NOP_PTRCALL_L ||
         op == NOP_PTRCALL2 || op == NOP_PTRCALL2_L || op == NOP_NATIVECALL;
 }
 
-bool IsGenericAggregate(eNOperation op)
+bool IsGenericAggregate(OperationCode op)
 {
     return op == NOP_CLT_READ || op == NOP_CLT_READ_L || op == NOP_CLT_READ_STATIC_STRING ||
         op == NOP_CLT_MOV || op == NOP_CLT_MOV_L || op == NOP_CLT_WRITE_REF ||
         op == NOP_VEC_MAKE;
 }
 
-void CheckShape(IRuntime& runtime, const char* source, const std::vector<eNOperation>& required,
+void CheckShape(IRuntime& runtime, const char* source, const std::vector<OperationCode>& required,
     bool debug, const char* label)
 {
     {
@@ -204,19 +217,20 @@ void CheckShape(IRuntime& runtime, const char* source, const std::vector<eNOpera
         for (const auto& op : operations)
         {
             {
-                Check(!IsRuntimeCall(op.op), std::string(label) + " has no runtime helper/library call");
-                Check(!IsGenericAggregate(op.op), std::string(label) + " has no generic collection operation; opcode=" +
-                    std::to_string(op.op) + " operands=" + std::to_string(op.n1) + "," + std::to_string(op.n2) + "," +
+                Check(!IsRuntimeCall(op.Code()), std::string(label) + " has no runtime helper/library call");
+                Check(!IsGenericAggregate(op.Code()), std::string(label) + " has no generic collection operation; opcode=" +
+                    std::to_string(op.Code()) + " operands=" + std::to_string(op.n1) + "," + std::to_string(op.n2) + "," +
                     std::to_string(op.n3) + " flags=" + std::to_string(op.argFlag) + " source=" + checked.loweredSource);
             }
         }
         {
-            for (eNOperation expected : required)
+            for (OperationCode expected : required)
             {
                 bool found = false;
-                for (const auto& op : operations) found = found || op.op == expected;
+                for (const auto& op : operations) found = found || ArithmeticMeaning(op.Code()) == expected;
                 const AggregateOpInfo* info = GetAggregateOpInfo(expected);
-                Check(info && found, std::string(label) + " emits " + (info ? info->name : "missing aggregate metadata"));
+                const TypedOpInfo* scalar = GetTypedOpInfo(expected);
+                Check((info || scalar) && found, std::string(label) + " emits " + (info ? info->name : scalar ? scalar->name : "missing metadata"));
             }
         }
 
@@ -226,11 +240,11 @@ void CheckShape(IRuntime& runtime, const char* source, const std::vector<eNOpera
         if (loaded) runtime.DestroyProgram(loaded);
         for (std::size_t i = 0; i < operations.size(); ++i)
         {
-            const AggregateOpInfo* info = GetAggregateOpInfo(operations[i].op);
+            const AggregateOpInfo* info = GetAggregateOpInfo(operations[i].Code());
             if (!info || info->shape != AggregateOpShape::Window) continue;
             for (int change = 0; change < 3; ++change)
             {
-                auto altered = operations;
+                auto altered = Operations(bytes, false);
                 if (change == 0) altered[i].argFlag &= ~NEOS_ARG_N2_LOCAL;
                 else if (change == 1) altered[i].n2 = 32767;
                 else altered[i].n3 = static_cast<decltype(altered[i].n3)>(info->controlMax + 1);
@@ -250,10 +264,10 @@ void Shapes(IRuntime& runtime, bool debug)
         {NOP_SET_I64_ADD,NOP_SET_I64_CONTAINS,NOP_SET_I64_REMOVE}, debug, "integer set operations have no native call");
     CheckShape(runtime, "export bool Probe(set<string> s,string key){bool a=s.add(key);bool b=s.contains(key);bool c=s.remove(key);return a&&b&&c;}",
         {NOP_SET_STRING_ADD,NOP_SET_STRING_CONTAINS,NOP_SET_STRING_REMOVE}, debug, "string set operations have no native call");
-    struct NumericShape { const char* operation; eNOperation op; };
+    struct NumericShape { const char* operation; OperationCode op; };
     const NumericShape numeric[] = {
-        {"%",NOP_I64_MOD},{"&",NOP_I64_AND},{"|",NOP_I64_OR},
-        {"^",NOP_I64_XOR},{"<<",NOP_I64_SHL},{">>",NOP_I64_SHR}
+        {"%",OP_I64_MOD},{"&",OP_I64_AND},{"|",OP_I64_OR},
+        {"^",OP_I64_XOR},{"<<",OP_I64_SHL},{">>",OP_I64_SHR}
     };
     for (const auto& shape : numeric)
     {
@@ -263,16 +277,16 @@ void Shapes(IRuntime& runtime, bool debug)
             NeoCore::StaticCompileResult checked;
             if (!CompileImage(runtime, source.c_str(), debug, bytes, checked)) continue;
             int count = 0;
-            for (const auto& op : Operations(bytes)) if (op.op == shape.op) ++count;
+            for (const auto& op : Operations(bytes)) if (ArithmeticMeaning(op.Code()) == shape.op) ++count;
             Check(count == 1, std::string("dedicated scalar integer operation ") + shape.operation);
         }
     }
     CheckShape(runtime, "export float Probe(float a,float b){Vector2 v=Vector2(a,b);Vector2 w=Vector2(b,a);v+=w;v-=w;v*=a;v/=b;v.x=a;return v.y;}",
-        {NOP_V2_MAKE,NOP_V2_ADD,NOP_V2_SUB,NOP_V2_MUL,NOP_V2_DIV,NOP_V2_GET,NOP_V2_SET}, debug, "Vector2 primitive shape");
+        {NOP_V2_MAKE,OP_V2_ADD,OP_V2_SUB,OP_V2_MUL,OP_V2_DIV,NOP_V2_GET,NOP_V2_SET}, debug, "Vector2 primitive shape");
     CheckShape(runtime, "export float Probe(float a,float b){Vector3 v=Vector3(a,b,a);Vector3 w=Vector3(b,a,b);v+=w;v-=w;v*=a;v/=b;v.z=a;return v.y;}",
-        {NOP_V3_MAKE,NOP_V3_ADD,NOP_V3_SUB,NOP_V3_MUL,NOP_V3_DIV,NOP_V3_GET,NOP_V3_SET}, debug, "Vector3 primitive shape");
+        {NOP_V3_MAKE,OP_V3_ADD,OP_V3_SUB,OP_V3_MUL,OP_V3_DIV,NOP_V3_GET,NOP_V3_SET}, debug, "Vector3 primitive shape");
     CheckShape(runtime, "export float Probe(float a,float b){Vector4 v=Vector4(a,b,a,b);Vector4 w=Vector4(b,a,b,a);v+=w;v-=w;v*=a;v/=b;v.w=a;return v.y;}",
-        {NOP_V4_MAKE,NOP_V4_ADD,NOP_V4_SUB,NOP_V4_MUL,NOP_V4_DIV,NOP_V4_GET,NOP_V4_SET}, debug, "Vector4 primitive shape");
+        {NOP_V4_MAKE,OP_V4_ADD,OP_V4_SUB,OP_V4_MUL,OP_V4_DIV,NOP_V4_GET,NOP_V4_SET}, debug, "Vector4 primitive shape");
     CheckShape(runtime, "export float Probe(float a){Quaternion q=Quaternion(1,a,2,3);q.w=a;return q.x;}",
         {NOP_V4_MAKE,NOP_V4_GET,NOP_V4_SET}, debug, "Quaternion uses validated Vec4 physical ops");
     CheckShape(runtime, "export float Probe(float a){Vector3 v=Vector3(a,2,3);v.x=a;v=Vector3(4,5,6);return v.z;}",
@@ -286,18 +300,18 @@ void Shapes(IRuntime& runtime, bool debug)
         if (CompileImage(runtime, source, debug, bytes, checked))
         {
             for (const SVMOperation& op : Operations(bytes))
-                Check(op.op != NOP_CELL_NEW && op.op != NOP_CELL_GET && op.op != NOP_CELL_SET,
+                Check(op.Code() != NOP_CELL_NEW && op.Code() != NOP_CELL_GET && op.Code() != NOP_CELL_SET,
                     "struct roots and fields require no alias cells");
             Check(checked.loweredSource.find("__neocore_assign_") == std::string::npos,
                 "struct replacement requires no in-place assignment helper");
         }
     }
     CheckShape(runtime, "export int Probe(int n){array<int> a=array<int>(n,7);a[0]=9;a.append(5);a.resize(4);a.reserve(8);return a[0]+a.len();}",
-        {NOP_ARRAY_I64_NEW,NOP_ARRAY_I64_GET,NOP_ARRAY_I64_SET,NOP_ARRAY_I64_APPEND,NOP_ARRAY_LEN,NOP_ARRAY_RESIZE,NOP_ARRAY_RESERVE}, debug, "int array primitive shape");
+        {NOP_ARRAY_I64_NEW,NOP_ARRAY_I64_GET,NOP_ARRAY_I64_STORE,NOP_ARRAY_I64_APPEND,NOP_ARRAY_LEN,NOP_ARRAY_RESIZE,NOP_ARRAY_RESERVE}, debug, "int array primitive shape");
     CheckShape(runtime, "export float Probe(int n){array<float> a=array<float>(n,1.5);a[0]=2.5;a.append(3.5);return a[0];}",
-        {NOP_ARRAY_F64_NEW,NOP_ARRAY_F64_GET,NOP_ARRAY_F64_SET,NOP_ARRAY_F64_APPEND}, debug, "float array primitive shape");
+        {NOP_ARRAY_F64_NEW,NOP_ARRAY_F64_GET,NOP_ARRAY_F64_STORE,NOP_ARRAY_F64_APPEND}, debug, "float array primitive shape");
     CheckShape(runtime, "export bool Probe(int n){array<bool> a=array<bool>(n,true);a[0]=false;a.append(true);return a[0];}",
-        {NOP_ARRAY_BOOL_NEW,NOP_ARRAY_BOOL_GET,NOP_ARRAY_BOOL_SET,NOP_ARRAY_BOOL_APPEND}, debug, "bool array primitive shape");
+        {NOP_ARRAY_BOOL_NEW,NOP_ARRAY_BOOL_GET,NOP_ARRAY_BOOL_STORE,NOP_ARRAY_BOOL_APPEND}, debug, "bool array primitive shape");
     CheckShape(runtime, "export float Probe(int n){array<Vector2> a=array<Vector2>(n,Vector2(1,2));a[0]=Vector2(3,4);a.append(Vector2(5,6));a[0].x+=2;return a[0].y;}",
         {NOP_ARRAY_V2_NEW,NOP_ARRAY_V2_GET,NOP_ARRAY_V2_SET,NOP_ARRAY_V2_APPEND,NOP_V2_GET,NOP_V2_SET}, debug, "vector2 array primitive shape");
     CheckShape(runtime, "export float Probe(int n){array<Vector3> a=array<Vector3>(n,Vector3(1,2,3));a[0]=Vector3(3,4,5);a.append(Vector3(5,6,7));return a[0].z;}",
@@ -415,12 +429,6 @@ void MapCompounds(IRuntime& runtime, bool debug)
 {
     const char* operators[] = {"+=", "-=", "*=", "/="};
     const int answers[] = {16, 8, 48, 3};
-    const eNOperation ops[][4] = {
-        {NOP_MAP_I64_I64_ADD, NOP_MAP_I64_I64_SUB, NOP_MAP_I64_I64_MUL, NOP_MAP_I64_I64_DIV},
-        {NOP_MAP_I64_F64_ADD, NOP_MAP_I64_F64_SUB, NOP_MAP_I64_F64_MUL, NOP_MAP_I64_F64_DIV},
-        {NOP_MAP_STRING_I64_ADD, NOP_MAP_STRING_I64_SUB, NOP_MAP_STRING_I64_MUL, NOP_MAP_STRING_I64_DIV},
-        {NOP_MAP_STRING_F64_ADD, NOP_MAP_STRING_F64_SUB, NOP_MAP_STRING_F64_MUL, NOP_MAP_STRING_F64_DIV}
-    };
     for (int kind = 0; kind < 4; ++kind)
     {
         const bool stringKey = kind >= 2, floating = (kind & 1) != 0;
@@ -431,30 +439,15 @@ void MapCompounds(IRuntime& runtime, bool debug)
         {
             const std::string update = "x" + std::string(operators[operation]) + "m[" + key + "];";
             const std::string shape = "export " + type + " Probe(" + mapType + " m){" + type + " x=12;" + update + "return x;}";
-            CheckShape(runtime, shape.c_str(), {debug ? (stringKey ? NOP_MAP_STRING_READ : NOP_MAP_I64_READ) : ops[kind][operation]},
-                debug, "map compound instruction shape");
+            const OperationCode read = stringKey ? (floating ? NOP_MAP_STR_F64_LOAD : NOP_MAP_STR_I64_LOAD)
+                : (floating ? NOP_MAP_INT_F64_LOAD : NOP_MAP_INT_I64_LOAD);
+            const OperationCode arithmetic = static_cast<OperationCode>((floating ? OP_F64_ADD : OP_I64_ADD) + (operation << 8));
+            CheckShape(runtime, shape.c_str(), {read, arithmetic}, debug, "map compound primitive shape");
             const std::string source = "export " + type + " Probe(){" + mapType + " m={" + key + ":4};" + type + " x=12;" + update + "return x;}";
             Compare(runtime, source.c_str(), floating ? Float(answers[operation]) : Int(answers[operation]), debug, "typed map compound result");
         }
     }
 
-    const char* separate[] = {
-        "export int Probe(map<string,int> m){int x=12;return x+=m[\"a\"];}",
-        "export float Probe(map<string,int> m){float x=12;x+=m[\"a\"];return x;}",
-        "struct S{int x;};export int Probe(map<string,int> m){S s=S(12);s.x+=m[\"a\"];return s.x;}",
-        "export int Probe(map<string,int> m){int x=12;x=x+m[\"a\"];return x;}"
-    };
-    for (const char* source : separate)
-    {
-        std::vector<uint8_t> bytes;
-        NeoCore::StaticCompileResult checked;
-        if (!CompileImage(runtime, source, debug, bytes, checked)) continue;
-        for (const auto& op : Operations(bytes))
-        {
-            const AggregateOpInfo* info = GetAggregateOpInfo(op.op);
-            Check(!info || info->shape != AggregateOpShape::Compound, "consumed, widened, field or binary expression stays separate");
-        }
-    }
     Compare(runtime, "int x=1;map<string,int> m={\"a\":2};string Key(){x=10;return \"a\";}export int Probe(){x+=m[Key()];return x;}", Int(12), debug, "target read follows key effects");
     Compare(runtime, "const string key=\"\\u0061\\n\";map<string,int> m={\"a\\n\":2};export int Probe(){int x=1;x+=m[key];x+=m[\"\\u0061\\n\"];return x;}", Int(5), debug, "decoded literal and constant keys agree");
     Compare(runtime, "int x=7;map<int,int> m={7:4};export int Probe(){x+=m[x];int y=x;return x*100+y;}", Int(1111), debug, "key aliases destination and later copy keeps destination");
@@ -543,6 +536,10 @@ void Cleanup(IRuntime& runtime, bool debug)
 
 int main()
 {
+#if defined(_WIN32) && defined(_DEBUG)
+    _CrtSetReportMode(_CRT_ASSERT, _CRTDBG_MODE_FILE);
+    _CrtSetReportFile(_CRT_ASSERT, _CRTDBG_FILE_STDERR);
+#endif
     IRuntime* runtime = CreateRuntime();
     Check(runtime != nullptr, "runtime creation");
     if (!runtime) return 1;

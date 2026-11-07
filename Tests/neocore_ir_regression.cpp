@@ -1,4 +1,7 @@
-﻿#include "NeoCoreCompiler.h"
+﻿#if defined(_WIN32) && defined(_DEBUG)
+#include <crtdbg.h>
+#endif
+#include "NeoCoreCompiler.h"
 #include "NeoCoreIR.h"
 #include "NeoScript.h"
 #include "NeoVMProgram.h"
@@ -345,7 +348,7 @@ void MapMetadata(IRuntime& runtime, bool debug)
     Check(NeoCore::CompileStaticSource("export int Probe(map<string,int> m){int x=1;x+=m[\"key\"];return x;}", valid),
         "numeric map IR frontend");
     if (!valid.success) return;
-    const std::size_t read = FindOp(valid.typedIR, NeoCore::IROp::MapRead);
+    const std::size_t read = FindOp(valid.typedIR, NeoCore::IROp::CollectionRead);
     const std::size_t key = FindOp(valid.typedIR, NeoCore::IROp::StringLiteral);
     Check(read < valid.typedIR.nodes.size() && key < valid.typedIR.nodes.size(), "map and constant key retain semantic IR");
     if (read == valid.typedIR.nodes.size() || key == valid.typedIR.nodes.size()) return;
@@ -1067,6 +1070,10 @@ void CallErrors(IRuntime& runtime, bool debug)
 
 int main()
 {
+#if defined(_WIN32) && defined(_DEBUG)
+    _CrtSetReportMode(_CRT_ASSERT, _CRTDBG_MODE_FILE);
+    _CrtSetReportFile(_CRT_ASSERT, _CRTDBG_FILE_STDERR);
+#endif
     IRuntime* runtime = CreateRuntime();
     Check(runtime != nullptr, "runtime creation");
     if (!runtime) return 1;

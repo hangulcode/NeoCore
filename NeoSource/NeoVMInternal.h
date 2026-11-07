@@ -127,18 +127,19 @@ enum eNeoDefaultString
 typedef u8	OpType;
 typedef u8	ArgFlag;
 
-#define NEOS_ARG_N1_IMMEDIATE	(1 << 5)
-#define NEOS_ARG_N2_IMMEDIATE	(1 << 4)
-#define NEOS_ARG_N3_IMMEDIATE	(1 << 3)
-#define NEOS_ARG_N1_LOCAL		(1 << 2)
-#define NEOS_ARG_N2_LOCAL		(1 << 1)
-#define NEOS_ARG_N3_LOCAL		(1 << 0)
-// 호출/복귀 op 전용: 반환값 슬롯을 쓰지 않음(=해당 오퍼랜드를 페치하지 않음).
-// PatchLocalOps 도 이 비트를 봐야 해서 argFlag 비트 정의와 같은 곳에 둔다.
-#define NEOS_OP_CALL_NORESULT	(1 << 7) // 0x80
-#define NEOS_OP_COMPARE_INVERT (1 << 6) // ordered jump: negate the comparison result
-#define NEOS_OP_REF_LOADED (1 << 6) // WREF는 부모 읽기 생략
-#define NEOS_OP_REF_WRITE (1 << 7) // ordinary collection write following WREF
+// 하위 네 비트는 명령 계열의 세부 연산, 상위 세 비트는 슬롯 위치다.
+#define NEOS_OP_SUB_MASK         0x0f
+#define NEOS_OP_MODIFIER         0x10
+#define NEOS_OP_ARITH_UPDATE     NEOS_OP_MODIFIER
+#define NEOS_ARG_N1_LOCAL        0x80
+#define NEOS_ARG_N2_LOCAL        0x40
+#define NEOS_ARG_N3_LOCAL        0x20
+// 제어 비트는 명령마다 의미가 다르며 서로 다른 의미를 동시에 쓰지 않는다.
+#define NEOS_OP_CALL_NORESULT    NEOS_OP_MODIFIER
+#define NEOS_OP_COMPARE_INVERT   NEOS_OP_MODIFIER
+#define NEOS_OP_REF_LOADED       NEOS_OP_MODIFIER
+#define NEOS_OP_REF_WRITE        NEOS_OP_MODIFIER
+#define NEOS_OP_FOREACH_TWOVAR      NEOS_OP_MODIFIER
 
 // NOP_JMP_RANGE_* descriptor 전용 플래그. opcode의 argFlag와 분리해
 // lower/upper가 각각 stack인지 global/static인지와 경계 포함 여부를 보관한다.
@@ -168,29 +169,14 @@ enum eNOperation : OpType
 
 
 
-	NOP_GREAT,		// >
-	NOP_GREAT_EQ,	// >=
-	NOP_LESS,		// <
-	NOP_LESS_EQ,	// <=
-	NOP_EQUAL2,		// ==
-	NOP_NEQUAL,		// !=
+	NOP_COMPARE,
 
 	NOP_JMP,
 	NOP_JMP_FALSE,
 	NOP_JMP_TRUE,
 
-	NOP_JMP_GREAT,		// >
-	NOP_JMP_GREAT_L,
-	NOP_JMP_GREAT_EQ,	// >=
-	NOP_JMP_GREAT_EQ_L,
-	NOP_JMP_LESS,		// <
-	NOP_JMP_LESS_L,
-	NOP_JMP_LESS_EQ,	// <=
-	NOP_JMP_LESS_EQ_L,
-	NOP_JMP_EQUAL2,	// ==
-	NOP_JMP_EQUAL2_L,
-	NOP_JMP_NEQUAL,	// !=
-	NOP_JMP_NEQUAL_L,
+	NOP_JMP_COMPARE,
+	NOP_JMP_COMPARE_L,
 	NOP_JMP_FOR,	// for (step 부호를 런타임에 보고 방향 결정 — 양수/음수/변수 모두 처리)
 	NOP_JMP_FOREACH,// foreach
 	NOP_SWITCH,		// n1 = switch table index, n2 = 조건식 위치. 매칭 offset(op 단위)만큼 상대 점프
@@ -251,57 +237,144 @@ enum eNOperation : OpType
 	// Stored vectors consume both atomically. Other values use normal dispatch;
 	// a native vector getter may suspend before the write and its setter.
 	NOP_CLT_WRITE_REF,
-	// dest op= clt[key]. READ 가 임시 슬롯에 복사하고 산술 명령이 다시 읽는 두 단계를 한 명령으로 합친다.
-	// n1 = 컨테이너, n2 = 키, n3 = dest(읽고 쓴다). 산술 종류는 opcode 다. 로컬 전용(_L) 변형은 두지 않는다.
-	// 3-피연산자 형태(x = a[i] op b[j])와 저장 형태는 측정 결과 분리 명령보다 느려 두지 않는다(ReadMe Methodology).
-	// 정적 프런트엔드가 입력 타입을 보증한다. 목적지 슬롯의 기존 값 정리는 유지한다.
-#define NEOCORE_TYPED_ENUM(op, name, suffix, arity, slots, writes, comparison, jump, branchOp) op,
-	NEOCORE_TYPED_OPS(NEOCORE_TYPED_ENUM)
-#undef NEOCORE_TYPED_ENUM
+    NOP_I64_ARITH,
+    NOP_F64_ARITH,
+    NOP_NUM_CONVERT,
+    NOP_I64_COMPARE,
+    NOP_F64_COMPARE,
+    NOP_JMP_I64_COMPARE,
+    NOP_JMP_F64_COMPARE,
+    // 목적지 저장형이 고정된 산술·복사. 타입별 임시 슬롯 배치 후 컴파일러만 선택한다.
+    NOP_I64_FIXED,
+    NOP_F64_FIXED,
+    NOP_SLOT_COPY,
 #define NEOCORE_AGGREGATE_ENUM(op, name, suffix, arity, shape, dimension, controlMax) op,
-	NEOCORE_AGGREGATE_OPS(NEOCORE_AGGREGATE_ENUM)
+	NEOCORE_AGGREGATE_PRIMARY_OPS(NEOCORE_AGGREGATE_ENUM)
+    NOP_V2_ARITH,
+    NOP_V3_ARITH,
+    NOP_V4_ARITH,
 #undef NEOCORE_AGGREGATE_ENUM
+	// FUSED가 뒤의 EXTEND를 한 번에 소비한다. 확장 슬롯은 독립 실행할 수 없다.
+	NOP_FUSED,
+	NOP_EXTEND,
 	NOP_NONE,
 	NOP_ERROR,
 
 	NOP_MAX,
 }; // Operation length
 
-inline const TypedOpInfo* GetTypedOpInfo(eNOperation op)
+enum class ArithmeticOp : u8 { Add, Sub, Mul, Div, Mod, BitAnd, BitOr, BitXor, ShiftLeft, ShiftRight, Neg };
+enum class ComparisonOp : u8 { Equal, Less, LessEqual, NotEqual, Greater, GreaterEqual };
+enum class ConversionOp : u8 { IntToFloat, FloatToInt };
+
+// 컴파일·검증용 키는 기본 opcode와 세부 연산을 함께 담는다. VM 실행은 두 단계로 분리한다.
+NEOS_FORCEINLINE constexpr OperationCode MakeOperation(eNOperation op, unsigned sub)
+{ return static_cast<OperationCode>(static_cast<unsigned>(op) | (sub << 8)); }
+NEOS_FORCEINLINE constexpr OperationCode MakeOperation(eNOperation op, ArithmeticOp sub)
+{ return MakeOperation(op, static_cast<unsigned>(sub)); }
+NEOS_FORCEINLINE constexpr OperationCode MakeOperation(eNOperation op, ComparisonOp sub)
+{ return MakeOperation(op, static_cast<unsigned>(sub)); }
+NEOS_FORCEINLINE constexpr OperationCode MakeOperation(eNOperation op, ConversionOp sub)
+{ return MakeOperation(op, static_cast<unsigned>(sub)); }
+constexpr eNOperation PrimaryOperation(OperationCode code)
+{ return static_cast<eNOperation>(code & 0xff); }
+constexpr u8 OperationSubCode(OperationCode code)
+{ return static_cast<u8>(code >> 8); }
+
+constexpr OperationCode OP_GREAT = MakeOperation(NOP_COMPARE, ComparisonOp::Greater);
+constexpr OperationCode OP_JMP_GREAT = MakeOperation(NOP_JMP_COMPARE, ComparisonOp::Greater);
+constexpr OperationCode OP_JMP_GREAT_L = MakeOperation(NOP_JMP_COMPARE_L, ComparisonOp::Greater);
+constexpr OperationCode OP_GREAT_EQ = MakeOperation(NOP_COMPARE, ComparisonOp::GreaterEqual);
+constexpr OperationCode OP_JMP_GREAT_EQ = MakeOperation(NOP_JMP_COMPARE, ComparisonOp::GreaterEqual);
+constexpr OperationCode OP_JMP_GREAT_EQ_L = MakeOperation(NOP_JMP_COMPARE_L, ComparisonOp::GreaterEqual);
+constexpr OperationCode OP_LESS = MakeOperation(NOP_COMPARE, ComparisonOp::Less);
+constexpr OperationCode OP_JMP_LESS = MakeOperation(NOP_JMP_COMPARE, ComparisonOp::Less);
+constexpr OperationCode OP_JMP_LESS_L = MakeOperation(NOP_JMP_COMPARE_L, ComparisonOp::Less);
+constexpr OperationCode OP_LESS_EQ = MakeOperation(NOP_COMPARE, ComparisonOp::LessEqual);
+constexpr OperationCode OP_JMP_LESS_EQ = MakeOperation(NOP_JMP_COMPARE, ComparisonOp::LessEqual);
+constexpr OperationCode OP_JMP_LESS_EQ_L = MakeOperation(NOP_JMP_COMPARE_L, ComparisonOp::LessEqual);
+constexpr OperationCode OP_EQUAL2 = MakeOperation(NOP_COMPARE, ComparisonOp::Equal);
+constexpr OperationCode OP_JMP_EQUAL2 = MakeOperation(NOP_JMP_COMPARE, ComparisonOp::Equal);
+constexpr OperationCode OP_JMP_EQUAL2_L = MakeOperation(NOP_JMP_COMPARE_L, ComparisonOp::Equal);
+constexpr OperationCode OP_NEQUAL = MakeOperation(NOP_COMPARE, ComparisonOp::NotEqual);
+constexpr OperationCode OP_JMP_NEQUAL = MakeOperation(NOP_JMP_COMPARE, ComparisonOp::NotEqual);
+constexpr OperationCode OP_JMP_NEQUAL_L = MakeOperation(NOP_JMP_COMPARE_L, ComparisonOp::NotEqual);
+#define NEOCORE_VECTOR_CODE(op, family, sub, name, suffix, arity, shape, dimension, controlMax) \
+    constexpr OperationCode op = MakeOperation(family, sub);
+NEOCORE_VECTOR_ARITHMETIC_FAMILIES(NEOCORE_VECTOR_CODE)
+#undef NEOCORE_VECTOR_CODE
+#define NEOCORE_TYPED_CODE(op, family, sub, name, suffix, arity, slots, writes, comparison, jump, branchOp) \
+    constexpr OperationCode op = MakeOperation(family, sub);
+NEOCORE_TYPED_OPS(NEOCORE_TYPED_CODE)
+#undef NEOCORE_TYPED_CODE
+
+inline const TypedOpInfo* TypedOperations(unsigned& count)
 {
-	static const TypedOpInfo operations[] = {
-#define NEOCORE_TYPED_INFO(op, name, suffix, arity, slots, writes, comparison, jump, branchOp) { op, name, suffix, arity, slots, writes, comparison, jump, branchOp },
-		NEOCORE_TYPED_OPS(NEOCORE_TYPED_INFO)
+    static const TypedOpInfo operations[] = {
+#define NEOCORE_TYPED_INFO(op, family, sub, name, suffix, arity, slots, writes, comparison, jump, branchOp) { op, name, suffix, arity, slots, writes, comparison, jump, branchOp },
+        NEOCORE_TYPED_OPS(NEOCORE_TYPED_INFO)
 #undef NEOCORE_TYPED_INFO
-	};
-	const unsigned index = static_cast<unsigned>(op) - static_cast<unsigned>(operations[0].op);
-	return index < sizeof(operations) / sizeof(operations[0]) ? &operations[index] : nullptr;
+    };
+    count = sizeof(operations) / sizeof(operations[0]);
+    return operations;
+}
+inline const TypedOpInfo* GetTypedOpInfo(OperationCode op)
+{
+    if (PrimaryOperation(op) == NOP_I64_FIXED) op = MakeOperation(NOP_I64_ARITH, OperationSubCode(op));
+    else if (PrimaryOperation(op) == NOP_F64_FIXED) op = MakeOperation(NOP_F64_ARITH, OperationSubCode(op));
+    struct Index
+    {
+        const TypedOpInfo* entries[NOP_JMP_F64_COMPARE - NOP_I64_ARITH + 1][16];
+        Index() : entries{}
+        {
+            unsigned count = 0;
+            const TypedOpInfo* all = TypedOperations(count);
+            for (unsigned i = 0; i < count; ++i)
+                entries[PrimaryOperation(all[i].op) - NOP_I64_ARITH][OperationSubCode(all[i].op)] = all + i;
+        }
+    };
+    static const Index index;
+    const unsigned family = static_cast<unsigned>(PrimaryOperation(op)) - NOP_I64_ARITH;
+    const unsigned sub = OperationSubCode(op);
+    return family <= NOP_JMP_F64_COMPARE - NOP_I64_ARITH && sub < 16 ? index.entries[family][sub] : nullptr;
 }
 
-inline const AggregateOpInfo* GetAggregateOpInfo(eNOperation op)
+inline const AggregateOpInfo* AggregateOperations(unsigned& count)
 {
 	static const AggregateOpInfo operations[] = {
 #define NEOCORE_AGGREGATE_INFO(op, name, suffix, arity, shape, dimension, controlMax) { op, name, suffix, arity, AggregateOpShape::shape, dimension, controlMax },
-		NEOCORE_AGGREGATE_OPS(NEOCORE_AGGREGATE_INFO)
+		NEOCORE_AGGREGATE_PRIMARY_OPS(NEOCORE_AGGREGATE_INFO)
+#define NEOCORE_VECTOR_INFO(op, family, sub, name, suffix, arity, shape, dimension, controlMax) NEOCORE_AGGREGATE_INFO(op, name, suffix, arity, shape, dimension, controlMax)
+        NEOCORE_VECTOR_ARITHMETIC_FAMILIES(NEOCORE_VECTOR_INFO)
+#undef NEOCORE_VECTOR_INFO
 #undef NEOCORE_AGGREGATE_INFO
 	};
-	const unsigned index = static_cast<unsigned>(op) - static_cast<unsigned>(operations[0].op);
-	return index < sizeof(operations) / sizeof(operations[0]) ? &operations[index] : nullptr;
+    count = sizeof(operations) / sizeof(operations[0]);
+    return operations;
 }
 
-inline bool IsReadArithOp(eNOperation op)
+inline const AggregateOpInfo* GetAggregateOpInfo(OperationCode op)
 {
-    (void)op;
-    return false;
+    unsigned count = 0;
+    const AggregateOpInfo* operations = AggregateOperations(count);
+    struct Index
+    {
+        const AggregateOpInfo* entries[NOP_MAX][16];
+        Index(const AggregateOpInfo* all, unsigned count) : entries{}
+        {
+            for (unsigned i = 0; i < count; ++i)
+                entries[PrimaryOperation(all[i].op)][OperationSubCode(all[i].op)] = all + i;
+        }
+    };
+    static const Index index(operations, count);
+    const unsigned primary = PrimaryOperation(op), sub = OperationSubCode(op);
+    return primary < NOP_MAX && sub < 16 ? index.entries[primary][sub] : nullptr;
 }
 
 enum eYield_Type : s16
 {
 	YILED_RETURN,
 };
-
-#define CODE_TO_NOP(op) (eNOperation)(op)// >> 2)
-#define CODE_TO_LEN(op) 3 //(op & 0x03)
 
 #pragma pack(1)
 struct SVMOperation
@@ -319,9 +392,44 @@ struct SVMOperation
 		};
 		int	n23;
 	};
+	NEOS_FORCEINLINE OperationCode Code() const { return MakeOperation(op, argFlag & NEOS_OP_SUB_MASK); }
+	void SetCode(OperationCode code)
+	{ op = PrimaryOperation(code); argFlag = static_cast<u8>((argFlag & ~NEOS_OP_SUB_MASK) | OperationSubCode(code)); }
 };
 #pragma pack()
+static_assert((NEOS_ARG_N1_LOCAL | NEOS_ARG_N2_LOCAL | NEOS_ARG_N3_LOCAL | NEOS_OP_MODIFIER | NEOS_OP_SUB_MASK) == 0xff, "Instruction flags fill exactly one byte");
 static_assert(sizeof(SVMOperation) == 8, "NeoScript instructions must remain eight bytes");
+
+inline bool IsFixedArithmetic(const SVMOperation& op)
+{ return op.op == NOP_I64_FIXED || op.op == NOP_F64_FIXED; }
+inline OperationCode ArithmeticMeaning(OperationCode op)
+{
+    return MakeOperation(PrimaryOperation(op) == NOP_I64_FIXED ? NOP_I64_ARITH :
+        PrimaryOperation(op) == NOP_F64_FIXED ? NOP_F64_ARITH : PrimaryOperation(op), OperationSubCode(op));
+}
+
+// 제자리 산술은 n1을 읽고 갱신하며 n2를 오른쪽 입력으로 쓴다. n3는 항상 0이다.
+inline bool SupportsArithmeticUpdate(OperationCode code)
+{
+    const TypedOpInfo* info = GetTypedOpInfo(code);
+    return info && info->arity == 2 &&
+        (PrimaryOperation(ArithmeticMeaning(code)) == NOP_I64_ARITH || PrimaryOperation(ArithmeticMeaning(code)) == NOP_F64_ARITH);
+}
+inline bool IsArithmeticUpdate(const SVMOperation& op)
+{
+    return (op.op == NOP_I64_ARITH || op.op == NOP_F64_ARITH || IsFixedArithmetic(op)) &&
+        (op.argFlag & NEOS_OP_ARITH_UPDATE) != 0;
+}
+inline void PackArithmeticUpdate(SVMOperation& op)
+{
+    // 모든 평가 순서 처리와 슬롯 재배치가 끝난 뒤, 같은 저장 위치만 합친다.
+    if (!SupportsArithmeticUpdate(op.Code()) || (op.argFlag & NEOS_OP_MODIFIER) ||
+        op.n1 != op.n2 || ((op.argFlag & NEOS_ARG_N1_LOCAL) != 0) != ((op.argFlag & NEOS_ARG_N2_LOCAL) != 0)) return;
+    op.n2 = op.n3; op.n3 = 0;
+    op.argFlag = static_cast<u8>((op.argFlag & (NEOS_ARG_N1_LOCAL | NEOS_OP_SUB_MASK)) |
+        NEOS_OP_ARITH_UPDATE | ((op.argFlag & NEOS_ARG_N3_LOCAL) << 1));
+}
+
 
 struct VarInfo;
 struct SVarWrapper;
@@ -640,8 +748,9 @@ NEOS_FORCEINLINE void Move_DestNoRelease(VarInfo* v1, VarInfo* v2)
 		// 인라인 벡터는 참조 조정 없이 슬롯 전체를 값으로 복사한다. 자기 대입도 허용한다.
 		*v1 = *v2; break;
 	case VAR_STRING: v1->_str = v2->_str; ++v1->_str->_refCount; break;
+	case VAR_VEC3:
 	case VAR_VEC4:
-		v1->_vec = v2->_vec; v1->_vecCount = v2->_vecCount; ++v1->_vec->_refCount; break;
+		v1->_vec = v2->_vec; ++v1->_vec->_refCount; break;
 	case VAR_FP_NATIVE: v1->_fpNative = v2->_fpNative; ++v1->_fpNative->_refCount; break;
 	case VAR_ARRAY: v1->_array = v2->_array; ++v1->_array->_refCount; break;
 	case VAR_MAP: v1->_tbl = v2->_tbl; ++v1->_tbl->_refCount; break;
@@ -980,7 +1089,7 @@ public:
 		}
 
 		const VAR_TYPE type = d->GetType();
-		if (type == VAR_VEC4 && Var_ReleaseVecFast(d))
+		if ((type == VAR_VEC3 || type == VAR_VEC4) && Var_ReleaseVecFast(d))
 			return;
 		if (type == VAR_STRING && Var_ReleaseStringFast(d))
 			return;

@@ -10,8 +10,8 @@
 namespace NeoScript
 {
 
-// 벡터 배열은 VarInfo 원소를 보관한다. 2·3성분은 슬롯 안에 직접 들어가고,
-// 4성분만 참조 카운트와 COW를 사용한다. 벡터는 리프라 배열이 순환에 참여하지 않는다.
+// 벡터 배열은 VarInfo 원소를 보관한다. 2성분은 슬롯 안에 직접 들어가고,
+// 3·4성분은 참조 카운트와 COW를 사용한다. 벡터는 리프라 배열이 순환에 참여하지 않는다.
 // 풀은 헤더만 재활용하므로 별도 원소 버퍼의 수명은 Allocate/Free가 관리한다.
 struct ArrayInfo : AllocBase
 {
@@ -117,8 +117,8 @@ struct ArrayInfo : AllocBase
 			byte &= (u8)~bit;
 	}
 
-	// 같은 타입의 int/float 저장과 성분 수가 맞는 인라인 벡터(2·3성분) 저장만 인라인한다. 인라인 벡터는
-	// 슬롯 16 B 복사라 본문이 작다. 변환·bool·4성분 벡터 저장은 드물어 아웃라인으로 보낸다
+	// 같은 타입의 int/float 저장과 성분 수가 맞는 인라인 벡터(2성분) 저장만 인라인한다.
+	// 변환·bool·공유 벡터 저장은 아웃라인으로 보낸다.
 	// (디스패치 루프의 인라인 크기가 곧 성능 — CltRead 의 배열 읽기와 같은 분리).
 	NEOS_FORCEINLINE bool AssignValue(int index, VarInfo* value)
 	{
@@ -410,7 +410,7 @@ private:
 	NEOS_FORCEINLINE void AssignVector(int index, VarInfo* value)
 	{
 		// 타입 검사가 끝난 인라인 벡터는 이전 원소 해제 없이 슬롯 전체를 복사한다.
-		if (_elementType != NeoArrayElementType::Vector4) VectorValues()[index] = *value;
+		if (_elementType == NeoArrayElementType::Vector2) VectorValues()[index] = *value;
 		else AssignVectorRare(index, value);
 	}
 	void AssignVectorRare(int index, VarInfo* value);

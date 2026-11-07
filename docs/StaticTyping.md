@@ -10,6 +10,54 @@ tools belong to the [NeoScript repository](https://github.com/hangulcode/NeoScri
 The typed VS Code extension provides completion, hover, signature help, diagnostics
 and DAP debugging; see [the extension guide](../Tools/vscode-neocore/README.md).
 
+## Instruction encoding
+
+The instruction remains eight bytes: one opcode byte, one flag byte, and three
+16-bit operands (the last two may form a 32-bit immediate or index). The flag
+layout reserves bits 0-3 for an opcode-specific sub-operation, bit 4 for an
+opcode-specific modifier, and bits 7/6/5 for the local-storage selection of
+operands n1/n2/n3. Sub-operation values are independent between opcode families.
+
+Arithmetic and comparison families retain their statically checked input types.
+Arithmetic sub-operations select addition, subtraction, multiplication, division,
+remainder, bitwise operations, shifts or negation. Comparison sub-operations select
+equality, inequality and ordered relations; the modifier can negate the result
+without changing unordered floating-point behavior. Calls, chained writes and
+foreach reuse the modifier only within their own opcode contracts.
+
+For binary `I64_ARITH` and `F64_ARITH`, bit 4 selects an in-place update:
+`n1 op= n2`, with `n3` and its local flag zero. The arithmetic sub-operation is
+unchanged; no primary opcode or additional sub-operation is allocated. Negation
+and conversions do not support this modifier. After slot relocation, the exporter
+packs only operations whose destination and left input identify the same storage
+slot. This preserves snapshots and evaluation order. Disassembly uses names such
+as `I64_ADD2 [S.9] += [S.14]`. Instructions still occupy eight bytes.
+
+Standalone updates write only the numeric payload: their destination is also a
+checked numeric input. Fusion normalizes both operand layouts when building its
+immutable execution plan. The compiler stores the tag-preservation decision in
+the image; loading validates it without choosing a new optimization. Tag writes
+are skipped when the destination has a compiler-owned numeric storage contract,
+or when the actual destination still holds the checked numeric input. Fusion's
+local scratch values still use ordinary typed stores; an elided fixed frame slot
+keeps its established tag. See [TypedStorage.md](TypedStorage.md) for the current
+storage migration and its final untagged eight-byte target.
+Integer overflow, division errors, shift validation, and floating-point behavior
+are unchanged. This is an encoding/execution change, not a measured speed claim.
+
+The old per-operand immediate flags are removed. MOVI and MOVF retain their
+opcode-defined immediate payloads, and LOADK retains its constant-pool index.
+Encoding, validation, fusion, disassembly and debugger stepping must interpret the
+same opcode/sub-operation pair. The VM switches on the primary opcode and calls
+a family handler, which switches on the low-bit sub-operation. Family handlers
+use ordinary inline definitions without forced inlining or outlining. Combined
+operation keys remain compiler and validation metadata, not the VM dispatch key.
+Invalid sub-operations are
+rejected when loading an image. Existing images must be regenerated for image version `0160`.
+This transition preserves evaluation order, value-dependent
+runtime failures and the current general-fusion implementation; it is not a
+performance claim.
+
 ## Implementation boundary
 
 Internal checks follow [the runtime contract rules](RuntimeContracts.md): compile-time
@@ -29,21 +77,26 @@ beginning with `__` remain valid. Literal strings and comments do not affect the
 internal prefix.
 
 The typed execution path preserves the VM's instruction dispatch, call frames,
-and value storage. Checked integer and floating-point `+`, `-`, `*`, and `/` expressions
-select eight dedicated numeric instructions. Integer-to-float widening and explicit
-float-to-integer conversion select two more instructions when the input type is known.
-Mixed arithmetic explicitly converts the integer operand before the floating-point
-operation. Integer overflow/division rules and floating-point behavior remain unchanged.
-Existing literal folding can eliminate an arithmetic or conversion instruction entirely.
+and value storage. Two arithmetic primary opcodes select int64 or binary64 payloads;
+the sub-operation selects the operation. A conversion family handles integer-to-float
+widening and explicit float-to-integer conversion. Mixed arithmetic still emits the
+conversion before the floating-point operation. Overflow, divisor and shift-count
+checks are unchanged. Literal folding can eliminate an instruction entirely.
 
-Numeric comparisons add six value instructions: integer and floating-point forms of
-equality, less-than, and less-than-or-equal. They cover `==`, `!=`, `<`, `<=`, `>`, and
-`>=` through operand swapping and result inversion. Both operands are evaluated left
-to right before any slot swap, so `>` and `>=` do not reverse side effects. Six matching
-direct-branch forms avoid producing a temporary bool when a condition consumes the
-comparison. Integer remainder, bitwise AND/OR/XOR, and left/right shifts add six
-instructions, preserving checked divisor and shift-count rules. Two numeric-negation
-instructions complete the 30 numeric typed instructions.
+Integer and floating-point comparison families each have value and branch forms.
+Their six sub-operations directly encode `==`, `<`, `<=`, `!=`, `>` and `>=`.
+Both operands are evaluated left to right; no operand swap is needed for `>` or
+`>=`. A source-level negation or a branch on false uses the independent modifier
+bit, preserving NaN behavior. These seven numeric primary opcodes represent 42
+supported opcode/sub-operation combinations. Definitions in `NeoVMTypedOps.h`
+generate semantic codes and validation/display metadata from shared family lists.
+
+Generic comparisons use one value family and one branch family, with a local-only
+branch variant. Vector2/3/4 arithmetic uses one family per dimension and the shared
+add/subtract/multiply/divide sub-operations. `NOP_JMP_FOR` and `NOP_JMP_FOREACH`
+remain separate primary opcodes and keep their dedicated loop handlers. The old
+map-only arithmetic opcodes are removed; scalar map accesses participate in the
+general fusion pass instead.
 
 An int/int comparison remains an exact signed 64-bit comparison. A mixed int/float
 comparison converts the integer to binary64, matching the existing generic comparison
@@ -78,7 +131,7 @@ For example, `(1 / 0) + F()` must fail before `F()` executes. Earlier operands a
 snapshotted before later effects, including assignments hidden inside an IR marker.
 Logical short-circuiting remains in the existing statement/expression compiler.
 Unary negation, bitwise negation, and logical inversion also have semantic IR nodes.
-Numeric negation selects `NOP_I64_NEG` or `NOP_F64_NEG`; bitwise negation uses typed
+Numeric negation selects the `Neg` sub-operation of `NOP_I64_ARITH` or `NOP_F64_ARITH`; bitwise negation uses typed
 integer XOR. `NOP_LOG_NOT` reads a checked bool payload in NeoCore, without dynamic
 truthiness conversion.
 
@@ -86,8 +139,8 @@ Named `int`, `float`, `bool`, and `string` assignments have explicit storage tar
 in IR. Numeric compound assignments and prefix/postfix increment/decrement use the
 same path. A target records a resolved variable and an ordered flat struct-field
 path. This includes local/file variables and parameters,
-and scalar fields of named structs; host properties, vector components, and
-collection elements retain their existing write paths.
+and scalar fields of named structs. Scalar collection elements also use typed IR;
+host properties and vector components retain their existing write paths.
 
 The RHS finishes before the target path is resolved or a compound assignment reads
 the old target value. Explicit numeric widening precedes the operation. Assignment
@@ -126,19 +179,41 @@ carry their owner function, value and source location; the emitter verifies thei
 types and reuses the existing call/return instructions. Void fallthrough and
 generated helper bodies still use the transitional statement compiler.
 
-Numeric map reads used by typed expressions retain their checked receiver, key and
-result types in IR. In non-debug builds, a discarded plain-variable compound
-assignment such as `sum += counts[key]` combines lookup and arithmetic in one
-instruction. Integer/string keys and int/float values have dedicated `+`, `-`, `*`
-and `/` forms. Receiver and key evaluation still finish before reading the old
-destination; null/missing-key and integer-division failures leave it unchanged.
-The destination already contains a checked numeric value, so the combined instruction
-updates its payload without repeating reference cleanup or resetting its type tag.
-Error formatting is kept outside the inline lookup/arithmetic path.
-No host callback runs inside the combined instruction. Widening, struct-field
-targets, consumed assignment results and debug-info builds retain separate
-instructions. Ordinary map reads fast-copy non-owning values and preserve
-ownership before releasing a reference-valued destination.
+Scalar list, map, array and compact-array accesses retain the checked receiver,
+key, value and evaluation order in IR. They emit typed load/store primitives;
+scalar struct fields use the same storage primitives. A common final-bytecode pass
+fuses connected numeric operations, conversions, comparisons and scalar collection
+loads/stores, regardless of the source assignment spelling or storage category.
+For example, it can group `sum += a[i]`, `x = a[i] + b[j]`, and arithmetic followed
+by a scalar collection store. It never reassociates floating-point expressions.
+
+A group contains up to eight primitives represented by one `FUSED` root and its
+`EXTEND` slots. The original addresses remain stable. The image stores the typed
+primitives, and the loader validates operands, control flow and temporary liveness
+before preparing the execution plan. The VM executes the bounded group outside the
+main dispatch loop, without dynamic operand-type discovery. Temporary storage is
+omitted only when every following use is accounted for; prior reference cleanup
+still occurs at the original successful write. User-variable stores remain visible
+in their original order. Unknown uses conservatively retain the temporary.
+
+Two local integer or floating-point arithmetic operations use an executor selected
+at image load time. It forwards the primitive numeric result directly and does not
+prepare the generic eight-value scratch buffer. If a destination still owns a
+reference, the group uses the existing executor to preserve its release order.
+Other groups retain the general executor. Liveness analysis treats loop-bound integer normalization as both a read
+and a write of its operand; unrelated normalization no longer blocks temporary
+elision. Reference cleanup and failure locations remain unchanged.
+
+Calls, host properties, suspension points and unsupported operations end a group.
+Instruction budgets and timeouts are checked between groups, never inside one;
+a group can execute at most eight primitive operations. Value-dependent checks
+(null, bounds, missing keys, division, shifts and compact integer range) remain.
+An error keeps the failing primitive's instruction pointer and the normal error
+trap. Debug-info builds retain separate instructions and their existing stepping
+and breakpoint behavior. ASM output expands grouped primitives and identifies
+forwarded temporary results. Reference-valued and vector operations retain their
+existing paths. This is a general scalar fusion pass, not a claim that every
+possible expression or data type is fused.
 
 String concatenation writes directly into the final string buffer and retains
 both input values until the result is complete. Null spelling, byte-length limits,
@@ -187,7 +262,7 @@ revalidate the saved receiver ID. Bool/string conversions remain checked generic
 conversions. Numeric expressions now emit from structured IR; the remaining
 compile-only intrinsics and compatibility leaves are explicit migration boundaries,
 not a complete typed-AST-to-bytecode backend replacement.
-NeoCore bytecode images use version `0154` and must be regenerated; the NeoCore
+NeoCore bytecode images use version `0160` and must be regenerated; the NeoCore
 image container that carries the static type table is at version 4. Regenerate older
 images: generated-code source mappings now mark shared helpers so their failures
 report the user callsite. The five generic `NOP_TABLE_*` arithmetic-write
@@ -815,7 +890,7 @@ an invalid index or empty pop fails at runtime. Maps support `len`,
 Keys and values produce typed lists. A stored key such as `"contains"` or `"len"`
 does not shadow these statically resolved methods.
 
-The current collection operations require backend image version 0154. Rebuild host libraries and
+The current collection operations require backend image version 0160. Rebuild host libraries and
 recompile previously cached program images. Existing `map.get` calls must be
 replaced with checked indexing or an explicit `contains` guard.
 
@@ -1020,9 +1095,12 @@ DAP execution remain separate work.
 1. Expand typed operations to remaining collection reads/writes and
    function argument/result transfers. Preserve the VM dispatch, frame, and
    execution-control architecture.
-2. Replace the private textual intermediate representation with direct typed bytecode
-   emission and slot-lifetime metadata. Remove destination cleanup only where lifetime
-   analysis proves that the slot cannot own a reference.
+2. Continue replacing the private textual intermediate representation with direct typed
+   bytecode. Compiler-owned slot layouts, compatible numeric temporary reuse, fixed
+   numeric stores, and function/global ownership plans are implemented; see
+   [TypedStorage.md](TypedStorage.md). Migrate remaining temporary producers, argument
+   windows, host transfers and exceptional cleanup before removing the tagged boundary
+   representation.
 3. Validate loaded bytecode against type/signature metadata and compare each conversion
    stage with a preserved baseline build and matching results.
 4. Extend the editor's semantic symbol model where it currently offers declaration

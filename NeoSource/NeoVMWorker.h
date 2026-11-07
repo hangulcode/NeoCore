@@ -10,6 +10,7 @@
 #include "NeoVMError.h"
 
 #include "NeoVMProgram.h"
+#include "NeoVMFusion.h"
 
 
 
@@ -40,7 +41,6 @@ struct SVarWrapper
 // NEOS_OP_CALL_NORESULT 는 NeoVMInternal.h 의 argFlag 비트 정의로 이동
 // JMP_FOREACH 전용: foreach(var k, v in ...) 2변수 형태. 대상이 list 인지는 런타임에만 알 수
 // 있으므로, 컴파일러가 이 플래그만 실어 보내고 미지원 판정/에러는 ForEach 런타임에서 한다.
-#define NEOS_OP_FOREACH_TWOVAR	(1 << 6) // 0x40
 
 
 #ifdef _DEBUG
@@ -285,6 +285,12 @@ private:
 
 	void    BindContext(CoroutineInfo* ctx);            // 컨텍스트를 활성 스택으로 바인딩
 	void    CleanupContextVars(CoroutineInfo* ctx, int usedMax);  // 반납 전 VarInfo 참조 정리
+    void PrepareFunctionStorage(const SFunctionTable& function, int base);
+    void ReleaseFunctionStorage(const SFunctionTable& function, int base);
+    void ReleaseStorageValue(VarInfo* value, SlotKind kind);
+    void CopyStorageReference(VarInfo* target, const VarInfo* source, SlotKind kind);
+    template <VAR_TYPE Type> void ReleaseKnownStorage(CNeoVM* vm, VarInfo* value);
+    template <VAR_TYPE Type> void CopyKnownStorage(CNeoVM* vm, VarInfo* target, const VarInfo* source);
 	// 이미 무효가 된 프레임의 closure는 sync하지 않는다. 실행 보유분만 반납한다.
 	void    ReleaseDetachedClosureWithoutSync(ClosureInfo*& closure);
 	// 오류로 실행을 폐기할 때, 컨텍스트의 실행 보유 closure 참조를 write-back
@@ -524,6 +530,7 @@ public:
 		case VAR_STRING:
 			++d->_str->_refCount;
 			break;
+		case VAR_VEC3:
 		case VAR_VEC4:
 			// 짝인 Var_ReleaseInternal / Move_DestNoRelease 는 처리하는데 여기만 빠져 있었다.
 			// alloc 타입은 하나도 빠짐없이 여기 있어야 한다.
@@ -563,6 +570,7 @@ public:
 
 #include "NeoVMWorker_Handlers.inl"
 #include "NeoVMWorker_Typed.inl"
+#include "NeoVMWorker_Fusion.inl"
 
 	// 파괴 재진입 방지와 순환 후보 intrusive FIFO 링크. 전역/실행 컨텍스트가
 	// 컨테이너를 들 수 있으므로 worker는 보수적으로 후보 가능으로 초기화한다.

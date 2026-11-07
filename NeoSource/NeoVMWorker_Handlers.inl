@@ -302,7 +302,7 @@ NEOS_FORCEINLINE bool handle_NATIVECALL(const SVMOperation& OP) {
 }
 
 // 본문 공용. pSrc = 반환값 슬롯(NORESULT 면 nullptr).
-NEOS_FORCEINLINE bool handle_RETURN_impl(VarInfo* pSrc) {
+NEOS_FORCEINLINE bool handle_RETURN_impl(VarInfo* pSrc, int functionIndex) {
     if (m_iBreakingCallStack == (int)m_pCallStack->size())
     {
 		// 최상위/코루틴 시작 closure는 호출 프레임이 없으므로 active 상태로 판별한다.
@@ -314,6 +314,8 @@ NEOS_FORCEINLINE bool handle_RETURN_impl(VarInfo* pSrc) {
         else
             Move(m_pVarStack_Pointer, pSrc);
 
+        ReleaseFunctionStorage(Functions()[functionIndex], _iSP_Vars);
+
         if (m_iBreakingCallStack == 0 && !IsNativeScriptCallActive() && IsMainCoroutine(m_pCur) == false)
         {
             if (StopCoroutine(true) == true) // Other Coroutine Active (No Stop)
@@ -323,7 +325,7 @@ NEOS_FORCEINLINE bool handle_RETURN_impl(VarInfo* pSrc) {
         return true; // exit RunInternal
     }
 
-    SCallStack& callStack = m_pCallStack->pop_back();
+    const SCallStack callStack = m_pCallStack->pop_back();
 	const u32 returnIP = callStack._ReturnIP;
 	if (m_pActiveClosure != nullptr)
 		FinishClosureReturn(pSrc);
@@ -345,6 +347,8 @@ NEOS_FORCEINLINE bool handle_RETURN_impl(VarInfo* pSrc) {
         else
             Move(m_pVarStack_Pointer, pSrc);
     }
+
+    ReleaseFunctionStorage(Functions()[functionIndex], _iSP_Vars);
 
     if (returnIP & FLAG_ASYNCWAIT)
     {
@@ -372,12 +376,12 @@ NEOS_FORCEINLINE bool handle_RETURN_impl(VarInfo* pSrc) {
 }
 
 NEOS_FORCEINLINE bool handle_RETURN(const SVMOperation& OP) {
-    return handle_RETURN_impl((OP.argFlag & NEOS_OP_CALL_NORESULT) ? nullptr : GetVarPtrF1(OP));
+    return handle_RETURN_impl((OP.argFlag & NEOS_OP_CALL_NORESULT) ? nullptr : GetVarPtrF1(OP), OP.n2);
 }
 
 NEOS_FORCEINLINE bool handle_RETURN_L(const SVMOperation& OP) {
     // NORESULT 면 슬롯을 안 뽑으므로 PatchLocalOps 가 _L 로 바꾸지 않는다.
-    return handle_RETURN_impl(GetVarPtr_L(OP.n1));
+    return handle_RETURN_impl(GetVarPtr_L(OP.n1), OP.n2);
 }
 
 NEOS_NOINLINE bool handle_TABLE_ALLOC(const SVMOperation& OP) {
@@ -582,7 +586,7 @@ NEOS_NOINLINE bool handle_VEC_MAKE(const SVMOperation& OP) {
         tmp[i] = NeoNarrowFloat32(args[i].GetFloatNumber());
     }
     if (OP.argFlag & NEOS_OP_CALL_NORESULT) return false;
-    // 2·3성분은 직접 저장하고, 4성분은 단독 소유 저장소를 재사용한다.
+    // 2성분은 직접 저장하고, 3·4성분은 단독 소유 저장소를 재사용한다.
     StoreVector(GetVarPtr3(OP), n, tmp[0], tmp[1], tmp[2], tmp[3]);
     return false;
 }

@@ -1294,8 +1294,7 @@ private:
     int switchDepth_ = 0;
     bool checkingConstant_ = false;
     const std::string internalPrefix_ = InternalSymbolPrefix();
-    bool resizeHelper_ = false;
-    bool concatHelper_ = false, unionHelper_ = false, intersectionHelper_ = false, differenceHelper_ = false;
+    std::set<TypeId> resizeHelpers_, concatHelpers_, unionHelpers_, intersectionHelpers_, differenceHelpers_;
     std::set<TypeId> structListClones_, structMapClones_, structMapValues_, structListResizes_, structListConcats_;
     int functionDepth_ = 0;
     std::vector<Expr*> activeLambdas_;
@@ -1659,6 +1658,22 @@ private:
     {
         for (Symbol& symbol : symbols_)
         {
+            if (!symbol.constant)
+            {
+                IRStorageSymbol storage;
+                storage.backendName = symbol.backendName;
+                storage.type = symbol.boxed ? types_.ListOf(symbol.type) : symbol.type;
+                storage.boxed = false;
+                storage.parameter = symbol.parameter && !symbol.boxed;
+                result_.typedIR.storageSymbols.push_back(storage);
+                if (symbol.parameter && symbol.boxed)
+                {
+                    storage.backendName += "$input";
+                    storage.type = symbol.type;
+                    storage.parameter = true;
+                    result_.typedIR.storageSymbols.push_back(storage);
+                }
+            }
             StaticDebugSymbol debug;
             debug.backendName = symbol.backendName;
             debug.name = symbol.name.text;
@@ -1673,11 +1688,13 @@ private:
                 global.exported = symbol.declaration->isExported;
                 result_.globals.push_back(global);
             }
-            if (symbol.backendName != symbol.name.text) edits_.push_back(Edit(symbol.name.begin, symbol.name.end, symbol.backendName));
+            if (symbol.backendName != symbol.name.text) edits_.push_back(Edit(symbol.name.begin, symbol.name.end,
+                symbol.backendName + (symbol.parameter && symbol.boxed ? "$input" : "")));
             if (symbol.parameter)
             {
-                if (symbol.boxed) edits_.push_back(Edit(symbol.functionBody, symbol.functionBody, symbol.backendName + "="
-                    + Intrinsic("cellnew", symbol.name.line) + "(" + symbol.backendName + ")" + ";"));
+                // 인자 슬롯은 벡터 저장형으로 고정하고 성분 쓰기용 셀은 별도 지역 슬롯에 둔다.
+                if (symbol.boxed) edits_.push_back(Edit(symbol.functionBody, symbol.functionBody, "var " + symbol.backendName + "="
+                    + Intrinsic("cellnew", symbol.name.line) + "(" + symbol.backendName + "$input)" + ";"));
                 continue;
             }
             if (!symbol.declaration) continue;
@@ -1929,8 +1946,12 @@ private:
                 structListResizes_.insert(type.element);
                 expression.callName += "_" + std::to_string(type.element);
             }
+            else
+            {
+                resizeHelpers_.insert(receiver.type);
+                expression.callName += "_typed_" + std::to_string(receiver.type);
+            }
             expression.type = types_.Void();
-            resizeHelper_ = true;
             return;
         }
         if (IsArray(receiver.type) && (member.op == "resize" || member.op == "reserve" || member.op == "append"))
@@ -1974,16 +1995,16 @@ private:
         {
             if (count) Fail(member.token, "clone requires no arguments");
             const TypeId element = list ? type.element : type.value;
-            if (list) structListClones_.insert(element); else structMapClones_.insert(element);
-            expression.callName = internalPrefix_ + (list ? "clonelist_" : "clonemap_") + std::to_string(element);
+            if (list) structListClones_.insert(element); else structMapClones_.insert(receiver.type);
+            expression.callName = internalPrefix_ + (list ? "clonelist_" : "clonemap_") + std::to_string(list ? element : receiver.type);
             expression.type = receiver.type;
             return;
         }
         if (map && member.op == "values" && IsStruct(type.value))
         {
             if (count) Fail(member.token, "values requires no arguments");
-            structMapValues_.insert(type.value);
-            expression.callName = internalPrefix_ + "mapvalues_" + std::to_string(type.value);
+            structMapValues_.insert(receiver.type);
+            expression.callName = internalPrefix_ + "mapvalues_" + std::to_string(receiver.type);
             expression.type = types_.ListOf(type.value);
             return;
         }
@@ -2486,7 +2507,6 @@ private:
             expression.type = BinaryType(expression.token, expression.op, expression.children[0]->type, expression.children[1]->type);
             if (types_.Get(expression.type).kind == TypeKind::List && expression.op == "+")
             {
-                concatHelper_ = true;
                 expression.callName = internalPrefix_ + "concat";
                 const TypeId element = types_.Get(expression.type).element;
                 if (IsStruct(element))
@@ -2495,12 +2515,18 @@ private:
                     structListClones_.insert(element);
                     expression.callName += "_" + std::to_string(element);
                 }
+                else
+                {
+                    concatHelpers_.insert(expression.type);
+                    expression.callName += "_typed_" + std::to_string(expression.type);
+                }
             }
             else if (types_.Get(expression.type).kind == TypeKind::Set)
             {
-                if (expression.op == "|") { unionHelper_ = true; expression.callName = internalPrefix_ + "union"; }
-                else if (expression.op == "&") { intersectionHelper_ = true; expression.callName = internalPrefix_ + "intersection"; }
-                else { differenceHelper_ = true; expression.callName = internalPrefix_ + "difference"; }
+                if (expression.op == "|") { unionHelpers_.insert(expression.type); expression.callName = internalPrefix_ + "union"; }
+                else if (expression.op == "&") { intersectionHelpers_.insert(expression.type); expression.callName = internalPrefix_ + "intersection"; }
+                else { differenceHelpers_.insert(expression.type); expression.callName = internalPrefix_ + "difference"; }
+                expression.callName += "_typed_" + std::to_string(expression.type);
             }
             else if (expression.op == "*" && types_.IsNumeric(expression.children[0]->type) && IsArithmeticVector(expression.children[1]->type))
             {
@@ -3291,6 +3317,14 @@ private:
         return AppendIR(std::move(conversion));
     }
 
+    bool ScalarCollectionIR(const Expr& expression) const
+    {
+        const Expr& target = expression.kind == ExprKind::Assignment ? *expression.children[0] : expression;
+        if (target.kind != ExprKind::Index || (!types_.IsNumeric(target.type) && target.type != types_.Bool())) return false;
+        const TypeKind owner = types_.Get(target.children[0]->type).kind;
+        return owner == TypeKind::List || owner == TypeKind::Map || owner == TypeKind::Array || owner == TypeKind::Array32;
+    }
+
     std::size_t BuildValueIR(const Expr& expression) const
     {
         IRNode node;
@@ -3335,6 +3369,24 @@ private:
                 value = ConvertIR(value, node.typeId, origin);
                 node.inputs.push_back(value);
             }
+        }
+        else if (expression.kind == ExprKind::Assignment && ScalarCollectionIR(expression))
+        {
+            const Expr& target = *expression.children[0];
+            node.op = IROp::CollectionWrite;
+            node.text = expression.op;
+            node.discardResult = expression.discardResult;
+            const std::size_t value = BuildValueIR(*expression.children[1]);
+            const IRSourceSpan source = result_.typedIR.nodes[value].source;
+            node.inputs.push_back(ConvertIR(value, expression.type, source));
+            node.inputs.push_back(BuildValueIR(*target.children[0]));
+            node.inputs.push_back(BuildValueIR(*target.children[1]));
+        }
+        else if (ScalarCollectionIR(expression))
+        {
+            node.op = IROp::CollectionRead;
+            node.inputs.push_back(BuildValueIR(*expression.children[0]));
+            node.inputs.push_back(BuildValueIR(*expression.children[1]));
         }
         else if (expression.checkedMapRead && types_.IsNumeric(expression.type))
         {
@@ -3425,7 +3477,7 @@ private:
         std::string text;
         IROp operation;
         if (allowIR && !expression.constantInitializer &&
-            (NumericIROp(expression, operation) || ScalarMutationIROp(expression, operation)
+            (NumericIROp(expression, operation) || ScalarMutationIROp(expression, operation) || ScalarCollectionIR(expression)
                 || expression.kind == ExprKind::Conditional
                 || expression.functionIndex != static_cast<std::size_t>(-1)
                 || (expression.widen && !expression.constantWiden)))
@@ -3680,7 +3732,36 @@ private:
         return value;
     }
 
-    std::string Helpers() const
+    void HelperStorage(const std::string& owner, const std::string& name, TypeId type, bool parameter = false)
+    {
+        IRStorageSymbol symbol;
+        symbol.ownerFunction = owner;
+        symbol.backendName = name;
+        symbol.type = type;
+        symbol.boxed = false;
+        symbol.parameter = parameter;
+        result_.typedIR.storageSymbols.push_back(std::move(symbol));
+    }
+
+    std::string HelperDefinition(const std::string& name, TypeId result,
+        const std::vector<std::pair<std::string, TypeId>>& parameters)
+    {
+        IRFunction signature;
+        signature.backendName = name;
+        signature.returnType = result;
+        std::string source = "\nfun " + name + "(";
+        for (std::size_t i = 0; i < parameters.size(); ++i)
+        {
+            if (i) source += ",";
+            source += "var " + parameters[i].first;
+            signature.parameterTypes.push_back(parameters[i].second);
+            HelperStorage(name, parameters[i].first, parameters[i].second, true);
+        }
+        result_.typedIR.functions.push_back(std::move(signature));
+        return source + "){";
+    }
+
+    std::string Helpers()
     {
         std::string result;
         for (const auto& implementation : scriptImplementations_)
@@ -3747,19 +3828,16 @@ private:
         for (TypeId type : structures_)
         {
             const TypeDesc& description = types_.Get(type);
-            result += "\nfun " + Helper("make", type) + "(";
+            std::vector<std::pair<std::string, TypeId>> parameters;
             for (std::size_t i = 0; i < description.fields.size(); ++i)
-            {
-                if (i) result += ",";
-                result += "var a" + std::to_string(i);
-            }
-            result += "){return [";
+                parameters.push_back(std::make_pair("a" + std::to_string(i), description.fields[i].type));
+            result += HelperDefinition(Helper("make", type), type, parameters) + "return [";
             for (std::size_t i = 0; i < description.fields.size(); ++i)
             {
                 if (i) result += ",";
                 result += "a" + std::to_string(i);
             }
-            result += "]; }\nfun " + Helper("clone", type) + "(var s){return [";
+            result += "]; }" + HelperDefinition(Helper("clone", type), type, {{"s", type}}) + "return [";
             for (std::size_t i = 0; i < description.fields.size(); ++i)
             {
                 if (i) result += ",";
@@ -3770,7 +3848,7 @@ private:
             result += "]; }";
             if (Defaultable(type))
             {
-                result += "\nfun " + Helper("default", type) + "(){return [";
+                result += HelperDefinition(Helper("default", type), type, {}) + "return [";
                 for (std::size_t i = 0; i < description.fields.size(); ++i)
                 {
                     if (i) result += ",";
@@ -3779,25 +3857,69 @@ private:
                 result += "];}";
             }
         }
-        if (resizeHelper_)
+        for (TypeId type : resizeHelpers_)
         {
             // 증가 중 오류가 나도 새 원소가 null인 중간 상태를 남기지 않는다.
-            result += "\nfun " + internalPrefix_ + "resize(var a,var n,var fill){if(n<0)n=0;var old=tosize(a);a.reserve(n);if(n<old){a.resize(n);}else{for(var i in old,n){a.append(fill);}}}";
+            const std::string name = internalPrefix_ + "resize_typed_" + std::to_string(type);
+            result += HelperDefinition(name, types_.Void(), {{"a", type}, {"n", types_.Int()}, {"fill", types_.Get(type).element}});
+            HelperStorage(name, "old", types_.Int()); HelperStorage(name, "i", types_.Int());
+            result += "if(n<0)n=0;var old=tosize(a);a.reserve(n);if(n<old){a.resize(n);}else{for(var i in old,n){a.append(fill);}}}";
         }
-        if (concatHelper_) result += "\nfun " + internalPrefix_ + "concat(var a,var b){var r=a.clone();foreach(var v in b)r.append(v);return r;}";
-        if (unionHelper_) result += "\nfun " + internalPrefix_ + "union(var a,var b){var r=a.clone();foreach(var v in b)r.add(v);return r;}";
-        if (intersectionHelper_) result += "\nfun " + internalPrefix_ + "intersection(var a,var b){var r=a.clone();foreach(var v in a)if(!b.contains(v))r.remove(v);return r;}";
-        if (differenceHelper_) result += "\nfun " + internalPrefix_ + "difference(var a,var b){var r=a.clone();foreach(var v in b)r.remove(v);return r;}";
+        const std::set<TypeId>* collections[] = { &concatHelpers_, &unionHelpers_, &intersectionHelpers_, &differenceHelpers_ };
+        const char* names[] = { "concat", "union", "intersection", "difference" };
+        const char* bodies[] = {
+            "var r=a.clone();foreach(var v in b)r.append(v);return r;}",
+            "var r=a.clone();foreach(var v in b)r.add(v);return r;}",
+            "var r=a.clone();foreach(var v in a)if(!b.contains(v))r.remove(v);return r;}",
+            "var r=a.clone();foreach(var v in b)r.remove(v);return r;}" };
+        for (std::size_t operation = 0; operation < 4; ++operation)
+            for (TypeId type : *collections[operation])
+            {
+                const std::string name = internalPrefix_ + names[operation] + "_typed_" + std::to_string(type);
+                result += HelperDefinition(name, type, {{"a", type}, {"b", type}});
+                HelperStorage(name, "r", type); HelperStorage(name, "v", types_.Get(type).element);
+                result += bodies[operation];
+            }
         for (TypeId type : structListClones_)
-            result += "\nfun " + internalPrefix_ + "clonelist_" + std::to_string(type) + "(var a){var r=[];foreach(var v in a)r.append(" + Helper("clone", type) + "(v));return r;}";
+        {
+            const std::string name = internalPrefix_ + "clonelist_" + std::to_string(type);
+            const TypeId list = types_.ListOf(type);
+            result += HelperDefinition(name, list, {{"a", list}});
+            HelperStorage(name, "r", list); HelperStorage(name, "v", type);
+            result += "var r=[];foreach(var v in a)r.append(" + Helper("clone", type) + "(v));return r;}";
+        }
         for (TypeId type : structMapClones_)
-            result += "\nfun " + internalPrefix_ + "clonemap_" + std::to_string(type) + "(var a){var r={};foreach(var k,v in a)r[k]=" + Helper("clone", type) + "(v);return r;}";
+        {
+            const std::string name = internalPrefix_ + "clonemap_" + std::to_string(type);
+            const TypeDesc& map = types_.Get(type);
+            result += HelperDefinition(name, type, {{"a", type}});
+            HelperStorage(name, "r", type); HelperStorage(name, "k", map.key); HelperStorage(name, "v", map.value);
+            result += "var r={};foreach(var k,v in a)r[k]=" + Helper("clone", map.value) + "(v);return r;}";
+        }
         for (TypeId type : structMapValues_)
-            result += "\nfun " + internalPrefix_ + "mapvalues_" + std::to_string(type) + "(var a){var r=[];foreach(var k,v in a)r.append(" + Helper("clone", type) + "(v));return r;}";
+        {
+            const std::string name = internalPrefix_ + "mapvalues_" + std::to_string(type);
+            const TypeDesc& map = types_.Get(type);
+            const TypeId list = types_.ListOf(map.value);
+            result += HelperDefinition(name, list, {{"a", type}});
+            HelperStorage(name, "r", list); HelperStorage(name, "k", map.key); HelperStorage(name, "v", map.value);
+            result += "var r=[];foreach(var k,v in a)r.append(" + Helper("clone", map.value) + "(v));return r;}";
+        }
         for (TypeId type : structListResizes_)
-            result += "\nfun " + internalPrefix_ + "resize_" + std::to_string(type) + "(var a,var n,var fill){if(n<0)n=0;var old=tosize(a);a.reserve(n);if(n<old)a.resize(n);else for(var i in old,n)a.append(" + Helper("clone", type) + "(fill));}";
+        {
+            const std::string name = internalPrefix_ + "resize_" + std::to_string(type);
+            result += HelperDefinition(name, types_.Void(), {{"a", types_.ListOf(type)}, {"n", types_.Int()}, {"fill", type}});
+            HelperStorage(name, "old", types_.Int()); HelperStorage(name, "i", types_.Int());
+            result += "if(n<0)n=0;var old=tosize(a);a.reserve(n);if(n<old)a.resize(n);else for(var i in old,n)a.append(" + Helper("clone", type) + "(fill));}";
+        }
         for (TypeId type : structListConcats_)
-            result += "\nfun " + internalPrefix_ + "concat_" + std::to_string(type) + "(var a,var b){var r=" + internalPrefix_ + "clonelist_" + std::to_string(type) + "(a);foreach(var v in b)r.append(" + Helper("clone", type) + "(v));return r;}";
+        {
+            const std::string name = internalPrefix_ + "concat_" + std::to_string(type);
+            const TypeId list = types_.ListOf(type);
+            result += HelperDefinition(name, list, {{"a", list}, {"b", list}});
+            HelperStorage(name, "r", list); HelperStorage(name, "v", type);
+            result += "var r=" + internalPrefix_ + "clonelist_" + std::to_string(type) + "(a);foreach(var v in b)r.append(" + Helper("clone", type) + "(v));return r;}";
+        }
         for (const Expr* lambda : lambdas_)
         {
             result += "\nfun " + lambda->callName + "(";

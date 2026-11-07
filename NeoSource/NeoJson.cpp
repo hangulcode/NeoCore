@@ -112,6 +112,7 @@ struct Encoder {
             // Serialization is synchronous, with no callbacks or VM mutation.
             return yyjson_mut_strn(doc, s.data(), s.size());
         }
+        case VAR_VEC3:
         case VAR_VEC4: return Fail(path, "unsupported type: Vector" + std::to_string(v.VectorComponentCount()));
         case VAR_FP_NATIVE: return Fail(path, "unsupported type: engine object");
         case VAR_ARRAY: return Fail(path, "unsupported type: system.array");

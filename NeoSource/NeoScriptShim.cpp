@@ -488,6 +488,7 @@ static ValueType VarTypeToValueType(VarInfo* v)
     }
     case VAR_STRING: return ValueType::String;
     // 성분 수가 곧 타입이다. Quat 은 4성분 벡터와 구분하지 않는다(해석은 호출자 규약).
+    case VAR_VEC3:
     case VAR_VEC4:
     {
         const int n = v->VectorComponentCount();

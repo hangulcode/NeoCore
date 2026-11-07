@@ -45,8 +45,6 @@ inline bool IsCompileConstant(int index)
 bool IsTempVar(int iVar);
 // 테스트·실험용 스위치. false 면 READ_* 융합 명령을 내지 않고 분리된 READ + 산술을 낸다.
 
-eNOperation	GetOpTypeFromOp(eNOperation op);
-int		GetOpLength(eNOperation op);
 
 struct SJumpValue
 {
@@ -210,6 +208,7 @@ struct SVars
 	}
 	int _iTempVarNameIndex = 0; // 이름 없는 임시 변수 생성 인덱스
 	int							_globalVarCount = 0;
+    std::map<int, SlotType> _globalStorage;
 };
 
 struct SFunctionTableForWriter
@@ -221,6 +220,8 @@ struct SFunctionTableForWriter
 	short						_localTempMax;
 	int							_localVarCount;
 	std::vector<std::pair<short, short>> _captures;
+    std::vector<SlotLayout> _storage;
+    std::vector<SlotCleanup> _cleanup;
 };
 
 // 익명 함수 한 개가 생성될 때 부모 프레임에서 복사할 지역 슬롯과, 그 값을
@@ -245,12 +246,16 @@ struct SFunctionInfo
 	std::string					_moduleName;
 	std::map<int, std::string>	_debugVarNames;
 	std::vector<SClosureCapture>	_captures;
+    std::map<int, SlotType> _storage;
 
 
 	int							_localVarCount;
 
 	int							_localTempMax;
 	int							_localTempCount;
+	std::vector<SlotType> _tempStorage;
+	std::vector<unsigned char> _tempBusy;
+	std::vector<int> _tempOrder;
 
 	CNArchive*					_code = NULL;
 	int							_iCode_Begin = 0;
@@ -265,8 +270,10 @@ struct SFunctionInfo
 		_args.clear();
 		_debugVarNames.clear();
 		_captures.clear();
+        _storage.clear();
 		_localVarCount = 0;
 		_localTempMax = _localTempCount = 0;
+		_tempStorage.clear(); _tempBusy.clear(); _tempOrder.clear();
 
 		_iCode_Begin = 0;
 		_iCode_Size = 0;
@@ -301,18 +308,48 @@ struct SFunctionInfo
 		return slot;
 	}
 
-	int	AllocLocalTempVar()
+	int AllocLocalTempVar(const SlotType& type = SlotType())
 	{
-		int r = COMPILE_LOCALTMP_VAR_BEGIN + 1 + (int)_args.size() + _localTempCount;
-		CheckCompileRange("temporary variable slot", r, COMPILE_LOCALTMP_VAR_BEGIN, COMPILE_STATIC_VAR_BEGIN - 1);
-		++_localTempCount;
-		if (_localTempMax < _localTempCount)
-			_localTempMax = _localTempCount;
-		return r;
+		std::size_t index = 0;
+		for (; index < _tempStorage.size(); ++index)
+			if (!_tempBusy[index] && _tempStorage[index].kind == type.kind && _tempStorage[index].typeId == type.typeId) break;
+		if (index == _tempStorage.size()) { _tempStorage.push_back(type); _tempBusy.push_back(0); }
+		return UseTempSlot(index);
+	}
+	// 벡터 생성·저장 인자는 연속 구간을 요구한다. 개별 타입별 재사용과 섞어도 순서를 보존한다.
+	int AllocTempWindow(int count)
+	{
+		std::size_t begin = 0;
+		for (;; ++begin)
+		{
+			bool available = true;
+			for (int i = 0; i < count && begin + i < _tempStorage.size(); ++i)
+				if (_tempBusy[begin + i] || _tempStorage[begin + i].kind != SlotKind::Boxed) { available = false; break; }
+			if (available) break;
+		}
+		while (_tempStorage.size() < begin + count) { _tempStorage.push_back(SlotType()); _tempBusy.push_back(0); }
+		const int first = COMPILE_LOCALTMP_VAR_BEGIN + 1 + static_cast<int>(_args.size()) + static_cast<int>(begin);
+		for (int i = 0; i < count; ++i) UseTempSlot(begin + i);
+		return first;
+	}
+	int UseTempSlot(std::size_t index)
+	{
+		const int slot = COMPILE_LOCALTMP_VAR_BEGIN + 1 + static_cast<int>(_args.size()) + static_cast<int>(index);
+		CheckCompileRange("temporary variable slot", slot, COMPILE_LOCALTMP_VAR_BEGIN, COMPILE_STATIC_VAR_BEGIN - 1);
+		_tempBusy[index] = 1; _tempOrder.push_back(static_cast<int>(index));
+		_localTempCount = static_cast<int>(_tempOrder.size());
+		_localTempMax = static_cast<int>(_tempStorage.size());
+		if (_tempStorage[index].kind != SlotKind::Boxed) _storage[slot] = _tempStorage[index];
+		return slot;
+	}
+	void RestoreTemps(int count)
+	{
+		while (static_cast<int>(_tempOrder.size()) > count) { _tempBusy[_tempOrder.back()] = 0; _tempOrder.pop_back(); }
+		_localTempCount = count;
 	}
 	void	FreeLocalTempVar()
 	{
-		_localTempCount = 0;
+		RestoreTemps(0);
 	}
 
 
@@ -321,7 +358,7 @@ struct SFunctionInfo
 		SFunctionInfo& fun;
 		int saved;
 		explicit OperandTemps(SFunctionInfo& f) : fun(f), saved(f._localTempCount) {}
-		~OperandTemps() { fun._localTempCount = saved; }
+		~OperandTemps() { fun.RestoreTemps(saved); }
 	};
 	void Push_LOADK(CArchiveRdWC& ar, int dest, int index, int line = -1)
 	{
@@ -348,13 +385,13 @@ struct SFunctionInfo
 	}
 	// n1(dest) 을 다른 슬롯으로 바꿔도 의미가 보존되는 단일-결과 op 인가.
 	// Push_OP2 의 인접 peephole 과 함수 호출 인자 융합(지연 복사 패치)이 공유한다.
-	static bool IsRetargetableProducerOP(eNOperation op)
+	static bool IsRetargetableProducerOP(OperationCode op)
 	{
 		const TypedOpInfo* typed = GetTypedOpInfo(op);
 		if (typed != nullptr) return !typed->jump;
-		// 복합 명령은 n1의 옛 값도 읽으므로 목적지만 바꾸면 의미가 달라진다.
+		// 저장 명령은 n1이 수신 컨테이너이므로 목적지 바꾸기를 적용하지 않는다.
 		const AggregateOpInfo* aggregate = GetAggregateOpInfo(op);
-		if (aggregate != nullptr) return aggregate->shape != AggregateOpShape::Compound;
+		if (aggregate != nullptr) return aggregate->shape != AggregateOpShape::Store;
 		switch (op)
 		{
 		case NOP_MOV:
@@ -362,12 +399,12 @@ struct SFunctionInfo
 		case NOP_LOADK:
 		case NOP_LOG_NOT:
 		case NOP_VAR_CLEAR:
-		case NOP_GREAT:		// >
-		case NOP_GREAT_EQ:	// >=
-		case NOP_LESS:		// <
-		case NOP_LESS_EQ:	// <=
-		case NOP_EQUAL2:	// ==
-		case NOP_NEQUAL:	// !=
+		case OP_GREAT:		// >
+		case OP_GREAT_EQ:	// >=
+		case OP_LESS:		// <
+		case OP_LESS_EQ:	// <=
+		case OP_EQUAL2:	// ==
+		case OP_NEQUAL:	// !=
 		case NOP_STR_ADD:
 		case NOP_TOSTRING:
 		case NOP_TOINT:
@@ -379,16 +416,16 @@ struct SFunctionInfo
 			return false;
 		}
 	}
-	eNOperation GetLastOP()
+	OperationCode GetLastOP()
 	{
 		if (_iLastOPOffset < 0)
 			return NOP_NONE;
 
-		return CODE_TO_NOP(*(OpType*)((u8*)_code->GetData() + _iLastOPOffset));
+		return GetOPPointer(_iLastOPOffset)->Code();
 	}
-	eNOperation GetOP(int iOffsetOP)
+	OperationCode GetOP(int iOffsetOP)
 	{
-		return CODE_TO_NOP(*(OpType*)((u8*)_code->GetData() + iOffsetOP));
+		return GetOPPointer(iOffsetOP)->Code();
 	}
 	SVMOperation* GetOPPointer(int iOffsetOP)
 	{
@@ -443,41 +480,41 @@ struct SFunctionInfo
 
 		(*_pDebugData)[iOff] = debug_info(ar.CurFile(), iDebugLoopLine != -1 ? iDebugLoopLine : ar.CurLine());
 	}
-	void	Push_OP(CArchiveRdWC& ar, eNOperation op, int r, int a1, int a2, int debugLine = -1)
+	void	Push_OP(CArchiveRdWC& ar, OperationCode op, int r, int a1, int a2, int debugLine = -1)
 	{
 		OperandTemps temps(*this);
 		a1 = ReadOperand(ar, a1); a2 = ReadOperand(ar, a2);
 		AddDebugData(ar, debugLine);
 		_iLastOPOffset = _code->GetBufferOffset();
 
-		OpType optype = GetOpTypeFromOp(op);
+		OpType optype = PrimaryOperation(op);
 		_code->Write(&optype, sizeof(optype));
 		//_code->Write(&r, sizeof(r));
-		Push_NoFlag(r, a1, a2);
+		Push_Flag(OperationSubCode(op), r, a1, a2);
 	}
-	void	Push_OP(CArchiveRdWC& ar, eNOperation op, int r, int a1, int a2, bool b2, bool b3)
+	void	Push_OP(CArchiveRdWC& ar, OperationCode op, int r, int a1, int a2, bool b2, bool b3)
 	{
 		OperandTemps temps(*this);
 		a1 = ReadOperand(ar, a1); a2 = ReadOperand(ar, a2);
 		AddDebugData(ar);
 		_iLastOPOffset = _code->GetBufferOffset();
 
-		OpType optype = GetOpTypeFromOp(op);
+		OpType optype = PrimaryOperation(op);
 		_code->Write(&optype, sizeof(optype));
 
-		Push_NoFlag(r, a1, a2);
+		Push_Flag(OperationSubCode(op), r, a1, a2);
 	}
-	void	Push_Call(CArchiveRdWC& ar, eNOperation op, int fun, int args, int res, int iDebugLine = -1)
+	void	Push_Call(CArchiveRdWC& ar, OperationCode op, int fun, int args, int res, int iDebugLine = -1)
 	{
 		AddDebugData(ar, iDebugLine);
 		_iLastOPOffset = _code->GetBufferOffset();
 		++_callOpEmitCount;
 
-		OpType optype = GetOpTypeFromOp(op);
+		OpType optype = PrimaryOperation(op);
 		_code->Write(&optype, sizeof(optype));
 		//_code->Write(&fun, sizeof(fun));
 		//_code->Write(&args, sizeof(args));
-		Push_NoFlag(fun, args, res);
+		Push_Flag(OperationSubCode(op), fun, args, res);
 	}
 	void	Push_CallPtr(CArchiveRdWC& ar, int table, int index, int args, bool isRet = false, int iDebugLine = -1)
 	{
@@ -487,7 +524,7 @@ struct SFunctionInfo
 		_iLastOPOffset = _code->GetBufferOffset();
 		++_callOpEmitCount;
 
-		OpType optype = GetOpTypeFromOp(NOP_PTRCALL);
+		OpType optype = PrimaryOperation(NOP_PTRCALL);
 		_code->Write(&optype, sizeof(optype));
 		//_code->Write(&table, sizeof(table));
 		//_code->Write(&index, sizeof(index));
@@ -502,14 +539,14 @@ struct SFunctionInfo
 		_iLastOPOffset = _code->GetBufferOffset();
 		++_callOpEmitCount;
 
-		OpType optype = GetOpTypeFromOp(NOP_PTRCALL2);
+		OpType optype = PrimaryOperation(NOP_PTRCALL2);
 		_code->Write(&optype, sizeof(optype));
 		//_code->Write(&table, sizeof(table));
 		//_code->Write(&index, sizeof(index));
 		//_code->Write(&args, sizeof(args));
 		Push_NoFlag(index, args, res);
 	}
-	void	Push_OP2(CArchiveRdWC& ar, eNOperation op, int r, int s, bool b2, int iDebugLine = -1)
+	void	Push_OP2(CArchiveRdWC& ar, OperationCode op, int r, int s, bool b2, int iDebugLine = -1)
 	{
 		OperandTemps temps(*this);
 		if (op == NOP_MOV && s >= COMPILE_EXTENDED_STATIC_BEGIN)
@@ -538,19 +575,19 @@ struct SFunctionInfo
 		AddDebugData(ar, iDebugLine);
 		_iLastOPOffset = _code->GetBufferOffset();
 
-		OpType optype = GetOpTypeFromOp(op);
+		OpType optype = PrimaryOperation(op);
 		_code->Write(&optype, sizeof(optype));
 		//_code->Write(&r, sizeof(r));
 		//_code->Write(&s, sizeof(s));
 
-		Push_NoFlag(r, s, 0);
+		Push_Flag(OperationSubCode(op), r, s, 0);
 	}
 	void	Push_MOVI(CArchiveRdWC& ar, int r, int v, int iDebugLine = -1)
 	{
 		AddDebugData(ar, iDebugLine);
 		_iLastOPOffset = _code->GetBufferOffset();
 
-		OpType optype = GetOpTypeFromOp(NOP_MOVI);
+		OpType optype = PrimaryOperation(NOP_MOVI);
 		_code->Write(&optype, sizeof(optype));
 		//_code->Write(&r, sizeof(r));
 		//_code->Write(&s, sizeof(s));
@@ -566,41 +603,41 @@ struct SFunctionInfo
 		if (static_cast<NS_FLOAT>(immediate) != v || std::signbit(immediate) != std::signbit(v)) return false;
 		AddDebugData(ar, iDebugLine);
 		_iLastOPOffset = _code->GetBufferOffset();
-		OpType optype = GetOpTypeFromOp(NOP_MOVF);
+		OpType optype = PrimaryOperation(NOP_MOVF);
 		_code->Write(&optype, sizeof(optype));
 		int bits = 0;
 		std::memcpy(&bits, &immediate, sizeof(bits));
 		Push_NoFlag(r, bits);
 		return true;
 	}
-	void	Push_OP1(CArchiveRdWC& ar, eNOperation op, int r)
+	void	Push_OP1(CArchiveRdWC& ar, OperationCode op, int r)
 	{
 		AddDebugData(ar);
 		_iLastOPOffset = _code->GetBufferOffset();
 
-		OpType optype = GetOpTypeFromOp(op);
+		OpType optype = PrimaryOperation(op);
 		_code->Write(&optype, sizeof(optype));
 		//_code->Write(&r, sizeof(r));
-		Push_NoFlag(r, 0, 0);
+		Push_Flag(OperationSubCode(op), r, 0, 0);
 	}
-	void	Push_OP0(CArchiveRdWC& ar, eNOperation op)
+	void	Push_OP0(CArchiveRdWC& ar, OperationCode op)
 	{
 		AddDebugData(ar);
 		_iLastOPOffset = _code->GetBufferOffset();
 
-		OpType optype = op;//GetOpTypeFromOp(op);
+		OpType optype = PrimaryOperation(op);
 		_code->Write(&optype, sizeof(optype));
 		//_code->Write(&r, sizeof(r));
-		Push_NoFlag(0, 0, 0);
+		Push_Flag(OperationSubCode(op), 0, 0, 0);
 	}
 	void	Push_RETURN(CArchiveRdWC& ar, int r, bool b1, int debugLine = -1)
 	{
 		OperandTemps temps(*this);
 		r = ReadOperand(ar, r);
-		OpType optype = GetOpTypeFromOp(NOP_RETURN);
+		OpType optype = PrimaryOperation(NOP_RETURN);
 		if(b1 == false)
 		{
-			eNOperation preOP = GetLastOP();
+			OperationCode preOP = GetLastOP();
 			switch (preOP)
 			{
 			case NOP_MOV:
@@ -617,10 +654,7 @@ struct SFunctionInfo
 					*(OpType*)((u8*)_code->GetData() + _iLastOPOffset) = optype;
 					*preDest = *preSrc;
 					*preSrc = 0;
-					if(*preArgFlag & NEOS_ARG_N2_IMMEDIATE) // const short  value ?
-						*preArgFlag = NEOS_ARG_N1_IMMEDIATE;
-					else
-						*preArgFlag = 0;
+					*preArgFlag = 0;
                     if (ar._debug && debugLine != -1)
                     {
                         CheckCompileRange("debug line", debugLine, 0, USHRT_MAX);
@@ -647,7 +681,7 @@ struct SFunctionInfo
 	//	AddDebugData(ar);
 	//	_iLastOPOffset = _code->GetBufferOffset();
 
-	//	OpType optype = GetOpTypeFromOp(NOP_FUNEND);
+	//	OpType optype = PrimaryOperation(NOP_FUNEND);
 	//	_code->Write(&optype, sizeof(optype));
 	//	Push_Arg(0, 0, 0);
 	//}
@@ -658,9 +692,9 @@ struct SFunctionInfo
 		AddDebugData(ar);
 		_iLastOPOffset = _code->GetBufferOffset();
 
-		eNOperation op = NOP_JMP;
-		OpType optype = GetOpTypeFromOp(op);
-		short add = destOffset == 0 ? 0 : CompileShort("jump distance", (destOffset - (_code->GetBufferOffset() + GetOpLength(op))) / (int)sizeof(SVMOperation));
+		OperationCode op = NOP_JMP;
+		OpType optype = PrimaryOperation(op);
+		short add = destOffset == 0 ? 0 : CompileShort("jump distance", (destOffset - (_code->GetBufferOffset() + sizeof(SVMOperation))) / (int)sizeof(SVMOperation));
 		_code->Write(&optype, sizeof(optype));
 		//_code->Write(&add, sizeof(add));
 		Push_NoFlag(add, 0, 0);
@@ -672,9 +706,9 @@ struct SFunctionInfo
 		AddDebugData(ar);
 		_iLastOPOffset = _code->GetBufferOffset();
 
-		eNOperation op = NOP_JMP_FALSE;
-		OpType optype = GetOpTypeFromOp(op);
-		short add = destOffset == 0 ? 0 : CompileShort("jump distance", (destOffset - (_code->GetBufferOffset() + GetOpLength(op))) / (int)sizeof(SVMOperation));
+		OperationCode op = NOP_JMP_FALSE;
+		OpType optype = PrimaryOperation(op);
+		short add = destOffset == 0 ? 0 : CompileShort("jump distance", (destOffset - (_code->GetBufferOffset() + sizeof(SVMOperation))) / (int)sizeof(SVMOperation));
 		_code->Write(&optype, sizeof(optype));
 		//_code->Write(&var, sizeof(var));
 		//_code->Write(&add, sizeof(add));
@@ -687,9 +721,9 @@ struct SFunctionInfo
 		AddDebugData(ar, iDebugLoopLine);
 		_iLastOPOffset = _code->GetBufferOffset();
 
-		eNOperation op = NOP_JMP_TRUE;
-		OpType optype = GetOpTypeFromOp(op);
-		short add = destOffset == 0 ? 0 : CompileShort("jump distance", (destOffset - (_code->GetBufferOffset() + GetOpLength(op))) / (int)sizeof(SVMOperation));
+		OperationCode op = NOP_JMP_TRUE;
+		OpType optype = PrimaryOperation(op);
+		short add = destOffset == 0 ? 0 : CompileShort("jump distance", (destOffset - (_code->GetBufferOffset() + sizeof(SVMOperation))) / (int)sizeof(SVMOperation));
 		_code->Write(&optype, sizeof(optype));
 		//_code->Write(&var, sizeof(var));
 		//_code->Write(&add, sizeof(add));
@@ -700,9 +734,9 @@ struct SFunctionInfo
 		AddDebugData(ar, iDebugLoopLine);
 		_iLastOPOffset = _code->GetBufferOffset();
 
-		eNOperation op = NOP_JMP_FOR;
-		OpType optype = GetOpTypeFromOp(op);
-		short add = destOffset == 0 ? 0 : CompileShort("jump distance", (destOffset - (_code->GetBufferOffset() + GetOpLength(op))) / (int)sizeof(SVMOperation));
+		OperationCode op = NOP_JMP_FOR;
+		OpType optype = PrimaryOperation(op);
+		short add = destOffset == 0 ? 0 : CompileShort("jump distance", (destOffset - (_code->GetBufferOffset() + sizeof(SVMOperation))) / (int)sizeof(SVMOperation));
 		_code->Write(&optype, sizeof(optype));
 		//_code->Write(&add, sizeof(add));
 		//_code->Write(&table, sizeof(table));
@@ -717,9 +751,9 @@ struct SFunctionInfo
 		AddDebugData(ar, iDebugLoopLine);
 		_iLastOPOffset = _code->GetBufferOffset();
 
-		eNOperation op = NOP_JMP_FOREACH;
-		OpType optype = GetOpTypeFromOp(op);
-		short add = destOffset == 0 ? 0 : CompileShort("jump distance", (destOffset - (_code->GetBufferOffset() + GetOpLength(op))) / (int)sizeof(SVMOperation));
+		OperationCode op = NOP_JMP_FOREACH;
+		OpType optype = PrimaryOperation(op);
+		short add = destOffset == 0 ? 0 : CompileShort("jump distance", (destOffset - (_code->GetBufferOffset() + sizeof(SVMOperation))) / (int)sizeof(SVMOperation));
 		_code->Write(&optype, sizeof(optype));
 		//_code->Write(&add, sizeof(add));
 		//_code->Write(&table, sizeof(table));
@@ -735,7 +769,7 @@ struct SFunctionInfo
 		AddDebugData(ar);
 		_iLastOPOffset = _code->GetBufferOffset();
 
-		OpType optype = GetOpTypeFromOp(NOP_SWITCH);
+		OpType optype = PrimaryOperation(NOP_SWITCH);
 		_code->Write(&optype, sizeof(optype));
 		Push_NoFlag((short)tableIndex, keyVar, 0);   // 런타임이 u16 으로 되읽는다
 	}
@@ -750,7 +784,7 @@ struct SFunctionInfo
 		AddDebugData(ar);
 		_iLastOPOffset = _code->GetBufferOffset();
 
-		OpType optype = GetOpTypeFromOp(NOP_LIST_ALLOC);
+		OpType optype = PrimaryOperation(NOP_LIST_ALLOC);
 		_code->Write(&optype, sizeof(optype));
 		//_code->Write(&r, sizeof(r));
 		Push_NoFlag(r, 0, 0);
@@ -760,12 +794,12 @@ struct SFunctionInfo
 		AddDebugData(ar);
 		_iLastOPOffset = _code->GetBufferOffset();
 
-		OpType optype = GetOpTypeFromOp(NOP_TABLE_ALLOC);
+		OpType optype = PrimaryOperation(NOP_TABLE_ALLOC);
 		_code->Write(&optype, sizeof(optype));
 		//_code->Write(&r, sizeof(r));
 		Push_NoFlag(r, 0, 0);
 	}
-	void	Push_Table_MASMDP(CArchiveRdWC& ar, eNOperation op, int nTable, int nArray, int nValue, bool b1, bool b2, bool b3)
+	void	Push_Table_MASMDP(CArchiveRdWC& ar, OperationCode op, int nTable, int nArray, int nValue, bool b1, bool b2, bool b3)
 	{
 		OperandTemps temps(*this);
 		nTable = ReadOperand(ar, nTable); nArray = ReadOperand(ar, nArray);
@@ -775,9 +809,9 @@ struct SFunctionInfo
 		AddDebugData(ar);
 		_iLastOPOffset = _code->GetBufferOffset();
 
-		eNOperation optype = GetOpTypeFromOp(op == NOP_MOV ? NOP_CLT_MOV : op);
+		OpType optype = PrimaryOperation(op == NOP_MOV ? NOP_CLT_MOV : op);
 		_code->Write(&optype, sizeof(optype));
-		Push_NoFlag(nTable, nArray, nValue);
+		Push_Flag(OperationSubCode(op), nTable, nArray, nValue);
 	}
 	void Push_TableWriteRef(CArchiveRdWC& ar, int owner, int key,
         int temp, int component, int value, bool loaded)
@@ -788,39 +822,39 @@ struct SFunctionInfo
         component = ReadOperand(ar, component); value = ReadOperand(ar, value);
         AddDebugData(ar);
         _iLastOPOffset = _code->GetBufferOffset();
-        OpType type = GetOpTypeFromOp(NOP_CLT_WRITE_REF);
+        OpType type = PrimaryOperation(NOP_CLT_WRITE_REF);
         _code->Write(&type, sizeof(type));
         Push_Flag(loaded ? NEOS_OP_REF_LOADED : 0, owner, key, temp);
         AddDebugData(ar);
         _iLastOPOffset = _code->GetBufferOffset();
-        type = GetOpTypeFromOp(NOP_CLT_MOV);
+        type = PrimaryOperation(NOP_CLT_MOV);
         _code->Write(&type, sizeof(type));
         Push_Flag(NEOS_OP_REF_WRITE, temp, component, value);
     }
-	void	Push_TableRead(CArchiveRdWC& ar, int nTable, int nArray, int nValue, bool b2, eNOperation op = NOP_CLT_READ) // value = table[nArray]
+	void	Push_TableRead(CArchiveRdWC& ar, int nTable, int nArray, int nValue, bool b2, OperationCode op = NOP_CLT_READ) // value = table[nArray]
 	{
 		OperandTemps temps(*this);
 		nTable = ReadOperand(ar, nTable); nArray = ReadOperand(ar, nArray);
 		AddDebugData(ar);
 		_iLastOPOffset = _code->GetBufferOffset();
 
-		OpType optype = GetOpTypeFromOp(op);
+		OpType optype = PrimaryOperation(op);
 		_code->Write(&optype, sizeof(optype));
 
-		Push_NoFlag(nTable, nArray, nValue);
+		Push_Flag(OperationSubCode(op), nTable, nArray, nValue);
 	}
-	void	Push_ToType(CArchiveRdWC& ar, eNOperation op, int r, int s)
+	void	Push_ToType(CArchiveRdWC& ar, OperationCode op, int r, int s)
 	{
 		OperandTemps temps(*this);
 		s = ReadOperand(ar, s);
 		AddDebugData(ar);
 		_iLastOPOffset = _code->GetBufferOffset();
 
-		OpType optype = GetOpTypeFromOp(op);
+		OpType optype = PrimaryOperation(op);
 		_code->Write(&optype, sizeof(optype));
 		//_code->Write(&r, sizeof(r));
 		//_code->Write(&s, sizeof(s));
-		Push_NoFlag(r, s, 0);
+		Push_Flag(OperationSubCode(op), r, s, 0);
 	}
 };
 
@@ -864,6 +898,19 @@ struct SRangeJumpCompile
 struct SFunctions
 {
 	std::set<std::string> _exportNames;
+    std::unordered_map<std::string, SlotType> _declaredStorage;
+    std::map<std::string, std::map<std::string, SlotType>> _helperStorage;
+    SlotType FindDeclaredStorage(const std::string& name) const
+    {
+        const auto function = _helperStorage.find(_cur->GetFullName());
+        if (function != _helperStorage.end())
+        {
+            const auto local = function->second.find(name);
+            if (local != function->second.end()) return local->second;
+        }
+        const auto value = _declaredStorage.find(name);
+        return value != _declaredStorage.end() ? value->second : SlotType();
+    }
 	std::vector<SFunctionLayer*>			_funLayers;
 	std::map<int, SFunctionInfo*>			_funIDs;
 	std::list<SFunctionInfo*>				_funSequence;

@@ -1,6 +1,7 @@
 ﻿#include <limits.h>
 
 #include "NeoVMProgram.h"
+#include "NeoVMFusion.h"
 #include "NeoVMInternal.h"
 #include "NeoArchive.h"
 #include "NeoTextLoader.h"   // FormatAsm / FormatBytes
@@ -330,7 +331,7 @@ bool CNeoVMProgram::Load(CNArchive& ar, std::string* err)
 		SFunctionTable& fun = functions[codeOwners[i]];
 		const SVMOperation& op = code[i];
 		int outgoing = -1;
-		switch (op.op)
+		switch (op.Code())
 		{
 		case NOP_CALL:
 		case NOP_CALL_L: outgoing = op.n2; break;
@@ -360,7 +361,7 @@ bool CNeoVMProgram::Load(CNArchive& ar, std::string* err)
 	}
 	// WREF consumes its next instruction only for stored vectors. Validate the
 	// immutable pair once here, so ordinary collection writes need no hot checks.
-	auto IsRefWriteOpcode = [](eNOperation op) {
+	auto IsRefWriteOpcode = [](OperationCode op) {
 		switch (op) {
 		case NOP_CLT_MOV:
 		case NOP_CLT_MOV_L: return true;
@@ -370,13 +371,13 @@ bool CNeoVMProgram::Load(CNArchive& ar, std::string* err)
 	for (size_t i = 0; i < code.size(); ++i)
 	{
 		const SVMOperation& op = code[i];
-		if (IsRefWriteOpcode(op.op) && (op.argFlag & NEOS_OP_REF_WRITE) &&
-			(i == 0 || code[i - 1].op != NOP_CLT_WRITE_REF))
+		if (IsRefWriteOpcode(op.Code()) && (op.argFlag & NEOS_OP_REF_WRITE) &&
+			(i == 0 || code[i - 1].Code() != NOP_CLT_WRITE_REF))
 		{
 			SetLoadError(err, "Orphan chained write");
 			return false;
 		}
-		if (op.op != NOP_CLT_WRITE_REF) continue;
+		if (op.Code() != NOP_CLT_WRITE_REF) continue;
 		if (i + 1 >= code.size() || codeOwners[i] < 0 || codeOwners[i] != codeOwners[i + 1])
 		{
 			SetLoadError(err, "Incomplete chained write");
@@ -389,12 +390,12 @@ bool CNeoVMProgram::Load(CNArchive& ar, std::string* err)
 			return local ? slot >= 0 && slot < fun._localAddCount :
 				(writable ? IsGlobalVariable(slot) : IsGlobalOperand(slot));
 		};
-		if (!IsRefWriteOpcode(write.op) || !(write.argFlag & NEOS_OP_REF_WRITE) ||
+		if (!IsRefWriteOpcode(write.Code()) || !(write.argFlag & NEOS_OP_REF_WRITE) ||
 			(op.argFlag & ~(locals | NEOS_OP_REF_LOADED)) ||
 			(write.argFlag & ~(locals | NEOS_OP_REF_WRITE)) ||
 			write.n1 != op.n3 ||
 			((write.argFlag & NEOS_ARG_N1_LOCAL) != 0) != ((op.argFlag & NEOS_ARG_N3_LOCAL) != 0) ||
-			(write.op == NOP_CLT_MOV_L && (write.argFlag & locals) != locals) ||
+			(write.Code() == NOP_CLT_MOV_L && (write.argFlag & locals) != locals) ||
 			!ValidSlot(op.n1, op.argFlag & NEOS_ARG_N1_LOCAL, false) ||
 			!ValidSlot(op.n2, op.argFlag & NEOS_ARG_N2_LOCAL, false) ||
 			!ValidSlot(op.n3, op.argFlag & NEOS_ARG_N3_LOCAL, true) ||
@@ -409,8 +410,8 @@ bool CNeoVMProgram::Load(CNArchive& ar, std::string* err)
 	{
 		const SVMOperation& op = code[opIndex];
 		int functionID = -1;
-		if (op.op == NOP_FMOV1) functionID = op.n2;
-		else if (op.op == NOP_FMOV2) functionID = op.n3;
+		if (op.Code() == NOP_FMOV1) functionID = op.n2;
+		else if (op.Code() == NOP_FMOV2) functionID = op.n3;
 		else continue;
 		if (functionID < 0 || functionID >= (int)functions.size() || codeOwners[opIndex] < 0)
 		{
@@ -498,6 +499,7 @@ bool CNeoVMProgram::Load(CNArchive& ar, std::string* err)
 	}
 
 	// 선택 청크: 디버그 변수명(BVDN) / 함수명(NFDN). 미지의 magic 을 만나면 되돌리고 종료.
+    bool hasStorage = false;
 	while (ImageBytesRemaining(ar) != 0)
 	{
 		u32 magic = 0;
@@ -611,6 +613,94 @@ bool CNeoVMProgram::Load(CNArchive& ar, std::string* err)
 					throw ImageLoadError{"Invalid or truncated script image chunk"};
 			}
 		}
+        else if (magic == 0x544f4c53)
+        {
+            u32 count = 0;
+            if (hasStorage || !ReadCount(ar, count) || count != functions.size())
+                throw ImageLoadError{"Invalid function storage count"};
+            hasStorage = true;
+            std::vector<bool> seen(functions.size(), false);
+            for (u32 i = 0; i < count; ++i)
+            {
+                int id = -1; u32 slots = 0;
+                ReadRequired(ar, id);
+                if (id < 0 || static_cast<std::size_t>(id) >= functions.size() || seen[id] ||
+                    !ReadCount(ar, slots) || slots >= static_cast<u32>(functions[id]._localAddCount))
+                    throw ImageLoadError{"Invalid function storage layout"};
+                seen[id] = true;
+                SFunctionTable& function = functions[id];
+                RequireImageCount(ar, slots, 7, "Truncated function storage layout");
+                function._storage.resize(slots);
+                int previous = 0;
+                for (SlotLayout& slot : function._storage)
+                {
+                    ReadRequired(ar, slot.slot); ReadRequired(ar, slot.kind); ReadRequired(ar, slot.typeId);
+                    if (slot.slot <= previous || slot.slot >= function._localAddCount ||
+                        slot.kind > SlotKind::Function)
+                        throw ImageLoadError{"Invalid function storage slot"};
+                    previous = slot.slot;
+                }
+                if (!ReadCount(ar, slots) || slots >= static_cast<u32>(function._stackSlotCount))
+                    throw ImageLoadError{"Invalid function cleanup count"};
+                RequireImageCount(ar, slots, 3, "Truncated function cleanup layout");
+                function._cleanup.resize(slots);
+                previous = 0;
+                for (SlotCleanup& slot : function._cleanup)
+                {
+                    ReadRequired(ar, slot.slot); ReadRequired(ar, slot.kind);
+                    if (slot.slot <= previous || slot.slot >= function._stackSlotCount || slot.kind > SlotKind::Function)
+                        throw ImageLoadError{"Invalid function cleanup slot"};
+                    previous = slot.slot;
+                }
+            }
+            if (!ReadCount(ar, count) || count != static_cast<u32>(header._iGlobalVarCount))
+                throw ImageLoadError{"Invalid global storage count"};
+            RequireImageCount(ar, count, 7, "Truncated global storage layout");
+            globalStorage.resize(count);
+            int previous = -header._iGlobalVarCount - 2;
+            for (SlotLayout& slot : globalStorage)
+            {
+                ReadRequired(ar, slot.slot); ReadRequired(ar, slot.kind); ReadRequired(ar, slot.typeId);
+                if (slot.slot <= previous || slot.slot >= -1 || slot.kind > SlotKind::Function)
+                    throw ImageLoadError{"Invalid global storage slot"};
+                previous = slot.slot;
+            }
+        }
+        else if (magic == 0x45535546)
+        {
+            u32 count = 0;
+            if (!fusions.empty() || !ReadCount(ar, count) || count > code.size() / 2)
+                throw ImageLoadError{"Invalid fusion descriptor count"};
+            RequireImageCount(ar, count, sizeof(int) + 3 + 2 * sizeof(SVMOperation), "Truncated fusion descriptors");
+            fusions.resize(count);
+            int previousEnd = 2;
+            for (u32 i = 0; i < count; ++i)
+            {
+                ProgramFusion& plan = fusions[i];
+                ReadRequired(ar, plan.start); ReadRequired(ar, plan.count); ReadRequired(ar, plan.elide); ReadRequired(ar, plan.update);
+                if (plan.count < 2 || plan.count > ProgramFusion::MaxSteps || plan.start < previousEnd ||
+                    static_cast<std::size_t>(plan.start) + plan.count > code.size() ||
+                    (plan.elide >> plan.count) != 0 || (plan.update >> plan.count) != 0)
+                    throw ImageLoadError{"Invalid fusion descriptor span"};
+                const SVMOperation& root = code[plan.start];
+                if (root.Code() != NOP_FUSED || root.argFlag != 0 || root.n1 != plan.count || root.n23 != static_cast<int>(i))
+                    throw ImageLoadError{"Invalid fusion root"};
+                for (unsigned n = 0; n < plan.count; ++n)
+                {
+                    if (codeOwners[plan.start + n] != codeOwners[plan.start] || codeOwners[plan.start] < 0 ||
+                        (n && (code[plan.start + n].Code() != NOP_EXTEND || code[plan.start + n].argFlag != 0 ||
+                            code[plan.start + n].n1 != 0 || code[plan.start + n].n23 != 0)))
+                        throw ImageLoadError{"Invalid fusion extension"};
+                    ReadRequired(ar, plan.operations[n]);
+                    const FusionIO io = FusionOperation(plan.operations[n]);
+                    if (!io.supported || (io.jump && n + 1 != plan.count) || ((plan.elide & (1u << n)) && io.writes != 1))
+                        throw ImageLoadError{"Invalid fused operation"};
+                }
+                // 원래 명령을 복원하여 일반 피연산자 검증을 그대로 공유한다.
+                for (unsigned n = 0; n < plan.count; ++n) code[plan.start + n] = plan.operations[n];
+                previousEnd = plan.start + plan.count;
+            }
+        }
 		else
 		{
 			ar.SetBufferOffset(oldOffset);
@@ -618,12 +708,31 @@ bool CNeoVMProgram::Load(CNArchive& ar, std::string* err)
 		}
 	}
 
+    if (!hasStorage) { SetLoadError(err, "Missing compiler storage layouts"); return false; }
+    for (const SFunctionTable& function : functions)
+    {
+        std::size_t typed = 0, cleanup = 0;
+        // 로더는 컴파일러의 정리 계획을 검증할 뿐 새 최적화를 선택하지 않는다.
+        for (int i = 1; i < function._stackSlotCount; ++i)
+        {
+            SlotKind kind = SlotKind::Boxed;
+            if (typed < function._storage.size() && function._storage[typed].slot == i)
+                kind = function._storage[typed++].kind;
+            if (kind == SlotKind::Int || kind == SlotKind::Float || kind == SlotKind::Bool ||
+                kind == SlotKind::Vector2 || kind == SlotKind::ObjectId) continue;
+            if (cleanup >= function._cleanup.size() || function._cleanup[cleanup].slot != i ||
+                function._cleanup[cleanup].kind != kind)
+            { SetLoadError(err, "Incomplete function cleanup layout"); return false; }
+            ++cleanup;
+        }
+        if (cleanup != function._cleanup.size()) { SetLoadError(err, "Invalid function cleanup layout"); return false; }
+    }
 	// range jump은 descriptor를 반드시 참조해야 한다. descriptor의 local slot은 해당
 	// opcode를 소유한 함수 프레임 기준이고, global slot은 상수 0 기준 signed offset이다.
 	for (int opIndex = 0; opIndex < (int)code.size(); ++opIndex)
 	{
 		const SVMOperation& op = code[opIndex];
-		if (op.op == NOP_LOADK)
+		if (op.Code() == NOP_LOADK)
 		{
 			const bool local = (op.argFlag & NEOS_ARG_N1_LOCAL) != 0;
 			if (op.n23 < 0 || op.n23 >= header._iStaticVarCount || codeOwners[opIndex] < 0 ||
@@ -633,7 +742,7 @@ bool CNeoVMProgram::Load(CNArchive& ar, std::string* err)
 				return false;
 			}
 		}
-		if (op.op != NOP_JMP_RANGE_INSIDE && op.op != NOP_JMP_RANGE_OUTSIDE)
+		if (op.Code() != NOP_JMP_RANGE_INSIDE && op.Code() != NOP_JMP_RANGE_OUTSIDE)
 			continue;
 		const int rangeIndex = (int)(u16)op.n3;
 		if (rangeIndex < 0 || rangeIndex >= (int)rangeJumps.size() || codeOwners[opIndex] < 0)
@@ -657,7 +766,29 @@ bool CNeoVMProgram::Load(CNArchive& ar, std::string* err)
 			return false;
 		}
 	}
-	return VerifyCode(codeOwners, err);
+    if (!VerifyCode(codeOwners, err)) return false;
+    if (!fusions.empty())
+    {
+        std::vector<std::vector<int>> targets;
+        for (const ProgramSwitchTable& table : switchTables)
+        {
+            targets.push_back(std::vector<int>(1, table.defaultOffset));
+            for (const ProgramSwitchEntry& item : table.entries) targets.back().push_back(item.jumpOffset);
+        }
+        // 저장된 제거 표시는 검증된 제어 흐름에서 다시 증명한다. 이미지가 임시 수명을 바꿀 수 없다.
+        const std::vector<ProgramFusion> expected = BuildTypedFusions(code, functions, targets);
+        if (expected.size() != fusions.size()) { SetLoadError(err, "Invalid fusion graph"); return false; }
+        for (std::size_t i = 0; i < fusions.size(); ++i)
+        {
+            if (fusions[i].start != expected[i].start || fusions[i].count != expected[i].count || fusions[i].elide != expected[i].elide ||
+                fusions[i].update != expected[i].update)
+            { SetLoadError(err, "Invalid fusion liveness"); return false; }
+            PrepareFusion(fusions[i]);
+            PrepareFusionExecution(fusions[i]);
+        }
+        InstallTypedFusions(code, fusions);
+    }
+    return true;
 }
 
 // 저장된 명령 형식을 한 번 검증한다. 로드 후 치환용 opcode는 파일에서 받지 않고,
@@ -665,7 +796,7 @@ bool CNeoVMProgram::Load(CNArchive& ar, std::string* err)
 bool CNeoVMProgram::VerifyCode(const std::vector<int>& owners, std::string* err)
 {
     auto reject = [&](const char* reason) { SetLoadError(err, reason); return false; };
-    if (functions.empty() || code.size() < 3 || code[0].op != NOP_ERROR || code[1].op != NOP_IDLE ||
+    if (functions.empty() || code.size() < 3 || code[0].Code() != NOP_ERROR || code[1].Code() != NOP_IDLE ||
         owners[2] < 0)
         return reject("Invalid script entry instructions");
     const u8 L1 = NEOS_ARG_N1_LOCAL, L2 = NEOS_ARG_N2_LOCAL, L3 = NEOS_ARG_N3_LOCAL;
@@ -678,7 +809,17 @@ bool CNeoVMProgram::VerifyCode(const std::vector<int>& owners, std::string* err)
         int argumentCount = -1;
         bool jump = false, terminal = false;
         const bool noResult = (op.argFlag & NEOS_OP_CALL_NORESULT) != 0;
-        switch (op.op)
+        const bool fixedCopy = op.op == NOP_SLOT_COPY;
+        const OperationCode checkedCode = fixedCopy ? NOP_MOV : op.Code();
+        if (fixedCopy || IsFixedArithmetic(op) || ((op.op == NOP_MOVI || op.op == NOP_MOVF) && (op.argFlag & NEOS_OP_MODIFIER)))
+        {
+            const SlotKind actual = FindSlotKind((op.argFlag & L1) ? fun._storage : globalStorage, op.n1);
+            const SlotKind expected = fixedCopy ? static_cast<SlotKind>(op.argFlag & NEOS_OP_SUB_MASK) :
+                op.op == NOP_F64_FIXED || op.op == NOP_MOVF ? SlotKind::Float : SlotKind::Int;
+            if (expected < SlotKind::Int || expected >= SlotKind::Function || actual != expected)
+                return reject("Invalid fixed storage destination");
+        }
+        switch (checkedCode)
         {
         case NOP_MOV: slots = 3; writes = 1; break;
         case NOP_MOVI:
@@ -690,21 +831,21 @@ bool CNeoVMProgram::VerifyCode(const std::vector<int>& owners, std::string* err)
         case NOP_LOG_NOT:
             slots = 3; writes = 1; break;
         case NOP_VAR_CLEAR: slots = writes = 1; break;
-        case NOP_GREAT:
-        case NOP_GREAT_EQ:
-        case NOP_LESS:
-        case NOP_LESS_EQ:
-        case NOP_EQUAL2:
-        case NOP_NEQUAL: slots = 7; writes = 1; break;
+        case OP_EQUAL2:
+        case OP_LESS:
+        case OP_LESS_EQ:
+        case OP_NEQUAL:
+        case OP_GREAT:
+        case OP_GREAT_EQ: slots = 7; writes = 1; break;
         case NOP_JMP: jump = terminal = true; break;
         case NOP_JMP_FALSE:
         case NOP_JMP_TRUE: slots = 2; jump = true; break;
-        case NOP_JMP_GREAT:
-        case NOP_JMP_GREAT_EQ:
-        case NOP_JMP_LESS:
-        case NOP_JMP_LESS_EQ:
-        case NOP_JMP_EQUAL2:
-        case NOP_JMP_NEQUAL: slots = 6; jump = true; break;
+        case OP_JMP_EQUAL2:
+        case OP_JMP_LESS:
+        case OP_JMP_LESS_EQ:
+        case OP_JMP_NEQUAL:
+        case OP_JMP_GREAT:
+        case OP_JMP_GREAT_EQ: slots = 6; jump = true; break;
         case NOP_JMP_FOR:
             slots = writes = 2; jump = true;
             if (!(op.argFlag & L2) || op.n2 < 0 || op.n2 > fun._localAddCount - 4)
@@ -738,7 +879,9 @@ bool CNeoVMProgram::VerifyCode(const std::vector<int>& owners, std::string* err)
             break;
         case NOP_PTRCALL2:
             slots = noResult ? 1 : 5; writes = noResult ? 0 : 4; argumentCount = op.n2; break;
-        case NOP_RETURN: slots = noResult ? 0 : 1; terminal = true; break;
+        case NOP_RETURN:
+            if (op.n2 != owners[i]) return reject("Invalid return frame layout");
+            slots = noResult ? 0 : 1; terminal = true; break;
         case NOP_TABLE_ALLOC: slots = writes = 1; break;
         case NOP_CLT_READ: slots = 7; writes = 4; break;
         case NOP_CLT_MOV: slots = 7; writes = 1; break;
@@ -752,15 +895,17 @@ bool CNeoVMProgram::VerifyCode(const std::vector<int>& owners, std::string* err)
         case NOP_ERROR: terminal = true; break;
         default:
         {
-            const TypedOpInfo* typed = GetTypedOpInfo(op.op);
-            const AggregateOpInfo* aggregate = GetAggregateOpInfo(op.op);
+            const TypedOpInfo* typed = GetTypedOpInfo(op.Code());
+            const AggregateOpInfo* aggregate = GetAggregateOpInfo(op.Code());
             if (typed == nullptr && aggregate == nullptr) return reject("Invalid saved instruction opcode");
-            slots = typed ? typed->slots : aggregate->Slots();
-            writes = typed ? typed->writes : 1;
+            slots = typed ? (IsArithmeticUpdate(op) ? 3 : typed->slots) : aggregate->Slots();
+            writes = typed ? typed->writes : aggregate->shape == AggregateOpShape::Store ? 0 : 1;
             jump = typed && typed->jump;
             const u8 allowedFlags = static_cast<u8>(((slots & 1) ? L1 : 0) | ((slots & 2) ? L2 : 0) | ((slots & 4) ? L3 : 0)
-                | (typed && typed->comparison ? NEOS_OP_COMPARE_INVERT : 0));
+                | NEOS_OP_SUB_MASK | (typed && typed->comparison ? NEOS_OP_COMPARE_INVERT : 0)
+                | (SupportsArithmeticUpdate(op.Code()) ? NEOS_OP_ARITH_UPDATE : 0));
             if (op.argFlag & ~allowedFlags) return reject("Invalid typed instruction flags");
+            if (IsArithmeticUpdate(op) && op.n3 != 0) return reject("Invalid in-place arithmetic operand");
             if (aggregate && aggregate->Slots() != 7)
             {
                 if (op.n3 < 0 || op.n3 > aggregate->controlMax) return reject("Invalid typed aggregate control");
@@ -772,31 +917,54 @@ bool CNeoVMProgram::VerifyCode(const std::vector<int>& owners, std::string* err)
             break;
         }
         }
-        if ((op.op == NOP_CALL || op.op == NOP_PTRCALL || op.op == NOP_PTRCALL2) && argumentCount < 0)
+        if ((op.Code() == NOP_CALL || op.Code() == NOP_PTRCALL || op.Code() == NOP_PTRCALL2) && argumentCount < 0)
             return reject("Invalid call argument count");
-        if ((op.op == NOP_TABLE_ALLOC || op.op == NOP_LIST_ALLOC) && op.n23 < 0)
+        if ((op.Code() == NOP_TABLE_ALLOC || op.Code() == NOP_LIST_ALLOC) && op.n23 < 0)
             return reject("Invalid collection allocation count");
         const short values[] = {op.n1, op.n2, op.n3};
         const u8 flags[] = {L1, L2, L3};
         for (unsigned n = 0; n < 3; ++n)
         {
             if (!(slots & (1u << n))) continue;
-            if (op.argFlag & (flags[n] << 3)) return reject("Immediate flag on variable operand");
             const int value = values[n];
             if (op.argFlag & flags[n]) {
                 if (value < 0 || value >= fun._stackSlotCount) return reject("Invalid local operand");
             } else if ((writes & (1u << n)) ? !IsGlobalVariable(value) : !IsGlobalOperand(value))
                 return reject("Invalid global operand");
         }
+        // 고정 숫자 슬롯에 다른 타입을 쓰는 이미지는 실행 전에 거부한다.
+        if (checkedCode == NOP_MOV || checkedCode == NOP_LOADK)
+        {
+            const SlotKind target = FindSlotKind((op.argFlag & L1) ? fun._storage : globalStorage, op.n1);
+            if (target >= SlotKind::Int && target <= SlotKind::Bool)
+            {
+                const int source = checkedCode == NOP_LOADK ? op.n23 : op.n2;
+                const bool local = checkedCode == NOP_MOV && (op.argFlag & L2);
+                if (!local && source >= 0)
+                {
+                    const VAR_TYPE type = staticValues[source]._type;
+                    if ((target == SlotKind::Int && type != VAR_INT) ||
+                        (target == SlotKind::Float && type != VAR_FLOAT) ||
+                        (target == SlotKind::Bool && type != VAR_BOOL))
+                        return reject("Incompatible fixed storage write");
+                }
+                else
+                {
+                    const SlotKind from = FindSlotKind(local ? fun._storage : globalStorage, static_cast<short>(source));
+                    if (from != SlotKind::Boxed && from != target)
+                        return reject("Incompatible fixed storage copy");
+                }
+            }
+        }
         auto validJump = [&](int offset) {
             const int64_t target = (int64_t)i + 1 + offset;
             if (target < 2 || target >= (int64_t)code.size() || owners[(size_t)target] != owners[i]) return false;
-            const auto targetOp = code[(size_t)target].op;
+            const auto targetOp = code[(size_t)target].Code();
             const bool writeTail = targetOp == NOP_CLT_MOV;
             return !(writeTail && (code[(size_t)target].argFlag & NEOS_OP_REF_WRITE));
         };
         if (jump && !validJump(op.n1)) return reject("Invalid branch target");
-        if (op.op == NOP_SWITCH)
+        if (op.Code() == NOP_SWITCH)
         {
             const size_t tableIndex = (u16)op.n1;
             if (tableIndex >= switchTables.size()) return reject("Invalid switch table reference");
@@ -818,7 +986,7 @@ void CNeoVMProgram::PatchNativeCalls()
 	for (int i = 0; i < opCount; ++i)
 	{
 		SVMOperation& op = code[i];
-		if (op.op != NOP_PTRCALL2)
+		if (op.Code() != NOP_PTRCALL2)
 			continue;
 
 		if (op.argFlag & NEOS_ARG_N1_LOCAL)
@@ -837,14 +1005,14 @@ void CNeoVMProgram::PatchNativeCalls()
 			continue;
 
 		// intrinsic 이 지정된 native(벡터 생성 등)는 전용 opcode 로 패치 (n2=인자수, n3=결과 유지).
-		eNOperation intrinsic = (eNOperation)CNeoVM::GetDefaultNativeIntrinsic(nativeIndex);
+		OperationCode intrinsic = (OperationCode)CNeoVM::GetDefaultNativeIntrinsic(nativeIndex);
 		if (intrinsic != NOP_NONE)
 		{
-			op.op = intrinsic;
+			op.SetCode(intrinsic);
 			continue;
 		}
 
-		op.op = NOP_NATIVECALL;
+		op.SetCode(NOP_NATIVECALL);
 		op.n1 = (short)nativeIndex;
 	}
 }
@@ -856,19 +1024,19 @@ void CNeoVMProgram::PatchStaticStringReads()
 	for (int i = 0; i < opCount; ++i)
 	{
 		SVMOperation& op = code[i];
-		if (op.op != NOP_CLT_READ)
+		if (op.Code() != NOP_CLT_READ)
 			continue;
 
 		// READ의 n2가 static 영역의 문자열 상수여야 한다. local/global 변수와
 		// immediate key는 값이 바뀔 수 있으므로 범용 경로를 유지한다.
-		if ((op.argFlag & (NEOS_ARG_N2_LOCAL | NEOS_ARG_N2_IMMEDIATE)) != 0)
+		if ((op.argFlag & (NEOS_ARG_N2_LOCAL)) != 0)
 			continue;
 		if (op.n2 < 0 || op.n2 >= staticCount)
 			continue;
 		if (staticValues[op.n2]._type != VAR_STRING)
 			continue;
 
-		op.op = NOP_CLT_READ_STATIC_STRING;
+		op.SetCode(NOP_CLT_READ_STATIC_STRING);
 	}
 }
 
@@ -886,41 +1054,35 @@ bool CNeoVMProgram::PatchLocalOps(std::string* err)
 		SVMOperation& op = code[i];
 		const u8 f = op.argFlag;
 		const bool noResult = (f & NEOS_OP_CALL_NORESULT) != 0;
-		eNOperation to = NOP_NONE;
+		OperationCode to = NOP_NONE;
 
-		switch (op.op)
+		switch (op.Code())
 		{
-		// n1, n2
+
 		case NOP_MOV:          if ((f & (L1|L2)) == (L1|L2)) to = NOP_MOV_L;        break;
-		case NOP_TOINT:        if ((f & (L1|L2)) == (L1|L2)) to = NOP_TOINT_L;      break;
-		// n1 만
 		case NOP_MOVI:         if (f & L1) to = NOP_MOVI_L;                         break;
 		case NOP_MOVF:
 			if (f & L1) to = NOP_MOVF_L;
 			break;
 		case NOP_MOVF_L:
 			break;
-		case NOP_LIST_ALLOC:   if (f & L1) to = NOP_LIST_ALLOC_L;                   break;
-		case NOP_CHANGE_INT:   if (f & L1) to = NOP_CHANGE_INT_L;                   break;
-		// n1, n2, n3
-		case NOP_CLT_READ:     if ((f & (L1|L2|L3)) == (L1|L2|L3)) to = NOP_CLT_READ_L;  break;
-		case NOP_CLT_MOV:      if ((f & (L1|L2|L3)) == (L1|L2|L3)) to = NOP_CLT_MOV_L;   break;
-		// n2, n3 (n1 은 점프 offset)
-		case NOP_JMP_LESS:     if ((f & (L2|L3)) == (L2|L3)) to = NOP_JMP_LESS_L;     break;
-		case NOP_JMP_LESS_EQ:  if ((f & (L2|L3)) == (L2|L3)) to = NOP_JMP_LESS_EQ_L;  break;
-		case NOP_JMP_GREAT:    if ((f & (L2|L3)) == (L2|L3)) to = NOP_JMP_GREAT_L;    break;
-		case NOP_JMP_GREAT_EQ: if ((f & (L2|L3)) == (L2|L3)) to = NOP_JMP_GREAT_EQ_L; break;
-		case NOP_JMP_EQUAL2:   if ((f & (L2|L3)) == (L2|L3)) to = NOP_JMP_EQUAL2_L;   break;
-		case NOP_JMP_NEQUAL:   if ((f & (L2|L3)) == (L2|L3)) to = NOP_JMP_NEQUAL_L;   break;
-		// n1, n2, n3
+		case OP_JMP_EQUAL2:   if ((f & (L2|L3)) == (L2|L3)) to = OP_JMP_EQUAL2_L;   break;
 		case NOP_STR_ADD:      if ((f & (L1|L2|L3)) == (L1|L2|L3)) to = NOP_STR_ADD_L; break;
-		// 호출/복귀 — NORESULT 면 슬롯을 아예 안 뽑으므로 바꿔봐야 이득이 없다.
+
+		case NOP_TOINT:        if ((f & (L1|L2)) == (L1|L2)) to = NOP_TOINT_L;      break;
+
 		case NOP_CALL:         if (!noResult && (f & L3)) to = NOP_CALL_L;           break;
-		case NOP_RETURN:       if (!noResult && (f & L1)) to = NOP_RETURN_L;         break;
 		case NOP_PTRCALL:      if ((f & (L1|L2)) == (L1|L2)) to = NOP_PTRCALL_L;     break;
 		case NOP_PTRCALL2:
 			if ((f & L1) && (noResult || (f & L3))) to = NOP_PTRCALL2_L;
 			break;
+		case NOP_RETURN:       if (!noResult && (f & L1)) to = NOP_RETURN_L;         break;
+		case NOP_CLT_READ:     if ((f & (L1|L2|L3)) == (L1|L2|L3)) to = NOP_CLT_READ_L;  break;
+		case NOP_CLT_MOV:      if ((f & (L1|L2|L3)) == (L1|L2|L3)) to = NOP_CLT_MOV_L;   break;
+
+		case NOP_LIST_ALLOC:   if (f & L1) to = NOP_LIST_ALLOC_L;                   break;
+		case NOP_CHANGE_INT:   if (f & L1) to = NOP_CHANGE_INT_L;                   break;
+
 		case NOP_JMP_RANGE_INSIDE:
 			if ((f & L2) && (size_t)(u16)op.n3 < rangeJumps.size())
 			{
@@ -939,13 +1101,19 @@ bool CNeoVMProgram::PatchLocalOps(std::string* err)
 					to = NOP_JMP_RANGE_OUTSIDE_L;
 			}
 			break;
+		case OP_JMP_LESS:     if ((f & (L2|L3)) == (L2|L3)) to = OP_JMP_LESS_L;     break;
+		case OP_JMP_LESS_EQ:  if ((f & (L2|L3)) == (L2|L3)) to = OP_JMP_LESS_EQ_L;  break;
+		case OP_JMP_NEQUAL:   if ((f & (L2|L3)) == (L2|L3)) to = OP_JMP_NEQUAL_L;   break;
+
+		case OP_JMP_GREAT:    if ((f & (L2|L3)) == (L2|L3)) to = OP_JMP_GREAT_L;    break;
+		case OP_JMP_GREAT_EQ: if ((f & (L2|L3)) == (L2|L3)) to = OP_JMP_GREAT_EQ_L; break;
 		default:
 			break;
 		}
 
 		if (to != NOP_NONE)
 		{
-			op.op = to;
+			op.SetCode(to);
 			++patched;
 		}
 	}
@@ -970,20 +1138,15 @@ CNeoVMProgram* NeoVMSystem::CreateProgram(const void* pBuffer, int iSize, std::s
 // _L 은 "오퍼랜드가 전부 로컬"이라는 실행 최적화 표시일 뿐 의미가 같으므로, 표기도 같아야
 // 한다. 이 정규화가 없으면 런타임 코드의 상당수가 default 로 빠져 빈 줄이 된다
 // (치환 대상이 MOV/ADD/CALL/RETURN 같은 최빈 op 이다 — PatchLocalOps 참조).
-static eNOperation NormalizeLocalOp(eNOperation op, bool* outIsLocal)
+static OperationCode NormalizeLocalOp(OperationCode op, bool* outIsLocal)
 {
-	eNOperation base = op;
+	OperationCode base = op;
 	switch (op)
 	{
 	case NOP_MOV_L:          base = NOP_MOV;          break;
 	case NOP_MOVI_L:         base = NOP_MOVI;         break;
 	case NOP_MOVF_L:         base = NOP_MOVF;         break;
-	case NOP_JMP_GREAT_L:    base = NOP_JMP_GREAT;    break;
-	case NOP_JMP_GREAT_EQ_L: base = NOP_JMP_GREAT_EQ; break;
-	case NOP_JMP_LESS_L:     base = NOP_JMP_LESS;     break;
-	case NOP_JMP_LESS_EQ_L:  base = NOP_JMP_LESS_EQ;  break;
-	case NOP_JMP_EQUAL2_L:   base = NOP_JMP_EQUAL2;   break;
-	case NOP_JMP_NEQUAL_L:   base = NOP_JMP_NEQUAL;   break;
+	case OP_JMP_EQUAL2_L:   base = OP_JMP_EQUAL2;   break;
 	case NOP_STR_ADD_L:      base = NOP_STR_ADD;      break;
 	case NOP_TOINT_L:        base = NOP_TOINT;        break;
 	case NOP_CALL_L:         base = NOP_CALL;         break;
@@ -996,6 +1159,11 @@ static eNOperation NormalizeLocalOp(eNOperation op, bool* outIsLocal)
 	case NOP_CHANGE_INT_L:   base = NOP_CHANGE_INT;   break;
 	case NOP_JMP_RANGE_INSIDE_L:  base = NOP_JMP_RANGE_INSIDE;  break;
 	case NOP_JMP_RANGE_OUTSIDE_L: base = NOP_JMP_RANGE_OUTSIDE; break;
+	case OP_JMP_LESS_L:     base = OP_JMP_LESS;     break;
+	case OP_JMP_LESS_EQ_L:  base = OP_JMP_LESS_EQ;  break;
+	case OP_JMP_NEQUAL_L:   base = OP_JMP_NEQUAL;   break;
+	case OP_JMP_GREAT_L:    base = OP_JMP_GREAT;    break;
+	case OP_JMP_GREAT_EQ_L: base = OP_JMP_GREAT_EQ; break;
 	default: break;
 	}
 	if (outIsLocal != nullptr)
@@ -1015,18 +1183,22 @@ bool FormatDebugOperation(const DebugInstructionFormatContext& context, std::str
 	// 원본 switch 가 v 를 쓰고 있어 이름을 유지한다(치환 실수를 줄인다).
 	SVMOperation v = *context.operation;
 	bool isLocalVariant = false;
-	v.op = NormalizeLocalOp((eNOperation)v.op, &isLocalVariant);
+	v.SetCode(NormalizeLocalOp((OperationCode)v.Code(), &isLocalVariant));
+	const bool fixedCopy = v.op == NOP_SLOT_COPY;
+	const bool fixedStore = fixedCopy || IsFixedArithmetic(v) ||
+		((v.op == NOP_MOVI || v.op == NOP_MOVF) && (v.argFlag & NEOS_OP_MODIFIER));
+	if (fixedCopy) v.SetCode(NOP_MOV);
 
 	// 원본 WriteFunLog 의 지역 상수 그대로.
 	const int OpFlagByteChars = 2;
 	int byteCount = 0;
 	bool known = true;
 
-	switch (v.op)
+	switch (v.Code())
 	{
 	case NOP_MOV:
 		byteCount = OpFlagByteChars + 2 * 2;
-		outAssembly = FormatAsm("MOV  %s = %s", context.operand(1).c_str(), context.operand(2).c_str());
+		outAssembly = FormatAsm("%s %s = %s", fixedCopy ? "COPY" : "MOV ", context.operand(1).c_str(), context.operand(2).c_str());
 		break;
 	case NOP_MOVI:
 		byteCount = OpFlagByteChars + 2 * 3;
@@ -1052,29 +1224,9 @@ bool FormatDebugOperation(const DebugInstructionFormatContext& context, std::str
 		byteCount = OpFlagByteChars + 2 * 1;
 		outAssembly = FormatAsm("CLR  %s", context.operand(1).c_str());
 		break;
-	case NOP_GREAT:		// >
-		byteCount = OpFlagByteChars + 2 * 3;
-		outAssembly = FormatAsm("GR   %s = %s > %s", context.operand(1).c_str(), context.operand(2).c_str(), context.operand(3).c_str());
-		break;
-	case NOP_GREAT_EQ:	// >=
-		byteCount = OpFlagByteChars + 2 * 3;
-		outAssembly = FormatAsm("GE   %s = %s >= %s", context.operand(1).c_str(), context.operand(2).c_str(), context.operand(3).c_str());
-		break;
-	case NOP_LESS:		// <
-		byteCount = OpFlagByteChars + 2 * 3;
-		outAssembly = FormatAsm("LS   %s = %s < %s", context.operand(1).c_str(), context.operand(2).c_str(), context.operand(3).c_str());
-		break;
-	case NOP_LESS_EQ:	// <=
-		byteCount = OpFlagByteChars + 2 * 3;
-		outAssembly = FormatAsm("LE   %s = %s <= %s", context.operand(1).c_str(), context.operand(2).c_str(), context.operand(3).c_str());
-		break;
-	case NOP_EQUAL2:	// ==
+	case OP_EQUAL2:	// ==
 		byteCount = OpFlagByteChars + 2 * 3;
 		outAssembly = FormatAsm("EQ   %s = %s == %s", context.operand(1).c_str(), context.operand(2).c_str(), context.operand(3).c_str());
-		break;
-	case NOP_NEQUAL:	// !=
-		byteCount = OpFlagByteChars + 2 * 3;
-		outAssembly = FormatAsm("NE   %s = %s != %s", context.operand(1).c_str(), context.operand(2).c_str(), context.operand(3).c_str());
 		break;
 	case NOP_JMP:
 		byteCount = OpFlagByteChars + 2 * 1;
@@ -1088,29 +1240,9 @@ bool FormatDebugOperation(const DebugInstructionFormatContext& context, std::str
 		byteCount = OpFlagByteChars + 2 * 2;
 		outAssembly = FormatAsm("JT   %d%s %s is True", v.n1, context.jumpLabel(context.opIndex + 1 + v.n1).c_str(), context.operand(2).c_str());
 		break;
-	case NOP_JMP_GREAT:		// >
-		byteCount = OpFlagByteChars + 2 * 3;
-		outAssembly = FormatAsm("%s %d%s,  %s > %s", (v.argFlag & NEOS_OP_COMPARE_INVERT) ? "JGR.NOT" : "JGR", v.n1, context.jumpLabel(context.opIndex + 1 + v.n1).c_str(), context.operand(2).c_str(), context.operand(3).c_str());
-		break;
-	case NOP_JMP_GREAT_EQ:	// >=
-		byteCount = OpFlagByteChars + 2 * 3;
-		outAssembly = FormatAsm("%s %d%s,  %s >= %s", (v.argFlag & NEOS_OP_COMPARE_INVERT) ? "JGE.NOT" : "JGE", v.n1, context.jumpLabel(context.opIndex + 1 + v.n1).c_str(), context.operand(2).c_str(), context.operand(3).c_str());
-		break;
-	case NOP_JMP_LESS:		// <
-		byteCount = OpFlagByteChars + 2 * 3;
-		outAssembly = FormatAsm("%s %d%s,  %s < %s", (v.argFlag & NEOS_OP_COMPARE_INVERT) ? "JLS.NOT" : "JLS", v.n1, context.jumpLabel(context.opIndex + 1 + v.n1).c_str(), context.operand(2).c_str(), context.operand(3).c_str());
-		break;
-	case NOP_JMP_LESS_EQ:	// <=
-		byteCount = OpFlagByteChars + 2 * 3;
-		outAssembly = FormatAsm("%s %d%s,  %s <= %s", (v.argFlag & NEOS_OP_COMPARE_INVERT) ? "JLE.NOT" : "JLE", v.n1, context.jumpLabel(context.opIndex + 1 + v.n1).c_str(), context.operand(2).c_str(), context.operand(3).c_str());
-		break;
-	case NOP_JMP_EQUAL2:	// ==
+	case OP_JMP_EQUAL2:	// ==
 		byteCount = OpFlagByteChars + 2 * 3;
 		outAssembly = FormatAsm("JEQ  %d%s,  %s == %s", v.n1, context.jumpLabel(context.opIndex + 1 + v.n1).c_str(), context.operand(2).c_str(), context.operand(3).c_str());
-		break;
-	case NOP_JMP_NEQUAL:	// !=
-		byteCount = OpFlagByteChars + 2 * 3;
-		outAssembly = FormatAsm("JNE  %d%s,  %s != %s", v.n1, context.jumpLabel(context.opIndex + 1 + v.n1).c_str(), context.operand(2).c_str(), context.operand(3).c_str());
 		break;
 	case NOP_JMP_FOR:	// for
 		byteCount = OpFlagByteChars + 2 * 3;
@@ -1260,19 +1392,71 @@ bool FormatDebugOperation(const DebugInstructionFormatContext& context, std::str
         byteCount = OpFlagByteChars + 2 * 3;
         outAssembly = FormatAsm("WREF %s.%s -> %s", context.operand(1).c_str(), context.operand(2).c_str(), context.operand(3).c_str());
         break;
+    case NOP_FUSED:
+        outAssembly = FormatAsm("FUSED plan[%d], %d slots", v.n23, v.n1); break;
+    case NOP_EXTEND:
+        outAssembly = "EXTEND (owned by FUSED)"; break;
 	case NOP_ERROR:
 		outAssembly = FormatAsm("Begin");
 		break;
+	case OP_LESS:		// <
+		byteCount = OpFlagByteChars + 2 * 3;
+		outAssembly = FormatAsm("LS   %s = %s < %s", context.operand(1).c_str(), context.operand(2).c_str(), context.operand(3).c_str());
+		break;
+	case OP_JMP_LESS:		// <
+		byteCount = OpFlagByteChars + 2 * 3;
+		outAssembly = FormatAsm("%s %d%s,  %s < %s", (v.argFlag & NEOS_OP_COMPARE_INVERT) ? "JLS.NOT" : "JLS", v.n1, context.jumpLabel(context.opIndex + 1 + v.n1).c_str(), context.operand(2).c_str(), context.operand(3).c_str());
+		break;
+	case OP_LESS_EQ:	// <=
+		byteCount = OpFlagByteChars + 2 * 3;
+		outAssembly = FormatAsm("LE   %s = %s <= %s", context.operand(1).c_str(), context.operand(2).c_str(), context.operand(3).c_str());
+		break;
+	case OP_JMP_LESS_EQ:	// <=
+		byteCount = OpFlagByteChars + 2 * 3;
+		outAssembly = FormatAsm("%s %d%s,  %s <= %s", (v.argFlag & NEOS_OP_COMPARE_INVERT) ? "JLE.NOT" : "JLE", v.n1, context.jumpLabel(context.opIndex + 1 + v.n1).c_str(), context.operand(2).c_str(), context.operand(3).c_str());
+		break;
+	case OP_NEQUAL:	// !=
+		byteCount = OpFlagByteChars + 2 * 3;
+		outAssembly = FormatAsm("NE   %s = %s != %s", context.operand(1).c_str(), context.operand(2).c_str(), context.operand(3).c_str());
+		break;
+	case OP_JMP_NEQUAL:	// !=
+		byteCount = OpFlagByteChars + 2 * 3;
+		outAssembly = FormatAsm("JNE  %d%s,  %s != %s", v.n1, context.jumpLabel(context.opIndex + 1 + v.n1).c_str(), context.operand(2).c_str(), context.operand(3).c_str());
+		break;
+	case OP_GREAT:		// >
+		byteCount = OpFlagByteChars + 2 * 3;
+		outAssembly = FormatAsm("GR   %s = %s > %s", context.operand(1).c_str(), context.operand(2).c_str(), context.operand(3).c_str());
+		break;
+	case OP_JMP_GREAT:		// >
+		byteCount = OpFlagByteChars + 2 * 3;
+		outAssembly = FormatAsm("%s %d%s,  %s > %s", (v.argFlag & NEOS_OP_COMPARE_INVERT) ? "JGR.NOT" : "JGR", v.n1, context.jumpLabel(context.opIndex + 1 + v.n1).c_str(), context.operand(2).c_str(), context.operand(3).c_str());
+		break;
+	case OP_GREAT_EQ:	// >=
+		byteCount = OpFlagByteChars + 2 * 3;
+		outAssembly = FormatAsm("GE   %s = %s >= %s", context.operand(1).c_str(), context.operand(2).c_str(), context.operand(3).c_str());
+		break;
+	case OP_JMP_GREAT_EQ:	// >=
+		byteCount = OpFlagByteChars + 2 * 3;
+		outAssembly = FormatAsm("%s %d%s,  %s >= %s", (v.argFlag & NEOS_OP_COMPARE_INVERT) ? "JGE.NOT" : "JGE", v.n1, context.jumpLabel(context.opIndex + 1 + v.n1).c_str(), context.operand(2).c_str(), context.operand(3).c_str());
+		break;
 	default:
 	{
-		const TypedOpInfo* typed = GetTypedOpInfo(v.op);
-		const AggregateOpInfo* aggregate = GetAggregateOpInfo(v.op);
+		const TypedOpInfo* typed = GetTypedOpInfo(v.Code());
+		const AggregateOpInfo* aggregate = GetAggregateOpInfo(v.Code());
 		if (typed != nullptr)
 		{
 			byteCount = OpFlagByteChars + 2 * (typed->arity + 1);
 			const char* invert = typed->comparison && (v.argFlag & NEOS_OP_COMPARE_INVERT) ? ".NOT" : "";
-			if (typed->jump)
-				outAssembly = FormatAsm("%s%s %d%s, %s, %s", typed->name, invert, v.n1,
+            if (IsArithmeticUpdate(v))
+            {
+                static const char* signs[] = { "+=", "-=", "*=", "/=", "%=", "&=", "|=", "^=", "<<=", ">>=" };
+                const unsigned sub = v.argFlag & NEOS_OP_SUB_MASK;
+                byteCount = OpFlagByteChars + 4;
+                outAssembly = FormatAsm("%s2 %s %s %s", typed->name, context.operand(1).c_str(),
+                    sub < sizeof(signs) / sizeof(signs[0]) ? signs[sub] : "?=", context.operand(2).c_str());
+            }
+            else if (typed->jump)
+                outAssembly = FormatAsm("%s%s %d%s, %s, %s", typed->name, invert, v.n1,
 					context.jumpLabel(context.opIndex + 1 + v.n1).c_str(), context.operand(2).c_str(), context.operand(3).c_str());
 			else if (typed->arity == 2)
 				outAssembly = FormatAsm("%s%s %s = %s, %s", typed->name, invert, context.operand(1).c_str(), context.operand(2).c_str(), context.operand(3).c_str());
@@ -1283,8 +1467,8 @@ bool FormatDebugOperation(const DebugInstructionFormatContext& context, std::str
 			byteCount = static_cast<int>(sizeof(SVMOperation));
 			if (aggregate->shape == AggregateOpShape::Binary)
 				outAssembly = FormatAsm("%s %s = %s, %s", aggregate->name, context.operand(1).c_str(), context.operand(2).c_str(), context.operand(3).c_str());
-			else if (aggregate->shape == AggregateOpShape::Compound)
-				outAssembly = FormatAsm("%s %s, %s[%s]", aggregate->name, context.operand(1).c_str(), context.operand(2).c_str(), context.operand(3).c_str());
+            else if (aggregate->shape == AggregateOpShape::Store)
+                outAssembly = FormatAsm("%s %s[%s] = %s", aggregate->name, context.operand(1).c_str(), context.operand(2).c_str(), context.operand(3).c_str());
 			else if (aggregate->shape == AggregateOpShape::Window)
 				outAssembly = FormatAsm("%s %s = window(%s, %d), control(%d)", aggregate->name, context.operand(1).c_str(), context.operand(2).c_str(), aggregate->arity, v.n3);
 			else if (aggregate->controlMax)
@@ -1292,7 +1476,7 @@ bool FormatDebugOperation(const DebugInstructionFormatContext& context, std::str
 			else
 				outAssembly = FormatAsm("%s %s = %s", aggregate->name, context.operand(1).c_str(), context.operand(2).c_str());
 		}
-		else { outAssembly = FormatAsm("?? op(%d)", (int)v.op); known = false; }
+		else { outAssembly = FormatAsm("?? op(%d)", (int)v.Code()); known = false; }
 		break;
 	}
 	}
@@ -1302,6 +1486,7 @@ bool FormatDebugOperation(const DebugInstructionFormatContext& context, std::str
 	// 로컬 전용 변형이었다는 표시. 같은 명령이지만 실행 경로가 다르다는 걸 볼 수 있게 한다.
 	if (isLocalVariant)
 		outAssembly += "  ;L";
+	if (fixedStore) outAssembly += "  ;fixed";
 	return known;
 }
 

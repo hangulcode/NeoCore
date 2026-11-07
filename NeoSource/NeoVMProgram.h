@@ -38,6 +38,43 @@ enum FUNCTION_TYPE : u8
 	FUNT_BUILT_IN,
 };
 
+// 컴파일러가 정한 저장 계약. typeId는 정확한 언어 타입, kind는 실행 시 저장·정리 방식이다.
+enum class SlotKind : u8
+{
+    Boxed, Int, Float, Bool, String, Vector2, Vector3, Vector4,
+    Native, Array, Map, List, Set, Coroutine, Async, ObjectId, Function
+};
+static_assert(static_cast<unsigned>(SlotKind::ObjectId) <= NEOS_OP_SUB_MASK, "Fixed copies must fit the sub-operation");
+struct SlotType
+{
+    u32 typeId = 0;
+    SlotKind kind = SlotKind::Boxed;
+    bool IsNumber() const { return kind >= SlotKind::Int && kind <= SlotKind::Bool; }
+};
+struct SlotLayout
+{
+    u32 typeId = 0;
+    short slot = 0;
+    SlotKind kind = SlotKind::Boxed;
+    bool IsNumber() const { return kind >= SlotKind::Int && kind <= SlotKind::Bool; }
+};
+static_assert(sizeof(SlotLayout) == 8, "Slot layouts must remain compact");
+inline SlotKind FindSlotKind(const std::vector<SlotLayout>& layout, short slot)
+{
+    std::size_t first = 0, last = layout.size();
+    while (first < last)
+    {
+        const std::size_t middle = first + (last - first) / 2;
+        if (layout[middle].slot < slot) first = middle + 1;
+        else last = middle;
+    }
+    return first < layout.size() && layout[first].slot == slot ? layout[first].kind : SlotKind::Boxed;
+}
+struct SlotCleanup
+{
+    short slot = 0;
+    SlotKind kind = SlotKind::Boxed;
+};
 
 struct SFunctionTable
 {
@@ -52,6 +89,8 @@ struct SFunctionTable
 	// 값을 받을 숨은 지역 슬롯. 캡처가 없으면 빈 벡터라 기존 함수 호출은
 	// 추가 비용이 없다.
 	std::vector<std::pair<short, short>> _captures;
+    std::vector<SlotLayout> _storage;
+    std::vector<SlotCleanup> _cleanup;
 };
 
 // static(상수) 슬롯 1개. VarInfo 가 아니라 원시 값으로 들고 있는다.
@@ -105,6 +144,26 @@ struct ProgramRangeJump
 	u8		flags = 0;
 };
 
+// 융합 계획은 명령·슬롯 번호만 보관한다. 워커의 값이나 포인터는 공유하지 않는다.
+struct ProgramFusion
+{
+    static const unsigned MaxSteps = 8;
+    typedef void (*Executor)(CNeoVMWorker*, const ProgramFusion&);
+    Executor execute = nullptr;
+    int start = 0;
+    u8 count = 0;
+    u8 elide = 0;
+    u8 update = 0; // 숫자 저장형이 고정되었거나 제자리 쓰기로 보존되는 목적지.
+    SVMOperation operations[MaxSteps];
+    signed char inputs[MaxSteps][3];
+    struct Address { short slot; u8 base; };
+    Address addresses[MaxSteps][4];
+    u8 results[MaxSteps];
+    u8 reads[MaxSteps], writes[MaxSteps];
+};
+
+void PrepareFusionExecution(ProgramFusion& plan);
+
 // 컴파일된 스크립트 이미지.
 // Create() 에서 1회 파싱 + 1회 코드 패치되고 이후 완전 불변이다.
 // 여러 CNeoVMWorker / 여러 CNeoVM / 여러 스레드가 refcount 로 공유한다.
@@ -135,10 +194,12 @@ public:
 	std::vector<SVMOperation>	code;              // 패치 완료 상태
 	int							localOpCount = 0;  // PatchLocalOps 가 _L 로 바꾼 op 수(진단용)
 	std::vector<SFunctionTable>	functions;
+    std::vector<SlotLayout> globalStorage;
 	std::map<std::string, int>	exportFunctions;   // 함수명 → 함수 ID
 	std::map<std::string, int>	exportVariables;   // 전역 변수명 → 전역 슬롯 인덱스
 	std::vector<SStaticConst>	staticValues;
 	std::vector<ProgramSwitchTable>	switchTables;      // NOP_SWITCH.n1 이 이 배열의 인덱스
+	std::vector<ProgramFusion> fusions;
 	std::vector<ProgramRangeJump>	rangeJumps;          // NOP_JMP_RANGE_*.n3 이 이 배열의 인덱스
 
 	// 디버그 정보 (IsDebugInfo() 일 때만 채워진다)

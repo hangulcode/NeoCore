@@ -9,8 +9,8 @@ struct ValueAccess
     { return static_cast<NeoScript::RuntimeImpl&>(runtime).m_vm; }
     static void SetVector(NeoScript::VarInfo& value, int count, const float* components)
     {
-        if (count == 4) value.SetVecType(4);
-        else value.SetInlineVec(count, components[0], components[1], count == 3 ? components[2] : 0);
+        if (count == 2) value.SetInlineVec(components[0], components[1]);
+        else value.SetVecType(count);
     }
     static bool WorkerAlive(NeoScript::RuntimeImpl& runtime, std::uint32_t id)
     {
@@ -161,10 +161,10 @@ ValuePtr MakeValue(NeoScript::IRuntime& runtime, const ValueData& data, const st
     case ValueKind::Bool: value = VarInfo(VAR_BOOL); value._bl = data.integer != 0; break;
     case ValueKind::String: result->vm->Var_SetStringA(&value, data.text); break;
     case ValueKind::Vector2: ValueAccess::SetVector(value, 2, data.vector); break;
-    case ValueKind::Vector3: ValueAccess::SetVector(value, 3, data.vector); break;
+    case ValueKind::Vector3:
     case ValueKind::Vector4:
         value._vec = result->vm->VecAlloc();
-        ValueAccess::SetVector(value, 4, data.vector);
+        ValueAccess::SetVector(value, data.kind == ValueKind::Vector3 ? 3 : 4, data.vector);
         value._vec->_refCount = 1;
         std::copy(data.vector, data.vector + 4, value._vec->v);
         break;
@@ -229,11 +229,12 @@ bool ReadValue(const ValuePtr& owner, ValueData& data)
     case VAR_NONE: break;
     case VAR_FUN: data.kind = ValueKind::Function; break;
     case VAR_VEC:
-        data.kind = value.VectorComponentCount() == 2 ? ValueKind::Vector2 : ValueKind::Vector3;
+        data.kind = ValueKind::Vector2;
         value.CopyVectorComponents(data.vector); break;
     case VAR_STRING: data.kind = ValueKind::String; data.text = value._str->_str; break;
+    case VAR_VEC3:
     case VAR_VEC4:
-        data.kind = ValueKind::Vector4;
+        data.kind = value.VectorComponentCount() == 3 ? ValueKind::Vector3 : ValueKind::Vector4;
         value.CopyVectorComponents(data.vector); break;
     case VAR_FP_NATIVE: data.kind = ValueKind::Object; break;
     case VAR_ARRAY: data.kind = ValueKind::Array; break;

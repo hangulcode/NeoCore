@@ -38,7 +38,7 @@ NEOS_FORCEINLINE float NeoNarrowFloat32(NS_FLOAT value)
 
 // 정수 산술은 하위 64비트를 보존하며 부호 있는 C++ 오버플로를 일으키지 않는다.
 inline NS_INT NeoIntFromBits(NS_UINT value) { NS_INT result; std::memcpy(&result, &value, sizeof(result)); return result; }
-inline NS_INT NeoIntAdd(NS_INT a, NS_INT b) { return NeoIntFromBits(NS_UINT(a) + NS_UINT(b)); }
+inline NS_INT NeoIntAdd(NS_INT a, NS_INT b) { return NS_UINT(a) + NS_UINT(b); }
 inline NS_INT NeoIntSub(NS_INT a, NS_INT b) { return NeoIntFromBits(NS_UINT(a) - NS_UINT(b)); }
 inline NS_INT NeoIntMul(NS_INT a, NS_INT b) { return NeoIntFromBits(NS_UINT(a) * NS_UINT(b)); }
 inline NS_INT NeoIntNeg(NS_INT a) { return NeoIntFromBits(NS_UINT(0) - NS_UINT(a)); }

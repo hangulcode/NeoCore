@@ -3,6 +3,7 @@
 #include "NeoParser.h"
 #include "NeoTextLoader.h"
 #include "NeoExport.h"
+#include "NeoVMFusion.h"
 #include "NeoVMProgram.h"   // DebugInstructionFormatContext / FormatDebugOperation
 
 namespace NeoScript
@@ -27,42 +28,12 @@ static const char* g_sExportCompileErrors[ECE_COUNT] =
 	"Invalid variable type while writing bytecode (%d)",
 };
 
-u8 GetArgIndexToCode(u8 flag, short* n1, short* n2, short* n3)
-{
-/*	u8 r = 0;
-	if ((flag & NEOS_ARG_N1_IMMEDIATE) == 0)
-	{
-		if (n1 == nullptr || *n1 >= 0)
-			r |= NEOS_ARG_N1_LOCAL;
-		else
-			*n1 = -*n1 - 1;
-	}
-
-	if ((flag & NEOS_ARG_N2_IMMEDIATE) == 0)
-	{
-		if (n2 == nullptr || *n2 >= 0)
-			r |= NEOS_ARG_N2_LOCAL;
-		else
-			*n2 = -*n2 - 1;
-	}
-
-	if ((flag & NEOS_ARG_N3_IMMEDIATE) == 0)
-	{
-		if (n3 == nullptr || *n3 >= 0)
-			r |= NEOS_ARG_N3_LOCAL;
-		else
-			*n3 = -*n3 - 1;
-	}
-	return r;*/
-	return 0;
-}
-
 u8 ChangeIndex(int staticCount, int localCount, int curFunStatkSize, SVMOperation& op, int argIndex)
 {
 	short* n = nullptr;
-	if (argIndex == 1)		{ if (op.argFlag & NEOS_ARG_N1_IMMEDIATE) return 0; n = &op.n1; }
-	else if (argIndex == 2) { if (op.argFlag & NEOS_ARG_N2_IMMEDIATE) return 0; n = &op.n2; }
-	else if (argIndex == 3) { if (op.argFlag & NEOS_ARG_N3_IMMEDIATE) return 0; n = &op.n3; }
+	if (argIndex == 1)		{ n = &op.n1; }
+	else if (argIndex == 2) { n = &op.n2; }
+	else if (argIndex == 3) { n = &op.n3; }
 
 	if (*n == -1)
 		return 0;
@@ -148,7 +119,17 @@ void WriteFun(CArchiveRdWC& arText, CNArchive& ar, SFunctions& funs, SFunctionIn
 		fun._captures.push_back(std::make_pair(capture._sourceSlot, capture._localSlot));
 
 	int curFunStatkSize = 1 + fun._argsCount + fun._localVarCount + fun._localTempMax;
+    int stackSlotCount = curFunStatkSize;
 	CheckCompileRange("function stack slots", curFunStatkSize, 0, SHRT_MAX);
+	for (const auto& entry : fi._storage)
+	{
+		SlotLayout slot;
+		slot.slot = CompileShort("storage slot", entry.first >= COMPILE_LOCALTMP_VAR_BEGIN
+			? entry.first - COMPILE_LOCALTMP_VAR_BEGIN + fi._localVarCount : entry.first);
+		slot.typeId = entry.second.typeId;
+		slot.kind = entry.second.kind;
+		fun._storage.push_back(slot);
+	}
 
 	funPos[fi._funID] = fun;
 
@@ -175,90 +156,81 @@ void WriteFun(CArchiveRdWC& arText, CNArchive& ar, SFunctions& funs, SFunctionIn
 			debug_info di = (funs.m_sDebugFinal)[off];
 			debugInfo.push_back(di);
 		}
-		//	arRead >> v.dbg;
-
-		OpType optype;
-		arRead >> optype;
-
-		u8 argFlag;
-		arRead >> argFlag;
-
-
-
-		v.op = CODE_TO_NOP(optype);
-		int len = CODE_TO_LEN(optype);
-		if (len)
-		{
-			arRead.Read(&v.n1, len * sizeof(short));
-		}
-
-		v.argFlag = argFlag;
-
+		arRead.Read(&v, sizeof(v));
+		u8 argFlag = v.argFlag;
+		const auto& storage = v.n1 <= COMPILE_GLOBAL_VAR_BEGIN ? vars._globalStorage : fi._storage;
+		const auto destination = storage.find(v.n1);
+		const SlotKind destinationKind = destination == storage.end() ? SlotKind::Boxed : destination->second.kind;
 
 		iOPCount++;
 
 		//if (arText._debug)
 		//	ar << v.dbg;
 
-		switch (v.op)
+		switch (v.Code())
 		{
+
+		case NOP_MOV:
+		case NOP_LOG_NOT:
+			argFlag |= ChangeIndex(staticCount, localCount, curFunStatkSize, v, 1);
+
+			argFlag |= ChangeIndex(staticCount, localCount, curFunStatkSize, v, 2);
+			break;
+
+		case NOP_MOVI:
+		case NOP_MOVF:
+		case NOP_LOADK:
+			argFlag |= ChangeIndex(staticCount, localCount, curFunStatkSize, v, 1);
+			break;
 
 		case NOP_VAR_CLEAR:
 			argFlag |= ChangeIndex(staticCount, localCount, curFunStatkSize, v, 1);
 
-			argFlag |= GetArgIndexToCode(argFlag, &v.n1, nullptr, nullptr);
 			break;
 
-		case NOP_GREAT:		// >
-		case NOP_GREAT_EQ:	// >=
-		case NOP_LESS:		// <
-		case NOP_LESS_EQ:	// <=
-		case NOP_EQUAL2:	// ==
-		case NOP_NEQUAL:	// !=
+		case OP_GREAT:		// >
+		case OP_GREAT_EQ:	// >=
+		case OP_LESS:		// <
+		case OP_LESS_EQ:	// <=
+		case OP_EQUAL2:	// ==
+		case OP_NEQUAL:	// !=
 		case NOP_STR_ADD: // ..
 			argFlag |= ChangeIndex(staticCount, localCount, curFunStatkSize, v, 1);
 			argFlag |= ChangeIndex(staticCount, localCount, curFunStatkSize, v, 2);
 			argFlag |= ChangeIndex(staticCount, localCount, curFunStatkSize, v, 3);
 
-			argFlag |= GetArgIndexToCode(argFlag, &v.n1, &v.n2, &v.n3);
 			break;
 
 		case NOP_JMP:
 			//ar << optype << v.n1;
-			argFlag |= GetArgIndexToCode(argFlag, nullptr, nullptr, nullptr);
 			break;
 		case NOP_JMP_FALSE:
 		case NOP_JMP_TRUE:
 			argFlag |= ChangeIndex(staticCount, localCount, curFunStatkSize, v, 2);
-			argFlag |= GetArgIndexToCode(argFlag, nullptr, &v.n2, nullptr);
 			break;
 
-		case NOP_JMP_GREAT:		// >
-		case NOP_JMP_GREAT_EQ:	// >=
-		case NOP_JMP_LESS:		// <
-		case NOP_JMP_LESS_EQ:	// <=
-		case NOP_JMP_EQUAL2:	// ==
-		case NOP_JMP_NEQUAL:	// !=
+		case OP_JMP_GREAT:		// >
+		case OP_JMP_GREAT_EQ:	// >=
+		case OP_JMP_LESS:		// <
+		case OP_JMP_LESS_EQ:	// <=
+		case OP_JMP_EQUAL2:	// ==
+		case OP_JMP_NEQUAL:	// !=
 			argFlag |= ChangeIndex(staticCount, localCount, curFunStatkSize, v, 2);
 			argFlag |= ChangeIndex(staticCount, localCount, curFunStatkSize, v, 3);
 
-			argFlag |= GetArgIndexToCode(argFlag, nullptr, &v.n2, &v.n3);
 			break;
 		case NOP_JMP_FOR:	// 
 			argFlag |= ChangeIndex(staticCount, localCount, curFunStatkSize, v, 2);
 			argFlag |= ChangeIndex(staticCount, localCount, curFunStatkSize, v, 3);
 
-			argFlag |= GetArgIndexToCode(argFlag, nullptr, &v.n2, &v.n3);
 			break;
 		case NOP_JMP_FOREACH:	//
 			argFlag |= ChangeIndex(staticCount, localCount, curFunStatkSize, v, 2);
 			argFlag |= ChangeIndex(staticCount, localCount, curFunStatkSize, v, 3);
 
-			argFlag |= GetArgIndexToCode(argFlag, nullptr, &v.n2, &v.n3);
 			break;
 		case NOP_SWITCH:	// n1 = switch table index (변환 금지), n2 = 조건식 위치
 			argFlag |= ChangeIndex(staticCount, localCount, curFunStatkSize, v, 2);
-			argFlag |= GetArgIndexToCode(argFlag, nullptr, &v.n2, nullptr);
 			break;
 		case NOP_TOSTRING:
 		case NOP_TOINT:
@@ -267,88 +239,61 @@ void WriteFun(CArchiveRdWC& arText, CNArchive& ar, SFunctions& funs, SFunctionIn
 			argFlag |= ChangeIndex(staticCount, localCount, curFunStatkSize, v, 1);
 			argFlag |= ChangeIndex(staticCount, localCount, curFunStatkSize, v, 2);
 
-			argFlag |= GetArgIndexToCode(argFlag, &v.n1, &v.n2, nullptr);
 			break;
 		case NOP_SLEEP:
 			argFlag |= ChangeIndex(staticCount, localCount, curFunStatkSize, v, 2);
-			argFlag |= GetArgIndexToCode(argFlag, nullptr, &v.n2, nullptr);
-			break;
-
-		case NOP_MOV:
-		case NOP_LOG_NOT:
-			argFlag |= ChangeIndex(staticCount, localCount, curFunStatkSize, v, 1);
-			if ((argFlag & NEOS_ARG_N2_IMMEDIATE) == 0)
-				argFlag |= ChangeIndex(staticCount, localCount, curFunStatkSize, v, 2);
-			argFlag |= GetArgIndexToCode(argFlag, &v.n1, &v.n2, nullptr);
-			break;
-
-		case NOP_MOVI:
-		case NOP_MOVF:
-		case NOP_LOADK:
-			argFlag |= ChangeIndex(staticCount, localCount, curFunStatkSize, v, 1);
-			argFlag |= GetArgIndexToCode(argFlag, &v.n1, nullptr, nullptr);
 			break;
 
 		case NOP_FMOV1:
 			argFlag |= ChangeIndex(staticCount, localCount, curFunStatkSize, v, 1);
-			argFlag |= GetArgIndexToCode(argFlag, &v.n1, nullptr, nullptr);
 			break;
 		case NOP_FMOV2:
 			argFlag |= ChangeIndex(staticCount, localCount, curFunStatkSize, v, 1);
-			if ((argFlag & NEOS_ARG_N2_IMMEDIATE) == 0)
-				argFlag |= ChangeIndex(staticCount, localCount, curFunStatkSize, v, 2);
-			argFlag |= GetArgIndexToCode(argFlag, &v.n1, &v.n2, nullptr);
+
+			argFlag |= ChangeIndex(staticCount, localCount, curFunStatkSize, v, 2);
 			break;
 
+		case NOP_CALL:
+			argFlag |= ChangeIndex(staticCount, localCount, curFunStatkSize, v, 3);
+			break;
 		case NOP_PTRCALL:
 			argFlag |= ChangeIndex(staticCount, localCount, curFunStatkSize, v, 1);
 			argFlag |= ChangeIndex(staticCount, localCount, curFunStatkSize, v, 2);
-			argFlag |= GetArgIndexToCode(argFlag, &v.n1, &v.n2, nullptr);
 			break;
 		case NOP_PTRCALL2:
 			argFlag |= ChangeIndex(staticCount, localCount, curFunStatkSize, v, 1);
 			argFlag |= ChangeIndex(staticCount, localCount, curFunStatkSize, v, 3);
-			argFlag |= GetArgIndexToCode(argFlag, &v.n1, nullptr, &v.n3);
 			break;
 		case NOP_NATIVECALL: // 컴파일에 나오지 않고, LoadVM 에서 NOP_PTRCALL2 인경우 System 함수이름을 찾어서 함수 Index 화
 			argFlag |= ChangeIndex(staticCount, localCount, curFunStatkSize, v, 3);
-			argFlag |= GetArgIndexToCode(argFlag, nullptr, nullptr, &v.n3);
-			break;
-		case NOP_CALL:
-			argFlag |= ChangeIndex(staticCount, localCount, curFunStatkSize, v, 3);
-			argFlag |= GetArgIndexToCode(argFlag, nullptr, nullptr, &v.n3);
 			break;
 		case NOP_RETURN:
+			v.n2 = CompileShort("return frame layout", fi._funID);
 			argFlag |= ChangeIndex(staticCount, localCount, curFunStatkSize, v, 1);
-			argFlag |= GetArgIndexToCode(argFlag, &v.n1, nullptr, nullptr);
 			if((argFlag & NEOS_ARG_N1_LOCAL) && v.n1 == 0)
 				argFlag |= NEOS_OP_CALL_NORESULT;
 			break;
 		//case NOP_FUNEND:
 		//	//ar << optype;
-		//	argFlag |= GetArgIndexToCode(argFlag, nullptr, nullptr, nullptr);
 		//	break;
 		case NOP_TABLE_ALLOC:
 			argFlag |= ChangeIndex(staticCount, localCount, curFunStatkSize, v, 1);
 			//ar << optype << v.n1;
-			argFlag |= GetArgIndexToCode(argFlag, &v.n1, nullptr, nullptr);
 			break;
-		case NOP_CLT_MOV:
 		case NOP_CLT_READ:
-			if ((argFlag & NEOS_ARG_N1_IMMEDIATE) == 0)
+		case NOP_CLT_MOV:
+
 				argFlag |= ChangeIndex(staticCount, localCount, curFunStatkSize, v, 1);
-			if ((argFlag & NEOS_ARG_N2_IMMEDIATE) == 0)
-				argFlag |= ChangeIndex(staticCount, localCount, curFunStatkSize, v, 2);
-			if ((argFlag & NEOS_ARG_N3_IMMEDIATE) == 0)
+
+			argFlag |= ChangeIndex(staticCount, localCount, curFunStatkSize, v, 2);
+
 				argFlag |= ChangeIndex(staticCount, localCount, curFunStatkSize, v, 3);
 
-			argFlag |= GetArgIndexToCode(argFlag, &v.n1, &v.n2, &v.n3);
 			break;
 
 		case NOP_LIST_ALLOC:
 			argFlag |= ChangeIndex(staticCount, localCount, curFunStatkSize, v, 1);
 			//ar << optype << v.n1;
-			argFlag |= GetArgIndexToCode(argFlag, &v.n1, nullptr, nullptr);
 			break;
 /*		case NOP_LIST_MOV:
 		case NOP_LIST_READ:
@@ -361,11 +306,9 @@ void WriteFun(CArchiveRdWC& arText, CNArchive& ar, SFunctions& funs, SFunctionIn
 			argFlag |= ChangeIndex(staticCount, localCount, curFunStatkSize, v, 2);
 			argFlag |= ChangeIndex(staticCount, localCount, curFunStatkSize, v, 3);
 
-			argFlag |= GetArgIndexToCode(argFlag, &v.n1, &v.n2, &v.n3);
 			break;*/
 		case NOP_CHANGE_INT:
 			argFlag |= ChangeIndex(staticCount, localCount, curFunStatkSize, v, 1);
-			argFlag |= GetArgIndexToCode(argFlag, &v.n1, nullptr, nullptr);
 			break;
 		case NOP_YIELD:
 			break;
@@ -389,7 +332,6 @@ void WriteFun(CArchiveRdWC& arText, CNArchive& ar, SFunctions& funs, SFunctionIn
 				}
 			}
 			argFlag |= ChangeIndex(staticCount, localCount, curFunStatkSize, v, 2);
-			argFlag |= GetArgIndexToCode(argFlag, nullptr, &v.n2, nullptr);
 			break;
 		}
 		case NOP_CLT_WRITE_REF:
@@ -401,8 +343,8 @@ void WriteFun(CArchiveRdWC& arText, CNArchive& ar, SFunctions& funs, SFunctionIn
 			break;
 		default:
 		{
-			const TypedOpInfo* typed = GetTypedOpInfo(v.op);
-			const AggregateOpInfo* aggregate = GetAggregateOpInfo(v.op);
+			const TypedOpInfo* typed = GetTypedOpInfo(v.Code());
+			const AggregateOpInfo* aggregate = GetAggregateOpInfo(v.Code());
 			if (typed != nullptr || aggregate != nullptr)
 			{
 				const unsigned slots = typed ? typed->slots : aggregate->Slots();
@@ -412,15 +354,45 @@ void WriteFun(CArchiveRdWC& arText, CNArchive& ar, SFunctions& funs, SFunctionIn
 			}
 			else
 			{
-				SetCompileError(arText, g_sExportCompileErrors[ECE_INVALID_OPCODE], v.op);
-				argFlag |= GetArgIndexToCode(argFlag, nullptr, nullptr, nullptr);
+				SetCompileError(arText, g_sExportCompileErrors[ECE_INVALID_OPCODE], v.Code());
 			}
 			break;
 		}
 		}
 
-		ar << optype << argFlag << v.n1 << v.n2 << v.n3;
+		v.argFlag = argFlag;
+        const short locations[] = {v.n1, v.n2, v.n3};
+        const u8 locationsFlags[] = {NEOS_ARG_N1_LOCAL, NEOS_ARG_N2_LOCAL, NEOS_ARG_N3_LOCAL};
+        for (unsigned n = 0; n < 3; ++n)
+            if (argFlag & locationsFlags[n]) stackSlotCount = (std::max)(stackSlotCount, static_cast<int>(locations[n]) + 1);
+        int outgoing = -1;
+        if (v.op == NOP_CALL || v.op == NOP_PTRCALL2 || v.op == NOP_VEC_MAKE) outgoing = v.n2;
+        else if (v.op == NOP_PTRCALL) outgoing = v.n3;
+        if (outgoing >= 0) stackSlotCount = (std::max)(stackSlotCount, curFunStatkSize + outgoing + 1);
+        PackArithmeticUpdate(v);
+		// 저장형은 이름이나 실행 중 태그가 아니라 프런트엔드 계약과 임시 슬롯 배치로 결정한다.
+		if ((v.op == NOP_I64_ARITH && destinationKind == SlotKind::Int) ||
+			(v.op == NOP_F64_ARITH && destinationKind == SlotKind::Float))
+			v.op = v.op == NOP_I64_ARITH ? NOP_I64_FIXED : NOP_F64_FIXED;
+		else if (v.op == NOP_MOV && destinationKind >= SlotKind::Int && destinationKind < SlotKind::Function)
+			v.SetCode(MakeOperation(NOP_SLOT_COPY, static_cast<unsigned>(destinationKind)));
+		else if ((v.op == NOP_MOVI && destinationKind == SlotKind::Int) || (v.op == NOP_MOVF && destinationKind == SlotKind::Float))
+			v.argFlag |= NEOS_OP_MODIFIER;
+		ar << v;
 	}
+    std::size_t typedSlot = 0;
+    for (int i = 1; i < stackSlotCount; ++i)
+    {
+        SlotKind kind = SlotKind::Boxed;
+        if (typedSlot < fun._storage.size() && fun._storage[typedSlot].slot == i)
+            kind = fun._storage[typedSlot++].kind;
+        if (kind == SlotKind::Int || kind == SlotKind::Float || kind == SlotKind::Bool ||
+            kind == SlotKind::Vector2 || kind == SlotKind::ObjectId) continue;
+        SlotCleanup cleanup;
+        cleanup.slot = CompileShort("cleanup slot", i); cleanup.kind = kind;
+        fun._cleanup.push_back(cleanup);
+    }
+    funPos[fi._funID] = std::move(fun);
 	int iNewCodeEnd = ar.GetBufferOffset();
 	fi._iCode_Begin = iNewCodeBegin;
 	fi._iCode_Size = iNewCodeEnd - iNewCodeBegin;
@@ -491,18 +463,14 @@ std::string GetLog(STempDebug& td, SVMOperation& op, int argIndex)
 	char ch[64] = {0,};
 	int v = 0;
 	const char* c = ""; // N.
-	bool isNum = false;
 
-	if (argIndex == 1) { v = op.n1; isNum = (op.argFlag & NEOS_ARG_N1_IMMEDIATE); }
-	if (argIndex == 2) { v = op.n2; isNum = (op.argFlag & NEOS_ARG_N2_IMMEDIATE); }
-	if (argIndex == 3) { v = op.n3; isNum = (op.argFlag & NEOS_ARG_N3_IMMEDIATE); }
+	if (argIndex == 1) { v = op.n1; }
+	if (argIndex == 2) { v = op.n2; }
+	if (argIndex == 3) { v = op.n3; }
 
-	if (false == isNum)
-	{
-		if (argIndex == 1) { c = (op.argFlag & NEOS_ARG_N1_LOCAL) ? "S." : "G."; }
-		if (argIndex == 2) { c = (op.argFlag & NEOS_ARG_N2_LOCAL) ? "S." : "G."; }
-		if (argIndex == 3) { c = (op.argFlag & NEOS_ARG_N3_LOCAL) ? "S." : "G."; }
-	}
+	if (argIndex == 1) { c = (op.argFlag & NEOS_ARG_N1_LOCAL) ? "S." : "G."; }
+	if (argIndex == 2) { c = (op.argFlag & NEOS_ARG_N2_LOCAL) ? "S." : "G."; }
+	if (argIndex == 3) { c = (op.argFlag & NEOS_ARG_N3_LOCAL) ? "S." : "G."; }
 
 	if (c[0] == 'G')
 	{
@@ -518,10 +486,7 @@ std::string GetLog(STempDebug& td, SVMOperation& op, int argIndex)
 	}
 	else
 	{
-		if(isNum)
-			snprintf(ch, _countof(ch), "%d", v);
-		else
-			snprintf(ch, _countof(ch), "[%s%d]", c, v);
+		snprintf(ch, _countof(ch), "[%s%d]", c, v);
 	}
 	return ch;
 }
@@ -552,7 +517,7 @@ std::string JumpMark(std::map<int, int>& sJumpMark, int opIndex)
 }
 
 
-void WriteFunLog(CArchiveRdWC& arText, CNArchive& arw, SFunctions& funs, SFunctionInfo& fi, SVars& vars, STempDebug& td)
+void WriteFunLog(CArchiveRdWC& arText, CNArchive& arw, SFunctions& funs, SFunctionInfo& fi, SVars& vars, STempDebug& td, const std::vector<ProgramFusion>& fusions)
 {
 	OutAsm("\n");
 	OutAsm(ANSI_COLOR_YELLOW "Fun - %s [T:%d ID:%d] arg:%d var:%d varTemp:%d" ANSI_RESET_ALL "\n", fi.GetFullName().c_str(), fi._funType, fi._funID, (int)fi._args.size(), fi._localVarCount, fi._localTempMax);
@@ -561,7 +526,24 @@ void WriteFunLog(CArchiveRdWC& arText, CNArchive& arw, SFunctions& funs, SFuncti
 	//	return;
 
 	//CNArchive arRead((u8*)fi._code->GetData() + fi._iCode_Begin, fi._iCode_Size);
-	CNArchive arRead((u8*)arw.GetData() + fi._iCode_Begin, fi._iCode_Size);
+    // ASM은 확장 슬롯의 실제 연산과 임시 저장 생략을 함께 보여준다.
+    std::vector<SVMOperation> displayed(static_cast<std::size_t>(fi._iCode_Size) / sizeof(SVMOperation));
+    std::memcpy(displayed.data(), static_cast<u8*>(arw.GetData()) + fi._iCode_Begin, fi._iCode_Size);
+    std::map<int, const ProgramFusion*> roots;
+    std::map<int, bool> inner;
+    const int functionBegin = (fi._iCode_Begin - sizeof(SNeoVMHeader)) / sizeof(SVMOperation);
+    for (const ProgramFusion& plan : fusions)
+        if (plan.start >= functionBegin && plan.start + plan.count <= functionBegin + static_cast<int>(displayed.size()))
+        {
+            const int first = plan.start - functionBegin;
+            roots[first] = &plan;
+            for (unsigned i = 0; i < plan.count; ++i)
+            {
+                displayed[first + i] = plan.operations[i];
+                inner[first + i] = (plan.elide & (1u << i)) != 0;
+            }
+        }
+    CNArchive arRead(displayed.data(), fi._iCode_Size);
 	arRead.SetPointer(0, SEEK_SET);
 
 	std::map<int, int> sJumpMark;
@@ -571,17 +553,17 @@ void WriteFunLog(CArchiveRdWC& arText, CNArchive& arw, SFunctions& funs, SFuncti
 		int off = arRead.GetBufferOffset();
 		arRead >> v;
 
-		switch (v.op)
+		switch (v.Code())
 		{
 		case NOP_JMP:
 		case NOP_JMP_FALSE:
 		case NOP_JMP_TRUE:
-		case NOP_JMP_GREAT:		// >
-		case NOP_JMP_GREAT_EQ:	// >=
-		case NOP_JMP_LESS:		// <
-		case NOP_JMP_LESS_EQ:	// <=
-		case NOP_JMP_EQUAL2:	// ==
-		case NOP_JMP_NEQUAL:	// !=
+		case OP_JMP_GREAT:		// >
+		case OP_JMP_GREAT_EQ:	// >=
+		case OP_JMP_LESS:		// <
+		case OP_JMP_LESS_EQ:	// <=
+		case OP_JMP_EQUAL2:	// ==
+		case OP_JMP_NEQUAL:	// !=
 		case NOP_JMP_FOR:	// for
 		case NOP_JMP_FOREACH:	// foreach
 		case NOP_JMP_RANGE_INSIDE:
@@ -591,7 +573,7 @@ void WriteFunLog(CArchiveRdWC& arText, CNArchive& arw, SFunctions& funs, SFuncti
 			break;
 		default:
 		{
-			const TypedOpInfo* typed = GetTypedOpInfo(v.op);
+			const TypedOpInfo* typed = GetTypedOpInfo(v.Code());
 			if (typed != nullptr && typed->jump)
 				sJumpMark[off / (int)sizeof(SVMOperation) + 1 + v.n1] = 0;
 			break;
@@ -638,11 +620,16 @@ void WriteFunLog(CArchiveRdWC& arText, CNArchive& arw, SFunctions& funs, SFuncti
 		std::string asmText;
 		int byteCount = 0;
 		if (false == FormatDebugOperation(context, asmText, &byteCount))
-			SetCompileError(arText, g_sExportCompileErrors[ECE_INVALID_OPCODE], v.op);
+			SetCompileError(arText, g_sExportCompileErrors[ECE_INVALID_OPCODE], v.Code());
 
 		// NOP_ERROR 등 바이트를 안 찍던 op 는 byteCount 가 0 이라 빈 칸으로 나온다(기존과 동일).
-		OutBytes((const u8*)&v, byteCount, skipByteChars);
-		OutAsm("%s\n", asmText.c_str());
+        const int position = off / sizeof(SVMOperation);
+        const auto root = roots.find(position);
+        if (root != roots.end()) OutAsm("FUSED (%u primitive operations, one VM dispatch)\n", root->second->count);
+        const auto step = inner.find(position);
+        if (step != inner.end()) OutAsm("  | ");
+        OutBytes((const u8*)&v, byteCount, skipByteChars);
+        OutAsm("%s%s\n", asmText.c_str(), step != inner.end() && step->second ? " [temporary forwarded]" : "");
 	}
 //	OutAsm("Fun End [%s]", fi._name.c_str());
 }
@@ -763,7 +750,7 @@ static void FoldGlobalGetters(SFunctions& funs)
 			continue;
 		SVMOperation op;
 		memcpy(&op, code + function->_iCode_Begin, sizeof(op));
-		if (CODE_TO_NOP(op.op) == NOP_RETURN && op.argFlag == 0 && op.n1 <= COMPILE_GLOBAL_VAR_BEGIN)
+		if (op.Code() == NOP_RETURN && op.argFlag == 0 && op.n1 <= COMPILE_GLOBAL_VAR_BEGIN)
 			getters[function->_funID] = op.n1;
 	}
 	if (getters.empty()) return;
@@ -774,11 +761,11 @@ static void FoldGlobalGetters(SFunctions& funs)
 		{
 			SVMOperation op;
 			memcpy(&op, code + offset, sizeof(op));
-			if (CODE_TO_NOP(op.op) != NOP_CALL || op.argFlag != 0 || op.n2 != 0)
+			if (op.Code() != NOP_CALL || op.argFlag != 0 || op.n2 != 0)
 				continue;
 			auto getter = getters.find(op.n1);
 			if (getter == getters.end()) continue;
-			op.op = GetOpTypeFromOp(NOP_MOV);
+			op.SetCode(PrimaryOperation(NOP_MOV));
 			op.n1 = op.n3;
 			op.n2 = getter->second;
 			op.n3 = 0;
@@ -823,9 +810,9 @@ bool Write(CArchiveRdWC& arText, CNArchive& ar, SFunctions& funs, SVars& vars)
 
 	SVMOperation op;
 	memset(&op, 0, sizeof(op));
-	op.op =  NOP_ERROR;
+	op.SetCode(NOP_ERROR);
 	ar << op;
-	op.op = NOP_IDLE;
+	op.SetCode(NOP_IDLE);
 	ar << op;
 
 	for (auto it = funs._funSequence.begin(); it != funs._funSequence.end(); it++)
@@ -921,6 +908,66 @@ bool Write(CArchiveRdWC& arText, CNArchive& ar, SFunctions& funs, SVars& vars)
 	WriteSwitchTables(ar, funs);
 	WriteRangeJumps(ar, funs);
 
+    // 이름이나 디버그 정보가 아니라 프런트엔드의 선언 계약을 이미지에 보존한다.
+    const u32 storageMagic = 0x544f4c53; // SLOT
+    ar << storageMagic;
+    ar.WriteCount(static_cast<u32>(funPos.size()));
+    for (const auto& item : funPos)
+    {
+        ar << item.first;
+        ar.WriteCount(static_cast<u32>(item.second._storage.size()));
+        for (const SlotLayout& slot : item.second._storage)
+            ar << slot.slot << slot.kind << slot.typeId;
+        ar.WriteCount(static_cast<u32>(item.second._cleanup.size()));
+        for (const SlotCleanup& slot : item.second._cleanup)
+            ar << slot.slot << slot.kind;
+    }
+    ar.WriteCount(static_cast<u32>(header._iGlobalVarCount));
+    for (int index = -header._iGlobalVarCount - 1; index <= -2; ++index)
+    {
+        const short slot = CompileShort("global storage slot", index);
+        const auto found = vars._globalStorage.find(index);
+        const SlotType type = found == vars._globalStorage.end() ? SlotType() : found->second;
+        ar << slot << type.kind << type.typeId;
+    }
+
+    // 타입을 잃지 않은 최종 명령 그래프에서 공통 융합을 고른다. 주소를 바꾸지 않아 점프·함수 오프셋은 유지된다.
+    if (!arText._debug && arText.m_coreTypedIR)
+    {
+        std::vector<SVMOperation> code(static_cast<std::size_t>(header._iCodeSize) / sizeof(SVMOperation));
+        std::memcpy(code.data(), static_cast<const u8*>(ar.GetData()) + sizeof(SNeoVMHeader), header._iCodeSize);
+        std::vector<SFunctionTable> functions;
+        for (const auto& item : funPos)
+        {
+            SFunctionTable function = {};
+            function._codePtr = item.second._codePtr;
+            function._argsCount = item.second._argsCount;
+            function._localTempMax = item.second._localTempMax;
+            function._localVarCount = item.second._localVarCount;
+            function._storage = item.second._storage;
+            functions.push_back(function);
+        }
+        std::vector<std::vector<int>> targets;
+        for (const SSwitchTableCompile& table : funs._switchTables)
+        {
+            targets.push_back(std::vector<int>(1, table._defaultOffset));
+            for (const SSwitchCaseCompile& item : table._cases) targets.back().push_back(item._jumpOffset);
+        }
+        const std::vector<ProgramFusion> plans = BuildTypedFusions(code, functions, targets);
+        if (!plans.empty())
+        {
+            InstallTypedFusions(code, plans);
+            std::memcpy(static_cast<u8*>(ar.GetData()) + sizeof(SNeoVMHeader), code.data(), header._iCodeSize);
+            const u32 magic = 0x45535546; // FUSE
+            ar.Write(&magic, sizeof(magic)); ar.WriteCount(static_cast<u32>(plans.size()));
+            for (const ProgramFusion& plan : plans)
+            {
+                ar << plan.start << plan.count << plan.elide << plan.update;
+                ar.Write(plan.operations, sizeof(SVMOperation) * plan.count);
+            }
+        }
+    }
+
 	int iSaveOffset2 = ar.GetBufferOffset();
 	ar.SetPointer(iSaveOffset1, SEEK_SET);
 	ar << header;
@@ -932,6 +979,10 @@ bool Write(CArchiveRdWC& arText, CNArchive& ar, SFunctions& funs, SVars& vars)
 
 bool WriteLog(CArchiveRdWC& arText, CNArchive& arw, SFunctions& funs, SVars& vars)
 {
+    std::vector<ProgramFusion> fusions;
+    CNeoVMProgram* program = CNeoVMProgram::Create(arw.GetData(), arw.GetBufferOffset());
+    if (program) { fusions = program->fusions; program->Release(); }
+
 	SNeoVMHeader header;
 	memset(&header, 0, sizeof(header));
 
@@ -1011,7 +1062,7 @@ bool WriteLog(CArchiveRdWC& arText, CNArchive& arw, SFunctions& funs, SVars& var
 	for (auto it = funs._funSequence.begin(); it != funs._funSequence.end(); it++)
 	{
 		SFunctionInfo& fi = *(*it);
-		WriteFunLog(arText, arw, funs, fi, vars, td);
+		WriteFunLog(arText, arw, funs, fi, vars, td, fusions);
 	}
 
 	//// 함수 포인터 저장

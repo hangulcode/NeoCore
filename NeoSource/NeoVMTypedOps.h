@@ -1,48 +1,50 @@
 ﻿#pragma once
 
-// 타입이 검증된 숫자 명령의 정의를 등록·저장·검증·표시에서 함께 사용한다.
+// 숫자 계열의 세부 연산을 한 번만 정의한다. 코드 상수와 검증·표시 메타데이터가 공유한다.
 // arity는 입력 수이고 slots/writes는 n1부터 시작하는 피연산자 비트 마스크다.
+#define NEOCORE_COMMON_ARITHMETIC(X, T, S) \
+    X(OP_##T##_ADD, NOP_##T##_ARITH, ArithmeticOp::Add, #T "_ADD", S "add", 2, 7, 1, false, false, NOP_NONE) \
+    X(OP_##T##_SUB, NOP_##T##_ARITH, ArithmeticOp::Sub, #T "_SUB", S "sub", 2, 7, 1, false, false, NOP_NONE) \
+    X(OP_##T##_MUL, NOP_##T##_ARITH, ArithmeticOp::Mul, #T "_MUL", S "mul", 2, 7, 1, false, false, NOP_NONE) \
+    X(OP_##T##_DIV, NOP_##T##_ARITH, ArithmeticOp::Div, #T "_DIV", S "div", 2, 7, 1, false, false, NOP_NONE) \
+    X(OP_##T##_NEG, NOP_##T##_ARITH, ArithmeticOp::Neg, #T "_NEG", S "neg", 1, 3, 1, false, false, NOP_NONE)
+#define NEOCORE_INTEGER_ARITHMETIC(X) \
+    X(OP_I64_MOD, NOP_I64_ARITH, ArithmeticOp::Mod, "I64_MOD", "imod", 2, 7, 1, false, false, NOP_NONE) \
+    X(OP_I64_AND, NOP_I64_ARITH, ArithmeticOp::BitAnd, "I64_AND", "iand", 2, 7, 1, false, false, NOP_NONE) \
+    X(OP_I64_OR, NOP_I64_ARITH, ArithmeticOp::BitOr, "I64_OR", "ior", 2, 7, 1, false, false, NOP_NONE) \
+    X(OP_I64_XOR, NOP_I64_ARITH, ArithmeticOp::BitXor, "I64_XOR", "ixor", 2, 7, 1, false, false, NOP_NONE) \
+    X(OP_I64_SHL, NOP_I64_ARITH, ArithmeticOp::ShiftLeft, "I64_SHL", "ishl", 2, 7, 1, false, false, NOP_NONE) \
+    X(OP_I64_SHR, NOP_I64_ARITH, ArithmeticOp::ShiftRight, "I64_SHR", "ishr", 2, 7, 1, false, false, NOP_NONE)
+#define NEOCORE_COMPARISON_PAIR(X, T, S, REL, NAME, SUB) \
+    X(OP_##T##_##REL, NOP_##T##_COMPARE, ComparisonOp::SUB, #T "_" #REL, S NAME, 2, 7, 1, true, false, OP_JMP_##T##_##REL) \
+    X(OP_JMP_##T##_##REL, NOP_JMP_##T##_COMPARE, ComparisonOp::SUB, "JMP_" #T "_" #REL, "", 2, 6, 0, true, true, NOP_NONE)
+#define NEOCORE_COMPARISONS(X, T, S) \
+    NEOCORE_COMPARISON_PAIR(X, T, S, EQ, "eq", Equal) \
+    NEOCORE_COMPARISON_PAIR(X, T, S, LT, "lt", Less) \
+    NEOCORE_COMPARISON_PAIR(X, T, S, LE, "le", LessEqual) \
+    NEOCORE_COMPARISON_PAIR(X, T, S, NE, "ne", NotEqual) \
+    NEOCORE_COMPARISON_PAIR(X, T, S, GT, "gt", Greater) \
+    NEOCORE_COMPARISON_PAIR(X, T, S, GE, "ge", GreaterEqual)
 #define NEOCORE_TYPED_OPS(X) \
-    X(NOP_I64_ADD, "I64_ADD", "iadd", 2, 7, 1, false, false, NOP_NONE) \
-    X(NOP_I64_SUB, "I64_SUB", "isub", 2, 7, 1, false, false, NOP_NONE) \
-    X(NOP_I64_MUL, "I64_MUL", "imul", 2, 7, 1, false, false, NOP_NONE) \
-    X(NOP_I64_DIV, "I64_DIV", "idiv", 2, 7, 1, false, false, NOP_NONE) \
-    X(NOP_I64_MOD, "I64_MOD", "imod", 2, 7, 1, false, false, NOP_NONE) \
-    X(NOP_I64_AND, "I64_AND", "iand", 2, 7, 1, false, false, NOP_NONE) \
-    X(NOP_I64_OR, "I64_OR", "ior", 2, 7, 1, false, false, NOP_NONE) \
-    X(NOP_I64_XOR, "I64_XOR", "ixor", 2, 7, 1, false, false, NOP_NONE) \
-    X(NOP_I64_SHL, "I64_SHL", "ishl", 2, 7, 1, false, false, NOP_NONE) \
-    X(NOP_I64_SHR, "I64_SHR", "ishr", 2, 7, 1, false, false, NOP_NONE) \
-    X(NOP_F64_ADD, "F64_ADD", "fadd", 2, 7, 1, false, false, NOP_NONE) \
-    X(NOP_F64_SUB, "F64_SUB", "fsub", 2, 7, 1, false, false, NOP_NONE) \
-    X(NOP_F64_MUL, "F64_MUL", "fmul", 2, 7, 1, false, false, NOP_NONE) \
-    X(NOP_F64_DIV, "F64_DIV", "fdiv", 2, 7, 1, false, false, NOP_NONE) \
-    X(NOP_I64_NEG, "I64_NEG", "ineg", 1, 3, 1, false, false, NOP_NONE) \
-    X(NOP_F64_NEG, "F64_NEG", "fneg", 1, 3, 1, false, false, NOP_NONE) \
-    X(NOP_I64_TO_F64, "I64_TO_F64", "itof", 1, 3, 1, false, false, NOP_NONE) \
-    X(NOP_F64_TO_I64, "F64_TO_I64", "ftoi", 1, 3, 1, false, false, NOP_NONE) \
-    X(NOP_I64_EQ, "I64_EQ", "ieq", 2, 7, 1, true, false, NOP_JMP_I64_EQ) \
-    X(NOP_I64_LT, "I64_LT", "ilt", 2, 7, 1, true, false, NOP_JMP_I64_LT) \
-    X(NOP_I64_LE, "I64_LE", "ile", 2, 7, 1, true, false, NOP_JMP_I64_LE) \
-    X(NOP_F64_EQ, "F64_EQ", "feq", 2, 7, 1, true, false, NOP_JMP_F64_EQ) \
-    X(NOP_F64_LT, "F64_LT", "flt", 2, 7, 1, true, false, NOP_JMP_F64_LT) \
-    X(NOP_F64_LE, "F64_LE", "fle", 2, 7, 1, true, false, NOP_JMP_F64_LE) \
-    X(NOP_JMP_I64_EQ, "JMP_I64_EQ", "", 2, 6, 0, true, true, NOP_NONE) \
-    X(NOP_JMP_I64_LT, "JMP_I64_LT", "", 2, 6, 0, true, true, NOP_NONE) \
-    X(NOP_JMP_I64_LE, "JMP_I64_LE", "", 2, 6, 0, true, true, NOP_NONE) \
-    X(NOP_JMP_F64_EQ, "JMP_F64_EQ", "", 2, 6, 0, true, true, NOP_NONE) \
-    X(NOP_JMP_F64_LT, "JMP_F64_LT", "", 2, 6, 0, true, true, NOP_NONE) \
-    X(NOP_JMP_F64_LE, "JMP_F64_LE", "", 2, 6, 0, true, true, NOP_NONE)
+    NEOCORE_COMMON_ARITHMETIC(X, I64, "i") \
+    NEOCORE_COMMON_ARITHMETIC(X, F64, "f") \
+    NEOCORE_INTEGER_ARITHMETIC(X) \
+    X(OP_I64_TO_F64, NOP_NUM_CONVERT, ConversionOp::IntToFloat, "I64_TO_F64", "itof", 1, 3, 1, false, false, NOP_NONE) \
+    X(OP_F64_TO_I64, NOP_NUM_CONVERT, ConversionOp::FloatToInt, "F64_TO_I64", "ftoi", 1, 3, 1, false, false, NOP_NONE) \
+    NEOCORE_COMPARISONS(X, I64, "i") \
+    NEOCORE_COMPARISONS(X, F64, "f")
 
 // 집합 명령의 물리 피연산자 모양은 숫자 명령과 분리한다. Window는 연속 지역 슬롯을 읽는다.
-#define NEOCORE_VECTOR_OPS(X, D, MAKE_SHAPE) \
+#define NEOCORE_VECTOR_PRIMARY_OPS(X, D, MAKE_SHAPE) \
     X(NOP_V##D##_MAKE, "V" #D "_MAKE", "v" #D "make", D, MAKE_SHAPE, D, 0) \
-    X(NOP_V##D##_ADD, "V" #D "_ADD", "v" #D "add", 2, Binary, D, 0) \
-    X(NOP_V##D##_SUB, "V" #D "_SUB", "v" #D "sub", 2, Binary, D, 0) \
-    X(NOP_V##D##_MUL, "V" #D "_MUL", "v" #D "mul", 2, Binary, D, 0) \
-    X(NOP_V##D##_DIV, "V" #D "_DIV", "v" #D "div", 2, Binary, D, 0) \
     X(NOP_V##D##_GET, "V" #D "_GET", "v" #D "get", 1, Unary, D, D - 1) \
     X(NOP_V##D##_SET, "V" #D "_SET", "v" #D "set", 2, Window, D, D - 1)
+// 각 차원은 기본 opcode 하나를 공유하고 사칙연산은 ArithmeticOp으로 구별한다.
+#define NEOCORE_VECTOR_ARITHMETIC_OPS(X, D) \
+    X(OP_V##D##_ADD, NOP_V##D##_ARITH, ArithmeticOp::Add, "V" #D "_ADD", "v" #D "add", 2, Binary, D, 0) \
+    X(OP_V##D##_SUB, NOP_V##D##_ARITH, ArithmeticOp::Sub, "V" #D "_SUB", "v" #D "sub", 2, Binary, D, 0) \
+    X(OP_V##D##_MUL, NOP_V##D##_ARITH, ArithmeticOp::Mul, "V" #D "_MUL", "v" #D "mul", 2, Binary, D, 0) \
+    X(OP_V##D##_DIV, NOP_V##D##_ARITH, ArithmeticOp::Div, "V" #D "_DIV", "v" #D "div", 2, Binary, D, 0)
 
 #define NEOCORE_ARRAY_OPS(X, TYPE, SUFFIX, D) \
     X(NOP_ARRAY_##TYPE##_NEW, "ARRAY_" #TYPE "_NEW", "a" SUFFIX "new", 2, Binary, D, 0) \
@@ -64,23 +66,31 @@
     NEOCORE_SET_OPS(X, I64, "i") \
     NEOCORE_SET_OPS(X, STRING, "s")
 
-// n1은 기존 값을 읽은 뒤 덮어쓴다. 숫자 종류와 키 종류는 명령 자체로 확정한다.
-#define NEOCORE_MAP_COMPOUND_FOR(X, KEY, VALUE) \
-    X(NOP_MAP_##KEY##_##VALUE##_ADD, "MAP_" #KEY "_" #VALUE "_ADD", "", 2, Compound, 0, 0) \
-    X(NOP_MAP_##KEY##_##VALUE##_SUB, "MAP_" #KEY "_" #VALUE "_SUB", "", 2, Compound, 0, 0) \
-    X(NOP_MAP_##KEY##_##VALUE##_MUL, "MAP_" #KEY "_" #VALUE "_MUL", "", 2, Compound, 0, 0) \
-    X(NOP_MAP_##KEY##_##VALUE##_DIV, "MAP_" #KEY "_" #VALUE "_DIV", "", 2, Compound, 0, 0)
+// 스칼라 접근은 저장소와 원소 타입을 컴파일 때 확정한다. Store는 n1[ n2 ] = n3이다.
+#define NEOCORE_SCALAR_ACCESS_FOR(X, OWNER, VALUE, SUFFIX) \
+    X(NOP_##OWNER##_##VALUE##_LOAD, #OWNER "_" #VALUE "_LOAD", SUFFIX "load", 2, Binary, 0, 0) \
+    X(NOP_##OWNER##_##VALUE##_STORE, #OWNER "_" #VALUE "_STORE", "", 3, Store, 0, 0)
 
-#define NEOCORE_MAP_COMPOUND_OPS(X) \
-    NEOCORE_MAP_COMPOUND_FOR(X, I64, I64) \
-    NEOCORE_MAP_COMPOUND_FOR(X, I64, F64) \
-    NEOCORE_MAP_COMPOUND_FOR(X, STRING, I64) \
-    NEOCORE_MAP_COMPOUND_FOR(X, STRING, F64)
+#define NEOCORE_SCALAR_ACCESS_OPS(X) \
+    NEOCORE_SCALAR_ACCESS_FOR(X, LIST, I64, "li") \
+    NEOCORE_SCALAR_ACCESS_FOR(X, LIST, F64, "lf") \
+    NEOCORE_SCALAR_ACCESS_FOR(X, LIST, BOOL, "lb") \
+    NEOCORE_SCALAR_ACCESS_FOR(X, MAP_INT, I64, "mii") \
+    NEOCORE_SCALAR_ACCESS_FOR(X, MAP_INT, F64, "mif") \
+    NEOCORE_SCALAR_ACCESS_FOR(X, MAP_INT, BOOL, "mib") \
+    NEOCORE_SCALAR_ACCESS_FOR(X, MAP_STR, I64, "msi") \
+    NEOCORE_SCALAR_ACCESS_FOR(X, MAP_STR, F64, "msf") \
+    NEOCORE_SCALAR_ACCESS_FOR(X, MAP_STR, BOOL, "msb") \
+    X(NOP_ARRAY_I64_STORE, "ARRAY_I64_STORE", "", 3, Store, 0, 0) \
+    X(NOP_ARRAY_F64_STORE, "ARRAY_F64_STORE", "", 3, Store, 0, 0) \
+    X(NOP_ARRAY_BOOL_STORE, "ARRAY_BOOL_STORE", "", 3, Store, 0, 0) \
+    X(NOP_ARRAY_I32_STORE, "ARRAY_I32_STORE", "", 3, Store, 0, 0) \
+    X(NOP_ARRAY_F32_STORE, "ARRAY_F32_STORE", "", 3, Store, 0, 0)
 
-#define NEOCORE_AGGREGATE_OPS(X) \
-    NEOCORE_VECTOR_OPS(X, 2, Binary) \
-    NEOCORE_VECTOR_OPS(X, 3, Window) \
-    NEOCORE_VECTOR_OPS(X, 4, Window) \
+#define NEOCORE_AGGREGATE_PRIMARY_OPS(X) \
+    NEOCORE_VECTOR_PRIMARY_OPS(X, 2, Binary) \
+    NEOCORE_VECTOR_PRIMARY_OPS(X, 3, Window) \
+    NEOCORE_VECTOR_PRIMARY_OPS(X, 4, Window) \
     X(NOP_CELL_NEW, "CELL_NEW", "cellnew", 1, Unary, 0, 0) \
     X(NOP_CELL_GET, "CELL_GET", "cellget", 1, Unary, 0, 0) \
     X(NOP_CELL_SET, "CELL_SET", "cellset", 2, Binary, 0, 0) \
@@ -96,15 +106,21 @@
     X(NOP_ARRAY_RESIZE, "ARRAY_RESIZE", "aresize", 2, Binary, 0, 0) \
     X(NOP_ARRAY_RESERVE, "ARRAY_RESERVE", "areserve", 2, Binary, 0, 0) \
     NEOCORE_IDENTITY_OPS(X) \
-    NEOCORE_MAP_COMPOUND_OPS(X)
+    NEOCORE_SCALAR_ACCESS_OPS(X)
+
+#define NEOCORE_VECTOR_ARITHMETIC_FAMILIES(X) \
+    NEOCORE_VECTOR_ARITHMETIC_OPS(X, 2) \
+    NEOCORE_VECTOR_ARITHMETIC_OPS(X, 3) \
+    NEOCORE_VECTOR_ARITHMETIC_OPS(X, 4)
 
 namespace NeoScript
 {
+typedef unsigned short OperationCode;
 enum eNOperation : unsigned char;
 
 struct TypedOpInfo
 {
-    eNOperation op;
+    OperationCode op;
     const char* name;
     const char* suffix;
     unsigned char arity;
@@ -112,16 +128,16 @@ struct TypedOpInfo
     unsigned char writes;
     bool comparison;
     bool jump;
-    eNOperation branchOp;
+    OperationCode branchOp;
 };
 
-inline const TypedOpInfo* GetTypedOpInfo(eNOperation op);
+inline const TypedOpInfo* GetTypedOpInfo(OperationCode op);
 
-enum class AggregateOpShape : unsigned char { Unary, Binary, Window, Compound };
+enum class AggregateOpShape : unsigned char { Unary, Binary, Window, Store };
 
 struct AggregateOpInfo
 {
-    eNOperation op;
+    OperationCode op;
     const char* name;
     const char* suffix;
     unsigned char arity;
@@ -130,8 +146,8 @@ struct AggregateOpInfo
     unsigned char controlMax;
 
     unsigned Slots() const
-    { return shape == AggregateOpShape::Binary || shape == AggregateOpShape::Compound ? 7 : 3; }
+    { return shape == AggregateOpShape::Binary || shape == AggregateOpShape::Store ? 7 : 3; }
 };
 
-inline const AggregateOpInfo* GetAggregateOpInfo(eNOperation op);
+inline const AggregateOpInfo* GetAggregateOpInfo(OperationCode op);
 }

@@ -22,7 +22,7 @@ enum class IROp
     LoadStorage, Assign, AddAssign, SubtractAssign, MultiplyAssign, DivideAssign,
     RemainderAssign, BitAndAssign, BitOrAssign, BitXorAssign, ShiftLeftAssign, ShiftRightAssign,
     PreIncrement, PreDecrement, PostIncrement, PostDecrement,
-    ScriptCall, NullableConvert, CopyStruct, MapRead, StringLiteral, Conditional
+    ScriptCall, NullableConvert, CopyStruct, MapRead, StringLiteral, Conditional, CollectionRead, CollectionWrite
 };
 
 enum class IRStorageKind { Invalid, Variable, Cell };
@@ -70,6 +70,16 @@ struct IRFunction
     std::vector<TypeId> parameterTypes;
 };
 
+// 디버그 이름과 별도로 선언의 저장 계약을 백엔드에 전달한다.
+struct IRStorageSymbol
+{
+    std::string backendName;
+    std::string ownerFunction;
+    TypeId type;
+    bool boxed;
+    bool parameter;
+};
+
 struct IRReturn
 {
     std::size_t functionIndex = static_cast<std::size_t>(-1);
@@ -88,6 +98,7 @@ struct TypedIR
     TypeRegistry types;
     std::vector<IRNode> nodes;
     std::vector<IRFunction> functions;
+    std::vector<IRStorageSymbol> storageSymbols;
     std::vector<IRReturn> returns;
 };
 

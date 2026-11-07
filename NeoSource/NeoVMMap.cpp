@@ -90,6 +90,7 @@ static bool MapKeyEquals(MapNode& node, VarInfo* pKey, u32 hash)
 	case VAR_VEC:       return VectorValuesEqual(&data->key, pKey);
 	case VAR_STRING:
 		return data->key._str == pKey->_str;
+	case VAR_VEC3:
 	case VAR_VEC4:       return VectorValuesEqual(&data->key, pKey);
 	default:           return ReferenceEquals(&data->key, pKey);
 	}

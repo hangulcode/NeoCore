@@ -2086,6 +2086,7 @@ struct neo_libs
 		case VAR_FLOAT: elementType = NeoArrayElementType::Float; break;
 		case VAR_BOOL:  elementType = NeoArrayElementType::Bool; break;
 		case VAR_VEC:
+		case VAR_VEC3:
 		case VAR_VEC4:
 			switch (initialValue->VectorComponentCount())
 			{
@@ -2383,7 +2384,7 @@ static int AddDefaultNativeFun(const std::string& nativeName, TYPE_NeoLib fun)
 	return nativeIndex;
 }
 // 특정 native 함수를 로드 시 전용 opcode 로 대체하도록 표시 (문자열 하드코딩 대신 등록부에 명시).
-static void SetSystemFunIntrinsic(const std::string& fname, eNOperation op)
+static void SetSystemFunIntrinsic(const std::string& fname, OperationCode op)
 {
 	auto it = g_sNeoFunLib_DefaultNativeIndex.find("#" + fname);
 	if (it != g_sNeoFunLib_DefaultNativeIndex.end())

@@ -70,6 +70,7 @@ NEOS_FORCEINLINE void CNeoVMWorker::Call(int n1, int n2, int returnValueIndex)
 	SetCodePtr(fun._codePtr);
 	_iSP_Vars = _iSP_VarsMax;
 	SetStackPointer(_iSP_Vars);
+	PrepareFunctionStorage(fun, _iSP_Vars);
 	_iSP_VarsMax = _iSP_Vars + fun._localAddCount;
 	if (_iSP_Vars_Max2 < _iSP_Vars + fun._stackSlotCount)
 		_iSP_Vars_Max2 = _iSP_Vars + fun._stackSlotCount;

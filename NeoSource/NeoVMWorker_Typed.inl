@@ -39,50 +39,6 @@ NEOS_FORCEINLINE void TypedMapRead(const SVMOperation& op)
     }
 }
 
-NEOS_NOINLINE void MapCompoundReadError(const VarInfo* receiver, VarInfo* key)
-{
-    // 문자열 생성과 오류 정리는 각 숫자 명령의 빠른 경로 밖에서 공유한다.
-    assert(receiver->GetType() == VAR_MAP || receiver->GetType() == VAR_NONE);
-    if (receiver->GetType() == VAR_NONE) SetError("cannot access a null map");
-    else SetErrorFormat("map key not found: %s", ToString(key).c_str());
-}
-
-template<bool StringKey, eNOperation Arithmetic>
-NEOS_FORCEINLINE void TypedMapCompound(const SVMOperation& op)
-{
-    VarInfo* receiver = GetVarPtr2(op);
-    VarInfo* key = GetVarPtr3(op);
-    assert(receiver->GetType() == VAR_MAP || receiver->GetType() == VAR_NONE);
-    if (receiver->GetType() == VAR_NONE)
-    {
-        MapCompoundReadError(receiver, key);
-        return;
-    }
-    VarInfo* found = StringKey
-        ? (key->GetType() == VAR_NONE ? nullptr : receiver->_tbl->FindString(key->_str))
-        : receiver->_tbl->FindInt(key->_int);
-    if (!found)
-    {
-        MapCompoundReadError(receiver, key);
-        return;
-    }
-    // 기존 숫자를 읽고 같은 타입으로 덮어쓰므로 목적지의 소유권·타입 태그는 바뀌지 않는다.
-    // 값 타입은 IR이 보증한다. 조회·계산 실패 전에는 목적지에 쓰지 않는다.
-    VarInfo* result = GetVarPtrF1(op);
-    if (Arithmetic == NOP_I64_ADD) result->_int = NeoIntAdd(result->_int, found->_int);
-    else if (Arithmetic == NOP_I64_SUB) result->_int = NeoIntSub(result->_int, found->_int);
-    else if (Arithmetic == NOP_I64_MUL) result->_int = NeoIntMul(result->_int, found->_int);
-    else if (Arithmetic == NOP_I64_DIV)
-    {
-        const NS_INT dividend = result->_int, divisor = found->_int;
-        if (CheckIntegerDivision(dividend, divisor)) result->_int = dividend / divisor;
-    }
-    else if (Arithmetic == NOP_F64_ADD) result->_float += found->_float;
-    else if (Arithmetic == NOP_F64_SUB) result->_float -= found->_float;
-    else if (Arithmetic == NOP_F64_MUL) result->_float *= found->_float;
-    else if (Arithmetic == NOP_F64_DIV) result->_float /= found->_float;
-}
-
 template<bool StringKey, int Operation>
 NEOS_FORCEINLINE void TypedSetOperation(const SVMOperation& op)
 {
@@ -120,15 +76,18 @@ NEOS_FORCEINLINE void TypedSetOperation(const SVMOperation& op)
 template<int Dimension>
 static NEOS_FORCEINLINE void ReadTypedVector(const VarInfo* value, float* components)
 {
-    if (Dimension < 4)
+    if (Dimension == 2)
     {
-        components[0] = value->_vecX;
-        components[1] = value->_vecYZ[0];
-        components[2] = Dimension == 3 ? value->_vecYZ[1] : 0.0f;
+        components[0] = value->_vecXY[0];
+        components[1] = value->_vecXY[1];
+        components[2] = 0.0f;
         components[3] = 0.0f;
     }
     else
+    {
+        assert((value->GetType() == VAR_VEC3 || value->GetType() == VAR_VEC4) && value->_vec->_refCount > 0);
         std::memcpy(components, value->_vec->v, sizeof(float) * 4);
+    }
 }
 
 template<int Dimension>
@@ -234,9 +193,9 @@ NEOS_FORCEINLINE void ReadTypedArrayValue(ArrayInfo* array, int index, VarInfo* 
         StoreNumberFloat(result, array->Float32Data()[index]);
     else
     {
-        // 결과 해제로 배열이 사라지더라도 Vec4 저장소는 결과가 계속 보유한다.
+        // 결과 해제로 배열이 사라지더라도 공유 벡터 저장소는 결과가 계속 보유한다.
         VarInfo value = array->VectorValues()[index];
-        if (Element == NeoArrayElementType::Vector4) ++value._vec->_refCount;
+        if (Element != NeoArrayElementType::Vector2) ++value._vec->_refCount;
         Var_Release(result);
         *result = value;
     }
@@ -250,7 +209,7 @@ NEOS_FORCEINLINE void WriteTypedArrayValue(ArrayInfo* array, int index, const Va
     else if (Element == NeoArrayElementType::Float) array->FloatData()[index] = value->_float;
     else if (Element == NeoArrayElementType::Int32) array->Int32Data()[index] = static_cast<std::int32_t>(value->_int);
     else if (Element == NeoArrayElementType::Float32) array->Float32Data()[index] = NeoNarrowFloat32(value->_float);
-    else if (Element == NeoArrayElementType::Vector4)
+    else if (Element == NeoArrayElementType::Vector3 || Element == NeoArrayElementType::Vector4)
     {
         VarInfo copy = *value;
         ++copy._vec->_refCount;
@@ -396,4 +355,314 @@ NEOS_NOINLINE void TypedIntegerShift(const SVMOperation& op)
     const NS_INT value = GetVarPtr2(op)->_int, count = GetVarPtr3(op)->_int;
     if (CheckShiftCount(count))
         StoreNumberInt(GetVarPtrF1(op), Left ? NeoShiftLeft(value, count) : NeoShiftRight(value, count));
+}
+
+// Owner: 0은 목록, 1은 정수 키 맵, 2는 문자열 키 맵이다. 값의 타입은 템플릿으로 고정한다.
+template<int Owner>
+NEOS_FORCEINLINE VarInfo* ScalarContainerElement(VarInfo* receiver, VarInfo* key, bool write)
+{
+    assert(receiver->GetType() == (Owner == 0 ? VAR_LIST : VAR_MAP) || receiver->GetType() == VAR_NONE);
+    if (receiver->GetType() == VAR_NONE)
+    {
+        SetError(Owner == 0 ? "cannot access a null list" : "cannot access a null map");
+        return nullptr;
+    }
+    if (Owner == 0)
+    {
+        const NS_UINT index = static_cast<NS_UINT>(key->_int);
+        if (index >= static_cast<NS_UINT>(receiver->_lst->_itemCount))
+        {
+            SetError(write ? RTE_ARRAY_INDEX_WRITE : RTE_ARRAY_INDEX_READ);
+            return nullptr;
+        }
+        return &receiver->_lst->_Bucket[index];
+    }
+    if (Owner == 2 && key->GetType() == VAR_NONE)
+    {
+        if (write) SetError("map key cannot be null");
+        else SetErrorFormat("map key not found: %s", ToString(key).c_str());
+        return nullptr;
+    }
+    VarInfo* found = Owner == 1 ? receiver->_tbl->FindInt(key->_int) : receiver->_tbl->FindString(key->_str);
+    if (!found && !write) SetErrorFormat("map key not found: %s", ToString(key).c_str());
+    return found;
+}
+
+template<int Owner, VAR_TYPE Value>
+NEOS_FORCEINLINE void ScalarContainerLoad(VarInfo* result, VarInfo* receiver, VarInfo* key)
+{
+    VarInfo* found = ScalarContainerElement<Owner>(receiver, key, false);
+    if (!found) return;
+    assert(found->GetType() == Value);
+    if (Value == VAR_INT) StoreNumberInt(result, found->_int);
+    else if (Value == VAR_FLOAT) StoreNumberFloat(result, found->_float);
+    else StoreNumberBool(result, found->_bl);
+}
+
+template<int Owner, VAR_TYPE Value>
+NEOS_FORCEINLINE void ScalarContainerStore(VarInfo* receiver, VarInfo* key, VarInfo* value)
+{
+    VarInfo* target = ScalarContainerElement<Owner>(receiver, key, true);
+    if (IsErrorTrap()) return;
+    assert(value->GetType() == Value);
+    if (target)
+    {
+        if (Value == VAR_INT) StoreNumberInt(target, value->_int);
+        else if (Value == VAR_FLOAT) StoreNumberFloat(target, value->_float);
+        else StoreNumberBool(target, value->_bl);
+    }
+    else receiver->_tbl->Insert(key, value);
+}
+
+template<NeoArrayElementType Element>
+NEOS_FORCEINLINE void ScalarArrayStore(VarInfo* receiver, VarInfo* key, VarInfo* value)
+{
+    if (!CheckTypedArrayReceiver(receiver)) return;
+    if (!receiver->_array->IsValidIndex(key->_int)) { SetError(RTE_ARRAY_INDEX_WRITE); return; }
+    if (!CheckTypedArrayValue<Element>(value)) return;
+    WriteTypedArrayValue<Element>(receiver->_array, static_cast<int>(key->_int), value);
+}
+
+// VM은 기본 opcode로 분기하고, 계열별 함수가 하위 비트의 세부 연산을 처리한다.
+inline void handle_COMPARE(const SVMOperation& OP)
+{
+    switch (static_cast<ComparisonOp>(OP.argFlag & NEOS_OP_SUB_MASK))
+    {
+    case ComparisonOp::Equal: handle_EQUAL2_cold(OP); break;
+    case ComparisonOp::Less: handle_LESS_cold(OP); break;
+    case ComparisonOp::LessEqual: handle_LESS_EQ_cold(OP); break;
+    case ComparisonOp::NotEqual: handle_NEQUAL_cold(OP); break;
+    case ComparisonOp::Greater: handle_GREAT_cold(OP); break;
+    case ComparisonOp::GreaterEqual: handle_GREAT_EQ_cold(OP); break;
+    default: SetError(RTE_UNKNOWN_OP); break;
+    }
+}
+
+inline void handle_JMP_COMPARE(const SVMOperation& OP)
+{
+    switch (static_cast<ComparisonOp>(OP.argFlag & NEOS_OP_SUB_MASK))
+    {
+    case ComparisonOp::Equal: if (true == CompareEQ(GetVarPtr2(OP), GetVarPtr3(OP))) SetCodeIncPtr(OP.n1); break;
+    case ComparisonOp::Less: if (((OP.argFlag & NEOS_OP_COMPARE_INVERT) == 0) == CompareGR(GetVarPtr3(OP), GetVarPtr2(OP), true)) SetComparisonJump(OP.n1); break;
+    case ComparisonOp::LessEqual: if (((OP.argFlag & NEOS_OP_COMPARE_INVERT) == 0) == CompareGE(GetVarPtr3(OP), GetVarPtr2(OP), true)) SetComparisonJump(OP.n1); break;
+    case ComparisonOp::NotEqual: if (false == CompareEQ(GetVarPtr2(OP), GetVarPtr3(OP))) SetCodeIncPtr(OP.n1); break;
+    case ComparisonOp::Greater: if (((OP.argFlag & NEOS_OP_COMPARE_INVERT) == 0) == CompareGR(GetVarPtr2(OP), GetVarPtr3(OP))) SetComparisonJump(OP.n1); break;
+    case ComparisonOp::GreaterEqual: if (((OP.argFlag & NEOS_OP_COMPARE_INVERT) == 0) == CompareGE(GetVarPtr2(OP), GetVarPtr3(OP))) SetComparisonJump(OP.n1); break;
+    default: SetError(RTE_UNKNOWN_OP); break;
+    }
+}
+
+inline void handle_JMP_COMPARE_L(const SVMOperation& OP)
+{
+    switch (static_cast<ComparisonOp>(OP.argFlag & NEOS_OP_SUB_MASK))
+    {
+    case ComparisonOp::Equal: if (true == CompareEQ(GetVarPtr_L(OP.n2), GetVarPtr_L(OP.n3))) SetCodeIncPtr(OP.n1); break;
+    case ComparisonOp::Less: if (((OP.argFlag & NEOS_OP_COMPARE_INVERT) == 0) == CompareGR(GetVarPtr_L(OP.n3), GetVarPtr_L(OP.n2), true)) SetComparisonJump(OP.n1); break;
+    case ComparisonOp::LessEqual: if (((OP.argFlag & NEOS_OP_COMPARE_INVERT) == 0) == CompareGE(GetVarPtr_L(OP.n3), GetVarPtr_L(OP.n2), true)) SetComparisonJump(OP.n1); break;
+    case ComparisonOp::NotEqual: if (false == CompareEQ(GetVarPtr_L(OP.n2), GetVarPtr_L(OP.n3))) SetCodeIncPtr(OP.n1); break;
+    case ComparisonOp::Greater: if (((OP.argFlag & NEOS_OP_COMPARE_INVERT) == 0) == CompareGR(GetVarPtr_L(OP.n2), GetVarPtr_L(OP.n3))) SetComparisonJump(OP.n1); break;
+    case ComparisonOp::GreaterEqual: if (((OP.argFlag & NEOS_OP_COMPARE_INVERT) == 0) == CompareGE(GetVarPtr_L(OP.n2), GetVarPtr_L(OP.n3))) SetComparisonJump(OP.n1); break;
+    default: SetError(RTE_UNKNOWN_OP); break;
+    }
+}
+
+// 입력과 목적지가 같은 숫자 슬롯이므로 참조 해제와 타입 태그 쓰기를 반복하지 않는다.
+inline void UpdateIntegerArithmetic(const SVMOperation& OP)
+{
+    VarInfo* value = GetVarPtrF1(OP);
+    const VarInfo* right = GetVarPtr2(OP);
+    assert(value->GetType() == VAR_INT && right->GetType() == VAR_INT);
+    const NS_INT a = value->_int, b = right->_int;
+    switch (static_cast<ArithmeticOp>(OP.argFlag & NEOS_OP_SUB_MASK))
+    {
+    case ArithmeticOp::Add: value->_int = NeoIntAdd(a, b); break;
+    case ArithmeticOp::Sub: value->_int = NeoIntSub(a, b); break;
+    case ArithmeticOp::Mul: value->_int = NeoIntMul(a, b); break;
+    case ArithmeticOp::Div: if (CheckIntegerDivision(a, b)) value->_int = a / b; break;
+    case ArithmeticOp::Mod: if (CheckIntegerDivision(a, b)) value->_int = a % b; break;
+    case ArithmeticOp::BitAnd: value->_int = a & b; break;
+    case ArithmeticOp::BitOr: value->_int = a | b; break;
+    case ArithmeticOp::BitXor: value->_int = a ^ b; break;
+    case ArithmeticOp::ShiftLeft: if (CheckShiftCount(b)) value->_int = NeoShiftLeft(a, b); break;
+    case ArithmeticOp::ShiftRight: if (CheckShiftCount(b)) value->_int = NeoShiftRight(a, b); break;
+    default: SetError(RTE_UNKNOWN_OP); break;
+    }
+}
+inline void UpdateFloatArithmetic(const SVMOperation& OP)
+{
+    VarInfo* value = GetVarPtrF1(OP);
+    const VarInfo* right = GetVarPtr2(OP);
+    assert(value->GetType() == VAR_FLOAT && right->GetType() == VAR_FLOAT);
+    const NS_FLOAT a = value->_float, b = right->_float;
+    switch (static_cast<ArithmeticOp>(OP.argFlag & NEOS_OP_SUB_MASK))
+    {
+    case ArithmeticOp::Add: value->_float = a + b; break;
+    case ArithmeticOp::Sub: value->_float = a - b; break;
+    case ArithmeticOp::Mul: value->_float = a * b; break;
+    case ArithmeticOp::Div: value->_float = a / b; break;
+    default: SetError(RTE_UNKNOWN_OP); break;
+    }
+}
+
+template<bool Fixed>
+NEOS_FORCEINLINE void StoreArithmeticInt(VarInfo* target, NS_INT value)
+{
+    if (Fixed) { assert(target->GetType() == VAR_INT); target->_int = value; }
+    else StoreNumberInt(target, value);
+}
+template<bool Fixed>
+NEOS_FORCEINLINE void StoreArithmeticFloat(VarInfo* target, NS_FLOAT value)
+{
+    if (Fixed) { assert(target->GetType() == VAR_FLOAT); target->_float = value; }
+    else StoreNumberFloat(target, value);
+}
+
+template<bool Fixed>
+inline void handle_I64_ARITH(const SVMOperation& OP)
+{
+    if (OP.argFlag & NEOS_OP_ARITH_UPDATE) { UpdateIntegerArithmetic(OP); return; }
+    switch (static_cast<ArithmeticOp>(OP.argFlag & NEOS_OP_SUB_MASK))
+    {
+    case ArithmeticOp::Add: StoreArithmeticInt<Fixed>(GetVarPtrF1(OP), NeoIntAdd(GetVarPtr2(OP)->_int, GetVarPtr3(OP)->_int)); break;
+    case ArithmeticOp::Sub: StoreArithmeticInt<Fixed>(GetVarPtrF1(OP), NeoIntSub(GetVarPtr2(OP)->_int, GetVarPtr3(OP)->_int)); break;
+    case ArithmeticOp::Mul: StoreArithmeticInt<Fixed>(GetVarPtrF1(OP), NeoIntMul(GetVarPtr2(OP)->_int, GetVarPtr3(OP)->_int)); break;
+    case ArithmeticOp::Div:
+        if (CheckIntegerDivision(GetVarPtr2(OP)->_int, GetVarPtr3(OP)->_int))
+            StoreArithmeticInt<Fixed>(GetVarPtrF1(OP), GetVarPtr2(OP)->_int / GetVarPtr3(OP)->_int);
+        break;
+    case ArithmeticOp::Mod:
+        if (CheckIntegerDivision(GetVarPtr2(OP)->_int, GetVarPtr3(OP)->_int))
+            StoreArithmeticInt<Fixed>(GetVarPtrF1(OP), GetVarPtr2(OP)->_int % GetVarPtr3(OP)->_int);
+        break;
+    case ArithmeticOp::BitAnd: StoreArithmeticInt<Fixed>(GetVarPtrF1(OP), GetVarPtr2(OP)->_int & GetVarPtr3(OP)->_int); break;
+    case ArithmeticOp::BitOr: StoreArithmeticInt<Fixed>(GetVarPtrF1(OP), GetVarPtr2(OP)->_int | GetVarPtr3(OP)->_int); break;
+    case ArithmeticOp::BitXor: StoreArithmeticInt<Fixed>(GetVarPtrF1(OP), GetVarPtr2(OP)->_int ^ GetVarPtr3(OP)->_int); break;
+    case ArithmeticOp::ShiftLeft:
+        if (CheckShiftCount(GetVarPtr3(OP)->_int))
+            StoreArithmeticInt<Fixed>(GetVarPtrF1(OP), NeoShiftLeft(GetVarPtr2(OP)->_int, GetVarPtr3(OP)->_int));
+        break;
+    case ArithmeticOp::ShiftRight:
+        if (CheckShiftCount(GetVarPtr3(OP)->_int))
+            StoreArithmeticInt<Fixed>(GetVarPtrF1(OP), NeoShiftRight(GetVarPtr2(OP)->_int, GetVarPtr3(OP)->_int));
+        break;
+    case ArithmeticOp::Neg: StoreArithmeticInt<Fixed>(GetVarPtrF1(OP), NeoIntNeg(GetVarPtr2(OP)->_int)); break;
+    default: SetError(RTE_UNKNOWN_OP); break;
+    }
+}
+
+template<bool Fixed>
+inline void handle_F64_ARITH(const SVMOperation& OP)
+{
+    if (OP.argFlag & NEOS_OP_ARITH_UPDATE) { UpdateFloatArithmetic(OP); return; }
+    switch (static_cast<ArithmeticOp>(OP.argFlag & NEOS_OP_SUB_MASK))
+    {
+    case ArithmeticOp::Add: StoreArithmeticFloat<Fixed>(GetVarPtrF1(OP), GetVarPtr2(OP)->_float + GetVarPtr3(OP)->_float); break;
+    case ArithmeticOp::Sub: StoreArithmeticFloat<Fixed>(GetVarPtrF1(OP), GetVarPtr2(OP)->_float - GetVarPtr3(OP)->_float); break;
+    case ArithmeticOp::Mul: StoreArithmeticFloat<Fixed>(GetVarPtrF1(OP), GetVarPtr2(OP)->_float * GetVarPtr3(OP)->_float); break;
+    case ArithmeticOp::Div: StoreArithmeticFloat<Fixed>(GetVarPtrF1(OP), GetVarPtr2(OP)->_float / GetVarPtr3(OP)->_float); break;
+    case ArithmeticOp::Neg: StoreArithmeticFloat<Fixed>(GetVarPtrF1(OP), -GetVarPtr2(OP)->_float); break;
+    default: SetError(RTE_UNKNOWN_OP); break;
+    }
+}
+
+inline void handle_NUM_CONVERT(const SVMOperation& OP)
+{
+    switch (static_cast<ConversionOp>(OP.argFlag & NEOS_OP_SUB_MASK))
+    {
+    case ConversionOp::IntToFloat: StoreNumberFloat(GetVarPtrF1(OP), static_cast<NS_FLOAT>(GetVarPtr2(OP)->_int)); break;
+    case ConversionOp::FloatToInt: StoreNumberInt(GetVarPtrF1(OP), NeoFloatToInt(GetVarPtr2(OP)->_float)); break;
+    default: SetError(RTE_UNKNOWN_OP); break;
+    }
+}
+
+inline void handle_I64_COMPARE(const SVMOperation& OP)
+{
+    switch (static_cast<ComparisonOp>(OP.argFlag & NEOS_OP_SUB_MASK))
+    {
+    case ComparisonOp::Equal: StoreNumberBool(GetVarPtrF1(OP), ((OP.argFlag & NEOS_OP_COMPARE_INVERT) == 0) == (GetVarPtr2(OP)->_int == GetVarPtr3(OP)->_int)); break;
+    case ComparisonOp::Less: StoreNumberBool(GetVarPtrF1(OP), ((OP.argFlag & NEOS_OP_COMPARE_INVERT) == 0) == (GetVarPtr2(OP)->_int < GetVarPtr3(OP)->_int)); break;
+    case ComparisonOp::LessEqual: StoreNumberBool(GetVarPtrF1(OP), ((OP.argFlag & NEOS_OP_COMPARE_INVERT) == 0) == (GetVarPtr2(OP)->_int <= GetVarPtr3(OP)->_int)); break;
+    case ComparisonOp::NotEqual: StoreNumberBool(GetVarPtrF1(OP), ((OP.argFlag & NEOS_OP_COMPARE_INVERT) == 0) == (GetVarPtr2(OP)->_int != GetVarPtr3(OP)->_int)); break;
+    case ComparisonOp::Greater: StoreNumberBool(GetVarPtrF1(OP), ((OP.argFlag & NEOS_OP_COMPARE_INVERT) == 0) == (GetVarPtr2(OP)->_int > GetVarPtr3(OP)->_int)); break;
+    case ComparisonOp::GreaterEqual: StoreNumberBool(GetVarPtrF1(OP), ((OP.argFlag & NEOS_OP_COMPARE_INVERT) == 0) == (GetVarPtr2(OP)->_int >= GetVarPtr3(OP)->_int)); break;
+    default: SetError(RTE_UNKNOWN_OP); break;
+    }
+}
+
+inline void handle_F64_COMPARE(const SVMOperation& OP)
+{
+    switch (static_cast<ComparisonOp>(OP.argFlag & NEOS_OP_SUB_MASK))
+    {
+    case ComparisonOp::Equal: StoreNumberBool(GetVarPtrF1(OP), ((OP.argFlag & NEOS_OP_COMPARE_INVERT) == 0) == (GetVarPtr2(OP)->_float == GetVarPtr3(OP)->_float)); break;
+    case ComparisonOp::Less: StoreNumberBool(GetVarPtrF1(OP), ((OP.argFlag & NEOS_OP_COMPARE_INVERT) == 0) == (GetVarPtr2(OP)->_float < GetVarPtr3(OP)->_float)); break;
+    case ComparisonOp::LessEqual: StoreNumberBool(GetVarPtrF1(OP), ((OP.argFlag & NEOS_OP_COMPARE_INVERT) == 0) == (GetVarPtr2(OP)->_float <= GetVarPtr3(OP)->_float)); break;
+    case ComparisonOp::NotEqual: StoreNumberBool(GetVarPtrF1(OP), ((OP.argFlag & NEOS_OP_COMPARE_INVERT) == 0) == (GetVarPtr2(OP)->_float != GetVarPtr3(OP)->_float)); break;
+    case ComparisonOp::Greater: StoreNumberBool(GetVarPtrF1(OP), ((OP.argFlag & NEOS_OP_COMPARE_INVERT) == 0) == (GetVarPtr2(OP)->_float > GetVarPtr3(OP)->_float)); break;
+    case ComparisonOp::GreaterEqual: StoreNumberBool(GetVarPtrF1(OP), ((OP.argFlag & NEOS_OP_COMPARE_INVERT) == 0) == (GetVarPtr2(OP)->_float >= GetVarPtr3(OP)->_float)); break;
+    default: SetError(RTE_UNKNOWN_OP); break;
+    }
+}
+
+inline void handle_JMP_I64_COMPARE(const SVMOperation& OP)
+{
+    switch (static_cast<ComparisonOp>(OP.argFlag & NEOS_OP_SUB_MASK))
+    {
+    case ComparisonOp::Equal: if (((OP.argFlag & NEOS_OP_COMPARE_INVERT) == 0) == (GetVarPtr2(OP)->_int == GetVarPtr3(OP)->_int)) SetComparisonJump(OP.n1); break;
+    case ComparisonOp::Less: if (((OP.argFlag & NEOS_OP_COMPARE_INVERT) == 0) == (GetVarPtr2(OP)->_int < GetVarPtr3(OP)->_int)) SetComparisonJump(OP.n1); break;
+    case ComparisonOp::LessEqual: if (((OP.argFlag & NEOS_OP_COMPARE_INVERT) == 0) == (GetVarPtr2(OP)->_int <= GetVarPtr3(OP)->_int)) SetComparisonJump(OP.n1); break;
+    case ComparisonOp::NotEqual: if (((OP.argFlag & NEOS_OP_COMPARE_INVERT) == 0) == (GetVarPtr2(OP)->_int != GetVarPtr3(OP)->_int)) SetComparisonJump(OP.n1); break;
+    case ComparisonOp::Greater: if (((OP.argFlag & NEOS_OP_COMPARE_INVERT) == 0) == (GetVarPtr2(OP)->_int > GetVarPtr3(OP)->_int)) SetComparisonJump(OP.n1); break;
+    case ComparisonOp::GreaterEqual: if (((OP.argFlag & NEOS_OP_COMPARE_INVERT) == 0) == (GetVarPtr2(OP)->_int >= GetVarPtr3(OP)->_int)) SetComparisonJump(OP.n1); break;
+    default: SetError(RTE_UNKNOWN_OP); break;
+    }
+}
+
+inline void handle_JMP_F64_COMPARE(const SVMOperation& OP)
+{
+    switch (static_cast<ComparisonOp>(OP.argFlag & NEOS_OP_SUB_MASK))
+    {
+    case ComparisonOp::Equal: if (((OP.argFlag & NEOS_OP_COMPARE_INVERT) == 0) == (GetVarPtr2(OP)->_float == GetVarPtr3(OP)->_float)) SetComparisonJump(OP.n1); break;
+    case ComparisonOp::Less: if (((OP.argFlag & NEOS_OP_COMPARE_INVERT) == 0) == (GetVarPtr2(OP)->_float < GetVarPtr3(OP)->_float)) SetComparisonJump(OP.n1); break;
+    case ComparisonOp::LessEqual: if (((OP.argFlag & NEOS_OP_COMPARE_INVERT) == 0) == (GetVarPtr2(OP)->_float <= GetVarPtr3(OP)->_float)) SetComparisonJump(OP.n1); break;
+    case ComparisonOp::NotEqual: if (((OP.argFlag & NEOS_OP_COMPARE_INVERT) == 0) == (GetVarPtr2(OP)->_float != GetVarPtr3(OP)->_float)) SetComparisonJump(OP.n1); break;
+    case ComparisonOp::Greater: if (((OP.argFlag & NEOS_OP_COMPARE_INVERT) == 0) == (GetVarPtr2(OP)->_float > GetVarPtr3(OP)->_float)) SetComparisonJump(OP.n1); break;
+    case ComparisonOp::GreaterEqual: if (((OP.argFlag & NEOS_OP_COMPARE_INVERT) == 0) == (GetVarPtr2(OP)->_float >= GetVarPtr3(OP)->_float)) SetComparisonJump(OP.n1); break;
+    default: SetError(RTE_UNKNOWN_OP); break;
+    }
+}
+
+inline void handle_V2_ARITH(const SVMOperation& OP)
+{
+    switch (static_cast<ArithmeticOp>(OP.argFlag & NEOS_OP_SUB_MASK))
+    {
+    case ArithmeticOp::Add: TypedVectorArithmetic<2, 0>(OP); break;
+    case ArithmeticOp::Sub: TypedVectorArithmetic<2, 1>(OP); break;
+    case ArithmeticOp::Mul: TypedVectorArithmetic<2, 2>(OP); break;
+    case ArithmeticOp::Div: TypedVectorArithmetic<2, 3>(OP); break;
+    default: SetError(RTE_UNKNOWN_OP); break;
+    }
+}
+
+inline void handle_V3_ARITH(const SVMOperation& OP)
+{
+    switch (static_cast<ArithmeticOp>(OP.argFlag & NEOS_OP_SUB_MASK))
+    {
+    case ArithmeticOp::Add: TypedVectorArithmetic<3, 0>(OP); break;
+    case ArithmeticOp::Sub: TypedVectorArithmetic<3, 1>(OP); break;
+    case ArithmeticOp::Mul: TypedVectorArithmetic<3, 2>(OP); break;
+    case ArithmeticOp::Div: TypedVectorArithmetic<3, 3>(OP); break;
+    default: SetError(RTE_UNKNOWN_OP); break;
+    }
+}
+
+inline void handle_V4_ARITH(const SVMOperation& OP)
+{
+    switch (static_cast<ArithmeticOp>(OP.argFlag & NEOS_OP_SUB_MASK))
+    {
+    case ArithmeticOp::Add: TypedVectorArithmetic<4, 0>(OP); break;
+    case ArithmeticOp::Sub: TypedVectorArithmetic<4, 1>(OP); break;
+    case ArithmeticOp::Mul: TypedVectorArithmetic<4, 2>(OP); break;
+    case ArithmeticOp::Div: TypedVectorArithmetic<4, 3>(OP); break;
+    default: SetError(RTE_UNKNOWN_OP); break;
+    }
 }

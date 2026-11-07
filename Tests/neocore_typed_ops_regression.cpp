@@ -116,11 +116,11 @@ static std::vector<SVMOperation> Operations(const std::vector<uint8_t>& image)
     return result;
 }
 
-static int CountTyped(const std::vector<SVMOperation>& operations, eNOperation only = NOP_NONE)
+static int CountTyped(const std::vector<SVMOperation>& operations, OperationCode only = NOP_NONE)
 {
     int count = 0;
     for (const auto& operation : operations)
-        if (GetTypedOpInfo(operation.op) && (only == NOP_NONE || only == operation.op)) ++count;
+        if (GetTypedOpInfo(operation.Code()) && (only == NOP_NONE || only == ArithmeticMeaning(operation.Code()))) ++count;
     return count;
 }
 
@@ -130,8 +130,8 @@ static std::string DescribeOperations(const std::vector<SVMOperation>& operation
     for (std::size_t i = 0; i < operations.size(); ++i)
     {
         const SVMOperation& operation = operations[i];
-        const TypedOpInfo* info = GetTypedOpInfo(operation.op);
-        result += " " + std::to_string(i) + ":" + (info ? info->name : std::to_string(operation.op)) +
+        const TypedOpInfo* info = GetTypedOpInfo(operation.Code());
+        result += " " + std::to_string(i) + ":" + (info ? info->name : std::to_string(operation.Code())) +
             "[" + std::to_string(operation.n1) + "," + std::to_string(operation.n2) + "," +
             std::to_string(operation.n3) + ";flags=" + std::to_string(operation.argFlag) + "]";
     }
@@ -441,20 +441,20 @@ static void Comparisons(IRuntime* runtime, bool debug)
 
 static void Shapes(IRuntime* runtime, bool debug)
 {
-    struct Shape { const char* body; eNOperation expected; };
+    struct Shape { const char* body; OperationCode expected; };
     const Shape shapes[] = {
-        {"export int Probe(int a,int b){return a+b;}", NOP_I64_ADD},
-        {"export int Probe(int a,int b){return a-b;}", NOP_I64_SUB},
-        {"export int Probe(int a,int b){return a*b;}", NOP_I64_MUL},
-        {"export int Probe(int a,int b){return a/b;}", NOP_I64_DIV},
-        {"export float Probe(float a,float b){return a+b;}", NOP_F64_ADD},
-        {"export float Probe(float a,float b){return a-b;}", NOP_F64_SUB},
-        {"export float Probe(float a,float b){return a*b;}", NOP_F64_MUL},
-        {"export float Probe(float a,float b){return a/b;}", NOP_F64_DIV},
-        {"export int Probe(int a){return -a;}", NOP_I64_NEG},
-        {"export float Probe(float a){return -a;}", NOP_F64_NEG},
-        {"export float Probe(int a){return float(a);}", NOP_I64_TO_F64},
-        {"export int Probe(float a){return int(a);}", NOP_F64_TO_I64}
+        {"export int Probe(int a,int b){return a+b;}", OP_I64_ADD},
+        {"export int Probe(int a,int b){return a-b;}", OP_I64_SUB},
+        {"export int Probe(int a,int b){return a*b;}", OP_I64_MUL},
+        {"export int Probe(int a,int b){return a/b;}", OP_I64_DIV},
+        {"export float Probe(float a,float b){return a+b;}", OP_F64_ADD},
+        {"export float Probe(float a,float b){return a-b;}", OP_F64_SUB},
+        {"export float Probe(float a,float b){return a*b;}", OP_F64_MUL},
+        {"export float Probe(float a,float b){return a/b;}", OP_F64_DIV},
+        {"export int Probe(int a){return -a;}", OP_I64_NEG},
+        {"export float Probe(float a){return -a;}", OP_F64_NEG},
+        {"export float Probe(int a){return float(a);}", OP_I64_TO_F64},
+        {"export int Probe(float a){return int(a);}", OP_F64_TO_I64}
     };
     for (const auto& shape : shapes)
     {
@@ -482,11 +482,11 @@ static void Shapes(IRuntime* runtime, bool debug)
             {
                 for (std::size_t index = 0; index < operations.size(); ++index)
                 {
-                    if (operations[index].op != shape.expected) continue;
+                    if (ArithmeticMeaning(operations[index].Code()) != shape.expected) continue;
                     for (int change = 0; change < 3; ++change)
                     {
                         std::vector<SVMOperation> altered = operations;
-                        if (change == 0) altered[index].argFlag |= NEOS_ARG_N2_IMMEDIATE;
+                        if (change == 0) altered[index].argFlag |= NEOS_OP_SUB_MASK;
                         else if (change == 1)
                         {
                             altered[index].argFlag &= ~NEOS_ARG_N1_LOCAL;
@@ -527,14 +527,14 @@ static void Shapes(IRuntime* runtime, bool debug)
 
 static void ComparisonShapes(IRuntime* runtime, bool debug)
 {
-    struct Shape { const char* type; const char* relation; eNOperation op; bool inverted; };
+    struct Shape { const char* type; const char* relation; OperationCode op; bool inverted; };
     const Shape shapes[] = {
-        {"int", "==", NOP_I64_EQ, false}, {"int", "!=", NOP_I64_EQ, true},
-        {"int", "<", NOP_I64_LT, false}, {"int", "<=", NOP_I64_LE, false},
-        {"int", ">", NOP_I64_LT, false}, {"int", ">=", NOP_I64_LE, false},
-        {"float", "==", NOP_F64_EQ, false}, {"float", "!=", NOP_F64_EQ, true},
-        {"float", "<", NOP_F64_LT, false}, {"float", "<=", NOP_F64_LE, false},
-        {"float", ">", NOP_F64_LT, false}, {"float", ">=", NOP_F64_LE, false}
+        {"int", "==", OP_I64_EQ, false}, {"int", "!=", OP_I64_NE, false},
+        {"int", "<", OP_I64_LT, false}, {"int", "<=", OP_I64_LE, false},
+        {"int", ">", OP_I64_GT, false}, {"int", ">=", OP_I64_GE, false},
+        {"float", "==", OP_F64_EQ, false}, {"float", "!=", OP_F64_NE, false},
+        {"float", "<", OP_F64_LT, false}, {"float", "<=", OP_F64_LE, false},
+        {"float", ">", OP_F64_GT, false}, {"float", ">=", OP_F64_GE, false}
     };
     for (const auto& shape : shapes)
     {
@@ -576,12 +576,12 @@ static void ComparisonShapes(IRuntime* runtime, bool debug)
             Check(error.ok(), std::string("comparison shape image: ") + error.message);
             if (!error.ok()) continue;
             const auto operations = Operations(bytes);
-            const eNOperation expected = branch ? valueInfo->branchOp : shape.op;
+            const OperationCode expected = branch ? valueInfo->branchOp : shape.op;
             Check(CountTyped(operations, expected) == 1 && CountTyped(operations) == 1,
                 label + " comparison executes as one typed value or fused branch" + DescribeOperations(operations));
             int booleanBranches = 0;
             for (const auto& operation : operations)
-                if (operation.op == NOP_JMP_FALSE || operation.op == NOP_JMP_TRUE) ++booleanBranches;
+                if (operation.Code() == NOP_JMP_FALSE || operation.Code() == NOP_JMP_TRUE) ++booleanBranches;
             Check(booleanBranches == 0, "direct numeric condition has no bool-result branch");
 
             Error loadError;
@@ -590,7 +590,7 @@ static void ComparisonShapes(IRuntime* runtime, bool debug)
             if (loaded) runtime->DestroyProgram(loaded);
             for (std::size_t index = 0; index < operations.size(); ++index)
             {
-                if (operations[index].op != expected) continue;
+                if (operations[index].Code() != expected) continue;
                 const bool invert = (operations[index].argFlag & NEOS_OP_COMPARE_INVERT) != 0;
                 // if는 거짓일 때 건너뛰고, while의 뒤쪽 비교는 참일 때 본문으로 돌아간다.
                 const bool jumpWhenFalse = branch && form != 5;
@@ -599,7 +599,7 @@ static void ComparisonShapes(IRuntime* runtime, bool debug)
                 for (int change = 0; change < (branch ? 5 : 3); ++change)
                 {
                     std::vector<SVMOperation> altered = operations;
-                    if (change == 0) altered[index].argFlag |= NEOS_ARG_N2_IMMEDIATE;
+                    if (change == 0) altered[index].argFlag |= NEOS_OP_SUB_MASK;
                     else if (change == 1)
                     {
                         altered[index].argFlag |= NEOS_ARG_N2_LOCAL;
@@ -677,10 +677,10 @@ static void ComparisonShapes(IRuntime* runtime, bool debug)
         const auto operations = Operations(image);
         for (const auto& operation : operations)
         {
-            if (operation.op == NOP_JMP_RANGE_INSIDE || operation.op == NOP_JMP_RANGE_OUTSIDE ||
-                operation.op == NOP_JMP_RANGE_INSIDE_L || operation.op == NOP_JMP_RANGE_OUTSIDE_L)
+            if (operation.Code() == NOP_JMP_RANGE_INSIDE || operation.Code() == NOP_JMP_RANGE_OUTSIDE ||
+                operation.Code() == NOP_JMP_RANGE_INSIDE_L || operation.Code() == NOP_JMP_RANGE_OUTSIDE_L)
                 ++rangesFound;
-            const TypedOpInfo* info = GetTypedOpInfo(operation.op);
+            const TypedOpInfo* info = GetTypedOpInfo(operation.Code());
             if (info && info->comparison && info->jump) ++typedBranches;
         }
         Check(range.fused ? rangesFound == 1 && typedBranches == 0 : rangesFound == 0 && typedBranches == 2,
@@ -785,8 +785,8 @@ static void StringConversionShapes(IRuntime* runtime, bool debug)
         int conversions = 0, concatenations = 0;
         for (const auto& operation : Operations(image))
         {
-            if (operation.op == NOP_TOSTRING) ++conversions;
-            if (operation.op == NOP_STR_ADD || operation.op == NOP_STR_ADD_L) ++concatenations;
+            if (operation.Code() == NOP_TOSTRING) ++conversions;
+            if (operation.Code() == NOP_STR_ADD || operation.Code() == NOP_STR_ADD_L) ++concatenations;
         }
         Check(conversions == (debug ? 1 : item.optimizedConversions) && concatenations == 1,
             std::string(item.source) + " only immediate temporary conversion is folded");
@@ -824,6 +824,65 @@ static void StaticProfile(IRuntime* runtime)
     if (invalid) runtime->DestroyProgram(invalid);
 }
 
+// 기본 opcode는 같아도 정의되지 않은 세부 연산을 이미지 로더가 받으면 안 된다.
+static void SubOperationImages(IRuntime* runtime)
+{
+    const char* source =
+        "export int I(int a,int b){return a-b;}"
+        "export float F(float a,float b){return a/b;}"
+        "export bool C(float a,float b){return a>=b;}"
+        "export int J(int a,int b){if(a!=b)return 1;return 0;}"
+        "export bool S(string a,string b){return a!=b;}"
+        "export int SJ(string a,string b){if(a==b)return 1;return 0;}"
+        "export Vector3 V(Vector3 a,float b){return a*b;}"
+        "export float Convert(int a){return float(a);}"
+        "export int Loop(){int s=0;for(int i in 0,3){s+=i;}list<int> a=[4,5];foreach(int x in a){s+=x;}return s;}"
+        "export float Immediate(){float x=1.5;return x;}";
+    NeoCore::StaticCompileResult checked;
+    Check(NeoCore::CompileStaticSource(source, checked), "sub-operation image frontend: " + checked.errorMessage);
+    if (!checked.success) return;
+    CompileDesc desc; desc.source=checked.loweredSource; desc.coreTypedIR=&checked.typedIR;
+    desc.coreIntrinsicPrefix=checked.backendIntrinsicPrefix; desc.includeDebugInfo=true;
+    std::vector<uint8_t> bytes;
+    Check(runtime->CompileToBytecode(desc,bytes).ok(), "sub-operation image compilation");
+    const auto operations=Operations(bytes);
+    bool sawFor=false, sawForeach=false, sawImmediate=false;
+    for (std::size_t i=2;i<operations.size();++i)
+    {
+        const SVMOperation& op=operations[i];
+        sawFor |= op.op==NOP_JMP_FOR; sawForeach |= op.op==NOP_JMP_FOREACH;
+        sawImmediate |= op.op==NOP_MOVF;
+        for(unsigned sub=0;sub<16;++sub)
+        {
+            const OperationCode code=MakeOperation(op.op,sub);
+            const bool known=GetTypedOpInfo(code)||GetAggregateOpInfo(code)||
+                (op.op==NOP_SLOT_COPY ? sub>=static_cast<unsigned>(SlotKind::Int) &&
+                    sub<static_cast<unsigned>(SlotKind::Function) :
+                    (op.op==NOP_COMPARE||op.op==NOP_JMP_COMPARE) ? sub<6 : sub==0);
+            if(known)continue;
+            auto malformed=bytes;
+            SVMOperation changed=op; changed.SetCode(code);
+            Check(changed.op==op.op && changed.n23==op.n23 && changed.n1==op.n1 &&
+                (changed.argFlag & ~NEOS_OP_SUB_MASK)==(op.argFlag & ~NEOS_OP_SUB_MASK),
+                "setting sub-operation preserves operand addresses and control flags");
+            std::memcpy(malformed.data()+sizeof(SNeoVMHeader)+i*sizeof(SVMOperation),&changed,sizeof(changed));
+            Error error; auto invalid=runtime->LoadProgram(malformed,&error);
+            Check(!invalid&&!error.ok(), "undefined sub-operation rejected");
+            if(invalid)runtime->DestroyProgram(invalid);
+        }
+    }
+    Check(sawFor&&sawForeach, "for and foreach retain standalone primary opcodes");
+    Check(sawImmediate, "float immediate survives flag layout change");
+    Error error; auto program=runtime->LoadProgram(bytes,&error);
+    Check(bool(program)&&error.ok(), "sub-operation image round trip");
+    if(program)
+    {
+        auto instance=runtime->CreateInstance(program);
+        Check(Same(Invoke(runtime,instance,"Loop"),Int(12)), "for and foreach execute after image round trip");
+        runtime->DestroyInstance(instance);runtime->DestroyProgram(program);
+    }
+}
+
 int main()
 {
     IRuntime* runtime = CreateRuntime();
@@ -831,6 +890,7 @@ int main()
     if (!runtime) return 1;
     runtime->FreezeBindings();
     StaticProfile(runtime);
+    SubOperationImages(runtime);
     for (bool debug : {false, true})
     {
         Arithmetic(runtime, debug);

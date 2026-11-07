@@ -137,7 +137,7 @@ enum VAR_TYPE : u8
 	VAR_FUN_NATIVE,
 	// Non-owning temporary, confined to the atomic chained-write handler.
 	VAR_REF,
-	// 2·3성분 벡터는 슬롯 안에 직접 보관하는 비할당 값이다.
+	// 2성분 벡터는 슬롯 안에 직접 보관하는 비할당 값이다.
 	VAR_VEC,
 
 	// =====================================================================
@@ -158,7 +158,8 @@ enum VAR_TYPE : u8
 	// 순환 참조의 당사자가 될 수 없고, 해제가 다른 객체로 내려가지 않는다.
 	VAR_STRING,
 
-	// 4성분 벡터·쿼터니언만 풀 저장소를 공유하고 쓰기 시 복제한다.
+	// 3·4성분 벡터와 쿼터니언은 풀 저장소를 공유하고 쓰기 시 복제한다.
+	VAR_VEC3,
 	VAR_VEC4,
 
 	// 네이티브 Function/Property 객체. map 저장소를 갖지 않는 독립 alloc 타입이다.
@@ -316,16 +317,11 @@ struct VarInfo
 {
 private:
 	VAR_TYPE	_type;
-	// 타입·성분 수·빈 2바이트 뒤에 x, union에 y/z를 두어 성분을 연속 배치한다.
-	// float[3]을 기존 union에 넣으면 정렬 때문에 슬롯이 24바이트가 되므로 분리한다.
-	u8 _vecCount;
-	u8 _unused[2];
-	float _vecX;
 	NEOS_FORCEINLINE void SetType(VAR_TYPE t) { _type = t; }
-	NEOS_FORCEINLINE void SetVecType(int count) { _type = count == 4 ? VAR_VEC4 : VAR_VEC; _vecCount = (u8)count; }
-	NEOS_FORCEINLINE void SetInlineVec(int count, float x, float y, float z)
+	NEOS_FORCEINLINE void SetVecType(int count) { _type = count == 2 ? VAR_VEC : count == 3 ? VAR_VEC3 : VAR_VEC4; }
+	NEOS_FORCEINLINE void SetInlineVec(float x, float y)
 	{
-		SetVecType(count); _vecX = x; _vecYZ[0] = y; _vecYZ[1] = z;
+		SetVecType(2); _vecXY[0] = x; _vecXY[1] = y;
 	}
 
 	NEOS_FORCEINLINE void ClearType()
@@ -362,8 +358,8 @@ public:
 		AsyncInfo*	_async;
 		ClosureInfo*	_closure;
 		CollectionIterator	_it;
-		VecInfo*	_vec; // VAR_VEC4 전용 공유 저장소
-		float _vecYZ[2]; // VAR_VEC의 y/z. x는 타입 영역 뒤에 둔다.
+		VecInfo*	_vec; // 3·4성분 벡터의 공유 저장소
+		float _vecXY[2]; // 2성분 벡터는 값 영역 안에 직접 보관한다.
 		ArrayInfo*	_array; // VAR_ARRAY 밀집 원시 배열
 		VarInfo* _ref; // VAR_REF: never stored in script values
 	};
@@ -397,12 +393,12 @@ public:
 	}
 	NEOS_FORCEINLINE bool IsVector() const
 	{
-		return (_type == VAR_VEC || _type == VAR_VEC4);
+		return (_type == VAR_VEC || _type == VAR_VEC3 || _type == VAR_VEC4);
 	}
 	// 벡터가 아니면 0. 내부 저장 방식과 무관하게 같은 성분 수를 돌려준다.
 	NEOS_FORCEINLINE int VectorComponentCount() const
 	{
-		return IsVector() ? _vecCount : 0;
+		return _type == VAR_VEC ? 2 : _type == VAR_VEC3 ? 3 : _type == VAR_VEC4 ? 4 : 0;
 	}
 	NEOS_FORCEINLINE float VectorComponent(int index) const;
 	NEOS_FORCEINLINE void CopyVectorComponents(float* out) const;
@@ -671,8 +667,8 @@ public:
 	void Var_SetInt(VarInfo* d, NS_INT v);
 	void Var_SetFloat(VarInfo* d, NS_FLOAT v);
 	void Var_SetBool(VarInfo* d, bool v);
-	// 4성분 저장소는 단독 소유일 때 재사용한다. 2·3성분은 StoreVector가 직접 저장한다.
-	VecInfo*	Vec4StoreFor(VarInfo* d);
+	// 3·4성분 저장소는 단독 소유일 때 재사용한다. 2성분은 StoreVector가 직접 저장한다.
+	VecInfo*	VecStoreFor(VarInfo* d, int dimension);
 	void StoreVector(VarInfo* d, int count, float x, float y, float z, float w);
 	float&	WritableVectorComponent(VarInfo* d, int index);
 	// 외부 setter의 인자 수와 벡터 성분 수는 기존과 같다.

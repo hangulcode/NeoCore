@@ -152,8 +152,37 @@ enum LiteralKind
 	Literal_Float,
 };
 
+static SlotType CoreStorageType(const NeoCore::TypeRegistry& types, NeoCore::TypeId id)
+{
+    using NeoCore::TypeKind;
+    SlotType storage;
+    storage.typeId = id;
+    const NeoCore::TypeDesc& type = types.Get(id);
+    switch (type.kind)
+    {
+    case TypeKind::Int: storage.kind = SlotKind::Int; break;
+    case TypeKind::Float: storage.kind = SlotKind::Float; break;
+    case TypeKind::Bool: storage.kind = SlotKind::Bool; break;
+    case TypeKind::String: storage.kind = SlotKind::String; break;
+    case TypeKind::Vector2: storage.kind = SlotKind::Vector2; break;
+    case TypeKind::Vector3: storage.kind = SlotKind::Vector3; break;
+    case TypeKind::Vector4: case TypeKind::Quaternion: storage.kind = SlotKind::Vector4; break;
+    case TypeKind::Array: case TypeKind::Array32: storage.kind = SlotKind::Array; break;
+    case TypeKind::List: case TypeKind::Struct: storage.kind = SlotKind::List; break;
+    case TypeKind::Map: storage.kind = SlotKind::Map; break;
+    case TypeKind::Set: storage.kind = SlotKind::Set; break;
+    case TypeKind::Function: storage.kind = SlotKind::Function; break;
+    case TypeKind::Native: storage.kind = SlotKind::ObjectId; break;
+    case TypeKind::BuiltinObject: storage.kind = type.name == "AsyncRequest" ? SlotKind::Async : SlotKind::Native; break;
+    case TypeKind::Coroutine: storage.kind = SlotKind::Coroutine; break;
+    default: break;
+    }
+    return storage;
+}
+
 struct SOperand
 {
+	SlotType _storage;
 	int _iVar;
 	int _iArrayIndex;
 	OperandType _operandType;
@@ -201,8 +230,10 @@ struct SOperand
 		else
 			_operandType = operandType;
 	}
+	SOperand(int iVar, const SlotType& storage) : SOperand(iVar) { _storage = storage; }
 	void Reset()
 	{
+		_storage = SlotType();
 		_readOnly = false;
 		_snapshotOffset = -1;
         _assignedResult = false;
@@ -217,6 +248,8 @@ struct SOperand
 	}
 	void SetIntLiteral(int var, NS_INT value)
 	{
+		_storage.typeId = static_cast<u32>(NeoCore::TypeKind::Int);
+		_storage.kind = SlotKind::Int;
 		_iVar = var;
 		_iArrayIndex = INVALID_ERROR_PARSEJOB;
 		_operandType = Data_NR;
@@ -226,6 +259,8 @@ struct SOperand
 	}
 	void SetFloatLiteral(int var, NS_FLOAT value)
 	{
+		_storage.typeId = static_cast<u32>(NeoCore::TypeKind::Float);
+		_storage.kind = SlotKind::Float;
 		_iVar = var;
 		_iArrayIndex = INVALID_ERROR_PARSEJOB;
 		_operandType = Data_NR;
@@ -296,7 +331,7 @@ static void ReadElement(SOperand& operand, int dest, CArchiveRdWC& ar, SFunction
 }
 
 
-static eNOperation RejectLegacyArithmetic(CArchiveRdWC& ar)
+static OperationCode RejectLegacyArithmetic(CArchiveRdWC& ar)
 {
     SetCompileError(ar, "numeric expressions require typed IR");
     return NOP_ERROR;
@@ -304,7 +339,7 @@ static eNOperation RejectLegacyArithmetic(CArchiveRdWC& ar)
 
 
 
-static void WriteElement(SOperand& operand, eNOperation op, int value, bool immediate,
+static void WriteElement(SOperand& operand, OperationCode op, int value, bool immediate,
 	CArchiveRdWC& ar, SFunctions& funs)
 {
     PrepareContainerPath(operand, ar, funs);
@@ -334,15 +369,15 @@ static void MaterializeValue(SOperand& operand, CArchiveRdWC& ar, SFunctions& fu
 {
 	if (operand.IsFun())
 	{
-		const int value = funs._cur->AllocLocalTempVar();
+		const int value = funs._cur->AllocLocalTempVar(operand._storage);
 		funs._cur->Push_OP2(ar, NOP_FMOV1, value, operand._iVar, false);
-		operand = SOperand(value);
+		operand = SOperand(value, operand._storage);
 	}
 	else if (operand.IsArray())
 	{
-		const int value = funs._cur->AllocLocalTempVar();
+		const int value = funs._cur->AllocLocalTempVar(operand._storage);
 		ReadElement(operand, value, ar, funs);
-		operand = SOperand(value);
+		operand = SOperand(value, operand._storage);
 	}
 }
 
@@ -357,9 +392,9 @@ static void SnapshotValue(SOperand& operand, CArchiveRdWC& ar, SFunctions& funs)
     MaterializeValue(operand, ar, funs);
     if (!operand.IsInvalidValue() && !IsTempVar(operand._iVar) && !IsCompileConstant(operand._iVar))
     {
-        const int value = funs._cur->AllocLocalTempVar();
+        const int value = funs._cur->AllocLocalTempVar(operand._storage);
         funs._cur->Push_OP2(ar, NOP_MOV, value, operand._iVar, operand.IsShort());
-        operand = SOperand(value);
+        operand = SOperand(value, operand._storage);
 		operand._snapshotOffset = funs._cur->_iLastOPOffset;
     }
 }
@@ -416,7 +451,7 @@ static bool TryStoreCallResult(CArchiveRdWC& ar, SFunctions& funs, int dest, SOp
         return false;
     SFunctionInfo& fun = *funs._cur;
     const int end = fun._code->GetBufferOffset();
-    const eNOperation kind = fun.GetLastOP();
+    const OperationCode kind = fun.GetLastOP();
     if ((kind != NOP_PTRCALL2 && (kind != NOP_CALL || ar._debug)) ||
         fun._iLastOPOffset + (int)sizeof(SVMOperation) != end ||
         fun._jumpTargetOffsets.count(end) != 0)
@@ -483,24 +518,24 @@ static ScalarBinaryOp TokenBinaryOp(TK_TYPE token)
     return ScalarBinaryOp::Invalid;
 }
 
-static ScalarBinaryOp TypedBinaryOp(eNOperation op)
+static ScalarBinaryOp TypedBinaryOp(OperationCode op)
 {
     switch (op)
     {
-    case NOP_I64_ADD: return ScalarBinaryOp::Add;
-    case NOP_I64_SUB: return ScalarBinaryOp::Subtract;
-    case NOP_I64_MUL: return ScalarBinaryOp::Multiply;
-    case NOP_I64_DIV: return ScalarBinaryOp::Divide;
-    case NOP_I64_MOD: return ScalarBinaryOp::Remainder;
-    case NOP_I64_AND: return ScalarBinaryOp::BitAnd;
-    case NOP_I64_OR: return ScalarBinaryOp::BitOr;
-    case NOP_I64_XOR: return ScalarBinaryOp::BitXor;
-    case NOP_I64_SHL: return ScalarBinaryOp::ShiftLeft;
-    case NOP_I64_SHR: return ScalarBinaryOp::ShiftRight;
-    case NOP_F64_ADD: return ScalarBinaryOp::Add;
-    case NOP_F64_SUB: return ScalarBinaryOp::Subtract;
-    case NOP_F64_MUL: return ScalarBinaryOp::Multiply;
-    case NOP_F64_DIV: return ScalarBinaryOp::Divide;
+    case OP_I64_ADD: return ScalarBinaryOp::Add;
+    case OP_F64_ADD: return ScalarBinaryOp::Add;
+    case OP_I64_SUB: return ScalarBinaryOp::Subtract;
+    case OP_F64_SUB: return ScalarBinaryOp::Subtract;
+    case OP_I64_MUL: return ScalarBinaryOp::Multiply;
+    case OP_F64_MUL: return ScalarBinaryOp::Multiply;
+    case OP_I64_DIV: return ScalarBinaryOp::Divide;
+    case OP_F64_DIV: return ScalarBinaryOp::Divide;
+    case OP_I64_MOD: return ScalarBinaryOp::Remainder;
+    case OP_I64_AND: return ScalarBinaryOp::BitAnd;
+    case OP_I64_OR: return ScalarBinaryOp::BitOr;
+    case OP_I64_XOR: return ScalarBinaryOp::BitXor;
+    case OP_I64_SHL: return ScalarBinaryOp::ShiftLeft;
+    case OP_I64_SHR: return ScalarBinaryOp::ShiftRight;
     default: return ScalarBinaryOp::Invalid;
     }
 }
@@ -594,33 +629,14 @@ static bool TryFoldLiteralBinOp(SOperand& a, ScalarBinaryOp op, const SOperand& 
 	return true;
 }
 
-struct SOperationInfo
-{
-	std::string _str;
-	eNOperation	_op;
-	int			_op_length;
-	eNOperation		_opType;
-	SOperationInfo() {}
-	SOperationInfo(const char* p, eNOperation	op, int len)
-	{
-		_str = p;
-		_op = op;
-		_op_length = len;
-		_opType = op;
-	}
-};
-
-#define OP_STR1(op, len) if(op > 255){ blError = true;} g_sOpInfo[op] = SOperationInfo(#op, op, len)
-
-
 struct STokenValue
 {
 	std::string _str;
 	char		_iPriority; // lower value is higher priority
-	eNOperation	_op;
+	OperationCode	_op;
 
 	STokenValue() {}
-	STokenValue(const char* p, char iPriority, eNOperation	op)
+	STokenValue(const char* p, char iPriority, OperationCode	op)
 	{
 		_str = p;
 		_iPriority = iPriority;
@@ -628,7 +644,6 @@ struct STokenValue
 	}
 };
 
-std::vector<SOperationInfo> g_sOpInfo;
 std::vector<STokenValue> g_sTokenToString;
 std::map<std::string, TK_TYPE> g_sStringToToken;
 
@@ -653,29 +668,16 @@ bool ParseMiddleArea(std::vector<SJumpValue>* pJumps, CArchiveRdWC& ar, SFunctio
 bool ParseSwitch(CArchiveRdWC& ar, SFunctions& funs, SVars& vars, bool* alwaysReturns, std::vector<SJumpValue>* pContinueJumps);
 bool ParseFunctionBody(CArchiveRdWC& ar, SFunctions& funs, SVars& vars, bool addOPFunEnd = true);
 
-eNOperation GetOpTypeFromOp(eNOperation op)
-{
-	return g_sOpInfo[op]._opType;
-}
-int GetOpLength(eNOperation op)
-{
-	//return sizeof(OpType) + g_sOpInfo[op]._op_length*sizeof(short);
-	return sizeof(OpType) + sizeof(ArgFlag) + (3 * sizeof(short));
-}
-
 void InitDefaultData()
 {
-	g_sOpInfo.clear();
 	g_sTokenToString.clear();
 	g_sStringToToken.clear();
 }
 int InitDefaultTokenString()
 {
 	InitDefaultData();
-	bool blError = false;
 
 	g_sTokenToString.resize(TK_MAX);
-	g_sOpInfo.resize(NOP_MAX);
 
 	TOKEN_STR1(TK_UNUSED, "unused token");
 
@@ -733,8 +735,8 @@ int InitDefaultTokenString()
 	TOKEN_STR3(TK_XOR, "^", 10, NOP_NONE); // C 우선순위: & (9) > ^ (10) > | (11)
 	TOKEN_STR3(TK_XOR_EQ, "^=", 15, NOP_NONE);
 	TOKEN_STR3(TK_EQUAL, "=", 15, NOP_MOV);
-	TOKEN_STR3(TK_EQUAL_EQ, "==", 8, NOP_EQUAL2);
-	TOKEN_STR3(TK_EQUAL_NOT, "!=", 8, NOP_NEQUAL);
+	TOKEN_STR3(TK_EQUAL_EQ, "==", 8, OP_EQUAL2);
+	TOKEN_STR3(TK_EQUAL_NOT, "!=", 8, OP_NEQUAL);
 
 	TOKEN_STR3(TK_AND, "&", 9, NOP_NONE);
 	TOKEN_STR3(TK_AND_EQ, "&=", 15, NOP_NONE);
@@ -750,10 +752,10 @@ int InitDefaultTokenString()
 	TOKEN_STR2(TK_L_ARRAY, "[");
 	TOKEN_STR2(TK_R_ARRAY, "]");
 
-	TOKEN_STR3(TK_GREAT, ">", 7, NOP_GREAT);
-	TOKEN_STR3(TK_GREAT_EQ, ">=", 7, NOP_GREAT_EQ);
-	TOKEN_STR3(TK_LESS, "<", 7, NOP_LESS);
-	TOKEN_STR3(TK_LESS_EQ, "<=", 7, NOP_LESS_EQ);
+	TOKEN_STR3(TK_GREAT, ">", 7, OP_GREAT);
+	TOKEN_STR3(TK_GREAT_EQ, ">=", 7, OP_GREAT_EQ);
+	TOKEN_STR3(TK_LESS, "<", 7, OP_LESS);
+	TOKEN_STR3(TK_LESS_EQ, "<=", 7, OP_LESS_EQ);
 
 	TOKEN_STR2(TK_COLON, ":");
 	TOKEN_STR2(TK_SEMICOLON, ";");
@@ -767,82 +769,6 @@ int InitDefaultTokenString()
 	TOKEN_STR2(TK_YIELD, "yield");
 
 	/////////////////////////////////////////////////////
-
-	OP_STR1(NOP_NONE, 0);
-	OP_STR1(NOP_MOV, 2);
-	OP_STR1(NOP_MOVI, 3);
-	OP_STR1(NOP_MOVF, 3);
-	OP_STR1(NOP_LOADK, 3);
-	OP_STR1(NOP_LOG_NOT, 2);
-
-	OP_STR1(NOP_VAR_CLEAR, 1);
-
-
-	OP_STR1(NOP_GREAT, 3);
-	OP_STR1(NOP_GREAT_EQ, 3);
-	OP_STR1(NOP_LESS, 3);
-	OP_STR1(NOP_LESS_EQ, 3);
-	OP_STR1(NOP_EQUAL2, 3);
-	OP_STR1(NOP_NEQUAL, 3);
-
-	OP_STR1(NOP_JMP_GREAT, 3);
-	OP_STR1(NOP_JMP_GREAT_EQ, 3);
-	OP_STR1(NOP_JMP_LESS, 3);
-	OP_STR1(NOP_JMP_LESS_EQ, 3);
-	OP_STR1(NOP_JMP_EQUAL2, 3);
-	OP_STR1(NOP_JMP_NEQUAL, 3);
-	OP_STR1(NOP_JMP_FOR, 3);
-	OP_STR1(NOP_JMP_FOREACH, 3);
-	OP_STR1(NOP_SWITCH, 2); // n1 = table index, n2 = 조건식 위치 (n3 미사용)
-
-	OP_STR1(NOP_STR_ADD, 3);
-
-	OP_STR1(NOP_TOSTRING, 2);
-	OP_STR1(NOP_TOINT, 2);
-	OP_STR1(NOP_TOFLOAT, 2);
-	OP_STR1(NOP_TOSIZE, 2);
-	OP_STR1(NOP_SLEEP, 2);
-
-	OP_STR1(NOP_FMOV1, 2);
-	OP_STR1(NOP_FMOV2, 3);
-
-	OP_STR1(NOP_JMP, 1);
-	OP_STR1(NOP_JMP_FALSE, 2);
-	OP_STR1(NOP_JMP_TRUE, 2);
-
-	OP_STR1(NOP_CALL, 3);
-	OP_STR1(NOP_PTRCALL, 3);
-	OP_STR1(NOP_PTRCALL2, 3);
-	OP_STR1(NOP_NATIVECALL, 3);
-	OP_STR1(NOP_RETURN, 1);
-//	OP_STR1(NOP_FUNEND, 0);
-
-	OP_STR1(NOP_TABLE_ALLOC, 3);
-	OP_STR1(NOP_CLT_READ, 3);
-	OP_STR1(NOP_CLT_MOV, 3);
-
-	OP_STR1(NOP_LIST_ALLOC, 3);
-
-	OP_STR1(NOP_CHANGE_INT, 1);
-	OP_STR1(NOP_YIELD, 1);
-	OP_STR1(NOP_JMP_RANGE_INSIDE, 3);
-	OP_STR1(NOP_JMP_RANGE_OUTSIDE, 3);
-	OP_STR1(NOP_JMP_RANGE_INSIDE_L, 3);
-	OP_STR1(NOP_JMP_RANGE_OUTSIDE_L, 3);
-	OP_STR1(NOP_CLT_WRITE_REF, 3);
-
-#define REGISTER_CORE_TYPED_OP(op, name, suffix, arity, slots, writes, comparison, jump, branchOp) OP_STR1(op, (arity) + 1);
-	NEOCORE_TYPED_OPS(REGISTER_CORE_TYPED_OP)
-#undef REGISTER_CORE_TYPED_OP
-#define REGISTER_CORE_AGGREGATE_OP(op, name, suffix, arity, shape, dimension, controlMax) OP_STR1(op, 3);
-	NEOCORE_AGGREGATE_OPS(REGISTER_CORE_AGGREGATE_OP)
-#undef REGISTER_CORE_AGGREGATE_OP
-
-	if (blError)
-	{
-		InitDefaultData();
-		return 0;
-	}
 
 	return 1;
 }
@@ -1016,7 +942,7 @@ TK_TYPE CalcToken(TK_TYPE tkTypeOnySingleChar, CArchiveRdWC& ar, std::string& tk
 	return tkTypeOnySingleChar;
 }
 
-eNOperation TokenToOP(TK_TYPE tk, int& iPriority)
+OperationCode TokenToOP(TK_TYPE tk, int& iPriority)
 {
 	if (tk < 0 || tk >= TK_MAX)
 	{
@@ -1459,6 +1385,12 @@ int  AddLocalVarName(CArchiveRdWC& ar, SFunctions& funs, SVars& vars, bool blExp
 		iLocalVar = funs._cur->AllocLocalVar(); // 0 번은 리턴 저장용
 	SLayerVar* pCurLayer = vars.GetCurrentLayer();
 	pCurLayer->AddLocalVar(vars.DeclarationName(name), iLocalVar);
+	const SlotType storage = funs.FindDeclaredStorage(name);
+	if (storage.kind != SlotKind::Boxed)
+	{
+		if (iLocalVar < 0) vars._globalStorage[iLocalVar] = storage;
+		else funs._cur->_storage[iLocalVar] = storage;
+	}
 	if (funs.GetCurFunName() != GLOBAL_INIT_FUN_NAME && iLocalVar > 0)
 		funs._cur->_debugVarNames[iLocalVar] = name;
 	if (blExport)
@@ -1547,7 +1479,10 @@ static int FindReadableVar(SFunctions& funs, SVars& vars, const std::string& nam
 		SFunctionInfo* function = layer->_function;
 		if (function == nullptr || function->_funType != FUNT_ANONYMOUS)
 			return -1; // 일반 함수 프레임은 바깥 지역을 보관하지 않는다.
+		const auto source = vars._varsFunction[i - 1]->_function->_storage.find(slot);
+		const SlotType storage = source == vars._varsFunction[i - 1]->_function->_storage.end() ? SlotType() : source->second;
 		slot = function->AddCapture(name, slot, layer);
+		if (storage.kind != SlotKind::Boxed) function->_storage[slot] = storage;
 	}
 	return slot;
 }
@@ -1578,8 +1513,8 @@ int  AddLocalVar(CArchiveRdWC& ar, SFunctions& funs, SVars& vars)
 void ClearTempVars(SFunctions& funs)
 {
 	funs._cur->FreeLocalTempVar();
-	eNOperation opLast = funs._cur->GetLastOP();
-	if (opLast == NOP_MOV || opLast == NOP_I64_NEG || opLast == NOP_F64_NEG
+	OperationCode opLast = funs._cur->GetLastOP();
+	if (opLast == NOP_MOV || opLast == OP_I64_NEG || opLast == OP_F64_NEG
     )
 	{
 		int iVar = funs._cur->GetN(funs._cur->_iLastOPOffset, 0);
@@ -1799,6 +1734,8 @@ bool ParseFunctionArg(CArchiveRdWC& ar, SFunctions& funs, SLayerVar* pCurLayer)
 				int iArg = 1 + (int)funs._cur->_args.size();
 				CheckCompileRange("function arguments", iArg, 0, COMPILE_MAX_ARGUMENTS);
 				pCurLayer->AddLocalVar(tk2, iArg);
+				const SlotType storage = funs.FindDeclaredStorage(tk2);
+				if (storage.kind != SlotKind::Boxed) funs._cur->_storage[iArg] = storage;
 				funs._cur->_debugVarNames[iArg] = tk2;
 				funs._cur->_args.insert(tk2);
 				bPreviusComa = false;
@@ -2626,6 +2563,32 @@ static bool ParsePostfixSelectors(SOperand& operand, CArchiveRdWC& ar, SFunction
 			key = funs.AddStaticString(member);
 		}
 
+        // 선택자의 값 타입은 소유 컨테이너 타입과 다르다. 다음 읽기의 임시 슬롯에도 구분해서 전달한다.
+        SlotType selectedStorage;
+        if (ar.m_coreTypedIR && operand._storage.typeId != 0)
+        {
+            const auto& types = ar.m_coreTypedIR->types;
+            const auto& owner = types.Get(operand._storage.typeId);
+            NeoCore::TypeId selected = NeoCore::InvalidType;
+            switch (owner.kind)
+            {
+            case NeoCore::TypeKind::Vector2:
+            case NeoCore::TypeKind::Vector3:
+            case NeoCore::TypeKind::Vector4:
+            case NeoCore::TypeKind::Quaternion: selected = types.Float(); break;
+            case NeoCore::TypeKind::Array:
+            case NeoCore::TypeKind::Array32:
+            case NeoCore::TypeKind::List: selected = owner.element; break;
+            case NeoCore::TypeKind::Map: selected = owner.value; break;
+            case NeoCore::TypeKind::Struct:
+                if (key.IsIntLiteral() && key._intLiteral >= 0 &&
+                    static_cast<NS_UINT>(key._intLiteral) < owner.fields.size())
+                    selected = owner.fields[static_cast<std::size_t>(key._intLiteral)].type;
+                break;
+            default: break;
+            }
+            selectedStorage = CoreStorageType(types, selected);
+        }
         // Assignment/prefix keys can return a named slot despite having already
         // executed. Preserve their resulting value; only an unevaluated plain
         // variable key keeps the documented late lookup at the eventual write.
@@ -2659,6 +2622,7 @@ static bool ParsePostfixSelectors(SOperand& operand, CArchiveRdWC& ar, SFunction
             if (!operand._pathOwners.empty()) operand._iVar = operand._pathOwners.back();
         }
         operand._operandType = key.IsShort() ? Data_TS : Data_TR;
+		operand._storage = selectedStorage;
 		lastSelectorWasDot = type == TK_DOT;
 	}
 }
@@ -2741,9 +2705,11 @@ static bool ParseCoreControl(std::string& operation, const char* marker, int& va
 
 static const AggregateOpInfo* FindCoreAggregate(const std::string& suffix)
 {
-    for (int op = 0; op < NOP_MAX; ++op)
+    unsigned count = 0;
+    const AggregateOpInfo* operations = AggregateOperations(count);
+    for (unsigned op = 0; op < count; ++op)
     {
-        const AggregateOpInfo* info = GetAggregateOpInfo(static_cast<eNOperation>(op));
+        const AggregateOpInfo* info = operations + op;
         if (info && info->suffix[0] && suffix == info->suffix) return info;
     }
     return nullptr;
@@ -2756,8 +2722,7 @@ static SOperand EmitCoreAggregate(const AggregateOpInfo& info, const SOperand* a
     if (info.shape == AggregateOpShape::Window)
     {
         // 인자 계산이 모두 끝난 뒤 전용 지역 구간을 확보한다. 네이티브 호출 프레임은 만들지 않는다.
-        const int base = funs._cur->AllocLocalTempVar();
-        for (int i = 1; i < info.arity; ++i) funs._cur->AllocLocalTempVar();
+        const int base = funs._cur->AllocTempWindow(info.arity);
         for (int i = 0; i < info.arity; ++i)
             funs._cur->Push_OP2(ar, NOP_MOV, base + i, arguments[i]._iVar, false, sourceLine);
         funs._cur->Push_OP(ar, info.op, destination, base, control, sourceLine);
@@ -2775,10 +2740,16 @@ static SOperand EmitCoreAggregate(const std::string& operation, const SOperand* 
     return EmitCoreAggregate(*FindCoreAggregate(operation), arguments, control, ar, funs, sourceLine);
 }
 
-static SOperand EmitCoreNumber(eNOperation op, const SOperand& left, const SOperand& right,
+static SOperand EmitCoreNumber(OperationCode op, const SOperand& left, const SOperand& right,
     CArchiveRdWC& ar, SFunctions& funs, int sourceLine, int destination = INVALID_ERROR_PARSEJOB)
 {
-    if (destination == INVALID_ERROR_PARSEJOB) destination = funs._cur->AllocLocalTempVar();
+    SlotType type;
+    const TypedOpInfo* info = GetTypedOpInfo(op);
+    type.kind = info && info->comparison ? SlotKind::Bool :
+        PrimaryOperation(op) == NOP_F64_ARITH || op == OP_I64_TO_F64 ? SlotKind::Float : SlotKind::Int;
+    type.typeId = static_cast<u32>(type.kind == SlotKind::Bool ? NeoCore::TypeKind::Bool :
+        type.kind == SlotKind::Float ? NeoCore::TypeKind::Float : NeoCore::TypeKind::Int);
+    if (destination == INVALID_ERROR_PARSEJOB) destination = funs._cur->AllocLocalTempVar(type);
     funs._cur->Push_OP(ar, op, destination, left._iVar, right._iVar, sourceLine);
     return SOperand(destination);
 }
@@ -2813,11 +2784,11 @@ static SOperand EmitCoreWrite(const std::string& family, bool array, bool field,
         }
         else
         {
-            static const eNOperation integers[] = { NOP_NONE, NOP_I64_ADD, NOP_I64_SUB, NOP_I64_MUL,
-                NOP_I64_DIV, NOP_I64_ADD, NOP_I64_SUB, NOP_I64_MOD, NOP_I64_AND, NOP_I64_OR,
-                NOP_I64_XOR, NOP_I64_SHL, NOP_I64_SHR };
-            static const eNOperation floats[] = { NOP_NONE, NOP_F64_ADD, NOP_F64_SUB, NOP_F64_MUL,
-                NOP_F64_DIV, NOP_F64_ADD, NOP_F64_SUB };
+            static const OperationCode integers[] = { NOP_NONE, OP_I64_ADD, OP_I64_SUB, OP_I64_MUL,
+                OP_I64_DIV, OP_I64_ADD, OP_I64_SUB, OP_I64_MOD, OP_I64_AND, OP_I64_OR,
+                OP_I64_XOR, OP_I64_SHL, OP_I64_SHR };
+            static const OperationCode floats[] = { NOP_NONE, OP_F64_ADD, OP_F64_SUB, OP_F64_MUL,
+                OP_F64_DIV, OP_F64_ADD, OP_F64_SUB };
             value = EmitCoreNumber(family == "i64" || family == "i32" ? integers[mode] : floats[mode], oldValue, value,
                 ar, funs, sourceLine);
         }
@@ -2838,7 +2809,7 @@ static SOperand EmitCoreWrite(const std::string& family, bool array, bool field,
     return whole ? result : EmitCoreAggregate(family + "get", &result, component, ar, funs, sourceLine);
 }
 
-static bool IsIdentityAggregateOperation(eNOperation op)
+static bool IsIdentityAggregateOperation(OperationCode op)
 {
     switch (op)
     {
@@ -2902,13 +2873,11 @@ static bool ParseCoreTypedIntrinsic(SOperand& result, const std::string& name,
             if (aggregate && (aggregate->controlMax ? component < 0 || component > aggregate->controlMax : component != -1))
                 aggregate = nullptr;
         }
-        // 평가 순서는 원본대로 두고, 비교 방향은 확정된 슬롯을 배치할 때만 바꾼다.
-        if (operation == "igt" || operation == "fgt") { operation.replace(1, 2, "lt"); swapOperands = true; }
-        else if (operation == "ige" || operation == "fge") { operation.replace(1, 2, "le"); swapOperands = true; }
-        else if (operation == "ine" || operation == "fne") { operation.replace(1, 2, "eq"); invert = true; }
-        for (int op = 0; op < NOP_MAX; ++op)
+        unsigned operationCount = 0;
+        const TypedOpInfo* operations = TypedOperations(operationCount);
+        for (unsigned op = 0; op < operationCount; ++op)
         {
-            const TypedOpInfo* candidate = GetTypedOpInfo(static_cast<eNOperation>(op));
+            const TypedOpInfo* candidate = operations + op;
             if (mode == -1 && component == -1 && candidate && !candidate->jump && operation == candidate->suffix) { info = candidate; break; }
         }
     }
@@ -2979,13 +2948,13 @@ static bool ParseCoreTypedIntrinsic(SOperand& result, const std::string& name,
         result = EmitCoreAggregate(*aggregate, arguments, component < 0 ? 0 : component, ar, funs, sourceLine);
         return true;
     }
-    if (info->op == NOP_I64_TO_F64 && arguments[0].IsIntLiteral())
+    if (info->op == OP_I64_TO_F64 && arguments[0].IsIntLiteral())
     {
         const NS_FLOAT value = static_cast<NS_FLOAT>(arguments[0]._intLiteral);
         result.SetFloatLiteral(funs.AddStaticNum(value), value);
         return true;
     }
-    if (info->op == NOP_F64_TO_I64 && arguments[0].IsFloatLiteral())
+    if (info->op == OP_F64_TO_I64 && arguments[0].IsFloatLiteral())
     {
         const NS_INT value = NeoFloatToInt(arguments[0]._floatLiteral);
         result.SetIntLiteral(funs.AddStaticInt(value), value);
@@ -3078,6 +3047,8 @@ class CoreIRValidator
         case IROp::MapRead: arity = 2; break;
         case IROp::StringLiteral: arity = 0; break;
         case IROp::Conditional: arity = 3; break;
+        case IROp::CollectionRead: arity = 2; break;
+        case IROp::CollectionWrite: arity = 3; break;
         default: return Fail(index, "unknown operation");
         }
         if (node.op != IROp::ScriptCall && node.functionIndex != static_cast<std::size_t>(-1))
@@ -3099,11 +3070,11 @@ class CoreIRValidator
         else if (node.storage.kind != NeoCore::IRStorageKind::Invalid || !node.storage.backendName.empty() ||
             node.storage.symbolId != 0 || !node.storage.fields.empty())
             return Fail(index, "operation does not accept storage metadata");
-        if (node.discardResult && (!storage || node.op == IROp::LoadStorage))
+        if (node.discardResult && node.op != IROp::CollectionWrite && (!storage || node.op == IROp::LoadStorage))
             return Fail(index, "operation does not accept discard metadata");
         unsigned char effects = node.op == IROp::LegacyExpression ? EXPR_EFFECT_ALL
             : node.op == IROp::ScriptCall || node.op == IROp::CopyStruct ? EXPR_EFFECT_CALL
-            : storage && node.op != IROp::LoadStorage ? EXPR_EFFECT_ASSIGN : 0;
+            : (storage && node.op != IROp::LoadStorage) || node.op == IROp::CollectionWrite ? EXPR_EFFECT_ASSIGN : 0;
         for (std::size_t input : node.inputs)
         {
             if (!Visit(input, depth + 1)) return false;
@@ -3113,7 +3084,7 @@ class CoreIRValidator
         const IRValueType input = arity ? ir_.nodes[node.inputs[0]].type : IRValueType::Invalid;
         const NeoCore::TypeId inputType = arity ? ir_.nodes[node.inputs[0]].typeId : NeoCore::InvalidType;
         const bool numeric = input == IRValueType::Int || input == IRValueType::Float;
-        if (arity == 2 && node.op != IROp::ScriptCall && node.op != IROp::MapRead &&
+        if (arity == 2 && node.op != IROp::ScriptCall && node.op != IROp::MapRead && node.op != IROp::CollectionRead &&
             inputType != ir_.nodes[node.inputs[1]].typeId)
             return Fail(index, "operand types differ");
         bool valid = false;
@@ -3178,6 +3149,28 @@ class CoreIRValidator
             valid = input == IRValueType::Bool && node.type != IRValueType::Void &&
                 ir_.nodes[node.inputs[1]].typeId == node.typeId && ir_.nodes[node.inputs[2]].typeId == node.typeId;
             break;
+        case IROp::CollectionRead:
+        case IROp::CollectionWrite:
+        {
+            const bool write = node.op == IROp::CollectionWrite;
+            const std::size_t receiver = write ? 1 : 0;
+            const NeoCore::TypeDesc& owner = ir_.types.Get(ir_.nodes[node.inputs[receiver]].typeId);
+            const bool map = owner.kind == NeoCore::TypeKind::Map;
+            const NeoCore::TypeId element = map ? owner.value : owner.element;
+            valid = (map || owner.kind == NeoCore::TypeKind::List || owner.kind == NeoCore::TypeKind::Array || owner.kind == NeoCore::TypeKind::Array32) &&
+                element == node.typeId && (node.type == IRValueType::Int || node.type == IRValueType::Float || node.type == IRValueType::Bool) &&
+                ir_.nodes[node.inputs[receiver + 1]].typeId == (map ? owner.key : ir_.types.Int());
+            if (write)
+            {
+                valid = valid && inputType == node.typeId &&
+                    (node.text == "=" || node.text == "+=" || node.text == "-=" || node.text == "*=" || node.text == "/=" ||
+                     node.text == "%=" || node.text == "&=" || node.text == "|=" || node.text == "^=" || node.text == "<<=" || node.text == ">>=");
+                if (node.text != "=") valid = valid && node.type != IRValueType::Bool;
+                if (node.type == IRValueType::Float) valid = valid &&
+                    (node.text == "=" || node.text == "+=" || node.text == "-=" || node.text == "*=" || node.text == "/=");
+            }
+            break;
+        }
         default: break;
         }
         if (!valid) return Fail(index, "operation type contract does not match");
@@ -3223,32 +3216,35 @@ public:
     }
 };
 
-static eNOperation CoreIRNumberOp(NeoCore::IROp operation, NeoCore::IRValueType type)
+static OperationCode CoreIRNumberOp(NeoCore::IROp operation, NeoCore::IRValueType type)
 {
     using NeoCore::IROp;
     const bool floating = type == NeoCore::IRValueType::Float;
     switch (operation)
     {
-    case IROp::Add: return floating ? NOP_F64_ADD : NOP_I64_ADD;
-    case IROp::Subtract: return floating ? NOP_F64_SUB : NOP_I64_SUB;
-    case IROp::Multiply: return floating ? NOP_F64_MUL : NOP_I64_MUL;
-    case IROp::Divide: return floating ? NOP_F64_DIV : NOP_I64_DIV;
-    case IROp::Remainder: return NOP_I64_MOD;
-    case IROp::BitAnd: return NOP_I64_AND;
-    case IROp::BitOr: return NOP_I64_OR;
-    case IROp::BitXor: return NOP_I64_XOR;
-    case IROp::ShiftLeft: return NOP_I64_SHL;
-    case IROp::ShiftRight: return NOP_I64_SHR;
-    case IROp::Equal: case IROp::NotEqual: return floating ? NOP_F64_EQ : NOP_I64_EQ;
-    case IROp::Less: case IROp::Greater: return floating ? NOP_F64_LT : NOP_I64_LT;
-    case IROp::LessEqual: case IROp::GreaterEqual: return floating ? NOP_F64_LE : NOP_I64_LE;
-    case IROp::ToFloat: return NOP_I64_TO_F64;
-    case IROp::ToInt: return NOP_F64_TO_I64;
+    case IROp::Add: return floating ? OP_F64_ADD : OP_I64_ADD;
+    case IROp::Subtract: return floating ? OP_F64_SUB : OP_I64_SUB;
+    case IROp::Multiply: return floating ? OP_F64_MUL : OP_I64_MUL;
+    case IROp::Divide: return floating ? OP_F64_DIV : OP_I64_DIV;
+    case IROp::Remainder: return OP_I64_MOD;
+    case IROp::BitAnd: return OP_I64_AND;
+    case IROp::BitOr: return OP_I64_OR;
+    case IROp::BitXor: return OP_I64_XOR;
+    case IROp::ShiftLeft: return OP_I64_SHL;
+    case IROp::ShiftRight: return OP_I64_SHR;
+    case IROp::Equal: return floating ? OP_F64_EQ : OP_I64_EQ;
+    case IROp::NotEqual: return floating ? OP_F64_NE : OP_I64_NE;
+    case IROp::Less: return floating ? OP_F64_LT : OP_I64_LT;
+    case IROp::Greater: return floating ? OP_F64_GT : OP_I64_GT;
+    case IROp::LessEqual: return floating ? OP_F64_LE : OP_I64_LE;
+    case IROp::GreaterEqual: return floating ? OP_F64_GE : OP_I64_GE;
+    case IROp::ToFloat: return OP_I64_TO_F64;
+    case IROp::ToInt: return OP_F64_TO_I64;
     default: return NOP_NONE;
     }
 }
 
-static eNOperation CoreIRWriteOp(NeoCore::IROp operation, NeoCore::IRValueType type)
+static OperationCode CoreIRWriteOp(NeoCore::IROp operation, NeoCore::IRValueType type)
 {
     using NeoCore::IROp;
     switch (operation)
@@ -3276,9 +3272,9 @@ static SOperand SnapshotCoreIRValue(SOperand value, CArchiveRdWC& ar, SFunctions
     MaterializeValue(value, ar, funs);
     if (!IsTempVar(value._iVar) && !IsCompileConstant(value._iVar))
     {
-        const int saved = funs._cur->AllocLocalTempVar();
+        const int saved = funs._cur->AllocLocalTempVar(value._storage);
         funs._cur->Push_OP2(ar, NOP_MOV, saved, value._iVar, false, line);
-        return SOperand(saved);
+        return SOperand(saved, value._storage);
     }
     return value;
 }
@@ -3309,12 +3305,29 @@ static SOperand ReadCoreIRStorage(const NeoCore::IRNode& node, const SOperand& t
     if (!node.storage.fields.empty())
     {
         const int value = funs._cur->AllocLocalTempVar();
-        funs._cur->Push_OP(ar, NOP_CLT_READ, target._iVar,
-            funs.AddStaticInt(static_cast<NS_INT>(node.storage.fields.back())), value, node.source.line);
+        const int key = funs.AddStaticInt(static_cast<NS_INT>(node.storage.fields.back()));
+        const OperationCode op = node.type == NeoCore::IRValueType::Int ? NOP_LIST_I64_LOAD :
+            node.type == NeoCore::IRValueType::Float ? NOP_LIST_F64_LOAD :
+            node.type == NeoCore::IRValueType::Bool ? NOP_LIST_BOOL_LOAD : NOP_NONE;
+        if (op != NOP_NONE) funs._cur->Push_OP(ar, op, value, target._iVar, key, node.source.line);
+        else funs._cur->Push_OP(ar, NOP_CLT_READ, target._iVar, key, value, node.source.line);
         return SOperand(value);
     }
     return node.storage.kind == NeoCore::IRStorageKind::Cell
         ? EmitCoreAggregate("cellget", &target, 0, ar, funs, node.source.line) : target;
+}
+
+static SlotType CoreNumericStorage(NeoCore::IRValueType value)
+{
+    SlotType type;
+    switch (value)
+    {
+    case NeoCore::IRValueType::Int: type.kind = SlotKind::Int; type.typeId = static_cast<u32>(NeoCore::TypeKind::Int); break;
+    case NeoCore::IRValueType::Float: type.kind = SlotKind::Float; type.typeId = static_cast<u32>(NeoCore::TypeKind::Float); break;
+    case NeoCore::IRValueType::Bool: type.kind = SlotKind::Bool; type.typeId = static_cast<u32>(NeoCore::TypeKind::Bool); break;
+    default: break;
+    }
+    return type;
 }
 
 static bool EmitCoreIRNode(std::size_t index, SOperand& result,
@@ -3331,25 +3344,6 @@ static bool EmitCoreIRMapInputs(const NeoCore::IRNode& node, SOperand (&argument
     if (!EmitCoreIRNode(node.inputs[1], arguments[1], ar, funs, vars)) return false;
     MaterializeValue(arguments[1], ar, funs);
     return true;
-}
-
-static eNOperation CoreIRMapCompoundOp(eNOperation arithmetic, bool stringKey)
-{
-    switch (arithmetic)
-    {
-#define NEOCORE_MAP_COMPOUND_SELECT(TYPE, OP) \
-    case NOP_##TYPE##_##OP: return stringKey ? NOP_MAP_STRING_##TYPE##_##OP : NOP_MAP_I64_##TYPE##_##OP;
-        NEOCORE_MAP_COMPOUND_SELECT(I64, ADD)
-        NEOCORE_MAP_COMPOUND_SELECT(I64, SUB)
-        NEOCORE_MAP_COMPOUND_SELECT(I64, MUL)
-        NEOCORE_MAP_COMPOUND_SELECT(I64, DIV)
-        NEOCORE_MAP_COMPOUND_SELECT(F64, ADD)
-        NEOCORE_MAP_COMPOUND_SELECT(F64, SUB)
-        NEOCORE_MAP_COMPOUND_SELECT(F64, MUL)
-        NEOCORE_MAP_COMPOUND_SELECT(F64, DIV)
-#undef NEOCORE_MAP_COMPOUND_SELECT
-    default: return NOP_NONE;
-    }
 }
 
 // 호출 인자는 순서대로 평가한 뒤 한꺼번에 인자 창으로 옮긴다. 중첩 호출이 같은 창을 재사용한다.
@@ -3401,9 +3395,78 @@ static bool EmitCoreIRCall(const NeoCore::IRNode& node, const std::string& name,
     // 일반 변수의 최종 대입만 직접 반환한다. 디버그에서는 복귀와 대입 사이의 중단 위치를 유지한다.
     const bool direct = !ar._debug && destination != INVALID_ERROR_PARSEJOB &&
         ((destination > 0 && destination < COMPILE_LOCALTMP_VAR_BEGIN) || destination <= COMPILE_GLOBAL_VAR_BEGIN);
-    result = SOperand(direct ? destination : funs._cur->AllocLocalTempVar());
+    result = SOperand(direct ? destination : funs._cur->AllocLocalTempVar(CoreStorageType(ar.m_coreTypedIR->types, node.typeId)));
     funs._cur->Push_Call(ar, NOP_CALL, function->_funID, static_cast<int>(arguments.size()), result._iVar, node.source.line);
     return true;
+}
+
+static OperationCode CoreIRCollectionOp(const NeoCore::TypeDesc& owner, NeoCore::IRValueType value, bool write)
+{
+    const bool integer = value == NeoCore::IRValueType::Int, floating = value == NeoCore::IRValueType::Float;
+#define NEOCORE_SELECT_ACCESS(OWNER) \
+    return write ? (integer ? NOP_##OWNER##_I64_STORE : floating ? NOP_##OWNER##_F64_STORE : NOP_##OWNER##_BOOL_STORE) \
+        : (integer ? NOP_##OWNER##_I64_LOAD : floating ? NOP_##OWNER##_F64_LOAD : NOP_##OWNER##_BOOL_LOAD)
+    if (owner.kind == NeoCore::TypeKind::List) { NEOCORE_SELECT_ACCESS(LIST); }
+    if (owner.kind == NeoCore::TypeKind::Map)
+    {
+        if (owner.key == static_cast<NeoCore::TypeId>(NeoCore::TypeKind::Int)) { NEOCORE_SELECT_ACCESS(MAP_INT); }
+        NEOCORE_SELECT_ACCESS(MAP_STR);
+    }
+#undef NEOCORE_SELECT_ACCESS
+    if (owner.kind == NeoCore::TypeKind::Array32)
+        return write ? (integer ? NOP_ARRAY_I32_STORE : NOP_ARRAY_F32_STORE)
+            : (integer ? NOP_ARRAY_I32_GET : NOP_ARRAY_F32_GET);
+    return write ? (integer ? NOP_ARRAY_I64_STORE : floating ? NOP_ARRAY_F64_STORE : NOP_ARRAY_BOOL_STORE)
+        : (integer ? NOP_ARRAY_I64_GET : floating ? NOP_ARRAY_F64_GET : NOP_ARRAY_BOOL_GET);
+}
+
+static bool EmitCoreIRCollection(const NeoCore::IRNode& node, SOperand& result,
+    CArchiveRdWC& ar, SFunctions& funs, SVars& vars, int destination)
+{
+    using NeoCore::IROp;
+    const bool write = node.op == IROp::CollectionWrite;
+    const std::size_t receiverIndex = write ? 1 : 0;
+    const NeoCore::TypeDesc& owner = ar.m_coreTypedIR->types.Get(ar.m_coreTypedIR->nodes[node.inputs[receiverIndex]].typeId);
+    SOperand value, receiver, key;
+    if (write)
+    {
+        if (!EmitCoreIRNode(node.inputs[0], value, ar, funs, vars)) return false;
+        MaterializeValue(value, ar, funs);
+        const int effects = (*ar.m_coreIREffects)[node.inputs[1]] | (*ar.m_coreIREffects)[node.inputs[2]];
+        if (NeedsSnapshot(value, effects)) SnapshotValue(value, ar, funs);
+    }
+    if (!EmitCoreIRNode(node.inputs[receiverIndex], receiver, ar, funs, vars)) return false;
+    MaterializeValue(receiver, ar, funs);
+    if (NeedsSnapshot(receiver, (*ar.m_coreIREffects)[node.inputs[receiverIndex + 1]])) SnapshotValue(receiver, ar, funs);
+    if (!EmitCoreIRNode(node.inputs[receiverIndex + 1], key, ar, funs, vars)) return false;
+    MaterializeValue(key, ar, funs);
+    const OperationCode read = CoreIRCollectionOp(owner, node.type, false);
+    if (!write)
+    {
+        const int target = destination != INVALID_ERROR_PARSEJOB ? destination : funs._cur->AllocLocalTempVar(CoreStorageType(ar.m_coreTypedIR->types, node.typeId));
+        funs._cur->Push_OP(ar, read, target, receiver._iVar, key._iVar, node.source.line);
+        result = SOperand(target); return true;
+    }
+    if (node.text != "=")
+    {
+        const int old = funs._cur->AllocLocalTempVar(CoreStorageType(ar.m_coreTypedIR->types, node.typeId));
+        funs._cur->Push_OP(ar, read, old, receiver._iVar, key._iVar, node.source.line);
+        IROp operation = node.text == "+=" ? IROp::Add : node.text == "-=" ? IROp::Subtract :
+            node.text == "*=" ? IROp::Multiply : node.text == "/=" ? IROp::Divide : node.text == "%=" ? IROp::Remainder :
+            node.text == "&=" ? IROp::BitAnd : node.text == "|=" ? IROp::BitOr : node.text == "^=" ? IROp::BitXor :
+            node.text == "<<=" ? IROp::ShiftLeft : IROp::ShiftRight;
+        value = EmitCoreNumber(CoreIRNumberOp(operation, node.type), SOperand(old), value, ar, funs, node.source.line);
+    }
+    // 소비되는 대입 결과는 후속 식에서 대상이 바뀌어도 보존한다.
+    if (!node.discardResult) value = SnapshotCoreIRValue(value, ar, funs, node.source.line);
+    funs._cur->Push_OP(ar, CoreIRCollectionOp(owner, node.type, true), receiver._iVar, key._iVar, value._iVar, node.source.line);
+    if (!node.discardResult && owner.kind == NeoCore::TypeKind::Array32 && node.type == NeoCore::IRValueType::Float)
+    {
+        const int stored = funs._cur->AllocLocalTempVar(CoreStorageType(ar.m_coreTypedIR->types, node.typeId));
+        funs._cur->Push_OP(ar, read, stored, receiver._iVar, key._iVar, node.source.line);
+        value = SOperand(stored);
+    }
+    result = value; return true;
 }
 
 static bool EmitCoreIRStorage(const NeoCore::IRNode& node, SOperand& result,
@@ -3416,24 +3479,6 @@ static bool EmitCoreIRStorage(const NeoCore::IRNode& node, SOperand& result,
     // 일반 변수의 슬롯 조회는 코드나 부작용을 만들지 않는다. 필드·셀의 실행 경로는 여전히 우변 뒤에 찾는다.
     if (plainVariable && !ResolveCoreIRStorage(node, target, ar, funs, vars)) return false;
     const int destination = plainVariable && node.discardResult ? target._iVar : INVALID_ERROR_PARSEJOB;
-    if (!ar._debug && destination != INVALID_ERROR_PARSEJOB && node.inputs.size() == 1)
-    {
-        const NeoCore::IRNode& rhs = ar.m_coreTypedIR->nodes[node.inputs[0]];
-        if (rhs.op == IROp::MapRead && rhs.typeId == node.typeId)
-        {
-            const bool stringKey = ar.m_coreTypedIR->nodes[rhs.inputs[1]].type == NeoCore::IRValueType::String;
-            const eNOperation combined = CoreIRMapCompoundOp(CoreIRWriteOp(node.op, node.type), stringKey);
-            if (combined != NOP_NONE)
-            {
-                // 버리는 변수 대입만 합친다. 호스트 호출·키 부작용은 모두 이 명령 전에 끝난다.
-                SOperand arguments[2];
-                if (!EmitCoreIRMapInputs(rhs, arguments, ar, funs, vars)) return false;
-                funs._cur->Push_OP(ar, combined, destination, arguments[0]._iVar, arguments[1]._iVar, node.source.line);
-                result = target;
-                return true;
-            }
-        }
-    }
     SOperand value;
     if (!node.inputs.empty())
     {
@@ -3463,7 +3508,10 @@ static bool EmitCoreIRStorage(const NeoCore::IRNode& node, SOperand& result,
     SOperand stored = value;
     if (!node.storage.fields.empty())
     {
-        funs._cur->Push_OP(ar, NOP_CLT_MOV, target._iVar,
+        const OperationCode op = node.type == NeoCore::IRValueType::Int ? NOP_LIST_I64_STORE :
+            node.type == NeoCore::IRValueType::Float ? NOP_LIST_F64_STORE :
+            node.type == NeoCore::IRValueType::Bool ? NOP_LIST_BOOL_STORE : NOP_CLT_MOV;
+        funs._cur->Push_OP(ar, op, target._iVar,
             funs.AddStaticInt(static_cast<NS_INT>(node.storage.fields.back())), value._iVar, node.source.line);
     }
     else if (node.storage.kind == NeoCore::IRStorageKind::Cell)
@@ -3489,7 +3537,7 @@ static bool EmitCoreIRStorage(const NeoCore::IRNode& node, SOperand& result,
     return true;
 }
 
-static bool EmitCoreIRNode(std::size_t index, SOperand& result,
+static bool EmitCoreIRNodeImpl(std::size_t index, SOperand& result,
     CArchiveRdWC& ar, SFunctions& funs, SVars& vars, int destination)
 {
     using NeoCore::IROp;
@@ -3581,7 +3629,7 @@ static bool EmitCoreIRNode(std::size_t index, SOperand& result,
         const int falseBase = funs._cur->_code->GetBufferOffset();
         const SJumpValue falseJump(falseBase - static_cast<int>(sizeof(short) * 3), falseBase);
         // 공통 결과는 새 임시 슬롯에 둔다. 가지의 부작용보다 먼저 대입 대상을 변경하지 않는다.
-        const int selected = funs._cur->AllocLocalTempVar();
+        const int selected = funs._cur->AllocLocalTempVar(CoreStorageType(ar.m_coreTypedIR->types, node.typeId));
         SJumpValue endJump;
         for (std::size_t branch = 1; branch < 3; ++branch)
         {
@@ -3605,6 +3653,8 @@ static bool EmitCoreIRNode(std::size_t index, SOperand& result,
         funs._cur->ClearLastOP();
         return true;
     }
+    case IROp::CollectionRead: case IROp::CollectionWrite:
+        return EmitCoreIRCollection(node, result, ar, funs, vars, destination);
     default: break;
     }
 
@@ -3624,8 +3674,8 @@ static bool EmitCoreIRNode(std::size_t index, SOperand& result,
         { const NS_INT value = NeoIntNeg(operands[0]._intLiteral); result.SetIntLiteral(funs.AddStaticInt(value), value); return true; }
         if (operands[0].IsFloatLiteral())
         { const NS_FLOAT value = -operands[0]._floatLiteral; result.SetFloatLiteral(funs.AddStaticNum(value), value); return true; }
-        result = SOperand(destination != INVALID_ERROR_PARSEJOB ? destination : funs._cur->AllocLocalTempVar());
-        funs._cur->Push_OP2(ar, node.type == NeoCore::IRValueType::Int ? NOP_I64_NEG : NOP_F64_NEG,
+        result = SOperand(destination != INVALID_ERROR_PARSEJOB ? destination : funs._cur->AllocLocalTempVar(CoreNumericStorage(node.type)));
+        funs._cur->Push_OP2(ar, node.type == NeoCore::IRValueType::Int ? OP_I64_NEG : OP_F64_NEG,
             result._iVar, operands[0]._iVar, false, node.source.line);
         return true;
     }
@@ -3633,7 +3683,7 @@ static bool EmitCoreIRNode(std::size_t index, SOperand& result,
     {
         if (operands[0].IsIntLiteral())
         { const NS_INT value = ~operands[0]._intLiteral; result.SetIntLiteral(funs.AddStaticInt(value), value); return true; }
-        result = EmitCoreNumber(NOP_I64_XOR, operands[0], SOperand(funs.AddStaticInt(-1)), ar, funs, node.source.line, destination);
+        result = EmitCoreNumber(OP_I64_XOR, operands[0], SOperand(funs.AddStaticInt(-1)), ar, funs, node.source.line, destination);
         return true;
     }
     if (node.op == IROp::LogicalNot)
@@ -3641,7 +3691,7 @@ static bool EmitCoreIRNode(std::size_t index, SOperand& result,
         if (IsTempVar(operands[0]._iVar) && funs._cur->_iLastOPOffset >= 0)
         {
             SVMOperation* comparison = funs._cur->GetOPPointer(funs._cur->_iLastOPOffset);
-            const TypedOpInfo* info = GetTypedOpInfo(comparison->op);
+            const TypedOpInfo* info = GetTypedOpInfo(comparison->Code());
             if (info && info->comparison && !info->jump && comparison->n1 == operands[0]._iVar &&
                 funs._cur->_iLastOPOffset + static_cast<int>(sizeof(SVMOperation)) == funs._cur->_code->GetBufferOffset() &&
                 funs._cur->_jumpTargetOffsets.count(funs._cur->_code->GetBufferOffset()) == 0)
@@ -3650,24 +3700,31 @@ static bool EmitCoreIRNode(std::size_t index, SOperand& result,
                 result = operands[0]; return true;
             }
         }
-        result = SOperand(destination != INVALID_ERROR_PARSEJOB ? destination : funs._cur->AllocLocalTempVar());
+        result = SOperand(destination != INVALID_ERROR_PARSEJOB ? destination : funs._cur->AllocLocalTempVar(CoreNumericStorage(node.type)));
         funs._cur->Push_OP2(ar, NOP_LOG_NOT, result._iVar, operands[0]._iVar, false, node.source.line);
         return true;
     }
-    const eNOperation op = CoreIRNumberOp(node.op, ar.m_coreTypedIR->nodes[node.inputs[0]].type);
+    const OperationCode op = CoreIRNumberOp(node.op, ar.m_coreTypedIR->nodes[node.inputs[0]].type);
     if (node.op == IROp::ToFloat && operands[0].IsIntLiteral())
     { const NS_FLOAT value = static_cast<NS_FLOAT>(operands[0]._intLiteral); result.SetFloatLiteral(funs.AddStaticNum(value), value); return true; }
     if (node.op == IROp::ToInt && operands[0].IsFloatLiteral())
     { const NS_INT value = NeoFloatToInt(operands[0]._floatLiteral); result.SetIntLiteral(funs.AddStaticInt(value), value); return true; }
     if (node.inputs.size() == 2 && TryFoldLiteralBinOp(operands[0], TypedBinaryOp(op), operands[1], funs))
     { result = operands[0]; return true; }
-    if (node.op == IROp::Greater || node.op == IROp::GreaterEqual) std::swap(operands[0], operands[1]);
-    result = SOperand(destination != INVALID_ERROR_PARSEJOB ? destination : funs._cur->AllocLocalTempVar());
+    result = SOperand(destination != INVALID_ERROR_PARSEJOB ? destination : funs._cur->AllocLocalTempVar(CoreNumericStorage(node.type)));
     if (node.inputs.size() == 1)
         funs._cur->Push_OP2(ar, op, result._iVar, operands[0]._iVar, false, node.source.line);
     else
         funs._cur->Push_OP(ar, op, result._iVar, operands[0]._iVar, operands[1]._iVar, node.source.line);
-    if (node.op == IROp::NotEqual) funs._cur->GetOPPointer(funs._cur->_iLastOPOffset)->argFlag |= NEOS_OP_COMPARE_INVERT;
+    return true;
+}
+
+static bool EmitCoreIRNode(std::size_t index, SOperand& result,
+    CArchiveRdWC& ar, SFunctions& funs, SVars& vars, int destination)
+{
+    if (!EmitCoreIRNodeImpl(index, result, ar, funs, vars, destination)) return false;
+    result._storage = CoreStorageType(ar.m_coreTypedIR->types,
+        ar.m_coreTypedIR->nodes[index].typeId);
     return true;
 }
 
@@ -4778,14 +4835,14 @@ TK_TYPE ParseJob(bool bReqReturn, SOperand& sResultStack, std::vector<SJumpValue
 // 따라서 "a == null || a.member"에서 a가 null이면 member 접근 자체를 건너뛴다.
 // ParseJob 과 동일한 계약: 실제로 만난 종결 토큰을 반환, 에러는 TK_NONE.
 // 논리 연산자가 없는 식은 emit 없이 그대로 통과한다 (기존 fused jump 최적화 유지).
-eNOperation ConvertCheckOPToOptimize(eNOperation n);      // 아래에 정의(비교 → 참일때점프)
-eNOperation ConvertCheckOPToOptimizeInv(eNOperation n);   // 아래에 정의(비교 → 거짓일때점프)
+OperationCode ConvertCheckOPToOptimize(OperationCode n);      // 아래에 정의(비교 → 참일때점프)
+OperationCode ConvertCheckOPToOptimizeInv(OperationCode n);   // 아래에 정의(비교 → 거짓일때점프)
 
-static bool UsesCompareInvert(eNOperation op)
+static bool UsesCompareInvert(OperationCode op)
 {
     const TypedOpInfo* typed = GetTypedOpInfo(op);
     return typed ? typed->comparison :
-        (op == NOP_GREAT || op == NOP_GREAT_EQ || op == NOP_LESS || op == NOP_LESS_EQ);
+        (op == OP_GREAT || op == OP_GREAT_EQ || op == OP_LESS || op == OP_LESS_EQ);
 }
 
 // 직전에 생성된 비교 OP(LS/GR/...)를 "비교+점프" 결합 명령(JMP_LESS 등)으로 덮어쓴다.
@@ -4797,16 +4854,17 @@ static bool TryFuseCompareJump(bool bJumpWhenTrue, const SOperand& operand, SFun
 {
 	if (false == IsTempVar(operand._iVar))
 		return false;
-	const eNOperation opCheck = funs._cur->GetLastOP();
-	const eNOperation opOpz = bJumpWhenTrue ? ConvertCheckOPToOptimize(opCheck)
+	const OperationCode opCheck = funs._cur->GetLastOP();
+	const OperationCode opOpz = bJumpWhenTrue ? ConvertCheckOPToOptimize(opCheck)
 	                                        : ConvertCheckOPToOptimizeInv(opCheck);
 	if (opOpz == NOP_NONE)
 		return false;
 
 	const int argLen = (int)sizeof(short) * 3;
 	funs._cur->_code->SetPointer(-((int)sizeof(OpType) + (int)sizeof(ArgFlag) + argLen), SEEK_CUR);
-	OpType optype = GetOpTypeFromOp(opOpz);
+	OpType optype = PrimaryOperation(opOpz);
 	funs._cur->_code->Write(&optype, sizeof(optype));
+	funs._cur->GetOPPointer(funs._cur->_code->GetBufferOffset() - sizeof(OpType))->SetCode(opOpz);
 	if (!bJumpWhenTrue && UsesCompareInvert(opCheck))
 		funs._cur->GetOPPointer(funs._cur->_code->GetBufferOffset() - sizeof(OpType))->argFlag ^= NEOS_OP_COMPARE_INVERT;
 	funs._cur->_code->SetPointer((int)sizeof(ArgFlag), SEEK_CUR);
@@ -4835,18 +4893,22 @@ struct SRangeBoundCandidate
 	bool	_inclusive = false;
 };
 
-static ERangeCompareRelation GetRangeCompareRelation(eNOperation op)
+static ERangeCompareRelation GetRangeCompareRelation(OperationCode op)
 {
 	switch (op)
 	{
-	case NOP_JMP_GREAT:    return RANGE_REL_GREAT;
-	case NOP_JMP_GREAT_EQ: return RANGE_REL_GREAT_EQ;
-	case NOP_JMP_LESS:     return RANGE_REL_LESS;
-	case NOP_JMP_LESS_EQ:  return RANGE_REL_LESS_EQ;
-	case NOP_JMP_I64_LT:  return RANGE_REL_LESS;
-	case NOP_JMP_I64_LE:  return RANGE_REL_LESS_EQ;
-	case NOP_JMP_F64_LT:  return RANGE_REL_LESS;
-	case NOP_JMP_F64_LE:  return RANGE_REL_LESS_EQ;
+	case OP_JMP_LESS:     return RANGE_REL_LESS;
+	case OP_JMP_I64_LT:  return RANGE_REL_LESS;
+	case OP_JMP_F64_LT:  return RANGE_REL_LESS;
+	case OP_JMP_LESS_EQ:  return RANGE_REL_LESS_EQ;
+	case OP_JMP_I64_LE:  return RANGE_REL_LESS_EQ;
+	case OP_JMP_F64_LE:  return RANGE_REL_LESS_EQ;
+	case OP_JMP_GREAT:    return RANGE_REL_GREAT;
+	case OP_JMP_I64_GT:  return RANGE_REL_GREAT;
+	case OP_JMP_F64_GT:  return RANGE_REL_GREAT;
+	case OP_JMP_GREAT_EQ: return RANGE_REL_GREAT_EQ;
+	case OP_JMP_I64_GE:  return RANGE_REL_GREAT_EQ;
+	case OP_JMP_F64_GE:  return RANGE_REL_GREAT_EQ;
 	default:                return RANGE_REL_NONE;
 	}
 }
@@ -4869,8 +4931,8 @@ static ERangeCompareRelation InvertRangeCompareRelation(ERangeCompareRelation re
 static int BuildRangeBoundCandidates(const SVMOperation& op, bool jumpWhenTrue, bool buildInsideRange,
 	SRangeBoundCandidate outCandidates[2])
 {
-	ERangeCompareRelation relation = GetRangeCompareRelation(op.op);
-	const TypedOpInfo* typed = GetTypedOpInfo(op.op);
+	ERangeCompareRelation relation = GetRangeCompareRelation(op.Code());
+	const TypedOpInfo* typed = GetTypedOpInfo(op.Code());
 	// 원본의 ! 비교까지 범위식으로 뒤집으면 NaN에서 !(x < lo)와 x >= lo가 달라진다.
 	// 이 경우에는 결과 반전을 가진 두 전용 분기를 그대로 유지한다.
 	if (typed != nullptr && jumpWhenTrue == ((op.argFlag & NEOS_OP_COMPARE_INVERT) != 0))
@@ -4914,7 +4976,7 @@ static bool TryFuseRangeJump(SFunctions& funs, const std::vector<SJumpValue>& tr
 	const SJumpValue* secondJump = nullptr;
 	bool firstJumpWhenTrue = false;
 	bool secondJumpWhenTrue = false;
-	eNOperation rangeOp = NOP_NONE;
+	OperationCode rangeOp = NOP_NONE;
 
 	if (trueJumps.size() == 1 && falseJumps.size() == 1)
 	{
@@ -4990,7 +5052,7 @@ static bool TryFuseRangeJump(SFunctions& funs, const std::vector<SJumpValue>& tr
 
 	// 첫 opcode를 재사용하고, 아직 어느 곳에서도 참조하지 않은 마지막 opcode는
 	// write cursor를 되돌려 다음 emission이 덮어쓰게 한다. NOP_IDLE을 남기지 않는다.
-	firstOp->op = GetOpTypeFromOp(rangeOp);
+	firstOp->SetCode(rangeOp);
 	firstOp->argFlag = 0;
 	firstOp->n1 = 0;
 	firstOp->n2 = lower._test;
@@ -5123,44 +5185,44 @@ TK_TYPE ParseShortCircuitLogic(bool bReqReturn, SOperand& sResultStack, CArchive
 	return endToken;
 }
 
-eNOperation ConvertCheckOPToOptimize(eNOperation n)
+OperationCode ConvertCheckOPToOptimize(OperationCode n)
 {
 	const TypedOpInfo* typed = GetTypedOpInfo(n);
 	if (typed != nullptr) return typed->branchOp;
 	switch (n)
 	{
-	case NOP_GREAT:		// >
-		return NOP_JMP_GREAT;
-	case NOP_GREAT_EQ:	// >=
-		return NOP_JMP_GREAT_EQ;
-	case NOP_LESS:		// <
-		return NOP_JMP_LESS;
-	case NOP_LESS_EQ:	// <=
-		return NOP_JMP_LESS_EQ;
-	case NOP_EQUAL2:	// ==
-		return NOP_JMP_EQUAL2;
-	case NOP_NEQUAL:	// !=
-		return NOP_JMP_NEQUAL;
+	case OP_EQUAL2:	// ==
+		return OP_JMP_EQUAL2;
+	case OP_LESS:		// <
+		return OP_JMP_LESS;
+	case OP_LESS_EQ:	// <=
+		return OP_JMP_LESS_EQ;
+	case OP_NEQUAL:	// !=
+		return OP_JMP_NEQUAL;
+	case OP_GREAT:		// >
+		return OP_JMP_GREAT;
+	case OP_GREAT_EQ:	// >=
+		return OP_JMP_GREAT_EQ;
 	default:
 		break;
 	}
 	return NOP_NONE;
 }
-eNOperation ConvertCheckOPToOptimizeInv(eNOperation n)
+OperationCode ConvertCheckOPToOptimizeInv(OperationCode n)
 {
 	const TypedOpInfo* typed = GetTypedOpInfo(n);
 	if (typed != nullptr) return typed->branchOp;
 	switch (n)
 	{
-	case NOP_GREAT:
-	case NOP_GREAT_EQ:
-	case NOP_LESS:
-	case NOP_LESS_EQ:
+	case OP_EQUAL2:	// ==
+		return OP_JMP_NEQUAL;
+	case OP_LESS:
+	case OP_LESS_EQ:
+	case OP_GREAT:
+	case OP_GREAT_EQ:
 		return ConvertCheckOPToOptimize(n);
-	case NOP_EQUAL2:	// ==
-		return NOP_JMP_NEQUAL;
-	case NOP_NEQUAL:	// !=
-		return NOP_JMP_EQUAL2;
+	case OP_NEQUAL:	// !=
+		return OP_JMP_EQUAL2;
 	default:
 		break;
 	}
@@ -5229,9 +5291,9 @@ bool ParseFor(CArchiveRdWC& ar, SFunctions& funs, SVars& vars)
 	MaterializeValue(iTempOffset, ar, funs);
 	int iStackCheckVar = iTempOffset._iVar;
 	int Pos2 = funs._cur->_code->GetBufferOffset();
-	eNOperation opCheck = funs._cur->GetLastOP();
+	OperationCode opCheck = funs._cur->GetLastOP();
 	bool isCheckOPOpt = false;
-	eNOperation opOpz = NOP_NONE;
+	OperationCode opOpz = NOP_NONE;
 	if (IsTempVar(iStackCheckVar))
 	{
 		opOpz = ConvertCheckOPToOptimize(opCheck);
@@ -5306,8 +5368,9 @@ bool ParseFor(CArchiveRdWC& ar, SFunctions& funs, SVars& vars)
 	{
 		int argLen = sizeof(short) * 3;
 		funs._cur->_code->SetPointer(-((int)sizeof(OpType) + (int)sizeof(ArgFlag) + argLen), SEEK_CUR); // OP + flag + n1, n2, n3
-		OpType optype = GetOpTypeFromOp(opOpz);
+		OpType optype = PrimaryOperation(opOpz);
 		funs._cur->_code->Write(&optype, sizeof(optype));
+		funs._cur->GetOPPointer(funs._cur->_code->GetBufferOffset() - sizeof(OpType))->SetCode(opOpz);
 		// 부정 비교를 복사해 온 경우에도 결과 반전 비트를 그대로 보존한다.
 		funs._cur->_code->SetPointer(static_cast<int>(sizeof(ArgFlag)), SEEK_CUR);
 		int cur = funs._cur->_code->GetBufferOffset();
@@ -5805,9 +5868,9 @@ bool ParseWhile(CArchiveRdWC& ar, SFunctions& funs, SVars& vars)
 	MaterializeValue(iTempOffset, ar, funs);
 	int iStackCheckVar = iTempOffset._iVar;
 	int Pos2 = funs._cur->_code->GetBufferOffset();
-	eNOperation opCheck = funs._cur->GetLastOP();
+	OperationCode opCheck = funs._cur->GetLastOP();
 	bool isCheckOPOpt = false;
-	eNOperation opOpz = NOP_NONE;
+	OperationCode opOpz = NOP_NONE;
 	if (IsTempVar(iStackCheckVar))
 	{
 		opOpz = ConvertCheckOPToOptimize(opCheck);
@@ -5858,8 +5921,9 @@ bool ParseWhile(CArchiveRdWC& ar, SFunctions& funs, SVars& vars)
 	{
 		int argLen = sizeof(short) * 3;
 		funs._cur->_code->SetPointer(-((int)sizeof(OpType) + (int)sizeof(ArgFlag) + argLen), SEEK_CUR); // OP + n1, n2, n3
-		OpType optype = GetOpTypeFromOp(opOpz);
+		OpType optype = PrimaryOperation(opOpz);
 		funs._cur->_code->Write(&optype, sizeof(optype));
+		funs._cur->GetOPPointer(funs._cur->_code->GetBufferOffset() - sizeof(OpType))->SetCode(opOpz);
 		// 부정 비교를 복사해 온 경우에도 결과 반전 비트를 그대로 보존한다.
 		funs._cur->_code->SetPointer(static_cast<int>(sizeof(ArgFlag)), SEEK_CUR);
 		int cur = funs._cur->_code->GetBufferOffset();
@@ -5951,9 +6015,9 @@ bool ParseIF(std::vector<SJumpValue>* pJumps, CArchiveRdWC& ar, SFunctions& funs
 		}
 	};
 
-	eNOperation opCheck = funs._cur->GetLastOP();
+	OperationCode opCheck = funs._cur->GetLastOP();
 	bool isCheckOPOpt = false;
-	eNOperation opOpz = NOP_NONE;
+	OperationCode opOpz = NOP_NONE;
 	if (false == blCondBranch && IsTempVar(iTempOffset._iVar))
 	{
 		opOpz = ConvertCheckOPToOptimizeInv(opCheck);
@@ -5976,8 +6040,9 @@ bool ParseIF(std::vector<SJumpValue>* pJumps, CArchiveRdWC& ar, SFunctions& funs
 		int argLen = sizeof(short) * 3;
 		funs._cur->_code->SetPointer(-((int)sizeof(OpType) + (int)sizeof(ArgFlag) + argLen), SEEK_CUR); // OP + flag +  n1, n2, n3
 		
-		eNOperation optype = GetOpTypeFromOp(opOpz);
+		OpType optype = PrimaryOperation(opOpz);
 		funs._cur->_code->Write(&optype, sizeof(optype));
+		funs._cur->GetOPPointer(funs._cur->_code->GetBufferOffset() - sizeof(OpType))->SetCode(opOpz);
 		if (UsesCompareInvert(opCheck))
 			funs._cur->GetOPPointer(funs._cur->_code->GetBufferOffset() - sizeof(OpType))->argFlag ^= NEOS_OP_COMPARE_INVERT;
 		funs._cur->_code->SetPointer((int)sizeof(ArgFlag), SEEK_CUR);
@@ -6954,18 +7019,18 @@ static bool ParseSingleStatement(std::vector<SJumpValue>* breaks, CArchiveRdWC& 
 #define NEOS_HOIST_MAX	32	// 함수당 상한. 프레임이 커지면 재귀 가능 깊이가 줄어든다.
 
 // n1 에 op 단위 상대 점프 offset 을 담는 op. 뒤로 가는 offset = 루프의 back edge.
-static bool IsRelativeJumpOp(eNOperation op)
+static bool IsRelativeJumpOp(OperationCode op)
 {
 	const TypedOpInfo* typed = GetTypedOpInfo(op);
 	if (typed != nullptr) return typed->jump;
 	switch (op)
 	{
 	case NOP_JMP:			case NOP_JMP_FALSE:		case NOP_JMP_TRUE:
-	case NOP_JMP_GREAT:		case NOP_JMP_GREAT_EQ:
-	case NOP_JMP_LESS:		case NOP_JMP_LESS_EQ:
-	case NOP_JMP_EQUAL2:	case NOP_JMP_NEQUAL:
-	case NOP_JMP_FOR:		case NOP_JMP_FOREACH:
-	case NOP_JMP_RANGE_INSIDE:	case NOP_JMP_RANGE_OUTSIDE:
+	case OP_JMP_EQUAL2:		case NOP_JMP_FOR:
+	case NOP_JMP_FOREACH:		case NOP_JMP_RANGE_INSIDE:
+	case NOP_JMP_RANGE_OUTSIDE:	case OP_JMP_LESS:
+	case OP_JMP_LESS_EQ:		case OP_JMP_NEQUAL:
+	case OP_JMP_GREAT:	case OP_JMP_GREAT_EQ:
 		return true;
 	default:
 		return false;
@@ -6977,16 +7042,16 @@ static bool IsRelativeJumpOp(eNOperation op)
 // 슬롯만 표시한다. 즉값(n23) / 점프 offset / 인자 수 / 함수 인덱스는 절대 포함하지 않는다 —
 // 그런 필드를 슬롯 인덱스로 재작성하면 코드가 조용히 깨진다.
 // bit1 = n2, bit2 = n3.
-static int HoistableOperandMask(eNOperation op)
+static int HoistableOperandMask(OperationCode op)
 {
 	switch (op)
 	{
 	case NOP_MOV:			// n1 = dest
 		return 0x2;
-	case NOP_JMP_GREAT:		case NOP_JMP_GREAT_EQ:
-	case NOP_JMP_LESS:		case NOP_JMP_LESS_EQ:
-	case NOP_JMP_EQUAL2:	case NOP_JMP_NEQUAL:
-	case NOP_STR_ADD:
+	case OP_JMP_EQUAL2:		case NOP_STR_ADD:
+	case OP_JMP_LESS:		case OP_JMP_LESS_EQ:
+	case OP_JMP_NEQUAL:	case OP_JMP_GREAT:
+	case OP_JMP_GREAT_EQ:
 		return 0x2 | 0x4;
 	case NOP_TOINT:			// n1 = dest
 		return 0x2;
@@ -7019,7 +7084,7 @@ static void HoistLoopConstants(SFunctions& funs, u8* pCode, int codeSize,
 	bool anyLoop = false;
 	for (int i = 0; i < n; i++)
 	{
-		if (false == IsRelativeJumpOp(ops[i].op))
+		if (false == IsRelativeJumpOp(ops[i].Code()))
 			continue;
 		const int off = ops[i].n1;
 		if (off >= 0)
@@ -7039,7 +7104,7 @@ static void HoistLoopConstants(SFunctions& funs, u8* pCode, int codeSize,
 	{
 		if (inLoop[i] == 0)
 			continue;
-		const int mask = HoistableOperandMask(ops[i].op);
+		const int mask = HoistableOperandMask(ops[i].Code());
 		if ((mask & 0x2) && IsStaticOperand(ops[i].n2)) useInLoop[ops[i].n2]++;
 		if ((mask & 0x4) && IsStaticOperand(ops[i].n3)) useInLoop[ops[i].n3]++;
 
@@ -7093,7 +7158,7 @@ static void HoistLoopConstants(SFunctions& funs, u8* pCode, int codeSize,
 
 	for (int i = 0; i < n; i++)
 	{
-		const int mask = HoistableOperandMask(ops[i].op);
+		const int mask = HoistableOperandMask(ops[i].Code());
 		if (mask & 0x2)
 		{
 			std::map<short, short>::iterator it = remap.find(ops[i].n2);
@@ -7312,6 +7377,39 @@ bool Parse(CArchiveRdWC& ar, CNArchive&arw, bool putASM)
 
 	SVars	vars;
 	SFunctions funs;
+	if (ar.m_coreTypedIR)
+	{
+		using NeoCore::TypeKind;
+		for (const NeoCore::IRStorageSymbol& symbol : ar.m_coreTypedIR->storageSymbols)
+		{
+			SlotType storage;
+			storage.typeId = symbol.type;
+			switch (ar.m_coreTypedIR->types.Get(symbol.type).kind)
+			{
+			case TypeKind::Int: storage.kind = SlotKind::Int; break;
+			case TypeKind::Float: storage.kind = SlotKind::Float; break;
+			case TypeKind::Bool: storage.kind = SlotKind::Bool; break;
+			case TypeKind::String: storage.kind = SlotKind::String; break;
+			case TypeKind::Vector2: storage.kind = SlotKind::Vector2; break;
+			case TypeKind::Vector3: storage.kind = SlotKind::Vector3; break;
+			case TypeKind::Vector4: case TypeKind::Quaternion: storage.kind = SlotKind::Vector4; break;
+			case TypeKind::Array: case TypeKind::Array32: storage.kind = SlotKind::Array; break;
+			case TypeKind::List: case TypeKind::Struct: storage.kind = SlotKind::List; break;
+			case TypeKind::Map: storage.kind = SlotKind::Map; break;
+			case TypeKind::Set: storage.kind = SlotKind::Set; break;
+			case TypeKind::Function: storage.kind = SlotKind::Function; break;
+			case TypeKind::Native: storage.kind = SlotKind::ObjectId; break;
+			case TypeKind::BuiltinObject:
+				storage.kind = ar.m_coreTypedIR->types.Get(symbol.type).name == "AsyncRequest" ? SlotKind::Async : SlotKind::Native;
+				break;
+			case TypeKind::Coroutine: storage.kind = SlotKind::Coroutine; break;
+			default: break;
+			}
+			if (symbol.boxed) storage.kind = symbol.parameter ? SlotKind::Boxed : SlotKind::List;
+			if (symbol.ownerFunction.empty()) funs._declaredStorage.emplace(symbol.backendName, storage);
+			else funs._helperStorage[symbol.ownerFunction].emplace(symbol.backendName, storage);
+		}
+	}
 
 	funs._curModule = funs.NewLayer();
 

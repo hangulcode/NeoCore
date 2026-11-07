@@ -111,6 +111,7 @@ void CNeoVM::Var_ReleaseInternal(VarInfo* d)
 			FreeString(d);
 		d->_str = NULL;
 		break;
+	case VAR_VEC3:
 	case VAR_VEC4:
 		if (--d->_vec->_refCount <= 0)
 			FreeVec(d->_vec);
@@ -913,10 +914,11 @@ VecInfo* CNeoVM::VecAlloc()
 }
 void CNeoVM::FreeVec(VecInfo* p)
 {
+	assert(p->_refCount == 0);
 	--m_sAllocStats.vectors;
 	m_sPool_Vec.Confer(p);
 }
-// 4성분만 공유 저장소를 보유한다. 나머지 벡터는 일반 값 복사다.
+// 3·4성분은 공유 저장소를 보유한다. 2성분 벡터는 일반 값 복사다.
 void ArrayInfo::AssignVectorRare(int index, VarInfo* value)
 {
 	_pVM->Move(&VectorValues()[index], value);
@@ -924,7 +926,7 @@ void ArrayInfo::AssignVectorRare(int index, VarInfo* value)
 void ArrayInfo::RetainInitialVector(const VarInfo& value)
 {
 	_initialVector = value;
-	if (_initialVector.GetType() == VAR_VEC4) ++_initialVector._vec->_refCount;
+	if (_initialVector.GetType() == VAR_VEC3 || _initialVector.GetType() == VAR_VEC4) ++_initialVector._vec->_refCount;
 }
 void ArrayInfo::ReleaseVectorRange(int begin, int end)
 {
@@ -939,7 +941,7 @@ void ArrayInfo::ReadVectorRare(int index, VarInfo* out)
 {
 	// a = a[0]이면 out 해제와 동시에 이 배열도 파괴된다. 먼저 원소 소유권을 확보한다.
 	VarInfo value = VectorValues()[index];
-	if (value.GetType() == VAR_VEC4) ++value._vec->_refCount;
+	if (value.GetType() == VAR_VEC3 || value.GetType() == VAR_VEC4) ++value._vec->_refCount;
 	_pVM->Var_Release(out);
 	*out = value;
 }
@@ -951,7 +953,7 @@ bool ArrayInfo::SetVectorComponents(int index, const float* components, int dime
 	float copy[4] = {};
 	std::memcpy(copy, components, dimension * sizeof(float));
 	VarInfo* value = &VectorValues()[index];
-	if (dimension < 4) value->SetInlineVec(dimension, copy[0], copy[1], copy[2]);
+	if (dimension == 2) value->SetInlineVec(copy[0], copy[1]);
 	else std::memcpy(_pVM->VecCopyOnWrite(value)->v, copy, sizeof(copy));
 	return true;
 }
