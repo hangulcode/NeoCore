@@ -7177,6 +7177,8 @@ void FinalizeFuction(SFunctions& funs)
 	// 점프가 op 단위 상대라 앞에 프롤로그를 붙여도 함수 내부 점프는 보정이 필요 없다.
 	std::vector<std::pair<short, short> > prologue;
 	HoistLoopConstants(funs, pSrc, funs._cur->_iCode_Size, prologue);
+	// 재작성된 키 오퍼랜드는 더 이상 static 상수가 아니다. 저장 종류 추론이 되짚도록 쌍을 남긴다.
+	funs._cur->_hoisted = prologue;
 
 	for (int i = 0; i < (int)prologue.size(); i++)
 	{

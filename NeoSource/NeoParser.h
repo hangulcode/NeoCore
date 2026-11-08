@@ -296,6 +296,9 @@ struct SFunctionInfo
     SlotType _returnStorage;
     std::vector<SlotType> _parameterStorage;
     std::vector<CompileCallStorage> _calls;
+    // 루프 상수 hoisting 이 만든 (숨은 지역 슬롯, static 상수 오퍼랜드) 쌍. 저장 종류 추론은 이 표로
+    // 숨은 슬롯을 원래 상수로 되짚어 구조체 필드 키를 알아낸다.
+    std::vector<std::pair<short, short> > _hoisted;
     // 몸통이 전역 하나를 돌려주는 RETURN뿐인 함수의 그 전역 슬롯. 0이면 그런 함수가 아니다.
     // 뒤에 오는 인자 없는 호출은 호출 창 없이 이 전역을 복사한다.
     int _globalGetterSlot = 0;

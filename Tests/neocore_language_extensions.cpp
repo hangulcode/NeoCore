@@ -59,6 +59,10 @@ int main()
         Expect("void F(){return;print(1);}export int Probe(){F();return 7;}", 7, "unreachable statement after void return", debug);
         Expect("int G(){return 1;print(1);}export int Probe(){return G()+1;}", 2, "unreachable statement after value return", debug);
         Expect("int H(int x){if(x>0){return 1;print(1);}else{return 2;print(2);}}export int Probe(){return H(1)*10+H(-1);}", 12, "unreachable statements in both branches", debug);
+        // 루프 안에서 쓰인 구조체 필드 키 상수는 숨은 지역 슬롯으로 옮겨진다. 루프 밖의 같은 필드 읽기도 필드 타입을 유지해야 한다.
+        Expect("struct Inner{list<int> state;list<int> order;};struct Outer{int a;int b;Inner bld;};"
+            "int Apply(Outer p){int sum=0;list<int> s=p.bld.state;for(int i in 0,p.bld.order.len())sum+=p.bld.order[i];return sum*100+s[0];}"
+            "export int Probe(){Outer p=Outer(1,2,Inner([5,6],[7,8]));return Apply(p);}", 1505, "hoisted struct field key keeps the field type", debug);
         // 긴 .. 사슬은 항마다 조각 파싱을 중첩하지 않아야 파서 깊이 한도에 걸리지 않는다.
         {
             std::string chain = "export int Probe(){string s=\"x\"";

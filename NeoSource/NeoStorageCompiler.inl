@@ -76,17 +76,28 @@ class StorageCompiler
     }
     void Copy(SFunctionInfo& function, int destination, int source)
     { Bind(function, destination, Get(function, source)); Bind(function, source, Get(function, destination)); }
+    // 루프 상수 hoisting 이 static 상수를 숨은 지역 슬롯으로 옮긴 오퍼랜드는 원래 상수로 되짚는다.
+    // 구조체 필드 키가 그렇게 옮겨지면 필드 타입을 찾지 못해 읽기 결과 슬롯이 엉뚱한 종류로 고정됐다.
+    int ConstantOperand(const SFunctionInfo& function, int slot) const
+    {
+        for (const std::pair<short, short>& hoisted : function._hoisted)
+            if (hoisted.first == slot) return hoisted.second;
+        return slot;
+    }
     SlotType Element(SFunctionInfo& function, int owner, int key) const
     {
         if (!functions_._typedIR) return SlotType();
         const NeoCore::TypeDesc& type = functions_._typedIR->types.Get(Get(function, owner).typeId);
         NeoCore::TypeId element = type.element;
         if (type.kind == NeoCore::TypeKind::Map) element = type.value;
-        if (type.kind == NeoCore::TypeKind::Struct && IsCompileConstant(key))
+        if (type.kind == NeoCore::TypeKind::Struct)
         {
-            const BoundaryValue& index = functions_._staticVars[StaticPoolIndex(key)];
-            if (index.GetType() == VAR_INT && index._int >= 0 && index._int < static_cast<NS_INT>(type.fields.size()))
-                element = type.fields[static_cast<size_t>(index._int)].type;
+            // 구조체 필드는 항상 상수 첨자다. 찾지 못하면 종류를 지어내지 않고 추론에서 뺀다.
+            const int constant = ConstantOperand(function, key);
+            if (!IsCompileConstant(constant)) return SlotType();
+            const BoundaryValue& index = functions_._staticVars[StaticPoolIndex(constant)];
+            if (index.GetType() != VAR_INT || index._int < 0 || index._int >= static_cast<NS_INT>(type.fields.size())) return SlotType();
+            element = type.fields[static_cast<size_t>(index._int)].type;
         }
         if (type.kind >= NeoCore::TypeKind::Vector2 && type.kind <= NeoCore::TypeKind::Quaternion)
             element = static_cast<NeoCore::TypeId>(NeoCore::TypeKind::Float);

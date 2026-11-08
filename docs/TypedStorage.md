@@ -64,7 +64,10 @@ block. A frame therefore releases only `[1, 1 + args + owned)` on return, and th
 image carries no separate cleanup list. Programs share these arrays across
 instances and recursive calls. The loader validates serialized plans and slot info
 rather than deciding new storage optimizations. Older images must be recompiled
-and host libraries rebuilt.
+and host libraries rebuilt. Loop constant hoisting moves numeric constants used
+inside loops into hidden frame slots before inference runs; each function keeps
+its (slot, constant) pairs so that inference still resolves a struct field key
+that was hoisted, instead of binding the read result to an unrelated kind.
 
 Copy and clear instructions carry their storage policy in the low four bits of
 `argFlag`: `MOV` (twelve policies, two immediate forms, and a boxed fallback that
