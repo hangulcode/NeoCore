@@ -425,6 +425,8 @@ private:
 
 	template<bool TIMEOUT, bool DEBUG>
 	bool	RunInternal(int iBreakingCallStack);
+	// 드문 명령의 처리. RunInternal의 switch에 없는 명령이 온다. 실행을 멈춰야 하면 true를 돌려준다.
+	bool	ExecuteColdOp(const SVMOperation& OP);
 
 	bool	StopCoroutine(bool doDead = true);
 	void	DeadCoroutine(CoroutineInfo* pCI);

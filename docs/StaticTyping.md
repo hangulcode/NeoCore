@@ -50,7 +50,11 @@ operation with one switch and the handler body is fixed by a template argument.
 The loader also replaces a range branch whose test value and both bounds are
 all `int` or all `float` slots with a runtime-only typed range branch that
 compares payloads without building typed views; mixed operand types keep the
-generic range branch.
+generic range branch. The dispatch loop itself keeps only the frequent
+instructions (copies, branches, calls and returns, runtime numeric opcodes,
+typed element access and map lookups); every other opcode is handled by a
+separate non-inlined function, which keeps the loop small enough for the
+compiler to hold its registers and lay out each handler without shared tails.
 Combinations without a runtime opcode fall back to the family handler, which
 switches on the low-bit sub-operation. Disassembly maps runtime opcodes back to
 the image form. Combined operation keys remain compiler and validation metadata.

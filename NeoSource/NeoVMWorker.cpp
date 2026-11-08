@@ -2249,10 +2249,12 @@ void CNeoVMWorker::JumpAsyncMsg()
 	m_pCur->m_sAsyncResumeCodePtrs.push_back(resume);
 	SetCodePtr(sizeof(SVMOperation));
 }
-#define NEOCORE_ARRAY_DISPATCH(NAME, ELEMENT) \
-		case NOP_ARRAY_##NAME##_NEW: TypedArrayNew<NeoArrayElementType::ELEMENT>(OP); break; \
+// 원소 읽기·쓰기는 루프 안에, 생성·추가는 루프 밖 ExecuteColdOp에 둔다.
+#define NEOCORE_ARRAY_ACCESS_DISPATCH(NAME, ELEMENT) \
 		case NOP_ARRAY_##NAME##_GET: TypedArrayGet<NeoArrayElementType::ELEMENT>(OP); break; \
-		case NOP_ARRAY_##NAME##_SET: TypedArraySet<NeoArrayElementType::ELEMENT>(OP); break; \
+		case NOP_ARRAY_##NAME##_SET: TypedArraySet<NeoArrayElementType::ELEMENT>(OP); break;
+#define NEOCORE_ARRAY_COLD_DISPATCH(NAME, ELEMENT) \
+		case NOP_ARRAY_##NAME##_NEW: TypedArrayNew<NeoArrayElementType::ELEMENT>(OP); break; \
 		case NOP_ARRAY_##NAME##_APPEND: TypedArrayAppend<NeoArrayElementType::ELEMENT>(OP); break;
 #define NEOCORE_SCALAR_CONTAINER_DISPATCH(OWNER, INDEX, TYPE, TAG) \
         case NOP_##OWNER##_##TYPE##_LOAD: ScalarContainerLoad<INDEX, TAG>(GetVarRawF1(OP), GetVarRaw2(OP), GetVarRaw3(OP)); break; \
@@ -2263,6 +2265,97 @@ void CNeoVMWorker::JumpAsyncMsg()
         NEOCORE_SCALAR_CONTAINER_DISPATCH(OWNER, INDEX, BOOL, VAR_BOOL)
 #define NEOCORE_SCALAR_ARRAY_STORE(TYPE, ELEMENT) \
         case NOP_ARRAY_##TYPE##_STORE: ScalarArrayStore<NeoArrayElementType::ELEMENT>(GetVarRawF1(OP), GetVarRaw2(OP), GetVarRaw3(OP)); break;
+
+// 드문 명령의 처리. 디스패치 루프를 작게 유지하려고 루프 밖에 둔다. 실행을 멈춰야 하면 true를 돌려준다.
+// 뜨거운 명령의 목록은 벤치·스모크의 동적 계측과 게임 스크립트의 정적 빈도로 정했다(RunInternal 참조).
+NEOS_NOINLINE bool CNeoVMWorker::ExecuteColdOp(const SVMOperation& OP)
+{
+	switch (OP.op)
+	{
+	case NOP_LOADK:         handle_LOADK_cold(OP); break;
+	case NOP_LOG_NOT:       handle_LOG_NOT_cold(OP); break;
+	case NOP_COMPARE:       handle_COMPARE(OP); break;
+	case NOP_JMP_COMPARE:   handle_JMP_COMPARE(OP); break;
+	case NOP_JMP_COMPARE_L: handle_JMP_COMPARE_L(OP); break;
+	case NOP_SWITCH:        handle_SWITCH(OP); break;
+	case NOP_TOINT:         handle_TOINT(OP); break;
+	case NOP_TOINT_L:       handle_TOINT_L(OP); break;
+	case NOP_TOFLOAT:       handle_TOFLOAT(OP); break;
+	case NOP_SLEEP:         return handle_SLEEP(OP);
+	case NOP_FMOV1:         handle_FMOV1(OP); break;
+	case NOP_FMOV2:         handle_FMOV2(OP); break;
+	case NOP_PTRCALL:       handle_PTRCALL(OP); break;
+	case NOP_PTRCALL_L:     handle_PTRCALL_L(OP); break;
+	case NOP_TABLE_ALLOC:   handle_TABLE_ALLOC(OP); break;
+	case NOP_CLT_READ:      handle_CLT_READ(OP); break;
+	case NOP_CLT_READ_L:    handle_CLT_READ_L(OP); break;
+	case NOP_CLT_MOV:       handle_CLT_MOV(OP); break;
+	case NOP_CLT_MOV_L:     handle_CLT_MOV_L(OP); break;
+	case NOP_LIST_ALLOC:    handle_LIST_ALLOC(OP); break;
+	case NOP_LIST_ALLOC_L:  handle_LIST_ALLOC_L(OP); break;
+	case NOP_CHANGE_INT:    handle_CHANGE_INT(OP); break;
+	case NOP_CHANGE_INT_L:  handle_CHANGE_INT_L(OP); break;
+	case NOP_YIELD:         return handle_YIELD(OP);
+	case NOP_IDLE:          handle_IDLE(OP); break;
+	case NOP_VEC_MAKE:      handle_VEC_MAKE(OP); break;
+	case NOP_CLT_READ_STATIC_STRING: handle_CLT_READ_STATIC_STRING(OP); break;
+	case NOP_JMP_RANGE_INSIDE: if (IsRangeInside<true>(OP, false)) SetComparisonJump(OP.n1); break;
+	case NOP_JMP_RANGE_OUTSIDE: if (IsRangeInside(OP, false) == false) SetComparisonJump(OP.n1); break;
+	case NOP_JMP_RANGE_INSIDE_L: if (IsRangeInside<true>(OP, true)) SetComparisonJump(OP.n1); break;
+	case NOP_JMP_RANGE_OUTSIDE_L: if (IsRangeInside(OP, true) == false) SetComparisonJump(OP.n1); break;
+	case NOP_CLT_WRITE_REF: handle_CLT_WRITE_REF(OP); break;
+	// 펼치지 못한 조합은 세부 연산을 실행 중 고르는 기존 경로로 간다.
+	case NOP_I64_ARITH: handle_I64_ARITH<false>(OP); break;
+	case NOP_F64_ARITH: handle_F64_ARITH<false>(OP); break;
+	case NOP_NUM_CONVERT: handle_NUM_CONVERT(OP); break;
+	case NOP_I64_COMPARE: handle_I64_COMPARE(OP); break;
+	case NOP_F64_COMPARE: handle_F64_COMPARE(OP); break;
+	case NOP_JMP_I64_COMPARE: handle_JMP_I64_COMPARE(OP); break;
+	case NOP_JMP_F64_COMPARE: handle_JMP_F64_COMPARE(OP); break;
+	case NOP_I64_FIXED: handle_I64_ARITH<true>(OP); break;
+	case NOP_F64_FIXED: handle_F64_ARITH<true>(OP); break;
+	case NOP_V2_MAKE: TypedVectorMake<2>(OP); break;
+	case NOP_V2_GET: TypedVectorGet<2>(OP); break;
+	case NOP_V2_SET: TypedVectorSet<2>(OP); break;
+	case NOP_V3_MAKE: TypedVectorMake<3>(OP); break;
+	case NOP_V3_GET: TypedVectorGet<3>(OP); break;
+	case NOP_V3_SET: TypedVectorSet<3>(OP); break;
+	case NOP_V4_MAKE: TypedVectorMake<4>(OP); break;
+	case NOP_V4_GET: TypedVectorGet<4>(OP); break;
+	case NOP_V4_SET: TypedVectorSet<4>(OP); break;
+	case NOP_CELL_NEW: TypedCellNew(OP); break;
+	case NOP_CELL_GET: TypedCellGet(OP); break;
+	case NOP_CELL_SET: TypedCellSet(OP); break;
+	NEOCORE_ARRAY_COLD_DISPATCH(I64, Int)
+	NEOCORE_ARRAY_COLD_DISPATCH(F64, Float)
+	NEOCORE_ARRAY_COLD_DISPATCH(BOOL, Bool)
+	NEOCORE_ARRAY_COLD_DISPATCH(V2, Vector2)
+	NEOCORE_ARRAY_COLD_DISPATCH(V3, Vector3)
+	NEOCORE_ARRAY_COLD_DISPATCH(V4, Vector4)
+	NEOCORE_ARRAY_COLD_DISPATCH(I32, Int32)
+	NEOCORE_ARRAY_COLD_DISPATCH(F32, Float32)
+	case NOP_ARRAY_LEN:
+		if (CheckTypedArrayReceiver(GetVarRaw2(OP)))
+			StoreNumberInt(GetVarRawF1(OP), GetVarRaw2(OP)->_array->_count);
+		break;
+	case NOP_ARRAY_RESIZE: TypedArrayResize(OP); break;
+	case NOP_ARRAY_RESERVE: TypedArrayReserve(OP); break;
+	case NOP_SET_I64_CONTAINS: TypedSetOperation<false, 0>(OP); break;
+	case NOP_SET_I64_ADD: TypedSetOperation<false, 1>(OP); break;
+	case NOP_SET_I64_REMOVE: TypedSetOperation<false, 2>(OP); break;
+	case NOP_SET_STRING_CONTAINS: TypedSetOperation<true, 0>(OP); break;
+	case NOP_SET_STRING_ADD: TypedSetOperation<true, 1>(OP); break;
+	case NOP_SET_STRING_REMOVE: TypedSetOperation<true, 2>(OP); break;
+	case NOP_V2_ARITH: handle_V2_ARITH(OP); break;
+	case NOP_V3_ARITH: handle_V3_ARITH(OP); break;
+	case NOP_V4_ARITH: handle_V4_ARITH(OP); break;
+	case NOP_NONE:          handle_NONE(OP); break;
+	default:
+		SetError(RTE_UNKNOWN_OP);
+		break;
+	}
+	return false;
+}
 
 template<bool TIMEOUT, bool DEBUG>
 bool	CNeoVMWorker::RunInternal(int iBreakingCallStack)
@@ -2335,19 +2428,16 @@ bool	CNeoVMWorker::RunInternal(int iBreakingCallStack)
 		}
 
 		const SVMOperation& OP = *GetOP();
+		// 뜨거운 명령만 이 switch에 둔다. 드문 명령은 ExecuteColdOp으로 보내 루프를 작게 유지한다.
+		// 루프가 크면 컴파일러가 레지스터를 잃고 꼬리를 합쳐 뜨거운 명령마다 점프가 하나씩 늘었다(실측).
 		switch (OP.op)
 		{
 		case NOP_MOV:           handle_MOV(OP); break;
-		case NOP_LOADK:         handle_LOADK_cold(OP); break;
-		case NOP_LOG_NOT:       handle_LOG_NOT_cold(OP); break;
 		case NOP_VAR_CLEAR:     handle_VAR_CLEAR(OP); break;
-		case NOP_COMPARE: handle_COMPARE(OP); break;
 		case NOP_JMP:           SetCodeIncPtr(OP.n1); break;
 		// 조건은 컴파일러가 bool로 확정했다. payload만 읽는다.
 		case NOP_JMP_FALSE:     if (!GetVarRaw2(OP)->_bl) SetCodeIncPtr(OP.n1); break;
 		case NOP_JMP_TRUE:      if (GetVarRaw2(OP)->_bl) SetCodeIncPtr(OP.n1); break;
-		case NOP_JMP_COMPARE: handle_JMP_COMPARE(OP); break;
-		case NOP_JMP_COMPARE_L: handle_JMP_COMPARE_L(OP); break;
 		case NOP_JMP_FOR:       if (For(GetVarRaw_L(OP.n2))) SetCodeIncPtr(OP.n1); break;
 		case NOP_JMP_FOREACH:
 			// 키·값·반복자·버전 슬롯은 n3부터 연속이다. 값 슬롯은 자기 선언 타입의 뷰로 넘긴다.
@@ -2355,24 +2445,12 @@ bool	CNeoVMWorker::RunInternal(int iBreakingCallStack)
 				(OP.argFlag & NEOS_ARG_N3_LOCAL) ? GetVarPtr_L(OP.n3 + 1) : GetVarPtr_G(OP.n3 + 1),
 				(OP.argFlag & NEOS_OP_FOREACH_TWOVAR) != 0)) SetCodeIncPtr(OP.n1);
 			break;
-		case NOP_SWITCH:        handle_SWITCH(OP); break;
-
 		case NOP_STR_ADD:       handle_STR_ADD(OP); break;
 		case NOP_STR_ADD_L:     handle_STR_ADD_L(OP); break;
 		case NOP_TOSTRING:      handle_TOSTRING(OP); break;
-		case NOP_TOINT:         handle_TOINT(OP); break;
-		case NOP_TOINT_L:       handle_TOINT_L(OP); break;
-		case NOP_TOFLOAT:       handle_TOFLOAT(OP); break;
 		case NOP_TOSIZE:        handle_TOSIZE(OP); break;
-		case NOP_SLEEP:
-			if (handle_SLEEP(OP)) return true;
-			break;
-		case NOP_FMOV1:         handle_FMOV1(OP); break;
-		case NOP_FMOV2:         handle_FMOV2(OP); break;
 		case NOP_CALL:          handle_CALL(OP); break;
 		case NOP_CALL_L:        handle_CALL_L(OP); break;
-		case NOP_PTRCALL:       handle_PTRCALL(OP); break;
-		case NOP_PTRCALL_L:     handle_PTRCALL_L(OP); break;
 		case NOP_PTRCALL2:      handle_PTRCALL2(OP); break;
 		case NOP_PTRCALL2_L:    handle_PTRCALL2_L(OP); break;
 		case NOP_NATIVECALL:    handle_NATIVECALL(OP); break;
@@ -2382,33 +2460,11 @@ bool	CNeoVMWorker::RunInternal(int iBreakingCallStack)
 		case NOP_RETURN_L:
 			if (handle_RETURN_L(OP)) return true;
 			break;
-		case NOP_TABLE_ALLOC:   handle_TABLE_ALLOC(OP); break;
-		case NOP_CLT_READ:      handle_CLT_READ(OP); break;
-		case NOP_CLT_READ_L:    handle_CLT_READ_L(OP); break;
-		case NOP_CLT_MOV:       handle_CLT_MOV(OP); break;
-		case NOP_CLT_MOV_L:     handle_CLT_MOV_L(OP); break;
-		case NOP_LIST_ALLOC:    handle_LIST_ALLOC(OP); break;
-		case NOP_LIST_ALLOC_L:  handle_LIST_ALLOC_L(OP); break;
-		case NOP_CHANGE_INT:    handle_CHANGE_INT(OP); break;
-		case NOP_CHANGE_INT_L:  handle_CHANGE_INT_L(OP); break;
-		case NOP_YIELD:
-			if (handle_YIELD(OP)) return true;
-			break;
-		case NOP_IDLE:          handle_IDLE(OP); break;
-		case NOP_VEC_MAKE:      handle_VEC_MAKE(OP); break;
-
-		case NOP_CLT_READ_STATIC_STRING: handle_CLT_READ_STATIC_STRING(OP); break;
-		case NOP_JMP_RANGE_INSIDE: if (IsRangeInside<true>(OP, false)) SetComparisonJump(OP.n1); break;
-		case NOP_JMP_RANGE_OUTSIDE: if (IsRangeInside(OP, false) == false) SetComparisonJump(OP.n1); break;
-		case NOP_JMP_RANGE_INSIDE_L: if (IsRangeInside<true>(OP, true)) SetComparisonJump(OP.n1); break;
-		case NOP_JMP_RANGE_OUTSIDE_L: if (IsRangeInside(OP, true) == false) SetComparisonJump(OP.n1); break;
 		// 타입이 확정된 범위 점프는 오류가 없어 점프 자체만 한다.
 		case NOP_RT_JMP_I64_RANGE_INSIDE: if (IsRangeInsideRT<false, true>(OP)) SetCodeIncPtr(OP.n1); break;
 		case NOP_RT_JMP_I64_RANGE_OUTSIDE: if (!IsRangeInsideRT<false, false>(OP)) SetCodeIncPtr(OP.n1); break;
 		case NOP_RT_JMP_F64_RANGE_INSIDE: if (IsRangeInsideRT<true, true>(OP)) SetCodeIncPtr(OP.n1); break;
 		case NOP_RT_JMP_F64_RANGE_OUTSIDE: if (!IsRangeInsideRT<true, false>(OP)) SetCodeIncPtr(OP.n1); break;
-
-		case NOP_CLT_WRITE_REF: handle_CLT_WRITE_REF(OP); break;
 		// 로드가 펼친 런타임 opcode. 세부 연산이 템플릿 인자라 switch 한 번으로 끝난다.
 #define NEOCORE_RT_CASE_ARITH(T, N, S) \
 		case NOP_RT_##T##_##N: T##ArithmeticRT<ArithmeticOp::S, false>(OP); break; \
@@ -2426,77 +2482,41 @@ bool	CNeoVMWorker::RunInternal(int iBreakingCallStack)
 		NEOCORE_RUNTIME_COMPARE(NEOCORE_RT_CASE_COMPARE, I64)
 		NEOCORE_RUNTIME_COMPARE(NEOCORE_RT_CASE_COMPARE, F64)
 #undef NEOCORE_RT_CASE_COMPARE
-		// 펼치지 못한 조합은 세부 연산을 실행 중 고르는 기존 경로로 간다.
-		case NOP_I64_ARITH: handle_I64_ARITH<false>(OP); break;
-		case NOP_F64_ARITH: handle_F64_ARITH<false>(OP); break;
-		case NOP_NUM_CONVERT: handle_NUM_CONVERT(OP); break;
-		case NOP_I64_COMPARE: handle_I64_COMPARE(OP); break;
-		case NOP_F64_COMPARE: handle_F64_COMPARE(OP); break;
-		case NOP_JMP_I64_COMPARE: handle_JMP_I64_COMPARE(OP); break;
-		case NOP_JMP_F64_COMPARE: handle_JMP_F64_COMPARE(OP); break;
-		case NOP_I64_FIXED: handle_I64_ARITH<true>(OP); break;
-		case NOP_F64_FIXED: handle_F64_ARITH<true>(OP); break;
-		case NOP_V2_MAKE: TypedVectorMake<2>(OP); break;
-		case NOP_V2_GET: TypedVectorGet<2>(OP); break;
-		case NOP_V2_SET: TypedVectorSet<2>(OP); break;
-		case NOP_V3_MAKE: TypedVectorMake<3>(OP); break;
-		case NOP_V3_GET: TypedVectorGet<3>(OP); break;
-		case NOP_V3_SET: TypedVectorSet<3>(OP); break;
-		case NOP_V4_MAKE: TypedVectorMake<4>(OP); break;
-		case NOP_V4_GET: TypedVectorGet<4>(OP); break;
-		case NOP_V4_SET: TypedVectorSet<4>(OP); break;
-		case NOP_CELL_NEW: TypedCellNew(OP); break;
-		case NOP_CELL_GET: TypedCellGet(OP); break;
-		case NOP_CELL_SET: TypedCellSet(OP); break;
-		NEOCORE_ARRAY_DISPATCH(I64, Int)
-		NEOCORE_ARRAY_DISPATCH(F64, Float)
-		NEOCORE_ARRAY_DISPATCH(BOOL, Bool)
-		NEOCORE_ARRAY_DISPATCH(V2, Vector2)
-		NEOCORE_ARRAY_DISPATCH(V3, Vector3)
-		NEOCORE_ARRAY_DISPATCH(V4, Vector4)
-		NEOCORE_ARRAY_DISPATCH(I32, Int32)
-		NEOCORE_ARRAY_DISPATCH(F32, Float32)
-		case NOP_ARRAY_LEN:
-            if (CheckTypedArrayReceiver(GetVarRaw2(OP)))
-                StoreNumberInt(GetVarRawF1(OP), GetVarRaw2(OP)->_array->_count);
-            break;
-		case NOP_ARRAY_RESIZE: TypedArrayResize(OP); break;
-		case NOP_ARRAY_RESERVE: TypedArrayReserve(OP); break;
+		// 타입이 확정된 컨테이너 원소 접근과 맵 조회.
 		case NOP_MAP_I64_READ: TypedMapRead<false, false>(OP); break;
 		case NOP_MAP_STRING_READ: TypedMapRead<true, false>(OP); break;
 		case NOP_MAP_I64_CONTAINS: TypedMapRead<false, true>(OP); break;
 		case NOP_MAP_STRING_CONTAINS: TypedMapRead<true, true>(OP); break;
-		case NOP_SET_I64_CONTAINS: TypedSetOperation<false, 0>(OP); break;
-		case NOP_SET_I64_ADD: TypedSetOperation<false, 1>(OP); break;
-		case NOP_SET_I64_REMOVE: TypedSetOperation<false, 2>(OP); break;
-		case NOP_SET_STRING_CONTAINS: TypedSetOperation<true, 0>(OP); break;
-		case NOP_SET_STRING_ADD: TypedSetOperation<true, 1>(OP); break;
-		case NOP_SET_STRING_REMOVE: TypedSetOperation<true, 2>(OP); break;
-        NEOCORE_SCALAR_OWNER_DISPATCH(LIST, 0)
-        NEOCORE_SCALAR_OWNER_DISPATCH(MAP_INT, 1)
-        NEOCORE_SCALAR_OWNER_DISPATCH(MAP_STR, 2)
-        NEOCORE_SCALAR_ARRAY_STORE(I64, Int)
-        NEOCORE_SCALAR_ARRAY_STORE(F64, Float)
-        NEOCORE_SCALAR_ARRAY_STORE(BOOL, Bool)
-        NEOCORE_SCALAR_ARRAY_STORE(I32, Int32)
-        NEOCORE_SCALAR_ARRAY_STORE(F32, Float32)
-		case NOP_V2_ARITH: handle_V2_ARITH(OP); break;
-		case NOP_V3_ARITH: handle_V3_ARITH(OP); break;
-		case NOP_V4_ARITH: handle_V4_ARITH(OP); break;
+		NEOCORE_SCALAR_OWNER_DISPATCH(LIST, 0)
+		NEOCORE_SCALAR_OWNER_DISPATCH(MAP_INT, 1)
+		NEOCORE_SCALAR_OWNER_DISPATCH(MAP_STR, 2)
+		NEOCORE_SCALAR_ARRAY_STORE(I64, Int)
+		NEOCORE_SCALAR_ARRAY_STORE(F64, Float)
+		NEOCORE_SCALAR_ARRAY_STORE(BOOL, Bool)
+		NEOCORE_SCALAR_ARRAY_STORE(I32, Int32)
+		NEOCORE_SCALAR_ARRAY_STORE(F32, Float32)
+		NEOCORE_ARRAY_ACCESS_DISPATCH(I64, Int)
+		NEOCORE_ARRAY_ACCESS_DISPATCH(F64, Float)
+		NEOCORE_ARRAY_ACCESS_DISPATCH(BOOL, Bool)
+		NEOCORE_ARRAY_ACCESS_DISPATCH(V2, Vector2)
+		NEOCORE_ARRAY_ACCESS_DISPATCH(V3, Vector3)
+		NEOCORE_ARRAY_ACCESS_DISPATCH(V4, Vector4)
+		NEOCORE_ARRAY_ACCESS_DISPATCH(I32, Int32)
+		NEOCORE_ARRAY_ACCESS_DISPATCH(F32, Float32)
 		case NOP_PREPARE_CALL: SelectCallPlan(OP.n1); break;
-		case NOP_NONE:          handle_NONE(OP); break;
 		case NOP_ERROR:
 			handle_ERROR(OP);
 			return false;
 		default:
-			SetError(RTE_UNKNOWN_OP);
+			if (ExecuteColdOp(OP)) return true;
 			break;
 		}
 	}
 	return true;
 }
 
-#undef NEOCORE_ARRAY_DISPATCH
+#undef NEOCORE_ARRAY_ACCESS_DISPATCH
+#undef NEOCORE_ARRAY_COLD_DISPATCH
 #undef NEOCORE_SCALAR_ARRAY_STORE
 #undef NEOCORE_SCALAR_CONTAINER_DISPATCH
 #undef NEOCORE_SCALAR_OWNER_DISPATCH
