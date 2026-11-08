@@ -275,6 +275,13 @@ enum eNOperation : OpType
 	NOP_RT_JMP_I64_RANGE_OUTSIDE,
 	NOP_RT_JMP_F64_RANGE_INSIDE,
 	NOP_RT_JMP_F64_RANGE_OUTSIDE,
+	// 오른쪽이 16비트 정수 상수인 형식. n3가 슬롯 번호가 아니라 상수 값이다(NEOCORE_RUNTIME_I64_IMM_ARITH 참조).
+#define NEOCORE_RT_ENUM_IMM(T, N, S) NOP_RT_##T##_##N##_IMM,
+	NEOCORE_RUNTIME_I64_IMM_ARITH(NEOCORE_RT_ENUM_IMM)
+#undef NEOCORE_RT_ENUM_IMM
+#define NEOCORE_RT_ENUM_JMP_IMM(T, N, S) NOP_RT_JMP_##T##_##N##_IMM,
+	NEOCORE_RUNTIME_COMPARE(NEOCORE_RT_ENUM_JMP_IMM, I64)
+#undef NEOCORE_RT_ENUM_JMP_IMM
 
 	NOP_MAX,
 }; // Operation length
@@ -481,12 +488,44 @@ inline bool NormalizeRuntimeOp(SVMOperation& op)
     case NOP_RT_JMP_F64_RANGE_INSIDE: meaning = MakeOperation(NOP_JMP_RANGE_INSIDE, 0u); break;
     case NOP_RT_JMP_I64_RANGE_OUTSIDE:
     case NOP_RT_JMP_F64_RANGE_OUTSIDE: meaning = MakeOperation(NOP_JMP_RANGE_OUTSIDE, 0u); break;
+    // 즉값 형식은 같은 의미의 3항 형식으로 표기한다. n3는 상수 값이라 표기 쪽이 따로 다룬다.
+#define NEOCORE_RT_UNMAP_IMM(T, N, S) case NOP_RT_##T##_##N##_IMM: meaning = OP_##T##_##N; arithmetic = true; break;
+    NEOCORE_RUNTIME_I64_IMM_ARITH(NEOCORE_RT_UNMAP_IMM)
+#undef NEOCORE_RT_UNMAP_IMM
+#define NEOCORE_RT_UNMAP_JMP_IMM(T, N, S) case NOP_RT_JMP_##T##_##N##_IMM: meaning = OP_JMP_##T##_##N; break;
+    NEOCORE_RUNTIME_COMPARE(NEOCORE_RT_UNMAP_JMP_IMM, I64)
+#undef NEOCORE_RT_UNMAP_JMP_IMM
     default: return false;
     }
     op.SetCode(meaning);
     if (arithmetic)
         op.argFlag = static_cast<u8>((op.argFlag & ~NEOS_OP_ARITH_UPDATE) | (update ? NEOS_OP_ARITH_UPDATE : 0));
     return true;
+}
+// n3에 정수 상수 값을 담은 런타임 opcode인가. 표기와 피연산자 해석은 n3를 슬롯으로 읽으면 안 된다.
+inline bool IsImmediateRuntimeOp(OpType op)
+{
+    return op >= NOP_RT_I64_ADD_IMM && op <= NOP_RT_JMP_I64_GE_IMM;
+}
+// 3항 정수 산술·정수 비교 점프의 런타임 opcode에 대응하는 즉값 형식. 없으면 NOP_NONE.
+inline eNOperation ImmediateRuntimeOpcode(eNOperation runtime)
+{
+    switch (runtime)
+    {
+#define NEOCORE_RT_TO_IMM(T, N, S) case NOP_RT_##T##_##N: return NOP_RT_##T##_##N##_IMM;
+    NEOCORE_RUNTIME_I64_IMM_ARITH(NEOCORE_RT_TO_IMM)
+#undef NEOCORE_RT_TO_IMM
+#define NEOCORE_RT_TO_JMP_IMM(T, N, S) case NOP_RT_JMP_##T##_##N: return NOP_RT_JMP_##T##_##N##_IMM;
+    NEOCORE_RUNTIME_COMPARE(NEOCORE_RT_TO_JMP_IMM, I64)
+#undef NEOCORE_RT_TO_JMP_IMM
+    default: return NOP_NONE;
+    }
+}
+// 즉값으로 바꿀 수 있는 정수 상수인가. 시프트 개수는 실행 시 검사가 실패하지 않는 0~63만 받는다.
+inline bool FitsRuntimeImmediate(eNOperation immediate, NS_INT value)
+{
+    if (immediate == NOP_RT_I64_SHL_IMM || immediate == NOP_RT_I64_SHR_IMM) return value >= 0 && value < 64;
+    return value >= -32768 && value <= 32767;
 }
 inline bool IsImmediateMove(const SVMOperation& op)
 {

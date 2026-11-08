@@ -2491,6 +2491,12 @@ bool	CNeoVMWorker::RunInternal(int iBreakingCallStack)
 		NEOCORE_RUNTIME_I64_ARITH(NEOCORE_RT_CASE_ARITH)
 		NEOCORE_RUNTIME_F64_ARITH(NEOCORE_RT_CASE_ARITH)
 #undef NEOCORE_RT_CASE_ARITH
+#define NEOCORE_RT_CASE_IMM(T, N, S) case NOP_RT_##T##_##N##_IMM: T##ArithmeticImmRT<ArithmeticOp::S>(OP); break;
+		NEOCORE_RUNTIME_I64_IMM_ARITH(NEOCORE_RT_CASE_IMM)
+#undef NEOCORE_RT_CASE_IMM
+#define NEOCORE_RT_CASE_JMP_IMM(T, N, S) case NOP_RT_JMP_##T##_##N##_IMM: T##JumpCompareImmRT<ComparisonOp::S>(OP); break;
+		NEOCORE_RUNTIME_COMPARE(NEOCORE_RT_CASE_JMP_IMM, I64)
+#undef NEOCORE_RT_CASE_JMP_IMM
 		case NOP_RT_I64_NEG: I64ArithmeticRT<ArithmeticOp::Neg, false>(OP); break;
 		case NOP_RT_F64_NEG: F64ArithmeticRT<ArithmeticOp::Neg, false>(OP); break;
 		case NOP_RT_I64_TO_F64: StoreNumberFloat(GetVarRawF1(OP), static_cast<NS_FLOAT>(GetVarRaw2(OP)->_int)); break;

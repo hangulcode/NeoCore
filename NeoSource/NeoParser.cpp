@@ -7012,7 +7012,20 @@ static bool IsRelativeJumpOp(OperationCode op)
 // 슬롯만 표시한다. 즉값(n23) / 점프 offset / 인자 수 / 함수 인덱스는 절대 포함하지 않는다 —
 // 그런 필드를 슬롯 인덱스로 재작성하면 코드가 조용히 깨진다.
 // bit1 = n2, bit2 = n3.
-static int HoistableOperandMask(const SVMOperation& v)
+// 로드 시 즉값 형식이 될 오른쪽 피연산자인가(NEOCORE_RUNTIME_I64_IMM_ARITH, 정수 비교 점프).
+// 이런 상수는 명령 안으로 들어가므로 hidden 지역으로 올리면 오히려 슬롯 읽기가 생긴다.
+static bool ImmediateRightOperand(const SVMOperation& v, const SFunctions& funs)
+{
+	const int index = v.n3 - COMPILE_STATIC_VAR_BEGIN;
+	if (index < 0 || index >= (int)funs._staticVars.size() || funs._staticVars[index].GetType() != VAR_INT)
+		return false;
+	const OperationCode meaning = ArithmeticMeaning(v.Code());
+	const eNOperation runtime = RuntimeOpcode(meaning, IsArithmeticUpdate(v));
+	const eNOperation immediate = runtime == NOP_NONE ? NOP_NONE : ImmediateRuntimeOpcode(runtime);
+	return immediate != NOP_NONE && FitsRuntimeImmediate(immediate, funs._staticVars[index]._int);
+}
+
+static int HoistableOperandMask(const SVMOperation& v, const SFunctions& funs)
 {
 	const OperationCode op = v.Code();
 	// 타입 있는 숫자 명령(산술·비교·비교 점프·변환)은 메타데이터의 읽기 피연산자가 곧 슬롯이다.
@@ -7022,6 +7035,7 @@ static int HoistableOperandMask(const SVMOperation& v)
 	{
 		int mask = (typed->slots & ~typed->writes) & 0x6;
 		if (!typed->comparison && (v.argFlag & NEOS_OP_ARITH_UPDATE)) mask &= ~0x4;
+		if ((mask & 0x4) && ImmediateRightOperand(v, funs)) mask &= ~0x4;
 		return mask;
 	}
 	switch (op)
@@ -7084,7 +7098,7 @@ static void HoistLoopConstants(SFunctions& funs, u8* pCode, int codeSize,
 	{
 		if (inLoop[i] == 0)
 			continue;
-		const int mask = HoistableOperandMask(ops[i]);
+		const int mask = HoistableOperandMask(ops[i], funs);
 		if ((mask & 0x2) && IsStaticOperand(ops[i].n2)) useInLoop[ops[i].n2]++;
 		if ((mask & 0x4) && IsStaticOperand(ops[i].n3)) useInLoop[ops[i].n3]++;
 
@@ -7138,7 +7152,7 @@ static void HoistLoopConstants(SFunctions& funs, u8* pCode, int codeSize,
 
 	for (int i = 0; i < n; i++)
 	{
-		const int mask = HoistableOperandMask(ops[i]);
+		const int mask = HoistableOperandMask(ops[i], funs);
 		if (mask & 0x2)
 		{
 			std::map<short, short>::iterator it = remap.find(ops[i].n2);

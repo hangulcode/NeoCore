@@ -1209,7 +1209,17 @@ bool CNeoVMProgram::PatchLocalOps(std::string* err)
 		// 숫자 계열은 (기본 opcode, 세부 연산, 제자리 여부)를 한 바이트 런타임 opcode로 펼친다.
 		// 디스패치 루프가 switch 한 번으로 고르고, 표기는 NormalizeRuntimeOp이 되돌린다.
 		const eNOperation runtime = RuntimeOpcode(ArithmeticMeaning(op.Code()), IsArithmeticUpdate(op));
-		if (runtime != NOP_NONE) op.op = runtime;
+		if (runtime == NOP_NONE) continue;
+		op.op = runtime;
+		// 오른쪽이 16비트 정수 상수(정적 풀)면 n3에 값을 넣은 즉값 형식으로 바꾼다. 상수 슬롯 적재와
+		// 위치 해독이 사라진다. 검증은 이 단계 전에 끝났다.
+		const eNOperation immediate = ImmediateRuntimeOpcode(runtime);
+		if (immediate != NOP_NONE && (f & L3) == 0 && op.n3 >= 0 && op.n3 < (int)staticValues.size() &&
+			staticValues[op.n3]._type == VAR_INT && FitsRuntimeImmediate(immediate, staticValues[op.n3]._int))
+		{
+			op.op = immediate;
+			op.n3 = static_cast<short>(staticValues[op.n3]._int);
+		}
 	}
 	localOpCount = patched;
 	return true;
@@ -1274,6 +1284,8 @@ bool FormatDebugOperation(const DebugInstructionFormatContext& context, std::str
 	// 원본 switch 가 v 를 쓰고 있어 이름을 유지한다(치환 실수를 줄인다).
 	SVMOperation v = *context.operation;
 	bool isLocalVariant = false;
+	// 즉값 형식의 n3는 슬롯이 아니라 상수 값이다. 되돌리기 전에 기억해 그대로 찍는다.
+	const bool immediate3 = IsImmediateRuntimeOp(v.op);
 	// 로드가 펼친 런타임 opcode는 이미지 형식으로 되돌려 같은 표기를 쓴다.
 	NormalizeRuntimeOp(v);
 	v.SetCode(NormalizeLocalOp((OperationCode)v.Code(), &isLocalVariant));
@@ -1559,9 +1571,11 @@ bool FormatDebugOperation(const DebugInstructionFormatContext& context, std::str
             }
             else if (typed->jump)
                 outAssembly = FormatAsm("%s%s %d%s, %s, %s", typed->name, invert, v.n1,
-					context.jumpLabel(context.opIndex + 1 + v.n1).c_str(), context.operand(2).c_str(), context.operand(3).c_str());
+					context.jumpLabel(context.opIndex + 1 + v.n1).c_str(), context.operand(2).c_str(),
+					immediate3 ? FormatAsm("#%d", v.n3).c_str() : context.operand(3).c_str());
 			else if (typed->arity == 2)
-				outAssembly = FormatAsm("%s%s %s = %s, %s", typed->name, invert, context.operand(1).c_str(), context.operand(2).c_str(), context.operand(3).c_str());
+				outAssembly = FormatAsm("%s%s %s = %s, %s", typed->name, invert, context.operand(1).c_str(), context.operand(2).c_str(),
+					immediate3 ? FormatAsm("#%d", v.n3).c_str() : context.operand(3).c_str());
 			else outAssembly = FormatAsm("%s %s = %s", typed->name, context.operand(1).c_str(), context.operand(2).c_str());
 		}
 		else if (aggregate != nullptr)

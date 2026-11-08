@@ -661,6 +661,26 @@ NEOS_FORCEINLINE void F64JumpCompareRT(const SVMOperation& OP)
     if (((OP.argFlag & NEOS_OP_COMPARE_INVERT) == 0) == CompareStep<Sub>(GetVarRaw2(OP)->_float, GetVarRaw3(OP)->_float)) SetComparisonJump(OP.n1);
 }
 
+// 즉값 형식. n3가 16비트 정수 상수이고 로드가 범위를 확인했으므로 시프트 검사는 실패하지 않는다.
+template<ArithmeticOp Sub>
+NEOS_FORCEINLINE void I64ArithmeticImmRT(const SVMOperation& OP)
+{
+    const NS_INT b = static_cast<NS_INT>(OP.n3);
+    if ((OP.argFlag & (NEOS_ARG_N1_LOCAL | NEOS_ARG_N2_LOCAL)) == (NEOS_ARG_N1_LOCAL | NEOS_ARG_N2_LOCAL))
+    {
+        VarInfo* const frame = m_pVarStack_Pointer;
+        IntegerStep<Sub>(frame + OP.n1, frame[OP.n2]._int, b);
+        return;
+    }
+    IntegerStep<Sub>(GetVarRawF1(OP), GetVarRaw2(OP)->_int, b);
+}
+template<ComparisonOp Sub>
+NEOS_FORCEINLINE void I64JumpCompareImmRT(const SVMOperation& OP)
+{
+    const NS_INT a = (OP.argFlag & NEOS_ARG_N2_LOCAL) ? m_pVarStack_Pointer[OP.n2]._int : GetVarRaw2(OP)->_int;
+    if (((OP.argFlag & NEOS_OP_COMPARE_INVERT) == 0) == CompareStep<Sub>(a, static_cast<NS_INT>(OP.n3))) SetCodeIncPtr(OP.n1);
+}
+
 template<bool Fixed>
 inline void handle_I64_ARITH(const SVMOperation& OP)
 {

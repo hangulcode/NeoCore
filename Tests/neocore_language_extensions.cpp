@@ -66,6 +66,17 @@ int main()
         Expect("struct Inner{list<int> state;list<int> order;};struct Outer{int a;int b;Inner bld;};"
             "int Apply(Outer p){int sum=0;list<int> s=p.bld.state;for(int i in 0,p.bld.order.len())sum+=p.bld.order[i];return sum*100+s[0];}"
             "export int Probe(){Outer p=Outer(1,2,Inner([5,6],[7,8]));return Apply(p);}", 1505, "hoisted struct field key keeps the field type", debug);
+        // 오른쪽이 16비트 정수 상수인 정수 산술·비교 점프는 로드 시 즉값 형식이 된다. 넘침·부호·반전 의미가 같아야 한다.
+        Expect("int Add1(int x){return x+1;}int Sub2(int x){return x-2;}int Mul3(int x){return x*-3;}int Mask(int x){return x&-16;}"
+            "int Or5(int x){return x|5;}int Xor7(int x){return x^7;}int Shl3(int x){return x<<3;}int Shr2(int x){return x>>2;}"
+            "export int Probe(){int big=9223372036854775807;int r=0;if(Add1(big)==-big-1)r+=1;if(Sub2(1)==-1)r+=2;if(Mul3(5)==-15)r+=4;"
+            "if(Mask(37)==32)r+=8;if(Or5(8)==13)r+=16;if(Xor7(5)==2)r+=32;if(Shl3(3)==24)r+=64;if(Shr2(40)==10)r+=128;return r;}",
+            255, "immediate integer arithmetic keeps wraparound and sign", debug);
+        Expect("int Lt(int x){if(x<-2)return 1;return 0;}int Ge(int x){if(!(x<5))return 1;return 0;}int Eq(int x){if(x==32767)return 1;return 0;}"
+            "int Big(int x){if(x<40000)return 1;return 0;}"
+            "export int Probe(){return Lt(-3)*1000+Lt(-2)*100+Ge(5)*10+Ge(4)+Eq(32767)*10000+Big(39999)*100000;}",
+            111010, "immediate integer comparison jumps keep inversion and range", debug);
+        Expect("export int Probe(){int s=0;for(int i in 0,1000,1)s+=(i&255)+1;return s;}", 125716, "loop integer constants stay immediate", debug);
         // 긴 .. 사슬은 항마다 조각 파싱을 중첩하지 않아야 파서 깊이 한도에 걸리지 않는다.
         {
             std::string chain = "export int Probe(){string s=\"x\"";

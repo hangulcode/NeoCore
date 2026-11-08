@@ -122,6 +122,12 @@
     X(I64, AND, BitAnd) X(I64, OR, BitOr) X(I64, XOR, BitXor) X(I64, SHL, ShiftLeft) X(I64, SHR, ShiftRight)
 #define NEOCORE_RUNTIME_F64_ARITH(X) \
     X(F64, ADD, Add) X(F64, SUB, Sub) X(F64, MUL, Mul) X(F64, DIV, Div)
+// 오른쪽 피연산자가 16비트 정수 상수인 3항 정수 산술은 로드 시 즉값 형식(NOP_RT_I64_NAME_IMM)으로 바뀐다.
+// n3에 상수 값이 들어가 상수 슬롯을 읽지 않는다. 나눗셈·나머지는 0 검사가 남으므로 제외하고, 시프트는
+// 0~63의 상수만 바꾼다. 정수 비교 점프(NOP_RT_JMP_I64_NAME_IMM)도 같은 조건으로 바뀐다.
+#define NEOCORE_RUNTIME_I64_IMM_ARITH(X) \
+    X(I64, ADD, Add) X(I64, SUB, Sub) X(I64, MUL, Mul) X(I64, AND, BitAnd) X(I64, OR, BitOr) \
+    X(I64, XOR, BitXor) X(I64, SHL, ShiftLeft) X(I64, SHR, ShiftRight)
 // 비교는 값 형식(NOP_RT_T_NAME)과 점프 형식(NOP_RT_JMP_T_NAME)을 만든다. 반전 비트는 argFlag에 남는다.
 #define NEOCORE_RUNTIME_COMPARE(X, T) \
     X(T, EQ, Equal) X(T, LT, Less) X(T, LE, LessEqual) X(T, NE, NotEqual) X(T, GT, Greater) X(T, GE, GreaterEqual)
