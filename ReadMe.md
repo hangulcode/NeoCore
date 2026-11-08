@@ -278,6 +278,58 @@ the same way with a paired run against `91d6d58`, and the
 with a paired run against `dca2d64`. Each report identifies its
 measured snapshot; none of them reports a later build.
 
+### Performance test results
+
+Sources: [`Samples/bench/bench.nc`](Samples/bench/bench.nc) (NeoCore) ·
+[`bench.ns`](Samples/bench/bench.ns) (NeoScript, in its own repository) ·
+[`bench.lua`](Samples/bench/bench.lua) · [`bench.cpp`](Samples/bench/bench.cpp) — the
+four files implement the **same eight algorithms**, statement for statement; only the
+syntax differs, and every run checks the same eight checksums.
+
+```
+CPU       : Intel Core i7-12700F (12C/20T)      RAM : 64 GB
+OS        : Windows 11 Pro 64-bit (build 26200)
+NeoCore   : CMake Release, MSVC 19.51 /O2 /Ob2 /MT, static CRT, no IPO (`neocore.exe`)
+NeoScript : console.exe, Release x64, whole-program optimization off
+Lua       : Lua 5.5.0 (official Win64 binary)
+C++       : MSVC 19.51 /O2 /std:c++17 (x64), the same `bench_cpp.exe` as the earlier snapshots
+```
+
+Lower is better. **ms** = median across five rotated serial rounds after one warmup
+round; within each round every process reports the best of five in-process
+repetitions, and the six executables (this build, two older NeoCore builds, NeoScript,
+Lua, C++) run in a rotated order so no language always follows another. `x NeoCore` =
+NeoCore's time divided by that language's time, so `0.86x` means the language needed
+more time than NeoCore and `1.05x` means it finished in 95% of NeoCore's time. The
+session record with per-round ranges and executable hashes is
+[docs/FourWayBenchmark.md](docs/FourWayBenchmark.md); it measures the tree that
+introduced the two-pointer value view on top of commit `f0935b6`.
+
+| Benchmark | What it stresses | NeoCore (ms) | NeoScript (ms) | Lua (ms) | C++ (ms) | NeoScript vs NeoCore | Lua vs NeoCore | C++ vs NeoCore |
+| :-------- | :--------------- | -----------: | -------------: | -------: | -------: | -------------------: | -------------: | -------------: |
+| `loop_sum` | integer loop, VM dispatch floor | **171** | 175 | 189 | 12.6 | 0.98x | 0.90x | 13.57x |
+| `float_math` | float mul/add/sub chain | **151** | 176 | 300 | 57 | 0.86x | 0.50x | 2.65x |
+| `func_call` | script function call overhead | **122** | 130 | 154 | 4.3 | 0.94x | 0.79x | 28.05x |
+| `fib_recursive` | recursion, fib(32) | **84** | 83 | 87 | 6.9 | 1.01x | 0.97x | 12.19x |
+| `array_rw` | sequential list write + read | **43** | 41 | 46 | 2.5 | 1.05x | 0.93x | 17.06x |
+| `map_str` | string-key hash lookup | **39** | 37 | 41 | 62 | 1.05x | 0.95x | 0.63x |
+| `string_ops` | string build + length | **46** | 49 | 142 | 13.5 | 0.94x | 0.32x | 3.41x |
+| `particles` | game-style float + list sim | **45** | 46 | 48 | 3.4 | 0.98x | 0.94x | 13.12x |
+| **total** | | **701** | 737 | 1007 | 162.0 | 0.95x | 0.70x | 4.33x |
+
+- NeoCore is faster than NeoScript, its dynamically typed predecessor, in five of the
+  eight cases and within 5% in the other three (`fib_recursive`, `array_rw` and
+  `map_str` sit inside one round's spread of each other). The sum of case medians is
+  5% below NeoScript and 30% below Lua.
+- `float_math` and `string_ops` show the largest margins: typed arithmetic runs
+  without tag checks, and string building no longer builds boundary views per step.
+- `map_str` is the one case where C++ is slower, because the C++ reference uses
+  `std::unordered_map<std::string, int>` and pays for hashing on every lookup while
+  the scripts hash interned keys once.
+- Build layout moves individual cases by several percent between otherwise identical
+  builds, so differences under about 5% are not evidence of a change. Numbers from
+  other sessions or machines are not comparable with this table.
+
 For embedding, `NeoSource/NeoCore.h` is the static entry point in namespace
 `NeoCore`. A public `Runtime` owns the shared backend VM and fixed host bindings;
 its `Compile`/`LoadImage` methods create programs, and each program's `CreateInstance`
