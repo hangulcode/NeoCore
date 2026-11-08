@@ -1,8 +1,8 @@
 # NeoCore — statically typed scripting
 
 NeoCore is an independent scripting-language project derived from
-[NeoScript](https://github.com/hangulcode/NeoScript). It keeps the existing VM as an
-initial execution backend while adding explicit variable types, C-style function
+[NeoScript](https://github.com/hangulcode/NeoScript). It keeps the NeoScript VM as
+its execution backend while adding explicit variable types, C-style function
 declarations, and compile-time checking. The static language is under active development.
 
 **NeoCore source files use `.nc`.** Dynamic `.ns` samples and regression fixtures
@@ -18,68 +18,50 @@ through its static frontend; they do not accept dynamic NeoScript source.
 ## Why NeoCore
 
 NeoCore started from NeoScript to pursue higher execution performance and more
-reliable scripts through static typing. Its compiler aims to resolve types,
-function signatures, member access, and applicable operations before execution.
-This moves errors that can be detected from the program and host declarations to
-compile time and reduces repeated runtime type checks and name lookups.
-
-Automatic memory management remains part of the design, retaining the backend's
-reference counting and cycle-collection capabilities. Script authors should be able
-to use managed values and containers without manually allocating and freeing their
-storage. Hosts still control safe points for cycle collection. Static typing is
-intended to improve execution and validation while preserving that convenience.
-
-The project follows these goals:
+reliable scripts through static typing. Its compiler resolves types, function
+signatures, member access, and applicable operations before execution, which moves
+detectable errors to compile time and removes repeated runtime type checks and name
+lookups. Automatic memory management remains: managed values and containers keep
+reference counting and cycle collection, and hosts control the collection safe points.
 
 - **Compile-time contracts:** explicit types, function signatures, value semantics,
-  and host schemas make invalid operations diagnosable before a script runs. Unsupported features fail explicitly instead of silently becoming dynamic.
-- **Efficient execution:** carry resolved type information into dedicated VM
-  instructions and progressively remove transitional compiler and runtime helpers.
-  Performance improvements must be measured; static typing alone is not evidence
-  that NeoCore already runs faster than NeoScript.
-- **Safe host integration:** resolve member names and signatures during compilation,
-  while validating object IDs and current object capabilities during execution.
-  Engine objects remain owned by the host; script garbage collection does not
-  replace the host's lifetime rules.
-- **Defined behavior:** preserve evaluation order, numeric rules, value/reference
-  semantics, and useful error locations as the compiler and VM evolve. Bounds,
-  allocation failures, and other conditions that depend on runtime state still
-  require runtime handling.
-- **Portable embedding:** retain the bytecode VM execution model and C++11-compatible
-  core, with a clear boundary between the scripting language and its host engine.
+  and host schemas make invalid operations diagnosable before a script runs.
+  Unsupported features fail explicitly instead of silently becoming dynamic.
+- **Efficient execution:** resolved types become dedicated VM instructions.
+  Performance claims must come from paired measurements, not from static typing alone.
+- **Safe host integration:** member names and signatures resolve during compilation;
+  object IDs and capabilities are validated during execution. Engine objects remain
+  owned by the host.
+- **Defined behavior:** evaluation order, numeric rules, value/reference semantics,
+  and useful error locations are preserved as the compiler and VM evolve.
+- **Portable embedding:** a bytecode VM with a C++11-compatible core and a clear
+  boundary between the scripting language and its host engine.
 
-These are development goals, not a claim that the static compiler, host integrations,
-or performance work is complete. The current implementation is described below.
+These are development goals; the current state is described below.
 
-## Current milestone
+## Current state
 
-The frontend checks scalar/vector declarations, structs, typed arrays, nested lists/maps, sets, typed function values and closures, named functions,
-calls and returns, including forward calls and recursion. It rejects `var`, `fun`, undeclared types,
-and implicit dynamic fallback. Numeric, bool, vector and struct values are never
-null and are initialized by default; strings, collections, function values and host
-objects may be null and default to null. Using a null reference is a runtime error.
+The frontend checks scalar/vector declarations, structs, typed arrays, nested
+lists/maps, sets, typed function values and closures, named functions, calls and
+returns, including forward calls and recursion. It rejects `var`, `fun`, undeclared
+types, and implicit dynamic fallback. Numeric, bool, vector and struct values are
+never null and are initialized by default; strings, collections, function values
+and host objects may be null and default to null. Using a null reference is a
+runtime error.
 
-NeoCore does not support pointers or `T&` reference declarations, parameters, or
-returns. Structs and vectors copy by value; functions return modified values for
-the caller to assign explicitly. Struct copies include independent nested fields.
-See the [struct sample](Samples/neocore/scripts/structs.nc) and
-[vector sample](Samples/neocore/scripts/vectors.nc). Vectors have float32 components,
-value copies, and checked named component writes; Quaternion uses `w, x, y, z` order.
-Vector2/3/4 support same-dimension addition/subtraction and scalar multiplication/
-division. Typed arrays keep a fixed element type and support vector element updates;
-the [particles sample](Samples/neocore/scripts/particles.nc) checks them against a
-scalar reference without timers.
-Built-in imports expose 65 checked math functions plus string/regex, collection,
-time and HTTP APIs. Typed JSON uses `system.jsonEncode(value)` and
-`system.jsonDecode<T>(text)`, preserving struct field names and validating the
-declared shape; see [JSON](docs/JSON.md). Script modules, typed foreach and
-signature-bound coroutines are supported; see the [migration guide](docs/SampleMigration.md).
+There are no pointers or `T&` declarations, parameters, or returns. Structs and
+vectors copy by value, including nested struct fields; functions return modified
+values for the caller to assign. Vectors have float32 components and checked
+component writes; Quaternion uses `w, x, y, z` order. Built-in imports expose
+checked math, string/regex, collection, time, JSON and HTTP APIs; script modules,
+typed foreach and signature-bound coroutines are supported. See the
+[struct](Samples/neocore/scripts/structs.nc), [vector](Samples/neocore/scripts/vectors.nc)
+and [particles](Samples/neocore/scripts/particles.nc) samples and the [JSON guide](docs/JSON.md).
 
-Typed host schemas declare nominal object types, structs, globals, methods, and
-read/write properties before compilation. The frontend resolves members and
-checks declared arguments and return types; execution calls a fixed binding without a
-per-member name lookup. Hosts retain ownership and resolve object IDs when a
-member call begins. See the [binding contract and current limits](docs/HostBindings.md).
+Typed host schemas declare object types, structs, globals, methods, and read/write
+properties before compilation. Calls go to a fixed binding without a per-member name
+lookup, and hosts resolve object IDs when a member call begins. See the
+[binding contract and current limits](docs/HostBindings.md).
 
 ```cpp
 int Fib(int n)
@@ -94,72 +76,29 @@ print(result);
 ```
 
 `int` is a signed 64-bit integer and `float` is a 64-bit floating-point value.
-**`int32` and `float32` are not scalar types that scripts can declare.** The agreed
-32-bit support is limited to `array32<int>` / `array32<float>` storage and vector
-components. Compact-array reads produce ordinary int64 / float64 values; writes
-check int32 range or round to float32.
+**`int32` and `float32` are not scalar types that scripts can declare;** 32-bit
+storage exists only in `array32<int>` / `array32<float>` and vector components.
+Compact-array reads produce ordinary int64 / float64 values; writes check the int32
+range or round to float32.
 
-Checked numeric expressions now use a typed intermediate representation (IR),
-retaining literal values, resolved symbols, operand types, and original source
-locations. The bytecode emitter reads that IR directly instead of reparsing
-numeric operation strings. Arithmetic, integer bit operations, int/float conversions,
-comparisons, comparison branches, and numeric negation use 30 dedicated I64/F64
-bytecode operations.
-Another 59 instructions cover vector arithmetic/construction/components,
-typed array storage/methods, and internal reference cells. Array/vector compound
-writes and numeric list compound updates expand into typed arithmetic and storage
-instructions at compile time, without runtime helper calls.
-Conditions use fused comparison branches, and numeric `!` preserves unordered
-comparisons through result inversion.
-The dispatch loop, call frames, eight-byte instructions, and eight-byte value slots
-remain in place. Declarations and control flow still use a transitional textual
-skeleton. Named scalar assignments, compound assignments, and prefix/postfix updates
-now carry their variable targets and flat struct-field paths in IR. Targets are
-resolved after the RHS; the stored value or old postfix value is retained as the
-expression result. Script calls carry resolved signatures and ordered argument
-roots, with explicit numeric conversions, null transfers and struct value copies. Return
-records retain the owning function, result type, and original source location.
-Structs store raw field values; clone helpers preserve nested value copies.
-Internal boxed vector locals still support component writes, without exposing
-language references. Host/builtin calls, remaining aggregate operations, and
-unmigrated selectors keep ordered compatibility paths. The typed VM is not complete.
-An early numeric-VM snapshot measured on 2026-10-31 showed a 7.5% increase in the
-sum of eight case medians versus its paired generic-op control; see the historical
-[measurement report](docs/TypedVmBenchmark.md). A later
-[typed IR snapshot](docs/TypedIrBenchmark.md) of commit `fd0e229` measured a sum of
-case medians 75.1% above the archived NeoScript baseline in the same session. The
-[three-way snapshot](docs/ThreeWayBenchmark.md) of commit `91d6d58` measured a sum
-14.3% above Lua, faster than Lua in five of eight cases and slower in `loop_sum`,
-`array_rw` and `map_str`. The [second three-way snapshot](docs/ThreeWayBenchmark2.md)
-of commit `dca2d64` measured a sum 26.6% above Lua, and a paired run in the same
-session found that build 7.3% slower than a rebuild of `91d6d58` with identical
-bytecode, which it attributes to build layout rather than to any one commit until a
-layout-controlled pair is measured. The [third three-way snapshot](docs/ThreeWayBenchmark3.md)
-of commit `cb522bb`, which lowers map reads to dedicated VM operations, measured a
-sum 1.9% above Lua with `map_str` at 1.85× Lua, and a paired run against the
-`dca2d64` build put `map_str` at 0.31× its earlier time. A follow-up pair in the
-same report measured the direct-destination lowering of statement-level assignments
-at 0.87× the `2b096ca` sum, with `loop_sum` at 0.60×; that session was the first
-with the NeoCore sum below the Lua sum. The typed path has not been measured
-against the inherited VM since `fd0e229`.
-The typed host boundary also supports collections, structs and retained function
-values. VS Code uses the same frontend for diagnostics and debugging. The
-remaining compiler/VM migration is described in the
-[status and roadmap](docs/StaticTyping.md).
+Checked expressions lower through a typed intermediate representation that keeps
+resolved types and source locations. Numeric operations, scalar writes, script calls
+and returns become dedicated typed instructions, values live in eight-byte untagged
+slots whose storage the compiler decides, and the loader further specializes
+instructions at load time. Declarations, control flow, host/builtin calls and some
+aggregate operations still use ordered transitional paths, so the typed VM is not
+finished; see the [status and roadmap](docs/StaticTyping.md) and
+[typed storage](docs/TypedStorage.md).
 
-This NeoCore build uses bytecode image version `0150`; regenerate cached images.
-Generic three-operand arithmetic, compound arithmetic, numeric negation, and fused
-read/arithmetic instructions and their handlers are excluded from the NeoCore library. Five generic indexed compound-arithmetic instructions
-were also removed. The original NeoScript repository retains its dynamic backend
-profile; NeoCore rejects that profile's images and earlier image versions.
-Rebuild C++ hosts against the matching headers and library, because the internal
-backend compile descriptor carries typed-lowering metadata. The NeoCore C ABI is
-a separate API; existing NeoScript C#/C hosts must migrate to its checked contracts.
+The current bytecode image version is `0165`. Earlier images and the dynamic
+NeoScript profile are rejected, so regenerate cached images and rebuild C++ hosts
+against matching headers. The NeoCore C ABI is a separate API; NeoScript C#/C hosts
+must migrate to its checked contracts.
 
 ## Build and run
 
 Requirements: **CMake 3.21+, a C++11-compatible compiler, and a C99 compiler** for
-the inherited PCRE2 source. MSVC's default C++14 mode does not raise the source
+the bundled PCRE2 source. MSVC's default C++14 mode does not raise the source
 requirement; non-Windows checks use strict C++11.
 
 ```sh
@@ -168,61 +107,38 @@ cmake --build Build/neocore --config Release --parallel
 ctest --test-dir Build/neocore -C Release --output-on-failure
 ```
 
-C++ hosts link `NeoCore::Runtime`, which uses `neocore_backend`. Generic
-binary/compound arithmetic, numeric negation, fused read/arithmetic, generic logical
-operators, increments, runtime type queries and assignment-result reads have been
-removed from its opcode set and VM dispatch; typed numeric and vector operations
-remain available. Bool logical inversion reads
-its statically checked bool value directly.
-The frontend no longer exposes an untyped comparison mode. Constant folding uses
-compiler operations independently of VM opcode numbers.
+| CMake option | Effect |
+| --- | --- |
+| `NEOCORE_BUILD_TESTS` | Typed regressions |
+| `NEOCORE_BUILD_EXAMPLES` | Console and the typed game-host example |
+| `NEOCORE_BUILD_UNITY_BRIDGE` | C ABI plugin and its checks |
+| `NEOCORE_CONSOLE_HTTP` | libcurl HTTPS transport for the console |
+| `NEOCORE_ENABLE_IPO` | Whole-program optimization; off by default because it relinks every test slowly. Compare timings only between builds with the same setting |
+| `NEOCORE_STATIC_CRT` | Static MSVC runtime; on when NeoCore is the top-level project, and an explicit `CMAKE_MSVC_RUNTIME_LIBRARY` is kept |
 
-`NEOCORE_BUILD_TESTS` controls typed regressions, and `NEOCORE_BUILD_EXAMPLES`
-controls the typed game-host example. Enable `NEOCORE_BUILD_UNITY_BRIDGE` for the
-C ABI plugin and its checks. `NEOCORE_CONSOLE_HTTP` adds libcurl HTTPS transport
-to the console. `NEOCORE_ENABLE_IPO` (default off) turns on whole-program
-optimization for optimized configurations (`/GL` + `/LTCG` with MSVC, `-flto` with
-GCC/Clang). It is off by default, as in the native `.vcxproj` Release builds, because
-link-time code generation relinks every test executable slowly; enable it for timed
-measurements and use the same setting for every build being compared. Toolchains
-without that support fall back to ordinary optimization with a status message.
-`NEOCORE_STATIC_CRT` links the static MSVC runtime (`/MT`, `/MTd`) like those
-native builds; it defaults on when NeoCore is the top-level project and off when a
-host includes NeoCore with `add_subdirectory`, and an explicit
-`CMAKE_MSVC_RUNTIME_LIBRARY` is always kept.
-Dynamic NeoScript test and console targets are no longer built from this checkout.
-
-For a multi-configuration CMake build such as Visual Studio:
+C++ hosts link `NeoCore::Runtime`. For a multi-configuration CMake build:
 
 ```powershell
 Build/neocore/bin/Release/neocore.exe --check Samples/neocore/scripts/fibonacci.nc
 Build/neocore/bin/Release/neocore.exe --file Samples/neocore/scripts/fibonacci.nc
 ```
 
-For the checked-in Visual Studio projects, open **[NeoCore.sln](NeoCore.sln)** at
-the repository root. Select `Console` as the startup project. Its project file is
-[`Samples/neocore/console.vcxproj`](Samples/neocore/console.vcxproj). The existing
-`Samples/console/console.sln` path opens the same NeoCore library and `.nc` console
-projects. For the library alone, open **[Windows/NeoCore.sln](Windows/NeoCore.sln)**.
-F5 opens the interactive sample menu. Select a sample by number or name, enter
-`smoke` to run all offline functional samples, or `q` to quit. The same menu opens
-when `neocore` has no command-line arguments. See the
-[console feature matrix](docs/SampleMigration.md) for smoke tests, diagnostics,
-manual benchmarks, and the remaining NeoCore tooling limitations.
-Use `neocore --sample-dir "path/to/scripts" --run hello` to choose the sample
-directory explicitly, or omit `--run hello` to open the menu with that directory.
-The path is a runtime argument; builds do not embed the checkout's sample path.
-From a Visual Studio developer prompt, run these commands at the root:
+For Visual Studio, open **[NeoCore.sln](NeoCore.sln)** at the repository root and
+select `Console` as the startup project; **[Windows/NeoCore.sln](Windows/NeoCore.sln)**
+opens the library alone. F5, or `neocore` without arguments, opens the interactive
+sample menu: select a sample by number or name, enter `smoke` to run all offline
+functional samples, or `q` to quit. `neocore --sample-dir "path/to/scripts" --run hello`
+chooses the sample directory explicitly. From a developer prompt:
 
 ```bat
 MSBuild NeoCore.sln /p:Configuration=Release /p:Platform=x64 /m
-Build\Windows\bin\x64\Release\neocore.exe --check Samples\neocore\scripts\fibonacci.nc
 Build\Windows\bin\x64\Release\neocore.exe --file Samples\neocore\scripts\fibonacci.nc
 ```
 
-[`Windows/NeoCore.vcxproj`](Windows/NeoCore.vcxproj) builds the frontend and its
-execution backend into one static library. Reference it from a C++ host and include
-`NeoCore.h`; do not also link the inherited `NeoScript` library into that executable.
+[`Windows/NeoCore.vcxproj`](Windows/NeoCore.vcxproj) builds the frontend and backend
+into one static library. Include `NeoCore.h` and do not also link the inherited
+`NeoScript` library. The console is
+`Build/Windows/bin/<platform>/<configuration>/neocore.exe` (`Win32` for x86).
 
 | Configuration | Library under `Build/Windows/lib` | CRT |
 | --- | --- | --- |
@@ -231,132 +147,85 @@ execution backend into one static library. Reference it from a C++ host and incl
 | Release x86 | `NeoCore32.lib` | `/MT` |
 | Debug x86 | `NeoCore32-d.lib` | `/MTd` |
 
-Console output is `Build/Windows/bin/<platform>/<configuration>/neocore.exe`, using
-`Win32` for the x86 project platform. Match the host's platform, CRT, and toolset.
-The native Windows `.nc` console links libcurl for HTTPS. CMake enables that
-optional console transport with `-DNEOCORE_CONSOLE_HTTP=ON`; the core remains
-transport-independent. The dynamic `.ns` runner remains in the original NeoScript
-repository; this checkout contains only the `.nc` console.
+Console modes: `--check <file>` compiles without running; `--file <file>` runs a
+checked program; `--emit-backend <file>` prints the lowered statement skeleton for
+diagnostics. Execution omits debug metadata unless `--debug` comes first, for example
+`neocore --debug --file source.nc`; run timed benchmarks without it. The
+[console feature matrix](docs/SampleMigration.md) lists smoke tests and remaining
+tooling limits. The [mini game host](Samples/neocore/minigame/README.md) runs one
+`.nc` program in three instances to check frame and event dispatch, `sleep`,
+callback reentry, and object-ID validation, without a graphics engine.
 
-The [NeoCore mini game host](Samples/neocore/minigame/README.md) compiles one `.nc`
-program for three independent instances. It checks frame/event dispatch, `sleep`
-and resume, service callback reentry, and object-ID validation after destruction.
-It is included in the CMake regression suite and in `NeoCore.sln` as
-`NeoCoreMiniGame`; no graphics engine is required.
-
-`--check <file>` checks and compiles without executing top-level code.
-`--file <file>` runs a checked program. `--emit-backend <file>` prints the checked,
-lowered statement skeleton for diagnostics. Its private compiler intrinsics and
-numeric IR markers require the matching compile metadata, including
-`StaticCompileResult::typedIR`; this output is not standalone NeoScript source.
-
-Execution omits debug metadata by default. Add `--debug` before the mode, for example
-`neocore --debug --file source.nc`, to include runtime source-line information.
-Frontend compilation errors identify their source location in either mode.
-Run timed benchmarks without `--debug`.
-
-[Samples/bench/check.nc](Samples/bench/check.nc) checks small-input results for all
-eight benchmark algorithms without timers. [Samples/bench/bench.nc](Samples/bench/bench.nc)
-contains the full workloads with explicit conversions and checked `map[key]` reads.
-All queried keys are populated before lookup. Checksums are preserved, while
-bytecode can change. Current VM and helper costs remain part of the measurement;
-static typing alone is not a speed claim.
-
-The [first NeoCore benchmark snapshot](docs/FirstNcBenchmark.md) records seven
-rotated serial rounds against NeoScript, Lua, and C++, with all eight checksums
-matching. It measures the initial source-lowering backend before typed VM instructions.
-The historical [typed numeric VM comparison](docs/TypedVmBenchmark.md) records an
-early typed/generic comparison in the same executable, alongside NeoScript, Lua,
-and C++. The [typed IR snapshot](docs/TypedIrBenchmark.md) measures commit `fd0e229`,
-the first build with generic arithmetic compiled out, against the same NeoScript,
-Lua, and C++ binaries; its NeoCore sum of case medians is 75.1% above NeoScript
-without a paired generic-op control. The [three-way snapshot](docs/ThreeWayBenchmark.md)
-measures commit `91d6d58` against Lua and C++ only, and the
-[second three-way snapshot](docs/ThreeWayBenchmark2.md) measures commit `dca2d64`
-the same way with a paired run against `91d6d58`, and the
-[third three-way snapshot](docs/ThreeWayBenchmark3.md) measures commit `cb522bb`
-with a paired run against `dca2d64`. Each report identifies its
-measured snapshot; none of them reports a later build.
+[`Samples/bench/check.nc`](Samples/bench/check.nc) checks all eight benchmark
+algorithms on small inputs without timers; [`Samples/bench/bench.nc`](Samples/bench/bench.nc)
+holds the timed workloads. Earlier measurement snapshots stay under `docs/`
+(`FirstNcBenchmark`, `TypedVmBenchmark`, `TypedIrBenchmark`, `ThreeWayBenchmark` 1–3);
+each describes only the build it measured.
 
 ### Performance test results
 
 Sources: [`Samples/bench/bench.nc`](Samples/bench/bench.nc) (NeoCore) ·
-[`bench.ns`](Samples/bench/bench.ns) (NeoScript, in its own repository) ·
+`bench.ns` (NeoScript, in its own repository) ·
 [`bench.lua`](Samples/bench/bench.lua) · [`bench.cpp`](Samples/bench/bench.cpp) — the
-four files implement the **same eight algorithms**, statement for statement; only the
-syntax differs, and every run checks the same eight checksums.
+four files implement the **same eight algorithms**, statement for statement, and
+every run checks the same eight checksums.
 
-```
+```text
 CPU       : Intel Core i7-12700F (12C/20T)      RAM : 64 GB
 OS        : Windows 11 Pro 64-bit (build 26200)
 NeoCore   : CMake Release, MSVC 19.51 /O2 /Ob2 /MT, static CRT, no IPO (`neocore.exe`)
 NeoScript : console.exe, Release x64, whole-program optimization off
 Lua       : Lua 5.5.0 (official Win64 binary)
-C++       : MSVC 19.51 /O2 /std:c++17 (x64), the same `bench_cpp.exe` as the earlier snapshots
+C++       : MSVC 19.51 /O2 /std:c++17 (x64)
 ```
 
-Lower is better. **ms** = median across five rotated serial rounds after one warmup
-round; within each round every process reports the best of five in-process
-repetitions, and the five executables (this build, commit `c74df0c`, NeoScript, Lua,
-C++) run in a rotated order so no language always follows another. The `vs NeoCore`
+Lower is better. **ms** is the median of five rotated serial rounds after a warmup;
+each process reports the best of five in-process repetitions. The `vs NeoCore`
 columns give NeoCore's time divided by that language's time, so `0.49x` means the
-language needed about twice NeoCore's time and `11.48x` means it finished 11.48 times faster. The
-session record with per-round ranges and executable hashes is
-[docs/FourWayBenchmark.md](docs/FourWayBenchmark.md); it measures the tree that adds
-typed loop-constant hoisting and a local-operand fast path on top of commit `c74df0c`.
+language needed about twice NeoCore's time. Per-round ranges, executable hashes and
+the dispatch-loop position are in [docs/FourWayBenchmark.md](docs/FourWayBenchmark.md).
 
 | Benchmark | What it stresses | NeoCore (ms) | NeoScript (ms) | Lua (ms) | C++ (ms) | Lua vs NeoCore | C++ vs NeoCore |
 | :-------- | :--------------- | -----------: | -------------: | -------: | -------: | -------------: | -------------: |
-| `loop_sum` | integer loop, VM dispatch floor | **147** | 178 | 195 | 12.8 | 0.75x | 11.48x |
-| `float_math` | float mul/add/sub chain | **155** | 180 | 314 | 58.3 | 0.49x | 2.66x |
-| `func_call` | script function call overhead | **116** | 134 | 158 | 4.4 | 0.73x | 26.50x |
-| `fib_recursive` | recursion, fib(32) | **83** | 87 | 89 | 7.0 | 0.93x | 11.83x |
-| `array_rw` | sequential list write + read | **43** | 43 | 47 | 2.5 | 0.91x | 17.01x |
-| `map_str` | string-key hash lookup | **49** | 37 | 41 | 63.1 | 1.20x | 0.78x |
-| `string_ops` | string build + length | **47** | 51 | 147 | 13.8 | 0.32x | 3.41x |
-| `particles` | game-style float + list sim | **46** | 49 | 50 | 3.5 | 0.92x | 13.12x |
-| **total** | | **686** | 759 | 1041 | 165.4 | 0.66x | 4.15x |
+| `loop_sum` | integer loop, VM dispatch floor | **149** | 175 | 194 | 12.8 | 0.77x | 11.68x |
+| `float_math` | float mul/add/sub chain | **152** | 176 | 313 | 58.8 | 0.49x | 2.58x |
+| `func_call` | script function call overhead | **112** | 133 | 158 | 4.3 | 0.71x | 26.15x |
+| `fib_recursive` | recursion, fib(32) | **78** | 86 | 90 | 7.0 | 0.87x | 11.11x |
+| `array_rw` | sequential list write + read | **42** | 44 | 47 | 2.5 | 0.89x | 16.55x |
+| `map_str` | string-key hash lookup | **44** | 37 | 40 | 62.9 | 1.10x | 0.70x |
+| `string_ops` | string build + length | **47** | 50 | 146 | 13.8 | 0.32x | 3.40x |
+| `particles` | game-style float + list sim | **45** | 48 | 49 | 3.4 | 0.92x | 13.05x |
+| **total** | | **669** | 749 | 1037 | 165.6 | 0.65x | 4.04x |
 
-- NeoCore is faster than NeoScript, its dynamically typed predecessor, in six of the
-  eight cases, equal in `array_rw`, and slower in `map_str` (49 vs 37 ms). The sum of
-  case medians is 10% below NeoScript and 34% below Lua.
-- `loop_sum` and `float_math` show the largest margins: typed arithmetic runs without
-  tag checks, loop constants are moved into frame slots, and handlers read all-local
-  operands through one frame base.
-- `map_str` is the one case where C++ is slower, because the C++ reference uses
-  `std::unordered_map<std::string, int>` and pays for hashing on every lookup while
-  the scripts hash interned keys once.
-- Code placement moves individual cases between otherwise identical builds; `map_str`
-  and `string_ops` change by up to about 25% with the 64-byte position of the dispatch
-  loop (the record lists the position), so single-case differences are not evidence of
-  a change unless the per-round ranges separate. Numbers from other sessions or
-  machines are not comparable with this table.
+- NeoCore is faster than NeoScript, its dynamically typed predecessor, in seven of
+  the eight cases and slower in `map_str` (44 vs 37 ms). The sum of case medians is
+  11% below NeoScript and 35% below Lua.
+- `map_str` is the one case where C++ is slower: its reference uses
+  `std::unordered_map<std::string, int>` and hashes on every lookup, while the
+  scripts hash interned keys once.
+- Code placement moves single cases between otherwise identical builds by up to
+  about 25%, so differences are evidence of a change only when the per-round ranges
+  separate. Numbers from other sessions or machines are not comparable.
 
-For embedding, `NeoSource/NeoCore.h` is the static entry point in namespace
-`NeoCore`. A public `Runtime` owns the shared backend VM and fixed host bindings;
-its `Compile`/`LoadImage` methods create programs, and each program's `CreateInstance`
-creates independent execution state while sharing compiled code. Hosts with many
-script assets use this runtime/program/instance hierarchy. Static `Program::Compile`
-remains a convenient isolated entry point. `Run`
-executes top-level code once; `Call` checks an exported function's declared
-signature before invoking the VM. Host values include scalars, null references,
-vectors, typed native IDs, collections, structs, and function values. Structs and
-vectors copy by value; collections retain shared identity. Retained closures are
-bound to their creating instance and become invalid after its reset or destruction.
-Host callbacks expose the caller instance separately from the receiver object.
-Delayed events retain an instance ID and resolve it through `Runtime::FindInstance`
-before invoking a callback. Runtime-owned values remain program-local even when
-programs share a VM.
-Include `NeoSource/NeoCoreHost.h` and supply `HostBindings` to expose methods and
-properties with statically checked signatures. Object resolvers still validate
-IDs at runtime. Saved program images include static contracts and debug metadata;
-loading rebinds the host schema without recompiling source. Images must come from
-a trusted matching compiler.
-The underlying NeoScript API remains implementation infrastructure.
-It is not a substitute for the NeoCore type-checking boundary.
-Embedded editors use `NeoCoreDebugger.h` through `Runtime::GetDebugger()` for
-breakpoints, stepping, source locations, call stacks and typed variable snapshots.
-Debug controls configure the next stop; execution remains in the instance API.
+## Embedding
+
+`NeoSource/NeoCore.h` is the static entry point in namespace `NeoCore`. A `Runtime`
+owns the shared backend VM and fixed host bindings; `Compile`/`LoadImage` create
+programs, and each program's `CreateInstance` creates independent execution state
+that shares compiled code. `Run` executes top-level code once; `Call` checks an
+exported function's declared signature before invoking it. Host values include
+scalars, null references, vectors, typed native IDs, collections, structs and
+function values; structs and vectors copy by value, and collections keep shared
+identity. Retained closures are bound to their creating instance and become invalid
+after its reset or destruction. Host callbacks receive the caller instance separately
+from the receiver object, and delayed events keep an instance ID that they resolve
+through `Runtime::FindInstance` before calling back. Runtime-owned values stay
+program-local even when programs share a VM. Supply `HostBindings` from `NeoSource/NeoCoreHost.h` to expose
+statically checked methods and properties; saved images rebind the host schema
+without recompiling and must come from a trusted matching compiler. Embedded editors
+use `Runtime::GetDebugger()` for breakpoints, stepping, call stacks and typed
+variable snapshots. Details: [Embedding](docs/Embedding.md),
+[host bindings](docs/HostBindings.md).
 
 ## Documentation and tools
 
@@ -394,13 +263,11 @@ Redistributed copies must retain the applicable copyright and license notices.
 
 The core has no HTTP/TLS library dependency. C++ hosts provide `IHttpTransport`
 through `CompileOptions::httpTransport`; Unity hosts supply the managed transport
-adapter. The NeoCore `.nc` console connects [libcurl](https://curl.se/libcurl/)
-for HTTP/HTTPS. Its native Windows build
-downloads pinned libcurl 8.23.0 (SHA-256 verified) using a CMake release supporting
-Visual Studio 2026, links it statically, and uses Schannel with the Windows
-certificate store. Core-only builds do not fetch curl. See
-[transport integration](docs/Embedding.md#http-and-https-transport). Include
-`THIRD_PARTY_NOTICES.txt` when distributing the console.
-The inherited backend uses bundled [PCRE2](ThirdParty/pcre2) for regular expressions;
-retain its license notices when distributing it. Checked HTTP and regex APIs are
-available to `.nc` scripts; see the [API guide](docs/API.md).
+adapter. The `.nc` console connects [libcurl](https://curl.se/libcurl/) for
+HTTP/HTTPS: its native Windows build downloads pinned libcurl 8.23.0 (SHA-256
+verified), links it statically, and uses Schannel with the Windows certificate store.
+Core-only builds do not fetch curl. See
+[transport integration](docs/Embedding.md#http-and-https-transport), and include
+`THIRD_PARTY_NOTICES.txt` when distributing the console. The inherited backend uses
+bundled [PCRE2](ThirdParty/pcre2) for regular expressions; retain its license notices
+when distributing it.
