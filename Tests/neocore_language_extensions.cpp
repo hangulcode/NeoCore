@@ -59,6 +59,17 @@ int main()
         Expect("void F(){return;print(1);}export int Probe(){F();return 7;}", 7, "unreachable statement after void return", debug);
         Expect("int G(){return 1;print(1);}export int Probe(){return G()+1;}", 2, "unreachable statement after value return", debug);
         Expect("int H(int x){if(x>0){return 1;print(1);}else{return 2;print(2);}}export int Probe(){return H(1)*10+H(-1);}", 12, "unreachable statements in both branches", debug);
+        // 긴 .. 사슬은 항마다 조각 파싱을 중첩하지 않아야 파서 깊이 한도에 걸리지 않는다.
+        {
+            std::string chain = "export int Probe(){string s=\"x\"";
+            for (int i = 0; i < 199; ++i) chain += " .. \"x\"";
+            chain += ";return s.len();}";
+            Expect(chain.c_str(), 200, "long string concatenation chain", debug);
+            std::string calls = "export int Probe(){int v=7;string s=tostring(v)";
+            for (int i = 0; i < 99; ++i) calls += " .. tostring(v)";
+            calls += ";return s.len();}";
+            Expect(calls.c_str(), 100, "long concatenation chain of calls", debug);
+        }
         Expect("int F(int x){return x+1;}export int Probe(){map<string,fn(int)->int> m={\"x\":F};return m[\"x\"](7);}", 8, "function map and result call", debug);
         Expect("struct Box{fn(int)->int callback;};export int Probe(){Box box=Box(fn(int x)->int{return x*2;});return box.callback(7);}", 14, "function-valued struct field", debug);
         Expect("int Twice(int x){return x*2;}int Apply(fn(int)->int f,int v){return f(v);}export int Probe(){return Apply(Twice,4);}", 8, "named function as call argument", debug);

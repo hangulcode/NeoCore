@@ -3483,13 +3483,25 @@ private:
         return result;
     }
 
-    std::string RenderExpr(const Expr& expression, bool allowIR = true, bool applyWrappers = true) const
+    // 왼쪽 자식도 같은 타입의 .. 식이면 "a .. b .. c" 사슬의 고리다. 고리는 IR 참조 대신 부모 조각 안에
+    // 그대로 펼친다. 자식마다 IR 참조를 두면 조각 파싱이 항마다 중첩되어 긴 사슬이 파서 깊이 한도를 넘는다.
+    // 왼쪽 결합은 그대로이므로 평가 순서와 결과는 바뀌지 않는다. 숫자 연산은 IR 로 내려가므로 대상이 아니다.
+    bool ChainLink(const Expr& parent, const Expr& child) const
+    {
+        return parent.op == ".." && child.kind == ExprKind::Binary && child.op == parent.op && child.type == parent.type &&
+            child.callName.empty() && !child.evaluatedConstant && !child.constantInitializer &&
+            !child.widen && !child.box && !child.clone && !child.branchCondition &&
+            !child.writeTarget && !child.assignmentTarget;
+    }
+
+    // chainLink: 이 식이 사슬의 고리다. IR 참조와 바깥 괄호 없이 부모 조각에 이어 붙는다.
+    std::string RenderExpr(const Expr& expression, bool allowIR = true, bool applyWrappers = true, bool chainLink = false) const
     {
         if (expression.evaluatedConstant)
             return ConstantLiteral(*expression.evaluatedConstant) + Lines(expression.begin, expression.end);
         std::string text;
         IROp operation;
-        if (allowIR && !expression.constantInitializer &&
+        if (allowIR && !chainLink && !expression.constantInitializer &&
             (NumericIROp(expression, operation) || ScalarMutationIROp(expression, operation) || ScalarCollectionIR(expression)
                 || (!expression.writeTarget && !expression.assignmentTarget && !expression.branchCondition &&
                     expression.type != InvalidType && types_.Get(expression.type).kind != TypeKind::Void && expression.kind != ExprKind::Name && expression.kind != ExprKind::Literal)
@@ -3565,8 +3577,10 @@ private:
             // 조건문의 최상위 논리식은 바깥 if/while 괄호로 충분하다. 추가 괄호는 분기를 불린 값 생성으로 바꾼다.
             // 자식 식의 괄호는 그대로 두어 중첩 논리식의 결합 순서와 단락 평가를 보존한다.
             const bool directCondition = expression.branchCondition && (expression.op == "&&" || expression.op == "||");
-            text = (directCondition ? "" : "(") + Lines(expression.begin, left.begin) + RenderExpr(left) + Lines(left.end, expression.token.begin)
-                + " " + expression.op + " " + Lines(expression.token.end, right.begin) + RenderExpr(right) + Lines(right.end, expression.end) + (directCondition ? "" : ")");
+            const bool bare = directCondition || chainLink;
+            const bool leftLink = ChainLink(expression, left);
+            text = (bare ? "" : "(") + Lines(expression.begin, left.begin) + RenderExpr(left, !leftLink, true, leftLink) + Lines(left.end, expression.token.begin)
+                + " " + expression.op + " " + Lines(expression.token.end, right.begin) + RenderExpr(right) + Lines(right.end, expression.end) + (bare ? "" : ")");
             break;
         }
         case ExprKind::Conditional:
