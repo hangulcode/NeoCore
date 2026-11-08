@@ -296,6 +296,21 @@ struct SFunctionInfo
     SlotType _returnStorage;
     std::vector<SlotType> _parameterStorage;
     std::vector<CompileCallStorage> _calls;
+    // 루프 조건·증감식처럼 컴파일한 뒤 다른 위치로 옮겨 쓰는 코드 안의 호출 계획은 활성 위치도 함께 옮긴다.
+    // PREPARE_CALL을 내지 않은 직접 호출은 이 위치로만 계획이 활성화된다.
+    void ShiftCallPlans(std::size_t first, std::size_t last, int delta)
+    {
+        for (std::size_t i = first; i < last && i < _calls.size(); ++i) _calls[i].prepareOffset += delta;
+    }
+    // 옮긴 코드 때문에 계획 벡터 순서가 활성 위치 순서와 다를 수 있다. 활성화는 이 순서로 훑는다.
+    std::vector<std::size_t> CallPlanOrder() const
+    {
+        std::vector<std::size_t> order(_calls.size());
+        for (std::size_t i = 0; i < order.size(); ++i) order[i] = i;
+        std::stable_sort(order.begin(), order.end(), [this](std::size_t a, std::size_t b)
+            { return _calls[a].prepareOffset < _calls[b].prepareOffset; });
+        return order;
+    }
     // 루프 상수 hoisting 이 만든 (숨은 지역 슬롯, static 상수 오퍼랜드) 쌍. 저장 종류 추론은 이 표로
     // 숨은 슬롯을 원래 상수로 되짚어 구조체 필드 키를 알아낸다.
     std::vector<std::pair<short, short> > _hoisted;

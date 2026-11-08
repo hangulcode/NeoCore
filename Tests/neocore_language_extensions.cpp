@@ -77,6 +77,11 @@ int main()
             "export int Probe(){return Lt(-3)*1000+Lt(-2)*100+Ge(5)*10+Ge(4)+Eq(32767)*10000+Big(39999)*100000;}",
             111010, "immediate integer comparison jumps keep inversion and range", debug);
         Expect("export int Probe(){int s=0;for(int i in 0,1000,1)s+=(i&255)+1;return s;}", 125716, "loop integer constants stay immediate", debug);
+        // while 조건은 본문 뒤로 옮겨 쓴다. 조건 안의 직접 호출(PREPARE_CALL 없음) 계획도 함께 옮겨야
+        // 본문의 문자열 인자 호출 계획이 조건의 float 인자 복사에 쓰이지 않는다.
+        Expect("float Gap(float a,float b){return a-b;}int notes=0;void Note(string s){notes+=s.len();}"
+            "export int Probe(){int t=0;float x=10.0;while(t<20&&Gap(x,1.0)>2.0){Note(\"fly\");x-=1.0;t++;}return t*100+notes;}",
+            721, "relocated while condition keeps its own call plan", debug);
         // 긴 .. 사슬은 항마다 조각 파싱을 중첩하지 않아야 파서 깊이 한도에 걸리지 않는다.
         {
             std::string chain = "export int Probe(){string s=\"x\"";

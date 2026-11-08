@@ -65,10 +65,11 @@ class StorageCompiler
         if (current.kind != SlotKind::Boxed && current.kind != type.kind)
         {
             // 어느 슬롯이 어떤 종류끼리 부딪혔는지 남긴다. 호출 창 슬롯이면 활성 계획 번호도 적는다.
-            char detail[160];
+            // 함수 이름을 함께 남겨 생성된 소스 위치만으로는 찾기 어려운 경우에도 원인 함수를 바로 찾게 한다.
+            char detail[320];
             const int call = activeCall_ ? static_cast<int>(activeCall_ - function._calls.data()) : -1;
-            snprintf(detail, sizeof(detail), "conflicting compiler slot types (slot %d: kind %d vs %d, function %d, call %d)",
-                slot, static_cast<int>(current.kind), static_cast<int>(type.kind), function._funID, call);
+            snprintf(detail, sizeof(detail), "conflicting compiler slot types (slot %d: kind %d vs %d, function %d '%.120s', call %d)",
+                slot, static_cast<int>(current.kind), static_cast<int>(type.kind), function._funID, function._name.c_str(), call);
             throw std::logic_error(detail);
         }
         if (current.kind == SlotKind::Boxed || (current.kind == type.kind && current.typeId == 0 && type.typeId != 0))
@@ -312,12 +313,14 @@ public:
                 BindCalls(*function);
                 const SVMOperation* code = reinterpret_cast<const SVMOperation*>(static_cast<const u8*>(functions_._codeFinal.GetData()) + function->_iCode_Begin);
                 // 활성 계획은 기록된 준비 위치로 찾는다. PREPARE_CALL이 없는 직접 호출도 창 쓰기의 종류를 받는다.
+                // 옮겨 쓴 루프 조건 때문에 벡터 순서와 위치 순서가 다를 수 있어 위치 순으로 훑는다.
+                const std::vector<std::size_t> order = function->CallPlanOrder();
                 std::size_t nextCall = 0;
                 for (int i = 0; i < function->_iCode_Size / static_cast<int>(sizeof(SVMOperation)); ++i)
                 {
                     const int offset = i * static_cast<int>(sizeof(SVMOperation));
-                    while (nextCall < function->_calls.size() && function->_calls[nextCall].prepareOffset <= offset)
-                        activeCall_ = &function->_calls[nextCall++];
+                    while (nextCall < order.size() && function->_calls[order[nextCall]].prepareOffset <= offset)
+                        activeCall_ = &function->_calls[order[nextCall++]];
                     Infer(*function, code[i]);
                 }
             }

@@ -5244,6 +5244,7 @@ bool ParseFor(CArchiveRdWC& ar, SFunctions& funs, SVars& vars)
 
 	// For Check
 	int Pos1 = PosLoopTop;
+	const std::size_t checkPlansBegin = funs._cur->_calls.size();
 	iTempOffset.Reset();
 	r = ParseShortCircuitLogic(true, iTempOffset, ar, funs, vars, TK_SEMICOLON, TK_COMMA, TK_R_SMALL, TK_R_ARRAY);
 	if (TK_SEMICOLON != r)
@@ -5278,6 +5279,7 @@ bool ParseFor(CArchiveRdWC& ar, SFunctions& funs, SVars& vars)
 		DebugCheck[i] = (*funs._cur->_pDebugData)[Pos1 / 8 + i];
 
 	// For Increase
+	const std::size_t incPlansBegin = funs._cur->_calls.size();
 	iTempOffset = INVALID_ERROR_PARSEJOB;
 	r = ParseJob(false, iTempOffset, NULL, ar, funs, vars); // 증감
 	if (TK_R_SMALL != r)
@@ -5297,6 +5299,7 @@ bool ParseFor(CArchiveRdWC& ar, SFunctions& funs, SVars& vars)
 	funs._cur->_code->SetPointer(Pos1, SEEK_SET);
 	for (int i = 0; i < iIncCodeSize / 8; i++)
 		DebugInc[i] = (*funs._cur->_pDebugData)[Pos1 / 8 + i];
+	const std::size_t incPlansEnd = funs._cur->_calls.size();
 
 	//	for {} Process
 	std::vector<SJumpValue> sJumps;
@@ -5321,6 +5324,9 @@ bool ParseFor(CArchiveRdWC& ar, SFunctions& funs, SVars& vars)
 		funs._cur->Set_JumpOffet(sContinueJumps[i], continuePos);
 	}
 	funs._cur->_code->Write(byTempInc, iIncCodeSize);
+	// 조건·증감식은 본문 뒤로 옮겨졌다. 그 안의 호출 계획 활성 위치도 같은 거리만큼 옮긴다.
+	funs._cur->ShiftCallPlans(incPlansBegin, incPlansEnd, continuePos - Pos1);
+	funs._cur->ShiftCallPlans(checkPlansBegin, incPlansBegin, continuePos + iIncCodeSize - Pos1);
 
 	funs._cur->Set_JumpOffet(jmp1, funs._cur->_code->GetBufferOffset());
 	// Write Check Code
@@ -5821,6 +5827,7 @@ bool ParseWhile(CArchiveRdWC& ar, SFunctions& funs, SVars& vars)
 
 	// While Check
 	int Pos1 = PosLoopTop;
+	const std::size_t checkPlansBegin = funs._cur->_calls.size();
 	iTempOffset.Reset();
 	if (TK_R_SMALL != ParseShortCircuitLogic(true, iTempOffset, ar, funs, vars))
 	{
@@ -5838,6 +5845,7 @@ bool ParseWhile(CArchiveRdWC& ar, SFunctions& funs, SVars& vars)
 	MaterializeValue(iTempOffset, ar, funs);
 	int iStackCheckVar = iTempOffset._iVar;
 	int Pos2 = funs._cur->_code->GetBufferOffset();
+	const std::size_t checkPlansEnd = funs._cur->_calls.size();
 	OperationCode opCheck = funs._cur->GetLastOP();
 	bool isCheckOPOpt = false;
 	OperationCode opOpz = NOP_NONE;
@@ -5885,6 +5893,8 @@ bool ParseWhile(CArchiveRdWC& ar, SFunctions& funs, SVars& vars)
 		funs._cur->Set_JumpOffet(sContinueJumps[i], continuePos);
 	}
 	funs._cur->_code->Write(byTempCheck.data(), iCheckCodeSize);
+	// 조건은 본문 뒤로 옮겨졌다. 그 안의 호출 계획 활성 위치도 같은 거리만큼 옮긴다.
+	funs._cur->ShiftCallPlans(checkPlansBegin, checkPlansEnd, continuePos - Pos1);
 	if (false == isCheckOPOpt)
 		funs._cur->Push_JMPTrue(ar, iStackCheckVar, PosLoopTop, iDebugLoopLine);
 	else

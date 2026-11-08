@@ -328,6 +328,8 @@ void WriteFun(CArchiveRdWC& arText, CNArchive& ar, SFunctions& funs, SFunctionIn
 	// 유지되므로 호출 뒤의 반환 슬롯 읽기도 같은 계획으로 해석한다. 숫자만 오가는 직접 호출은
 	// PREPARE_CALL 명령 없이 계획만 둔다.
 	const CompileCallStorage* activeCall = nullptr;
+	// 옮겨 쓴 루프 조건 때문에 벡터 순서와 위치 순서가 다를 수 있어 위치 순으로 훑는다.
+	const std::vector<std::size_t> callOrder = fi.CallPlanOrder();
 	std::size_t nextCall = 0;
 	auto KindOf = [&](int n) -> SlotKind
 	{
@@ -372,7 +374,7 @@ void WriteFun(CArchiveRdWC& arText, CNArchive& ar, SFunctions& funs, SFunctionIn
 		arRead.Read(&v, sizeof(v));
 		u8 argFlag = v.argFlag;
 		const int opOffset = arRead.GetBufferOffset() - static_cast<int>(sizeof(v));
-		while (nextCall < fi._calls.size() && fi._calls[nextCall].prepareOffset <= opOffset) activeCall = &fi._calls[nextCall++];
+		while (nextCall < callOrder.size() && fi._calls[callOrder[nextCall]].prepareOffset <= opOffset) activeCall = &fi._calls[callOrder[nextCall++]];
 		// 종류는 명령 번호를 바꾸기 전의 컴파일 번호로 찾는다.
 		const bool immediateMove = IsImmediateMove(v);
 		const bool slotMove = v.op == NOP_MOV && !immediateMove;
