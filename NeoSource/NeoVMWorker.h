@@ -452,6 +452,35 @@ private:
 	}
 	NEOS_FORCEINLINE VarInfo* GetVarRaw_L(short n) { return m_pVarStack_Pointer + n; }
 	NEOS_FORCEINLINE VarInfo* GetVarRaw_G(short n) { return NEOS_GLOBAL_VAR(n); }
+	// 피연산자 주소 묶음. 모두 지역이면 프레임 기준 하나로 계산하고, 아니면 위치 비트를 하나씩 본다.
+	// 루프 상수 hoisting 뒤에는 반복 안의 명령 대부분이 지역 피연산자만 쓴다. 본문은 한 벌만 둔다.
+	NEOS_FORCEINLINE void GetVarRaw12(const SVMOperation& OP, VarInfo*& first, VarInfo*& second)
+	{
+		if ((OP.argFlag & (NEOS_ARG_N1_LOCAL | NEOS_ARG_N2_LOCAL)) == (NEOS_ARG_N1_LOCAL | NEOS_ARG_N2_LOCAL))
+		{
+			VarInfo* const frame = m_pVarStack_Pointer;
+			first = frame + OP.n1;
+			second = frame + OP.n2;
+			return;
+		}
+		first = GetVarRawF1(OP);
+		second = GetVarRaw2(OP);
+	}
+	NEOS_FORCEINLINE void GetVarRaw123(const SVMOperation& OP, VarInfo*& first, VarInfo*& second, VarInfo*& third)
+	{
+		const unsigned all = NEOS_ARG_N1_LOCAL | NEOS_ARG_N2_LOCAL | NEOS_ARG_N3_LOCAL;
+		if ((OP.argFlag & all) == all)
+		{
+			VarInfo* const frame = m_pVarStack_Pointer;
+			first = frame + OP.n1;
+			second = frame + OP.n2;
+			third = frame + OP.n3;
+			return;
+		}
+		first = GetVarRawF1(OP);
+		second = GetVarRaw2(OP);
+		third = GetVarRaw3(OP);
+	}
 
 	// 피연산자의 선언 타입·정책. 종류가 필요한 범용 명령만 배치표를 읽는다.
 	// 두 표(m_pSlotTypes, m_pGlobalTypes)는 읽기 전용 비트가 든 사본이라 값으로 쓸 때는 비트를 벗긴다.

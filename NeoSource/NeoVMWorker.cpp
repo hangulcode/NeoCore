@@ -2276,14 +2276,14 @@ void CNeoVMWorker::JumpAsyncMsg()
 		case NOP_ARRAY_##NAME##_NEW: TypedArrayNew<NeoArrayElementType::ELEMENT>(OP); break; \
 		case NOP_ARRAY_##NAME##_APPEND: TypedArrayAppend<NeoArrayElementType::ELEMENT>(OP); break;
 #define NEOCORE_SCALAR_CONTAINER_DISPATCH(OWNER, INDEX, TYPE, TAG) \
-        case NOP_##OWNER##_##TYPE##_LOAD: ScalarContainerLoad<INDEX, TAG>(GetVarRawF1(OP), GetVarRaw2(OP), GetVarRaw3(OP)); break; \
-        case NOP_##OWNER##_##TYPE##_STORE: ScalarContainerStore<INDEX, TAG>(GetVarRawF1(OP), GetVarRaw2(OP), GetVarRaw3(OP)); break;
+        case NOP_##OWNER##_##TYPE##_LOAD: { VarInfo *a, *b, *c; GetVarRaw123(OP, a, b, c); ScalarContainerLoad<INDEX, TAG>(a, b, c); } break; \
+        case NOP_##OWNER##_##TYPE##_STORE: { VarInfo *a, *b, *c; GetVarRaw123(OP, a, b, c); ScalarContainerStore<INDEX, TAG>(a, b, c); } break;
 #define NEOCORE_SCALAR_OWNER_DISPATCH(OWNER, INDEX) \
         NEOCORE_SCALAR_CONTAINER_DISPATCH(OWNER, INDEX, I64, VAR_INT) \
         NEOCORE_SCALAR_CONTAINER_DISPATCH(OWNER, INDEX, F64, VAR_FLOAT) \
         NEOCORE_SCALAR_CONTAINER_DISPATCH(OWNER, INDEX, BOOL, VAR_BOOL)
 #define NEOCORE_SCALAR_ARRAY_STORE(TYPE, ELEMENT) \
-        case NOP_ARRAY_##TYPE##_STORE: ScalarArrayStore<NeoArrayElementType::ELEMENT>(GetVarRawF1(OP), GetVarRaw2(OP), GetVarRaw3(OP)); break;
+        case NOP_ARRAY_##TYPE##_STORE: { VarInfo *a, *b, *c; GetVarRaw123(OP, a, b, c); ScalarArrayStore<NeoArrayElementType::ELEMENT>(a, b, c); } break;
 
 // 드문 명령의 처리. 디스패치 루프를 작게 유지하려고 루프 밖에 둔다. 실행을 멈춰야 하면 true를 돌려준다.
 // 뜨거운 명령의 목록은 벤치·스모크의 동적 계측과 게임 스크립트의 정적 빈도로 정했다(RunInternal 참조).
@@ -2499,8 +2499,8 @@ bool	CNeoVMWorker::RunInternal(int iBreakingCallStack)
 #undef NEOCORE_RT_CASE_JMP_IMM
 		case NOP_RT_I64_NEG: I64ArithmeticRT<ArithmeticOp::Neg, false>(OP); break;
 		case NOP_RT_F64_NEG: F64ArithmeticRT<ArithmeticOp::Neg, false>(OP); break;
-		case NOP_RT_I64_TO_F64: StoreNumberFloat(GetVarRawF1(OP), static_cast<NS_FLOAT>(GetVarRaw2(OP)->_int)); break;
-		case NOP_RT_F64_TO_I64: StoreNumberInt(GetVarRawF1(OP), NeoFloatToInt(GetVarRaw2(OP)->_float)); break;
+		case NOP_RT_I64_TO_F64: { VarInfo *d, *s; GetVarRaw12(OP, d, s); StoreNumberFloat(d, static_cast<NS_FLOAT>(s->_int)); } break;
+		case NOP_RT_F64_TO_I64: { VarInfo *d, *s; GetVarRaw12(OP, d, s); StoreNumberInt(d, NeoFloatToInt(s->_float)); } break;
 #define NEOCORE_RT_CASE_COMPARE(T, N, S) \
 		case NOP_RT_##T##_##N: T##CompareRT<ComparisonOp::S>(OP); break; \
 		case NOP_RT_JMP_##T##_##N: T##JumpCompareRT<ComparisonOp::S>(OP); break;

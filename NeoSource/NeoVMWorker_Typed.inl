@@ -630,12 +630,16 @@ NEOS_FORCEINLINE void F64ArithmeticRT(const SVMOperation& OP)
 template<ComparisonOp Sub>
 NEOS_FORCEINLINE void I64CompareRT(const SVMOperation& OP)
 {
-    StoreNumberBool(GetVarRawF1(OP), ((OP.argFlag & NEOS_OP_COMPARE_INVERT) == 0) == CompareStep<Sub>(GetVarRaw2(OP)->_int, GetVarRaw3(OP)->_int));
+    VarInfo *d, *a, *b;
+    GetVarRaw123(OP, d, a, b);
+    StoreNumberBool(d, ((OP.argFlag & NEOS_OP_COMPARE_INVERT) == 0) == CompareStep<Sub>(a->_int, b->_int));
 }
 template<ComparisonOp Sub>
 NEOS_FORCEINLINE void F64CompareRT(const SVMOperation& OP)
 {
-    StoreNumberBool(GetVarRawF1(OP), ((OP.argFlag & NEOS_OP_COMPARE_INVERT) == 0) == CompareStep<Sub>(GetVarRaw2(OP)->_float, GetVarRaw3(OP)->_float));
+    VarInfo *d, *a, *b;
+    GetVarRaw123(OP, d, a, b);
+    StoreNumberBool(d, ((OP.argFlag & NEOS_OP_COMPARE_INVERT) == 0) == CompareStep<Sub>(a->_float, b->_float));
 }
 // 비교 점프의 n1은 점프 거리다. 두 입력이 지역이면 프레임 기준 하나로 읽는다.
 template<ComparisonOp Sub>
