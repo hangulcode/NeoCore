@@ -7246,9 +7246,14 @@ bool ParseFunctionBody(CArchiveRdWC& ar, SFunctions& funs, SVars& vars, bool add
 	if (ar.m_sErrorString.empty() == false)
 		return false;
 
-	if(addOPFunEnd && bodyAlwaysReturns == false)
-		//funs._cur->Push_FUNEND(ar);
-		funs._cur->Push_RETURN(ar, 0, true); // 
+	// 블록의 반환 판정은 문장 구조를 따르므로 `return; print(1);`처럼 도달하지 못하는 문장이 뒤에 있어도
+	// "항상 반환"으로 본다. 그 문장들은 그대로 명령이 되어 함수의 마지막 명령이 RET가 아니게 되고, 로더는
+	// 함수 끝이 종결 명령이기를 요구한다. 그래서 실제 마지막 명령을 보고 RET를 붙인다.
+	const int bodySize = funs._cur->_code->GetBufferOffset() - funs._cur->_iCode_Begin;
+	const bool endsWithReturn = bodySize >= (int)sizeof(SVMOperation) &&
+		PrimaryOperation(funs._cur->GetOP(funs._cur->_code->GetBufferOffset() - (int)sizeof(SVMOperation))) == NOP_RETURN;
+	if (addOPFunEnd && (bodyAlwaysReturns == false || endsWithReturn == false))
+		funs._cur->Push_RETURN(ar, 0, true);
 
 	return true;
 }

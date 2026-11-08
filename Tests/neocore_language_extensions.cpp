@@ -55,6 +55,10 @@ int main()
         Expect("struct Inner{int x;};struct Outer{Inner value;};export int Probe(){Outer original=Outer(Inner(3));fn()->int f=fn()->int{original.value.x+=1;return original.value.x;};original.value.x=9;return f()*100+f()*10+original.value.x;}", 459, "nested struct capture copies", debug);
         Expect("export int Probe(){Vector3 v=Vector3(1,2,3);fn()->float f=fn()->float{v.x+=1;return v.x;};v.x=8;return int(f()+f()+v.x);}", 13, "boxed vector capture copies", debug);
         Expect("struct S{int x;};export int Probe(){S original=S(3);fn(S)->S f=fn(S item)->S{item.x+=4;return item;};S result=f(original);return original.x*10+result.x;}", 37, "indirect struct argument return copies", debug);
+        // return 뒤의 도달하지 못하는 문장은 그대로 명령이 되지만 함수는 여전히 종결 명령으로 끝나야 한다.
+        Expect("void F(){return;print(1);}export int Probe(){F();return 7;}", 7, "unreachable statement after void return", debug);
+        Expect("int G(){return 1;print(1);}export int Probe(){return G()+1;}", 2, "unreachable statement after value return", debug);
+        Expect("int H(int x){if(x>0){return 1;print(1);}else{return 2;print(2);}}export int Probe(){return H(1)*10+H(-1);}", 12, "unreachable statements in both branches", debug);
         Expect("int F(int x){return x+1;}export int Probe(){map<string,fn(int)->int> m={\"x\":F};return m[\"x\"](7);}", 8, "function map and result call", debug);
         Expect("struct Box{fn(int)->int callback;};export int Probe(){Box box=Box(fn(int x)->int{return x*2;});return box.callback(7);}", 14, "function-valued struct field", debug);
         Expect("int Twice(int x){return x*2;}int Apply(fn(int)->int f,int v){return f(v);}export int Probe(){return Apply(Twice,4);}", 8, "named function as call argument", debug);
