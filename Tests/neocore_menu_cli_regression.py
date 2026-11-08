@@ -51,8 +51,8 @@ def main():
 
     result = run(commands="r\n" + numbers["hello"] + "\nfibonacci\ndivide_by_zero\nhello\nr\nq\n")
     assert passed(result) == ["hello", "fibonacci", "hello", "hello"], result.stdout + result.stderr
-    # hello runs the array_rw workload and prints its checksum.
-    assert result.stdout.splitlines().count("25493856") == 3, result.stdout
+    # hello prints LoopSum(2, 6) once per run.
+    assert result.stdout.splitlines().count("21") == 3, result.stdout
     assert re.search(r"(?m)\b55\s*$", result.stdout), result.stdout
     assert result.stdout.count("Expected division-by-zero error handled.") == 1, result.stdout
     checks += 1
