@@ -323,7 +323,7 @@ NEOS_FORCEINLINE bool handle_RETURN_impl(VarInfo* pSrc, bool sourceLocal, int fu
     {
 		// 최상위/코루틴 시작 closure는 호출 프레임이 없으므로 active 상태로 판별한다.
 		if (m_pActiveClosure != nullptr)
-			FinishClosureReturn(ValueRef(pSrc, VAR_NONE));
+			FinishClosureReturn(pSrc);
 
         StoreReturnValue(m_pVarStack_Pointer, pSrc, sourceLocal, resultPolicy);
         LeaveFrame(fun, _iSP_Vars);
@@ -342,7 +342,7 @@ NEOS_FORCEINLINE bool handle_RETURN_impl(VarInfo* pSrc, bool sourceLocal, int fu
     const SCallStack callStack = m_pCallStack->pop_back();
 	const u32 returnIP = callStack._ReturnIP;
 	if (m_pActiveClosure != nullptr)
-		FinishClosureReturn(ValueRef(pSrc, VAR_NONE));
+		FinishClosureReturn(pSrc);
 
     if (callStack._iReturnValueIndex == RETURN_DISCARD)
     {

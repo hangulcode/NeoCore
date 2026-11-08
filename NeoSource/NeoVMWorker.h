@@ -285,7 +285,8 @@ private:
 	{
 		_functionIndex = index;
 		m_pFunction = &fun;
-		m_pSlotTypes = fun._slotTypes.data();
+		// 뷰가 원소를 바로 가리키므로 읽기 전용 비트가 든 사본을 든다. SlotType_L이 비트를 벗긴다.
+		m_pSlotTypes = fun._slotTypesFlagged.data();
 	}
 	NEOS_FORCEINLINE void SelectFunction(int index) { SelectFunction(index, _pProgram->functions[index]); }
 	// 저장된 레지스터(_info)를 되살린 뒤 배치표를 함수 번호에 맞춘다.
@@ -345,18 +346,14 @@ private:
     }
     NEOS_FORCEINLINE void EnterFrame(int functionIndex, int base)
     { EnterFrame(functionIndex, _pProgram->functions[functionIndex], base); }
-    // 프레임 종료: 인자와 소유 슬롯 구간만 정책으로 해제한다. 숫자 슬롯은 보지 않고,
-    // 소유 슬롯이 없는 함수는 구간이 비어 있다.
+    // 프레임 종료: 인자와 소유 슬롯 구간만 정책으로 해제한다. 숫자 슬롯은 보지 않고, 소유 슬롯이 없는 함수는
+    // 비교 한 번으로 끝난다. 해제 루프는 호출을 품고 있어 반환 핸들러에 인라인하면 루프 함수의 레지스터를
+    // 잃으므로(실측: this 재적재) 루프 밖 함수에 둔다.
     NEOS_FORCEINLINE void LeaveFrame(const SFunctionTable& fun, int base)
     {
-        const u8* info = fun._slotInfo.data();
-        VarInfo* slots = &(*m_pVarStack_Base)[base];
-        for (int i = fun._releaseFirst; i < fun._releaseCount; ++i)
-        {
-            const StoragePolicy policy = SlotInfoPolicy(info[i]);
-            if (policy != StoragePolicy::Payload) ReleaseByPolicy(slots + i, policy);
-        }
+        if (fun._releaseFirst < fun._releaseCount) ReleaseFrameOwned(fun, base);
     }
+    void ReleaseFrameOwned(const SFunctionTable& fun, int base);
     // 창 슬롯을 계획의 정책으로 놓는다. 네이티브 호출이 끝난 뒤와 코루틴 복귀가 쓴다.
     void ReleaseCallWindow(const CallStoragePlan& plan, VarInfo* window, bool includeResult);
     // 정책 기반 소유 전달. 태그를 읽지 않고 명령·배치표가 준 정책만 쓴다.
@@ -457,18 +454,20 @@ private:
 	NEOS_FORCEINLINE VarInfo* GetVarRaw_G(short n) { return NEOS_GLOBAL_VAR(n); }
 
 	// 피연산자의 선언 타입·정책. 종류가 필요한 범용 명령만 배치표를 읽는다.
-	NEOS_FORCEINLINE VAR_TYPE SlotType_L(short n) const { return m_pSlotTypes[n]; }
-	NEOS_FORCEINLINE VAR_TYPE SlotType_G(short n) const { return m_pGlobalTypes[n]; }
+	// 두 표(m_pSlotTypes, m_pGlobalTypes)는 읽기 전용 비트가 든 사본이라 값으로 쓸 때는 비트를 벗긴다.
+	NEOS_FORCEINLINE VAR_TYPE SlotType_L(short n) const { return static_cast<VAR_TYPE>(m_pSlotTypes[n] & ~NEOS_TYPE_READONLY); }
+	NEOS_FORCEINLINE VAR_TYPE SlotType_G(short n) const { return static_cast<VAR_TYPE>(m_pGlobalTypes[n] & ~NEOS_TYPE_READONLY); }
 	NEOS_FORCEINLINE VAR_TYPE SlotType1(const SVMOperation& OP) const { return (OP.argFlag & NEOS_ARG_N1_LOCAL) ? SlotType_L(OP.n1) : SlotType_G(OP.n1); }
 	NEOS_FORCEINLINE VAR_TYPE SlotType2(const SVMOperation& OP) const { return (OP.argFlag & NEOS_ARG_N2_LOCAL) ? SlotType_L(OP.n2) : SlotType_G(OP.n2); }
 	NEOS_FORCEINLINE VAR_TYPE SlotType3(const SVMOperation& OP) const { return (OP.argFlag & NEOS_ARG_N3_LOCAL) ? SlotType_L(OP.n3) : SlotType_G(OP.n3); }
 	NEOS_FORCEINLINE StoragePolicy SlotPolicy_L(short n) const { return m_pFunction->SlotPolicy(n); }
-	NEOS_FORCEINLINE StoragePolicy SlotPolicy_G(short n) const { return PolicyOfType(m_pGlobalTypes[n]); }
+	NEOS_FORCEINLINE StoragePolicy SlotPolicy_G(short n) const { return PolicyOfType(SlotType_G(n)); }
 	NEOS_FORCEINLINE StoragePolicy SlotPolicy1(const SVMOperation& OP) const { return (OP.argFlag & NEOS_ARG_N1_LOCAL) ? SlotPolicy_L(OP.n1) : SlotPolicy_G(OP.n1); }
 	NEOS_FORCEINLINE StoragePolicy SlotPolicy3(const SVMOperation& OP) const { return (OP.argFlag & NEOS_ARG_N3_LOCAL) ? SlotPolicy_L(OP.n3) : SlotPolicy_G(OP.n3); }
-	// 경계 API(컬렉션·네이티브·변환)로 넘길 때만 선언 타입을 붙인 뷰를 만든다.
-	NEOS_FORCEINLINE ValueRef GetVarPtr_L(short n) { return ValueRef(m_pVarStack_Pointer + n, m_pSlotTypes[n]); }
-	NEOS_FORCEINLINE ValueRef GetVarPtr_G(short n) { return ValueRef(m_pVarGlobal_Pointer + n, m_pGlobalTypes[n]); }
+	// 경계 API(컬렉션·네이티브·변환)로 넘길 때만 선언 타입을 붙인 뷰를 만든다. 뷰는 읽기 전용 표의 원소를
+	// 직접 가리키므로 타입 바이트를 복사하지 않고, SetType은 그 비트를 보고 쓰기를 거른다.
+	NEOS_FORCEINLINE ValueRef GetVarPtr_L(short n) { return ValueRef(m_pVarStack_Pointer + n, m_pSlotTypes + n); }
+	NEOS_FORCEINLINE ValueRef GetVarPtr_G(short n) { return ValueRef(m_pVarGlobal_Pointer + n, m_pGlobalTypes + n); }
 	NEOS_FORCEINLINE ValueRef GetVarPtr1(const SVMOperation& OP) { return (OP.argFlag & NEOS_ARG_N1_LOCAL) ? GetVarPtr_L(OP.n1) : GetVarPtr_G(OP.n1); }
 	NEOS_FORCEINLINE ValueRef GetVarPtr2(const SVMOperation& OP) { return (OP.argFlag & NEOS_ARG_N2_LOCAL) ? GetVarPtr_L(OP.n2) : GetVarPtr_G(OP.n2); }
 	NEOS_FORCEINLINE ValueRef GetVarPtr3(const SVMOperation& OP) { return (OP.argFlag & NEOS_ARG_N3_LOCAL) ? GetVarPtr_L(OP.n3) : GetVarPtr_G(OP.n3); }
@@ -552,7 +551,8 @@ private:
 	void SyncActiveClosure(ValueRef keepOnStack = nullptr);
 	void SyncClosureAtFrame(ClosureInfo* closure, int stackBase, ValueRef keepOnStack = nullptr,
 		ValueStack* varStack = nullptr);
-	NEOS_NOINLINE void FinishClosureReturn(ValueRef keepOnStack);
+	// 반환값 슬롯은 호출자가 가져갈 때까지 남긴다. 뷰는 안에서 만들어 반환 핸들러에 16바이트 임시를 두지 않는다.
+	NEOS_NOINLINE void FinishClosureReturn(VarInfo* keepOnStack);
 	void DrainCoroutineClosures(CoroutineInfo* pCI); // close/cancel 시 실행 보유 closure를 동기화·반납
 
 	// pRet: 결과를 받을 슬롯(정책은 호출 계획의 반환 정책). nullptr이고 keepResult면 뒤따르는 MOV가

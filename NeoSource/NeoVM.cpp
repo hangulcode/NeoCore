@@ -13,6 +13,21 @@
 namespace NeoScript
 {
 
+// 리터럴 선언 타입과 null 뷰가 가리키는 읽기 전용 타입 셀. 각 원소는 자기 번호에 읽기 전용 비트를 더한 값이라
+// ValueRef::DeclaredType이 마스크만 벗기면 그 타입이 나온다. 정적 저장이라 뷰가 프로그램 수명과 무관하게 가리킬 수 있다.
+#define NEOS_TYPE_CELL(n) static_cast<VAR_TYPE>(NEOS_TYPE_READONLY | (n))
+#define NEOS_TYPE_CELL8(b) NEOS_TYPE_CELL(b), NEOS_TYPE_CELL(b + 1), NEOS_TYPE_CELL(b + 2), NEOS_TYPE_CELL(b + 3), \
+	NEOS_TYPE_CELL(b + 4), NEOS_TYPE_CELL(b + 5), NEOS_TYPE_CELL(b + 6), NEOS_TYPE_CELL(b + 7)
+const VAR_TYPE g_typeIdentity[NEOS_TYPE_READONLY] =
+{
+	NEOS_TYPE_CELL8(0), NEOS_TYPE_CELL8(8), NEOS_TYPE_CELL8(16), NEOS_TYPE_CELL8(24),
+	NEOS_TYPE_CELL8(32), NEOS_TYPE_CELL8(40), NEOS_TYPE_CELL8(48), NEOS_TYPE_CELL8(56),
+	NEOS_TYPE_CELL8(64), NEOS_TYPE_CELL8(72), NEOS_TYPE_CELL8(80), NEOS_TYPE_CELL8(88),
+	NEOS_TYPE_CELL8(96), NEOS_TYPE_CELL8(104), NEOS_TYPE_CELL8(112), NEOS_TYPE_CELL8(120),
+};
+#undef NEOS_TYPE_CELL8
+#undef NEOS_TYPE_CELL
+
 CNeoVM* 	NeoVMSystem::CreateVM(const std::shared_ptr<IHttpTransport>& transport, size_t maxRegexPatternBytes)
 {
 	CNeoVM* vm = new CNeoVM();

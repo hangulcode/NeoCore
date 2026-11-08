@@ -703,12 +703,19 @@ bool CNeoVMProgram::Load(CNArchive& ar, std::string* err)
         globalTypes[ConstantBase() + slot.slot] = StorageValueType(slot.kind);
     }
     for (int i = 0; i < header._iStaticVarCount; ++i) globalTypes[ConstantBase() + i] = staticValues[i]._type;
+    // 워커의 뷰가 가리키는 읽기 전용 사본. 비트만 다르고 순서는 같다.
+    globalTypesFlagged.resize(globalTypes.size());
+    for (std::size_t i = 0; i < globalTypes.size(); ++i)
+        globalTypesFlagged[i] = static_cast<VAR_TYPE>(globalTypes[i] | NEOS_TYPE_READONLY);
     for (SFunctionTable& function : functions)
     {
         // 창 슬롯은 호출 계획이 타입을 주므로 프레임 표에서는 VAR_NONE이다.
         function._slotTypes.assign(function._stackSlotCount, VAR_NONE);
         function._slotTypes[0] = function._resultType;
         for (const SlotLayout& slot : function._storage) function._slotTypes[slot.slot] = StorageValueType(slot.kind);
+        function._slotTypesFlagged.resize(function._slotTypes.size());
+        for (std::size_t i = 0; i < function._slotTypes.size(); ++i)
+            function._slotTypesFlagged[i] = static_cast<VAR_TYPE>(function._slotTypes[i] | NEOS_TYPE_READONLY);
         if (!function._captures.empty())
         {
             std::shared_ptr<std::vector<VAR_TYPE>> types(new std::vector<VAR_TYPE>);

@@ -185,6 +185,9 @@ struct SFunctionTable
     int _releaseFirst = 1;
     // 프레임 슬롯 [0, _stackSlotCount)의 선언 타입. 창 슬롯은 VAR_NONE이다.
     std::vector<VAR_TYPE> _slotTypes;
+    // 같은 표에 읽기 전용 비트(NEOS_TYPE_READONLY)를 더한 사본. 워커의 고정 슬롯 뷰(ValueRef)가 이 원소를
+    // 가리켜 SetType이 프로그램 표에 쓰지 못하게 한다. 정리·디버거 등 다른 독자는 위의 깨끗한 표를 읽는다.
+    std::vector<VAR_TYPE> _slotTypesFlagged;
     // 프레임 슬롯 [0, _localAddCount)의 정책·임시 표시. 0번은 반환값 정책이다.
     std::vector<u8> _slotInfo;
 	// 익명 함수 생성 시 부모 프레임에서 복사할 슬롯과, 호출 프레임에서
@@ -283,6 +286,7 @@ public:
 	std::vector<SFunctionTable>	functions;
     std::vector<SlotLayout> globalStorage;
     std::vector<VAR_TYPE> globalTypes; // 전체 인스턴스가 공유하는 고정 전역·상수 배치
+    std::vector<VAR_TYPE> globalTypesFlagged; // globalTypes에 읽기 전용 비트를 더한 사본. 워커의 전역 뷰 전용.
 	std::map<std::string, int>	exportFunctions;   // 함수명 → 함수 ID
 	std::map<std::string, int>	exportVariables;   // 전역 변수명 → 전역 슬롯 인덱스
 	std::vector<SStaticConst>	staticValues;

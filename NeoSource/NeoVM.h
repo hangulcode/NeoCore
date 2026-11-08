@@ -445,23 +445,45 @@ public:
 };
 
 
+// 타입 바이트의 읽기 전용 표시. 뷰가 가리키는 바이트에 이 비트가 켜져 있으면 프로그램이 소유한 선언 타입
+// (고정 슬롯 표, 리터럴 셀)이라 SetType이 쓰지 않는다. 경계 값(BoundaryValue::_type)은 실제 태그만 담아
+// 비트가 꺼져 있고, 거기에만 쓴다. VAR_TYPE의 실제 값은 모두 이 비트 아래에 있어야 한다.
+#define NEOS_TYPE_READONLY 0x80
+// 리터럴 타입으로 만든 뷰와 null 뷰가 가리키는 읽기 전용 셀. g_typeIdentity[t] == (t | NEOS_TYPE_READONLY).
+// 정적 배열이라 주소가 프로그램 수명 내내 유효하고, 1바이트 원소라 정렬 조건이 없다.
+extern const VAR_TYPE g_typeIdentity[NEOS_TYPE_READONLY];
+
 // 함수의 고정 슬롯이나 컨테이너 원소를 빌려 쓰는 뷰. 값 자체에는 태그를 쓰지 않는다.
 // 경계 전용 뷰: 태그 있는 경계 값(BoundaryValue)이나 선언 타입이 고정된 슬롯을 같은 API로 다룬다.
 // 인터프리터 핫 패스는 이 뷰를 만들지 않고 VarInfo*와 명령에 실린 정책만 쓴다.
+// 포인터 둘로 16바이트다. 타입은 항상 type_가 가리키는 바이트에서 읽고, 그 바이트의 읽기 전용 비트가
+// 경계 값(쓰기 가능)과 고정 슬롯(선언 타입, 쓰지 않음)을 가른다. 분기 대신 마스크 하나로 끝난다.
 class ValueRef
 {
     VarInfo* value_ = nullptr;
-    VAR_TYPE* boundary_ = nullptr; // 경계 값의 태그. 없으면 fixed_가 선언 타입이다.
-    VAR_TYPE fixed_ = VAR_NONE;
+    // 타입 바이트. 경계 값이면 그 값의 _type, 고정 슬롯이면 워커가 든 읽기 전용 표의 원소, 리터럴·null 뷰면
+    // g_typeIdentity의 셀이다. null 포인터가 되는 일은 없으므로 GetType은 value_를 보지 않고도 안전하다.
+    VAR_TYPE* type_ = const_cast<VAR_TYPE*>(&g_typeIdentity[VAR_NONE]);
+    static VAR_TYPE* ReadOnlyCell(VAR_TYPE type)
+    {
+        assert(static_cast<unsigned>(type) < NEOS_TYPE_READONLY);
+        return const_cast<VAR_TYPE*>(&g_typeIdentity[static_cast<unsigned>(type)]);
+    }
+    // 고정 뷰를 같은 선언 타입 바이트로 옮길 때만 쓴다.
+    ValueRef(VarInfo* value, VAR_TYPE* type, int) : value_(value), type_(type) {}
 public:
     ValueRef() {}
     ValueRef(std::nullptr_t) {}
-    ValueRef(BoundaryValue* value) : value_(value), boundary_(value ? &value->_type : nullptr) {}
+    ValueRef(BoundaryValue* value) : value_(value), type_(value ? &value->_type : ReadOnlyCell(VAR_NONE)) {}
     ValueRef(const BoundaryValue* value) : ValueRef(const_cast<BoundaryValue*>(value)) {}
-    ValueRef(VarInfo* value, VAR_TYPE type) : value_(value), fixed_(type) {}
+    // 리터럴 선언 타입. 읽기 전용 셀을 가리키므로 SetType은 계약 검사만 한다.
+    ValueRef(VarInfo* value, VAR_TYPE type) : value_(value), type_(ReadOnlyCell(type)) {}
+    // 워커의 읽기 전용 선언 타입 표(m_pSlotTypes, m_pGlobalTypes)의 원소를 가리키는 고정 슬롯 뷰.
+    ValueRef(VarInfo* value, const VAR_TYPE* declared) : value_(value), type_(const_cast<VAR_TYPE*>(declared))
+    { assert(*declared & NEOS_TYPE_READONLY); }
     VarInfo* operator->() const { return value_; }
     VarInfo* Data() const { return value_; }
-    bool IsBoundary() const { return boundary_ != nullptr; }
+    NEOS_FORCEINLINE bool IsBoundary() const { return (*type_ & NEOS_TYPE_READONLY) == 0; }
     explicit operator bool() const { return value_ != nullptr; }
     bool operator!() const { return value_ == nullptr; }
     bool operator==(ValueRef other) const { return value_ == other.value_; }
@@ -470,17 +492,17 @@ public:
     bool operator>(ValueRef other) const { return value_ > other.value_; }
     bool operator<=(ValueRef other) const { return value_ <= other.value_; }
     bool operator>=(ValueRef other) const { return value_ >= other.value_; }
-    // 경계 값 배열은 16바이트 보폭, 고정 슬롯 배열은 같은 선언 타입의 8바이트 보폭으로 움직인다.
+    // 경계 값 배열은 16바이트 보폭으로 태그와 함께 움직이고, 고정 슬롯 배열은 같은 선언 타입의 8바이트 보폭이다.
     ValueRef operator+(std::ptrdiff_t n) const
     {
         if (!value_) { assert(n == 0); return *this; }
-        if (boundary_) return ValueRef(static_cast<BoundaryValue*>(value_) + n);
-        return ValueRef(value_ + n, fixed_);
+        if (IsBoundary()) return ValueRef(static_cast<BoundaryValue*>(value_) + n);
+        return ValueRef(value_ + n, type_, 0);
     }
     ValueRef operator-(std::ptrdiff_t n) const { return *this + -n; }
     std::ptrdiff_t operator-(ValueRef other) const
     {
-        if (boundary_) return static_cast<BoundaryValue*>(value_) - static_cast<BoundaryValue*>(other.value_);
+        if (IsBoundary()) return static_cast<BoundaryValue*>(value_) - static_cast<BoundaryValue*>(other.value_);
         return value_ - other.value_;
     }
     ValueRef& operator+=(std::ptrdiff_t n) { *this = *this + n; return *this; }
@@ -489,9 +511,9 @@ public:
     ValueRef operator++(int) { ValueRef old = *this; ++*this; return old; }
     ValueRef& operator--() { return *this -= 1; }
     ValueRef operator&() const { return *this; }
-    // 이 두 값은 값 태그가 아니라 불변 배치표의 저장 표현 식별자다.
-    static VAR_TYPE CallableStorageType() { return static_cast<VAR_TYPE>(254); }
-    static VAR_TYPE ObjectIdStorageType() { return static_cast<VAR_TYPE>(253); }
+    // 이 두 값은 값 태그가 아니라 불변 배치표의 저장 표현 식별자다. 읽기 전용 비트 아래의 맨 위 번호를 쓴다.
+    static VAR_TYPE CallableStorageType() { return static_cast<VAR_TYPE>(NEOS_TYPE_READONLY - 1); }
+    static VAR_TYPE ObjectIdStorageType() { return static_cast<VAR_TYPE>(NEOS_TYPE_READONLY - 2); }
     int FunctionIndex() const
     { assert(GetType() == VAR_FUN); return DeclaredType() == CallableStorageType() ? static_cast<int>(NS_UINT(value_->_int) >> 1) : value_->_fun_index; }
     void SetFunctionIndex(int index) const
@@ -500,7 +522,8 @@ public:
         if (DeclaredType() == CallableStorageType()) value_->_int = static_cast<NS_INT>((NS_UINT(index) << 1) | 1);
         else { value_->_int = 0; value_->_fun_index = index; }
     }
-    NEOS_FORCEINLINE VAR_TYPE DeclaredType() const { return boundary_ ? *boundary_ : fixed_; }
+    // 읽기 전용 비트를 벗긴 선언 타입. 분기 없이 로드 하나와 마스크 하나다.
+    NEOS_FORCEINLINE VAR_TYPE DeclaredType() const { return static_cast<VAR_TYPE>(*type_ & ~NEOS_TYPE_READONLY); }
     // 인터프리터의 경계 연산이 명령마다 부르므로 반드시 인라인한다. 숫자·없음·함수·반복자는 저장 표현이
     // 곧 타입이라 먼저 돌려주고, 참조 저장만 고정 슬롯의 0 payload를 null로 푼다.
     NEOS_FORCEINLINE VAR_TYPE GetType() const
@@ -508,7 +531,7 @@ public:
         const VAR_TYPE type = DeclaredType();
         if (type < VAR_FUN_NATIVE) return type;
         if (type >= ObjectIdStorageType()) return StorageIdentityType(type);
-        if (!boundary_ && (type >= VAR_STRING || type == VAR_FUN_NATIVE) && value_->_int == 0) return VAR_NONE;
+        if (!IsBoundary() && (type >= VAR_STRING || type == VAR_FUN_NATIVE) && value_->_int == 0) return VAR_NONE;
         return type;
     }
     // 함수 슬롯은 같은 정적 함수 타입 안에서 이름 함수 ID와 캡처 포인터를 표현하고, 객체 ID 슬롯은 0을 null로 본다.
@@ -518,17 +541,17 @@ public:
             return value_->_int == 0 ? VAR_NONE : (NS_UINT(value_->_int) & 1) ? VAR_FUN : VAR_CLOSURE;
         return value_->_int == 0 ? VAR_NONE : VAR_INT;
     }
+    // 경계 값의 태그만 쓴다. 읽기 전용 바이트(고정 슬롯의 선언 타입, 리터럴 셀)에 쓰려는 것은 VM 내부의 계약
+    // 위반이라 Debug에서 assert로 잡고 Release에서는 쓰지 않는다. 고정 슬롯은 선언 타입과 같은 타입, null,
+    // 그리고 저장 식별자가 허용하는 실제 타입만 받을 수 있다.
     NEOS_FORCEINLINE void SetType(VAR_TYPE type) const
     {
-        if (boundary_) *boundary_ = type;
-        else
-        {
-            assert(type == DeclaredType() || type == VAR_NONE ||
-                (DeclaredType() == ObjectIdStorageType() && type == VAR_INT) ||
-                (DeclaredType() == CallableStorageType() && (type == VAR_FUN || type == VAR_CLOSURE)));
-        }
+        if (IsBoundary()) { *type_ = type; return; }
+        assert(type == DeclaredType() || type == VAR_NONE ||
+            (DeclaredType() == ObjectIdStorageType() && type == VAR_INT) ||
+            (DeclaredType() == CallableStorageType() && (type == VAR_FUN || type == VAR_CLOSURE)));
     }
-    NEOS_FORCEINLINE void ClearType() const { value_->_int = 0; if (boundary_) *boundary_ = VAR_NONE; }
+    NEOS_FORCEINLINE void ClearType() const { value_->_int = 0; if (IsBoundary()) *type_ = VAR_NONE; }
     void SetVecType(int count) const { SetType(count == 2 ? VAR_VEC : count == 3 ? VAR_VEC3 : VAR_VEC4); }
     void SetInlineVec(float x, float y) const { SetVecType(2); value_->_vecXY[0] = x; value_->_vecXY[1] = y; }
     NEOS_FORCEINLINE bool IsAllocType() const { return GetType() >= VAR_STRING; }
@@ -552,8 +575,10 @@ public:
     bool SetListIndexer(VMHash<int>* indexer) const;
     void CopyPayload(ValueRef source) const
     {
-        SetType(source.GetType());
-        if (source.GetType() == VAR_FUN) SetFunctionIndex(source.FunctionIndex());
+        // 원본 타입은 한 번만 읽는다. SetType의 태그 쓰기 뒤에 다시 읽으면 로드가 되풀이된다.
+        const VAR_TYPE type = source.GetType();
+        SetType(type);
+        if (type == VAR_FUN) SetFunctionIndex(source.FunctionIndex());
         else *value_ = *source.value_;
     }
     class Element;
@@ -589,6 +614,9 @@ inline bool ValueRef::SetListIndexer(VMHash<int>* indexer) const { BoundaryValue
 
 // 경계 값의 태그는 일반 VM 슬롯의 크기에 포함되지 않는다.
 static_assert(sizeof(BoundaryValue) == 16, "BoundaryValue must remain 16 bytes");
+// 뷰는 값 포인터와 타입 바이트 포인터뿐이다. 멤버를 더하면 인라인된 경계 연산마다 복사와 스필이 늘어난다.
+static_assert(sizeof(ValueRef) == 2 * sizeof(void*), "ValueRef must stay two pointers");
+static_assert(VAR_CLOSURE < NEOS_TYPE_READONLY, "VAR_TYPE values must leave the read-only bit clear");
 
 enum NeoDebugStopReason
 {

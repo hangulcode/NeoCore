@@ -29,9 +29,14 @@ former inline representation avoided. Smaller slots alone do not prove a speedup
 
 The program owns immutable frame, global and outgoing-call layouts. Captures
 retain a shared immutable layout, so their ownership information survives the
-creating frame. `ValueRef` is a borrowed boundary view over a payload and one
-declared type (`VarInfo*` plus `VAR_TYPE`, or a tagged `BoundaryValue`); it is
-not stored in each VM slot and the interpreter's hot paths do not construct it.
+creating frame. `ValueRef` is a borrowed boundary view made of two pointers: the
+payload and the byte that holds its type. For a `BoundaryValue` that byte is the
+value's own tag and may be written; for a fixed slot it is an element of a
+read-only copy of the frame or global type table whose top bit
+(`NEOS_TYPE_READONLY`) marks it as the declared type, so `SetType` asserts the
+storage contract and never writes there. Views built from a literal type or from
+null point at a static identity cell with the same bit. The view is not stored in
+each VM slot and the interpreter's hot paths do not construct it.
 Typed instructions take `VarInfo*` operands (`GetVarRaw*`); only generic bridge
 operations, collections and natives build the typed view (`GetVarPtr*`). For a
 fixed slot, `SetType` checks the contract in Debug and never writes a type tag.

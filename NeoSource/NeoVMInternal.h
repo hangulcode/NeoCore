@@ -872,9 +872,11 @@ int& GetModuleRefCount(ValueRef p);
 
 NEOS_FORCEINLINE void Move_DestNoRelease(ValueRef v1, ValueRef v2)
 {
-	v1.SetType(v2.GetType());
+	// 타입은 한 번만 읽는다. SetType이 태그 바이트에 쓰므로 뒤에서 다시 읽으면 컴파일러가 로드를 되풀이한다.
+	const VAR_TYPE type = v2.GetType();
+	v1.SetType(type);
 	// case 순서 = VAR_TYPE 열거 순서. Var_ReleaseInternal 과 같은 이유로 순서가 성능을 좌우한다.
-	switch (v2.GetType())
+	switch (type)
 	{
 	case VAR_INT: v1->_int = v2->_int; break;
 	case VAR_FLOAT: v1->_float = v2->_float; break;

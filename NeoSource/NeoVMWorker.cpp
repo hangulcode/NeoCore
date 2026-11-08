@@ -162,7 +162,7 @@ CNeoVMWorker::~CNeoVMWorker()
 		for (const SlotLayout& slot : _pProgram->globalStorage)
 			ReleaseByPolicy(m_pVarGlobal_Pointer + slot.slot, PolicyOf(slot.kind));
 		for (int i = -1; i < _pProgram->header._iStaticVarCount; ++i)
-			Var_Release(ValueRef(m_pVarGlobal_Pointer + i, m_pGlobalTypes[i]));
+			Var_Release(ValueRef(m_pVarGlobal_Pointer + i, m_pGlobalTypes + i));
 	}
 	m_sVarGlobal.clear();
 	m_pVarGlobal_Pointer = nullptr;
@@ -461,7 +461,8 @@ bool CNeoVMWorker::Init(const NeoLoadVMParam* vparam, CNeoVMProgram* pProgram, i
 	m_sVarGlobal.clear();
 	m_sVarGlobal.resize(iMaxVar);
 	m_pVarGlobal_Pointer = m_sVarGlobal.data() + pProgram->ConstantBase();
-	m_pGlobalTypes = pProgram->globalTypes.data() + pProgram->ConstantBase();
+	// 전역 뷰가 원소를 바로 가리키는 읽기 전용 사본이다. 값으로 쓸 때는 SlotType_G가 비트를 벗긴다.
+	m_pGlobalTypes = pProgram->globalTypesFlagged.data() + pProgram->ConstantBase();
 	// 전역은 모두 0(숫자 0, null 참조)에서 시작한다. 선언 초기화는 전역 초기화 함수가 한다.
 
 	for (int i = 0; i < staticCount; i++)
@@ -874,6 +875,18 @@ void CNeoVMWorker::ReleaseCallWindow(const CallStoragePlan& plan, VarInfo* windo
 static NEOS_FORCEINLINE ClosureInfo* CallableClosure(const VarInfo* slot)
 {
 	return slot->_int != 0 && (slot->_int & 1) == 0 ? slot->_closure : nullptr;
+}
+
+// 프레임의 소유 슬롯 구간 [_releaseFirst, _releaseCount)를 정책으로 해제한다. LeaveFrame이 구간이 있을 때만 부른다.
+NEOS_NOINLINE void CNeoVMWorker::ReleaseFrameOwned(const SFunctionTable& fun, int base)
+{
+	const u8* info = fun._slotInfo.data();
+	VarInfo* slots = &(*m_pVarStack_Base)[base];
+	for (int i = fun._releaseFirst; i < fun._releaseCount; ++i)
+	{
+		const StoragePolicy policy = SlotInfoPolicy(info[i]);
+		if (policy != StoragePolicy::Payload) ReleaseByPolicy(slots + i, policy);
+	}
 }
 
 void CNeoVMWorker::ReleaseByPolicy(VarInfo* slot, StoragePolicy policy)
@@ -2903,14 +2916,15 @@ void CNeoVMWorker::SyncActiveClosure(ValueRef keepOnStack)
 	SyncClosureAtFrame(m_pActiveClosure, _iSP_Vars, keepOnStack);
 }
 
-NEOS_NOINLINE void CNeoVMWorker::FinishClosureReturn(ValueRef keepOnStack)
+NEOS_NOINLINE void CNeoVMWorker::FinishClosureReturn(VarInfo* keepOnStack)
 {
 	// closure 반환만 여기로 온다. 반환값 슬롯은 caller가 Move할 때까지 남겨 두고,
 	// 나머지 캡처 슬롯은 보관함으로 되돌려 실행 보유 참조도 함께 반납한다.
 	ClosureInfo* closure = m_pActiveClosure;
 	if (closure == nullptr)
 		return;
-	SyncClosureAtFrame(closure, _iSP_Vars, keepOnStack);
+	// 뷰는 슬롯 주소 비교에만 쓰이므로 선언 타입이 필요 없다.
+	SyncClosureAtFrame(closure, _iSP_Vars, ValueRef(keepOnStack, VAR_NONE));
 	if (m_pCur && m_pCur->_activeClosure == closure)
 		m_pCur->_activeClosure = nullptr;
 	m_pActiveClosure = nullptr;
