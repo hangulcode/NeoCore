@@ -82,6 +82,11 @@ Headless.Bind("GameObject.Position.get",Position);
 Headless.Bind("GameObject.Position.set",SetPosition);
 Headless.Bind("GameObject.FindChildByRID",Find);
 Headless.Bind("GameObject.AddEvent.OnClick",Register);
+string name="";
+string Name(GameObject self){return name;}
+void SetName(GameObject self,string value){name=value;}
+Headless.Bind("GameObject.Name.get",Name);
+Headless.Bind("GameObject.Name.set",SetName);
 Headless.SetGlobal_this(node);
 '''
 
@@ -126,6 +131,16 @@ with tempfile.TemporaryDirectory(prefix="neocore-host-") as temporary:
     for debug in ([], ["--debug"]):
         result = run(*base, *debug, "--file", app)
         require(result.returncode == 0 and "HEADLESS_OK" in result.stdout, "run typed script host: " + result.stdout + result.stderr)
+    # 호스트 속성 setter에 넘긴 Vector3·string은 호출이 끝나면 해제되어야 한다. 끝난 뒤 남은 개수가 0이어야 한다.
+    leak = root / "setter_leak.nc"
+    leak.write_text('for(int i in 0,1000){Vector3 p=this.Position;p.x+=1.0;this.Position=p;this.Name="n"..tostring(i);}'
+                    'print("SETTERS_DONE "..this.Name);', encoding="utf-8-sig")
+    for debug in ([], ["--debug"]):
+        result = run(*base, *debug, "--stats", "--file", leak)
+        output = result.stdout + result.stderr
+        line = next((item for item in output.splitlines() if item.startswith("[ALLOC] process-global")), "")
+        require(result.returncode == 0 and "SETTERS_DONE n999" in output and " str=0 " in line and " vec=0 " in line,
+                "host property setters release Vector3 and string values: " + line + result.stderr)
     result = run(*base, "--warn-unused", "--check", app)
     require(result.returncode == 0 and "HEADLESS_OK" not in result.stdout, "unused check accepts wrapped host app without running it: " + result.stdout + result.stderr)
     require("unused function 'Log'" not in result.stderr and "unused function 'Register'" not in result.stderr,

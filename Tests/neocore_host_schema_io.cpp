@@ -24,6 +24,7 @@ NeoCore::HostSchemaDocument Fixture()
     schema.AddMethod(data,"GetInt",types.Int(),{types.String(),types.Int()});
     schema.AddMethod(resource,"LoadText",types.String(),{types.String()});
     schema.AddProperty(node,"Id",types.Int(),true,false); schema.AddProperty(node,"Position",types.Vector3());
+    schema.AddProperty(node,"Name",types.String());
     schema.AddMethod(node,"FindChildByRID",node,{types.String()});
     schema.AddMethod(node,"Missing",types.Void(),{});
     schema.AddEvent(node,"OnClick",types.FunctionOf(types.Void(),{types.Int()}));

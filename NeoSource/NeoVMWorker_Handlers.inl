@@ -134,8 +134,12 @@ NEOS_NOINLINE bool handle_FMOV2(const SVMOperation& OP) {
 }
 
 NEOS_FORCEINLINE int GetCallReturnValueIndex(const SVMOperation& OP) {
+    // NORESULT는 결과를 쓰지 않는 문장 호출이다(파서가 붙인다). 결과를 창 0번에 남기면 가져가는 명령이 없고,
+    // 다음 PREPARE_CALL이 그 슬롯을 해제 없이 비워 소유 결과(문자열·벡터·컬렉션)가 호출마다 하나씩 샌다.
+    // 함수값 호출과 같이 RETURN_DISCARD로 넘겨 피호출자의 프레임 정리가 결과를 해제하게 한다.
+    // -1(창 0번에 남김)은 네이티브·호스트가 결과 슬롯을 직접 읽는 호출만 쓴다.
     if (OP.argFlag & NEOS_OP_CALL_NORESULT)
-        return -1;
+        return RETURN_DISCARD;
     if (OP.argFlag & NEOS_ARG_N3_LOCAL)
         return _iSP_Vars + OP.n3;
     // 전역 목적지는 opcode와 같은 음수 오프셋을 저장한다. 기준점은 상수 0이다.

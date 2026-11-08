@@ -188,6 +188,18 @@ export int Wait() {
     sleep(0); return a[0].len();
 }
 export void Fill(int n) { saved = [tostring(n)]; }
+string MakeName(int i) { return "n" .. tostring(i); }
+Vector3 MakePosition(float x) { return Vector3(x, 1.0, 2.0); }
+list<int> MakeList(int i) { return [i, i + 1]; }
+export int DiscardedResults(int n) {
+    int live = 0;
+    for (int i in 0, n) {
+        MakeName(i); MakePosition(1.0); MakeList(i);
+        if (i == 7) live = Probe.Live();
+    }
+    if (Probe.Live() != live) return -1;
+    return n;
+}
 )nc";
 
 void Exercise(bool debug, int iterations) {
@@ -220,6 +232,8 @@ void Exercise(bool debug, int iterations) {
     Integer(instance->Call("Churn", {NeoCore::Scalar::Int(0)}), baseline.value.asInt(),
         "block-local ownership released on function return");
     Integer(instance->Call("BlockControl"), 4, "break and continue preserve live block locals");
+    Integer(instance->Call("DiscardedResults", {NeoCore::Scalar::Int(2000)}), 2000,
+        "statement calls release discarded string, vector and list results");
     for (bool choose : {false, true}) {
         const auto result = instance->Call("BlockReturn", {NeoCore::Scalar::Bool(choose)});
         Check(result.ok() && result.value.asString() == "31", "branch return preserves owned value");
