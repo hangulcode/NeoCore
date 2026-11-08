@@ -47,7 +47,10 @@ static int CompileFrameSlot(int value, int localCount)
 static short PermuteFrameSlot(const FrameLayout* layout, int frameSlot)
 {
 	if (layout != nullptr && frameSlot > 0 && frameSlot < static_cast<int>(layout->perm.size()))
+	{
+		assert(layout->perm[frameSlot] >= 0);
 		return layout->perm[frameSlot];
+	}
 	return CompileShort("frame slot", frameSlot);
 }
 
@@ -113,10 +116,16 @@ static bool ChangeRangeOperand(int staticCount, int localCount, int curFunStatkS
 
 // 연속 슬롯 묶음(for/foreach 숨은 지역, 집계 명령의 창)은 한 블록으로 움직인다.
 // 묶음 안에 소유 슬롯이 하나라도 있으면 묶음 전체가 소유 구간에 놓인다.
-static void CollectFrameGroups(SFunctions& funs, SFunctionInfo& fi, std::vector<int>& groupOf, std::vector<int>& groupSize)
+static void CollectFrameGroups(SFunctions& funs, SFunctionInfo& fi, std::vector<int>& groupOf, std::vector<int>& groupSize, std::vector<u8>& used)
 {
 	const int localCount = fi._localVarCount;
 	const int frameCount = static_cast<int>(groupOf.size());
+	auto Use = [&](int operand)
+	{
+		if (operand <= 0 || operand >= COMPILE_STATIC_VAR_BEGIN) return;
+		const int slot = CompileFrameSlot(operand, localCount);
+		if (slot > 0 && slot < frameCount) used[slot] = 1;
+	};
 	auto AddGroup = [&](int first, int count)
 	{
 		if (first <= 0 || count <= 1 || first + count > frameCount) return;
@@ -130,6 +139,13 @@ static void CollectFrameGroups(SFunctions& funs, SFunctionInfo& fi, std::vector<
 	while (arRead.GetBufferOffset() < arRead.GetBufferSize())
 	{
 		arRead.Read(&v, sizeof(v));
+		// 참조되지 않는 임시만 없앤다. 제어값이 임시 번호와 우연히 같으면 보수적으로 남긴다.
+		// 모든 명령의 세 필드를 확인하므로 새 명령을 추가해도 피연산자를 빠뜨려 지우지 않는다.
+		Use(v.n1); Use(v.n2); Use(v.n3);
+		const int closureId = v.op == NOP_FMOV1 ? v.n2 : v.op == NOP_FMOV2 ? v.n3 : -1;
+		const auto closure = funs._funIDs.find(closureId);
+		if (closure != funs._funIDs.end())
+			for (const SClosureCapture& capture : closure->second->_captures) Use(capture._sourceSlot);
 		if (v.op == NOP_JMP_FOR)
 		{
 			if (v.n2 > 0 && v.n2 < COMPILE_LOCALTMP_VAR_BEGIN) AddGroup(v.n2, 4);
@@ -145,6 +161,10 @@ static void CollectFrameGroups(SFunctions& funs, SFunctionInfo& fi, std::vector<
 			v.n2 > 0 && v.n2 < COMPILE_STATIC_VAR_BEGIN)
 			AddGroup(CompileFrameSlot(v.n2, localCount), aggregate->arity);
 	}
+	for (const auto& range : funs._rangeJumps)
+		if (range._ownerFunction == fi._funID) { Use(range._lower); Use(range._upper); }
+	for (const SClosureCapture& capture : fi._captures) Use(capture._localSlot);
+	for (const auto& name : fi._debugVarNames) Use(name.first);
 }
 
 static FrameLayout BuildFrameLayout(SFunctions& funs, SFunctionInfo& fi)
@@ -169,7 +189,8 @@ static FrameLayout BuildFrameLayout(SFunctions& funs, SFunctionInfo& fi)
 		if (policy[1 + i] == StoragePolicy::Boxed) policy[1 + i] = PolicyOf(fi._parameterStorage[i].kind);
 
 	std::vector<int> groupOf(frameCount, -1), groupSize;
-	CollectFrameGroups(funs, fi, groupOf, groupSize);
+	std::vector<u8> used(frameCount, 0);
+	CollectFrameGroups(funs, fi, groupOf, groupSize, used);
 
 	struct Block { int first; int count; bool owned; int order; };
 	std::vector<Block> blocks;
@@ -181,8 +202,10 @@ static FrameLayout BuildFrameLayout(SFunctions& funs, SFunctionInfo& fi)
 		if (slot + block.count > frameCount) block.count = frameCount - slot;
 		block.owned = false;
 		block.order = 16;
+		bool keep = false;
 		for (int i = 0; i < block.count; ++i)
 		{
+			keep = keep || !temporary[slot + i] || used[slot + i];
 			const StoragePolicy p = policy[slot + i];
 			if (p != StoragePolicy::Payload)
 			{
@@ -190,7 +213,7 @@ static FrameLayout BuildFrameLayout(SFunctions& funs, SFunctionInfo& fi)
 				block.order = (std::min)(block.order, static_cast<int>(p));
 			}
 		}
-		blocks.push_back(block);
+		if (keep) blocks.push_back(block);
 		slot += block.count;
 	}
 	// 소유 블록은 정책 순, 그 안에서는 원래 순서를 유지한다. 숫자 블록은 원래 순서 그대로 뒤에 둔다.
@@ -201,7 +224,7 @@ static FrameLayout BuildFrameLayout(SFunctions& funs, SFunctionInfo& fi)
 		return false;
 	});
 
-	layout.perm.assign(frameCount, 0);
+	layout.perm.assign(frameCount, -1);
 	layout.slotInfo.assign(frameCount, 0);
 	for (int slot = 0; slot <= argCount && slot < frameCount; ++slot)
 	{
@@ -220,6 +243,8 @@ static FrameLayout BuildFrameLayout(SFunctions& funs, SFunctionInfo& fi)
 		}
 		if (block.owned) layout.ownedCount += block.count;
 	}
+	layout.localAddCount = next;
+	layout.slotInfo.resize(next);
 	return layout;
 }
 struct STempDebug
@@ -251,7 +276,7 @@ void WriteFun(CArchiveRdWC& arText, CNArchive& ar, SFunctions& funs, SFunctionIn
 	SFunctionTableForWriter fun;
 	fun._codePtr = ar.GetBufferOffset() - sizeof(SNeoVMHeader);
 	fun._argsCount = CompileShort("function arguments", (int)fi._args.size());
-	fun._localTempMax = CompileShort("temporary variables", fi._localTempMax);
+	fun._localTempMax = CompileShort("temporary variables", layout.localAddCount - 1 - fun._argsCount - fi._localVarCount);
 	fun._localVarCount = fi._localVarCount;
 	fun._funType = fi._funType;
 	fun._name = fi._name;
@@ -267,8 +292,10 @@ void WriteFun(CArchiveRdWC& arText, CNArchive& ar, SFunctions& funs, SFunctionIn
 	for (const auto& entry : fi._storage)
 	{
 		if (entry.first <= 0 || entry.first >= COMPILE_STATIC_VAR_BEGIN) continue;
+		const int frameSlot = CompileFrameSlot(entry.first, fi._localVarCount);
+		if (frameSlot < static_cast<int>(layout.perm.size()) && layout.perm[frameSlot] < 0) continue;
 		SlotLayout slot;
-		slot.slot = PermuteFrameSlot(&layout, CompileFrameSlot(entry.first, fi._localVarCount));
+		slot.slot = PermuteFrameSlot(&layout, frameSlot);
 		slot.typeId = entry.second.typeId;
 		slot.kind = entry.second.kind;
 		fun._storage.push_back(slot);
@@ -276,6 +303,9 @@ void WriteFun(CArchiveRdWC& arText, CNArchive& ar, SFunctions& funs, SFunctionIn
 	std::sort(fun._storage.begin(), fun._storage.end(), [](const SlotLayout& a, const SlotLayout& b) { return a.slot < b.slot; });
 	fun._slotInfo = layout.slotInfo;
 	fun._ownedCount = layout.ownedCount;
+	bool payloadFrame = fi._captures.empty();
+	for (std::size_t slot = 1; slot < layout.slotInfo.size(); ++slot)
+		if (SlotInfoPolicy(layout.slotInfo[slot]) != StoragePolicy::Payload) payloadFrame = false;
 
 	funPos[fi._funID] = fun;
 
@@ -463,6 +493,14 @@ void WriteFun(CArchiveRdWC& arText, CNArchive& ar, SFunctions& funs, SFunctionIn
 			argFlag |= ChangeIndex(staticCount, localCount, curFunStatkSize, v, 1, &layout);
 			if((argFlag & NEOS_ARG_N1_LOCAL) && v.n1 == 0)
 				argFlag |= NEOS_OP_CALL_NORESULT;
+			// void의 사용하지 않는 반환 슬롯은 Boxed다. 인자·지역은 모두 payload이면 빠른 반환이 가능하다.
+			{
+				const StoragePolicy resultPolicy = PolicyOf(fi._returnStorage.kind);
+				const bool payloadResult = resultPolicy == StoragePolicy::Payload ||
+					(resultPolicy == StoragePolicy::Boxed && (argFlag & NEOS_OP_CALL_NORESULT));
+				v.n3 = static_cast<short>(static_cast<u8>(resultPolicy) |
+					(payloadFrame && payloadResult ? RETURN_PAYLOAD_FRAME : 0));
+			}
 			break;
 		//case NOP_FUNEND:
 		//	//ar << optype;
@@ -614,6 +652,7 @@ void WriteFun(CArchiveRdWC& arText, CNArchive& ar, SFunctions& funs, SFunctionIn
 	int iNewCodeEnd = ar.GetBufferOffset();
 	fi._iCode_Begin = iNewCodeBegin;
 	fi._iCode_Size = iNewCodeEnd - iNewCodeBegin;
+	fi._localTempMax = funPos[fi._funID]._localTempMax;
 }
 
 static std::string ToPtringString(const std::string & str)

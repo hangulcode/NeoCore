@@ -59,6 +59,9 @@ int main()
         Expect("void F(){return;print(1);}export int Probe(){F();return 7;}", 7, "unreachable statement after void return", debug);
         Expect("int G(){return 1;print(1);}export int Probe(){return G()+1;}", 2, "unreachable statement after value return", debug);
         Expect("int H(int x){if(x>0){return 1;print(1);}else{return 2;print(2);}}export int Probe(){return H(1)*10+H(-1);}", 12, "unreachable statements in both branches", debug);
+        Expect("int next=0;string Next(){next+=1;return tostring(next);}export int Probe(){"
+            "string text=(Next() .. Next()) .. (Next() .. Next()) .. Next();if(text!=\"12345\")return -1;return next;}",
+            5, "iterative concatenation keeps grouping and call order", debug);
         // 루프 안에서 쓰인 구조체 필드 키 상수는 숨은 지역 슬롯으로 옮겨진다. 루프 밖의 같은 필드 읽기도 필드 타입을 유지해야 한다.
         Expect("struct Inner{list<int> state;list<int> order;};struct Outer{int a;int b;Inner bld;};"
             "int Apply(Outer p){int sum=0;list<int> s=p.bld.state;for(int i in 0,p.bld.order.len())sum+=p.bld.order[i];return sum*100+s[0];}"
@@ -100,6 +103,17 @@ int main()
         Reject("import system;export int Probe(){list<float> values=[1.0];set<float> s=system.set(values);return s.len();}", "system.set with float list rejected");
         Reject("struct S{int id;};import system;export int Probe(){set<S> s=set<S>();return s.len();}", "struct set elements rejected");
         Expect("export int Probe(){list<int> a=[3,1,2];a.sort(fn(int x,int y)->bool{return x<y;});return a[0]*100+a[1]*10+a[2];}", 123, "typed sort comparator", debug);
+        // 비교자 안의 정렬이 끝나도 바깥 비교자와 호출자의 실행 위치를 각각 복원해야 한다.
+        Expect("bool Less(int a,int b){return a<b;}bool Outer(int a,int b){list<int> inner=[2,1];inner.sort(Less);return a<b;}"
+            "export int Probe(){list<int> a=[3,1,2];a.sort(Outer);return a[0]*100+a[1]*10+a[2];}",
+            123, "nested named sort comparators restore each parent", debug);
+        Expect("export int Probe(){int direction=1;list<int> a=[3,1,2];a.sort(fn(int x,int y)->bool{"
+            "list<int> b=[3,1,2];b.sort(fn(int p,int q)->bool{return p*direction<q*direction;});return x*direction<y*direction;});"
+            "return a[0]*100+a[1]*10+a[2]+direction*1000;}",
+            1123, "nested captured sort comparators preserve captures and caller", debug);
+        FailsAtRuntime("bool Fail(int a,int b){int zero=0;return a/zero<b;}bool Outer(int a,int b){list<int> inner=[2,1];inner.sort(Fail);return a<b;}"
+            "export int Probe(){list<int> a=[3,1,2];a.sort(Outer);return 123;}",
+            "division by zero", "nested sort keeps the failed comparator error trap", debug);
         Expect("import coroutine;int total=0;void Task(int x){total+=x;yield;total+=2;yield;total+=3;}export int Probe(){coroutine<fn(int)->void> c=coroutine.create(Task);coroutine.resume(c,4);int first=total;coroutine.resume(c,4);coroutine.resume(c,4);return first*10+total;}", 49, "typed coroutine suspension", debug);
         Expect("import system;export int Probe(){TimeSpan a=system.time_span_ms(5);TimeSpan b=a.add(system.time_span_ms(7));return b.total_milliseconds();}", 12, "opaque builtin methods", debug);
         Expect("const int Idle=0;const int Moving=Idle+1;int Pick(int state){switch(state){case Idle:return 1;case Moving,2:return 2;case -1:return 3;default:return 9;}}export int Probe(){return Pick(0)*1000+Pick(2)*100+Pick(-1)*10+Pick(7);}", 1239, "int switch with const labels and default", debug);

@@ -931,8 +931,16 @@ bool CNeoVMProgram::VerifyCode(const std::vector<int>& owners, std::string* err)
         case NOP_PTRCALL2:
             slots = noResult ? 1 : 5; writes = noResult ? 0 : 4; argumentCount = op.n2; break;
         case NOP_RETURN:
+        {
             if (op.n2 != owners[i]) return reject("Invalid return frame layout");
+            bool payloadFrame = fun._captures.empty() && (fun.SlotPolicy(0) == StoragePolicy::Payload ||
+                (fun.SlotPolicy(0) == StoragePolicy::Boxed && noResult));
+            for (std::size_t slot = 1; slot < fun._slotInfo.size(); ++slot)
+                if (SlotInfoPolicy(fun._slotInfo[slot]) != StoragePolicy::Payload) payloadFrame = false;
+            const unsigned expected = static_cast<unsigned>(fun.SlotPolicy(0)) | (payloadFrame ? RETURN_PAYLOAD_FRAME : 0);
+            if (static_cast<unsigned>(op.n3) != expected) return reject("Invalid return storage policy");
             slots = noResult ? 0 : 1; terminal = true; break;
+        }
         case NOP_TABLE_ALLOC: slots = writes = 1; break;
         case NOP_CLT_READ: slots = 7; writes = 4; break;
         case NOP_CLT_MOV: slots = 7; writes = 1; break;

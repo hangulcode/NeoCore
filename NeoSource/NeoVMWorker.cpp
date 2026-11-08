@@ -896,15 +896,15 @@ void CNeoVMWorker::ReleaseByPolicy(VarInfo* slot, StoragePolicy policy)
 	{
 	case StoragePolicy::Payload:
 	case StoragePolicy::Boxed: return;
-	case StoragePolicy::String: ReleaseKnownStorage<VAR_STRING>(vm, ValueRef(slot, VAR_STRING)); return;
-	case StoragePolicy::Vec: ReleaseKnownStorage<VAR_VEC3>(vm, ValueRef(slot, VAR_VEC3)); return;
-	case StoragePolicy::Native: ReleaseKnownStorage<VAR_FP_NATIVE>(vm, ValueRef(slot, VAR_FP_NATIVE)); return;
-	case StoragePolicy::Array: ReleaseKnownStorage<VAR_ARRAY>(vm, ValueRef(slot, VAR_ARRAY)); return;
-	case StoragePolicy::Map: ReleaseKnownStorage<VAR_MAP>(vm, ValueRef(slot, VAR_MAP)); return;
-	case StoragePolicy::List: ReleaseKnownStorage<VAR_LIST>(vm, ValueRef(slot, VAR_LIST)); return;
-	case StoragePolicy::Set: ReleaseKnownStorage<VAR_SET>(vm, ValueRef(slot, VAR_SET)); return;
-	case StoragePolicy::Coroutine: ReleaseKnownStorage<VAR_COROUTINE>(vm, ValueRef(slot, VAR_COROUTINE)); return;
-	case StoragePolicy::Async: ReleaseKnownStorage<VAR_ASYNC>(vm, ValueRef(slot, VAR_ASYNC)); return;
+	case StoragePolicy::String: ReleaseKnownStorage<VAR_STRING>(vm, slot); return;
+	case StoragePolicy::Vec: ReleaseKnownStorage<VAR_VEC3>(vm, slot); return;
+	case StoragePolicy::Native: ReleaseKnownStorage<VAR_FP_NATIVE>(vm, slot); return;
+	case StoragePolicy::Array: ReleaseKnownStorage<VAR_ARRAY>(vm, slot); return;
+	case StoragePolicy::Map: ReleaseKnownStorage<VAR_MAP>(vm, slot); return;
+	case StoragePolicy::List: ReleaseKnownStorage<VAR_LIST>(vm, slot); return;
+	case StoragePolicy::Set: ReleaseKnownStorage<VAR_SET>(vm, slot); return;
+	case StoragePolicy::Coroutine: ReleaseKnownStorage<VAR_COROUTINE>(vm, slot); return;
+	case StoragePolicy::Async: ReleaseKnownStorage<VAR_ASYNC>(vm, slot); return;
 	case StoragePolicy::Module: Var_Release(ValueRef(slot, VAR_MODULE)); return;
 	case StoragePolicy::Callable:
 		if (CallableClosure(slot) != nullptr) Var_Release(ValueRef(slot, VAR_CLOSURE));
@@ -921,15 +921,15 @@ void CNeoVMWorker::CopyByPolicy(VarInfo* target, const VarInfo* source, StorageP
 	{
 	case StoragePolicy::Payload:
 	case StoragePolicy::Boxed: *target = *source; return;
-	case StoragePolicy::String: CopyKnownStorage<VAR_STRING>(vm, ValueRef(target, VAR_STRING), ValueRef(from, VAR_STRING)); return;
-	case StoragePolicy::Vec: CopyKnownStorage<VAR_VEC3>(vm, ValueRef(target, VAR_VEC3), ValueRef(from, VAR_VEC3)); return;
-	case StoragePolicy::Native: CopyKnownStorage<VAR_FP_NATIVE>(vm, ValueRef(target, VAR_FP_NATIVE), ValueRef(from, VAR_FP_NATIVE)); return;
-	case StoragePolicy::Array: CopyKnownStorage<VAR_ARRAY>(vm, ValueRef(target, VAR_ARRAY), ValueRef(from, VAR_ARRAY)); return;
-	case StoragePolicy::Map: CopyKnownStorage<VAR_MAP>(vm, ValueRef(target, VAR_MAP), ValueRef(from, VAR_MAP)); return;
-	case StoragePolicy::List: CopyKnownStorage<VAR_LIST>(vm, ValueRef(target, VAR_LIST), ValueRef(from, VAR_LIST)); return;
-	case StoragePolicy::Set: CopyKnownStorage<VAR_SET>(vm, ValueRef(target, VAR_SET), ValueRef(from, VAR_SET)); return;
-	case StoragePolicy::Coroutine: CopyKnownStorage<VAR_COROUTINE>(vm, ValueRef(target, VAR_COROUTINE), ValueRef(from, VAR_COROUTINE)); return;
-	case StoragePolicy::Async: CopyKnownStorage<VAR_ASYNC>(vm, ValueRef(target, VAR_ASYNC), ValueRef(from, VAR_ASYNC)); return;
+	case StoragePolicy::String: CopyKnownStorage<VAR_STRING>(vm, target, source); return;
+	case StoragePolicy::Vec: CopyKnownStorage<VAR_VEC3>(vm, target, source); return;
+	case StoragePolicy::Native: CopyKnownStorage<VAR_FP_NATIVE>(vm, target, source); return;
+	case StoragePolicy::Array: CopyKnownStorage<VAR_ARRAY>(vm, target, source); return;
+	case StoragePolicy::Map: CopyKnownStorage<VAR_MAP>(vm, target, source); return;
+	case StoragePolicy::List: CopyKnownStorage<VAR_LIST>(vm, target, source); return;
+	case StoragePolicy::Set: CopyKnownStorage<VAR_SET>(vm, target, source); return;
+	case StoragePolicy::Coroutine: CopyKnownStorage<VAR_COROUTINE>(vm, target, source); return;
+	case StoragePolicy::Async: CopyKnownStorage<VAR_ASYNC>(vm, target, source); return;
 	case StoragePolicy::Module: Move(ValueRef(target, VAR_MODULE), ValueRef(from, VAR_MODULE)); return;
 	case StoragePolicy::Callable:
 	{
@@ -944,48 +944,54 @@ void CNeoVMWorker::CopyByPolicy(VarInfo* target, const VarInfo* source, StorageP
 	}
 }
 
-template <typename Container>
-static NEOS_FORCEINLINE void ReleaseStorageContainer(CNeoVM* vm, Container* pointer, ValueRef value)
+// 태그 있는 경계 값은 GC 큐에 넣을 때만 만든다. 일반 참조 증감은 고정 타입 포인터로 끝낸다.
+template <VAR_TYPE Type, typename Container>
+static NEOS_FORCEINLINE void ReleaseStorageContainer(CNeoVM* vm, Container* pointer, const VarInfo* value)
 {
-    if (--pointer->_refCount <= 0) vm->QueueContainerForDestroy(*value);
-    else if (pointer->_cycleState._mayContainContainerChild) vm->QueueContainerForCycleCheck(*value);
+    if (pointer == nullptr) return;
+    if (--pointer->_refCount <= 0) vm->QueueContainerForDestroy(BoundaryFromSlot(value, Type));
+    else if (pointer->_cycleState._mayContainContainerChild) vm->QueueContainerForCycleCheck(BoundaryFromSlot(value, Type));
 }
 
 template <VAR_TYPE Type>
-NEOS_FORCEINLINE void CNeoVMWorker::ReleaseKnownStorage(CNeoVM* vm, ValueRef value)
+NEOS_FORCEINLINE void CNeoVMWorker::ReleaseKnownStorage(CNeoVM* vm, VarInfo* value)
 {
-    // null 여부는 값의 상태다. 해제 함수 선택은 컴파일러가 정한 타입으로 고정된다.
-    assert(value.GetType() == VAR_NONE || value.GetType() == Type);
-    if (value.GetType() == VAR_NONE) return;
-    if (Type == VAR_STRING) { if (--value->_str->_refCount <= 0) vm->FreeString(value); }
-    else if (Type == VAR_VEC3 || Type == VAR_VEC4) { if (--value->_vec->_refCount <= 0) vm->FreeVec(value->_vec); }
-    else if (Type == VAR_FP_NATIVE) { if (--value->_fpNative->_refCount <= 0) vm->FreeFunctionProperty(value->_fpNative); }
-    else if (Type == VAR_ARRAY) { if (--value->_array->_refCount <= 0) vm->FreeArray(value->_array); }
-    else if (Type == VAR_MAP) ReleaseStorageContainer(vm, value->_tbl, value);
-    else if (Type == VAR_LIST) ReleaseStorageContainer(vm, value->_lst, value);
-    else if (Type == VAR_SET) ReleaseStorageContainer(vm, value->_set, value);
-    else if (Type == VAR_COROUTINE) ReleaseStorageContainer(vm, value->_cor, value);
-    else if (Type == VAR_ASYNC) ReleaseStorageContainer(vm, value->_async, value);
-    value.ClearType();
-}
-
-template <VAR_TYPE Type>
-NEOS_FORCEINLINE void CNeoVMWorker::CopyKnownStorage(CNeoVM* vm, ValueRef target, ValueRef source)
-{
-    assert(source.GetType() == VAR_NONE || source.GetType() == Type);
-    // 먼저 새 참조를 보관하므로 자기 대입과 같은 객체를 가리키는 별칭도 안전하다.
-    const BoundaryValue copy = *source;
-    if (copy.GetType() != VAR_NONE)
+    // Type은 템플릿 상수다. Release 빌드에서는 해당 타입의 해제 코드만 남는다.
+    switch (Type)
     {
-        if (Type == VAR_STRING) ++copy._str->_refCount;
-        else if (Type == VAR_VEC3 || Type == VAR_VEC4) ++copy._vec->_refCount;
-        else if (Type == VAR_FP_NATIVE) ++copy._fpNative->_refCount;
-        else if (Type == VAR_ARRAY) ++copy._array->_refCount;
-        else if (Type == VAR_MAP) ++copy._tbl->_refCount;
-        else if (Type == VAR_LIST) ++copy._lst->_refCount;
-        else if (Type == VAR_SET) ++copy._set->_refCount;
-        else if (Type == VAR_COROUTINE) ++copy._cor->_refCount;
-        else if (Type == VAR_ASYNC) ++copy._async->_refCount;
+    case VAR_STRING: if (value->_str && --value->_str->_refCount <= 0) vm->FreeString(ValueRef(value, Type)); break;
+    case VAR_VEC3:
+    case VAR_VEC4: if (value->_vec && --value->_vec->_refCount <= 0) vm->FreeVec(value->_vec); break;
+    case VAR_FP_NATIVE: if (value->_fpNative && --value->_fpNative->_refCount <= 0) vm->FreeFunctionProperty(value->_fpNative); break;
+    case VAR_ARRAY: if (value->_array && --value->_array->_refCount <= 0) vm->FreeArray(value->_array); break;
+    case VAR_MAP: ReleaseStorageContainer<Type>(vm, value->_tbl, value); break;
+    case VAR_LIST: ReleaseStorageContainer<Type>(vm, value->_lst, value); break;
+    case VAR_SET: ReleaseStorageContainer<Type>(vm, value->_set, value); break;
+    case VAR_COROUTINE: ReleaseStorageContainer<Type>(vm, value->_cor, value); break;
+    case VAR_ASYNC: ReleaseStorageContainer<Type>(vm, value->_async, value); break;
+    default: assert(false); return;
+    }
+    value->_int = 0;
+}
+
+template <VAR_TYPE Type>
+NEOS_FORCEINLINE void CNeoVMWorker::CopyKnownStorage(CNeoVM* vm, VarInfo* target, const VarInfo* source)
+{
+    // 먼저 새 참조를 보관하므로 자기 대입과 같은 객체를 가리키는 별칭도 안전하다.
+    const VarInfo copy = *source;
+    switch (Type)
+    {
+    case VAR_STRING: if (copy._str) ++copy._str->_refCount; break;
+    case VAR_VEC3:
+    case VAR_VEC4: if (copy._vec) ++copy._vec->_refCount; break;
+    case VAR_FP_NATIVE: if (copy._fpNative) ++copy._fpNative->_refCount; break;
+    case VAR_ARRAY: if (copy._array) ++copy._array->_refCount; break;
+    case VAR_MAP: if (copy._tbl) ++copy._tbl->_refCount; break;
+    case VAR_LIST: if (copy._lst) ++copy._lst->_refCount; break;
+    case VAR_SET: if (copy._set) ++copy._set->_refCount; break;
+    case VAR_COROUTINE: if (copy._cor) ++copy._cor->_refCount; break;
+    case VAR_ASYNC: if (copy._async) ++copy._async->_refCount; break;
+    default: assert(false); return;
     }
     ReleaseKnownStorage<Type>(vm, target);
     *target = copy;
@@ -2724,14 +2730,15 @@ ValueRef CNeoVMWorker::testCall(int iFID, ValueRef args, int argc)
 	if (!EnsureStackRange(base, fun._stackSlotCount - 1))
 		return nullptr;
 	ActiveClosureIsolation activeClosureIsolation(m_pActiveClosure);
-	bool ok = BeginTestCall(fun, iFID, base, args, argc);
+	STestCallParent parent;
+	bool ok = BeginTestCall(fun, iFID, base, args, argc, parent);
 	if (ok)
 	{
 		++m_iDebugSuppressCount;
 		ok = Run();
 		--m_iDebugSuppressCount;
 	}
-	return FinishTestCall(fun, base, ok);
+	return FinishTestCall(fun, base, ok, parent);
 }
 
 ValueRef CNeoVMWorker::testCall(ValueRef function, ValueRef args, int argc)
@@ -2758,7 +2765,8 @@ ValueRef CNeoVMWorker::testCall(ValueRef function, ValueRef args, int argc)
 		!EnsureStackRange(base, fun._stackSlotCount - 1))
 		return nullptr;
 	ActiveClosureIsolation activeClosureIsolation(m_pActiveClosure);
-	bool ok = BeginTestCall(fun, closure->_funIndex, base, args, argc);
+	STestCallParent parent;
+	bool ok = BeginTestCall(fun, closure->_funIndex, base, args, argc, parent);
 	if (ok)
 	{
 		for (size_t i = 0; i < fun._captures.size(); ++i)
@@ -2769,18 +2777,18 @@ ValueRef CNeoVMWorker::testCall(ValueRef function, ValueRef args, int argc)
 		ok = Run();
 		--m_iDebugSuppressCount;
 	}
-	return FinishTestCall(fun, base, ok);
+	return FinishTestCall(fun, base, ok, parent);
 }
 
-// 부모 레지스터를 보관함에 두고 자식 프레임을 연다. 인자 타입이 맞지 않으면 오류로 끝낸다.
-bool CNeoVMWorker::BeginTestCall(const SFunctionTable& fun, int functionIndex, int base, ValueRef args, int argc)
+// 부모 레지스터는 호출별 보관함에 둔다. 자식의 중첩 testCall이 바깥 호출의 복원 상태를 덮지 않는다.
+bool CNeoVMWorker::BeginTestCall(const SFunctionTable& fun, int functionIndex, int base, ValueRef args, int argc, STestCallParent& parent)
 {
-	m_sTestCallParent._code = GetCodeptr();
-	m_sTestCallParent._iSP_Vars = _iSP_Vars;
-	m_sTestCallParent._iSP_VarsMax = _iSP_VarsMax;
-	m_sTestCallParent._iSP_Vars_Max2 = _iSP_Vars_Max2;
-	m_sTestCallParent._functionIndex = _functionIndex;
-	m_sTestCallParent._plan = _activePlan;
+	parent._code = GetCodeptr();
+	parent._iSP_Vars = _iSP_Vars;
+	parent._iSP_VarsMax = _iSP_VarsMax;
+	parent._iSP_Vars_Max2 = _iSP_Vars_Max2;
+	parent._functionIndex = _functionIndex;
+	parent._plan = _activePlan;
 
 	SetCodePtr(fun._codePtr);
 	_iSP_Vars = base;
@@ -2800,7 +2808,7 @@ bool CNeoVMWorker::BeginTestCall(const SFunctionTable& fun, int functionIndex, i
 	return true;
 }
 
-ValueRef CNeoVMWorker::FinishTestCall(const SFunctionTable& fun, int base, bool ok)
+ValueRef CNeoVMWorker::FinishTestCall(const SFunctionTable& fun, int base, bool ok, const STestCallParent& parent)
 {
 	// 예외로 남은 자식 클로저를 부모 프레임 복원 전에 동기화하고 실행 참조를 반납한다.
 	if (!ok) UnwindActiveClosures();
@@ -2813,14 +2821,14 @@ ValueRef CNeoVMWorker::FinishTestCall(const SFunctionTable& fun, int base, bool 
 		slot->_int = 0;
 	}
 	// 실패한 자식 호출의 오류 트랩은 호스트가 실패를 삼켜도 유지한다.
-	SetCodePtr(ok ? m_sTestCallParent._code : 0);
-	_iSP_Vars = m_sTestCallParent._iSP_Vars;
-	_iSP_VarsMax = m_sTestCallParent._iSP_VarsMax;
-	_iSP_Vars_Max2 = m_sTestCallParent._iSP_Vars_Max2;
+	SetCodePtr(ok ? parent._code : 0);
+	_iSP_Vars = parent._iSP_Vars;
+	_iSP_VarsMax = parent._iSP_VarsMax;
+	_iSP_Vars_Max2 = parent._iSP_Vars_Max2;
 	SetStackPointer(_iSP_Vars);
-	_functionIndex = m_sTestCallParent._functionIndex;
+	_functionIndex = parent._functionIndex;
 	RestoreFrameTables();
-	_activePlan = m_sTestCallParent._plan;
+	_activePlan = parent._plan;
 	_isInitialized = true;
 	return ok ? ValueRef(&m_sTestCallResult) : ValueRef(nullptr);
 }

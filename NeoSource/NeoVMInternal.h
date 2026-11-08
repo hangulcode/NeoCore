@@ -543,6 +543,8 @@ struct SCallStack
 	int	 _functionIndex = -1;
 };
 static const int RETURN_DISCARD = (std::numeric_limits<int>::min)();
+// RETURN의 n3: 하위 정책 비트와 소유 슬롯·캡처가 없는 프레임 표시. 컴파일러가 확정한다.
+static const u16 RETURN_PAYLOAD_FRAME = 1u << 4;
 
 static constexpr u32 FLAG_CLOSURE = 1u << 31;  // 호출자가 closure였음 → 보조스택에서 복원
 static constexpr u32 FLAG_ASYNCWAIT = 1u << 30; // async 콜백 프레임 → wait() 반환슬롯 복원

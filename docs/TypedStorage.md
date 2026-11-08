@@ -69,12 +69,37 @@ inside loops into hidden frame slots before inference runs; each function keeps
 its (slot, constant) pairs so that inference still resolves a struct field key
 that was hoisted, instead of binding the read result to an unrelated kind.
 
+Before assigning physical slots, the exporter drops temporary slots that no
+remaining instruction, aggregate window, range descriptor, capture, or debugger
+name references. Named locals are retained, and contiguous operand groups stay
+intact. This is compiler-time compaction; loading does not rewrite frame layouts.
+Operand fields that happen to contain a temporary's number conservatively keep
+that slot, so compaction never depends on an incomplete opcode whitelist.
+
+Image version 0165 records the result storage policy in each `RETURN` instruction's
+`n3`, plus bit 4 when arguments, locals and temporaries are payload-only, the
+result is payload-only or absent, and the function has no captures. An absent
+void result may retain a boxed slot descriptor without forcing ownership work.
+The loader validates these conditions against the saved layout. Such returns skip
+ownership cleanup and capture synchronization; coroutine completion, async-wait
+restoration, caller closure restoration, and debugger boundaries still use the
+normal return protocol. Other returns use the recorded policy without looking
+it up in the frame's slot-info vector.
+
 Copy and clear instructions carry their storage policy in the low four bits of
 `argFlag`: `MOV` (twelve policies, two immediate forms, and a boxed fallback that
 the exporter counts), `LOADK` and `VAR_CLEAR`. A `MOV` from a call result with the
 modifier bit transfers ownership instead of copying. The exporter resolves
 call-window slot kinds from the active `PREPARE_CALL` plan, so window writes are
 policy copies rather than generic moves.
+
+Known reference copies and releases operate directly on eight-byte payloads with
+the compiler-selected pointer type. They retain the source before releasing the
+destination, including self-assignment and shared-object aliases. Tagged boundary
+values are constructed only when a container must enter a destruction/cycle queue
+or an existing host-facing slow path needs one. Synchronous native-to-script calls
+keep parent registers in a C++ local snapshot per invocation, so nested comparators
+cannot overwrite an outer call's restoration state.
 
 The compiler assigns separate compatible temporary slots and emits fixed
 integer/float arithmetic, copies and immediate stores. Those instructions write

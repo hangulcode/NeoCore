@@ -367,8 +367,8 @@ private:
         *target = *source;
         source->_int = 0;
     }
-    template <VAR_TYPE Type> void ReleaseKnownStorage(CNeoVM* vm, ValueRef value);
-    template <VAR_TYPE Type> void CopyKnownStorage(CNeoVM* vm, ValueRef target, ValueRef source);
+    template <VAR_TYPE Type> void ReleaseKnownStorage(CNeoVM* vm, VarInfo* value);
+    template <VAR_TYPE Type> void CopyKnownStorage(CNeoVM* vm, VarInfo* target, const VarInfo* source);
     // 호출 계획의 반환 타입. 네이티브와 호스트가 반환 슬롯을 읽고 쓸 때 쓴다.
     NEOS_FORCEINLINE VAR_TYPE PlanType(int index) const
     {
@@ -637,9 +637,8 @@ public:
 		int _functionIndex = -1;
 		const CallStoragePlan* _plan = nullptr;
 	};
-	STestCallParent m_sTestCallParent;
-	bool BeginTestCall(const SFunctionTable& fun, int functionIndex, int base, ValueRef args, int argc);
-	ValueRef FinishTestCall(const SFunctionTable& fun, int base, bool ok);
+	bool BeginTestCall(const SFunctionTable& fun, int functionIndex, int base, ValueRef args, int argc, STestCallParent& parent);
+	ValueRef FinishTestCall(const SFunctionTable& fun, int base, bool ok, const STestCallParent& parent);
 	bool StartCoroutione(int argSP_Vars, int n3);
 	// 호스트가 준 태그 있는 인자를 피호출자 인자 슬롯에 정책대로 넣는다. 타입이 맞지 않으면 false.
 	bool StoreArgument(const SFunctionTable& fun, int base, int index, ValueRef value);

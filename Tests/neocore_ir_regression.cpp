@@ -782,6 +782,76 @@ void DirectDestinationStructure(IRuntime& runtime, bool debug)
     program->Release();
 }
 
+// 인자 생산자를 호출 창으로 옮긴 뒤 남은 빈 임시가 재귀 프레임 크기를 늘리지 않아야 한다.
+void CompactFrameStructure(IRuntime& runtime, bool debug)
+{
+    NeoCore::StaticCompileResult checked;
+    Check(NeoCore::CompileStaticSource(
+        "int Fib(int n){if(n<2)return n;return Fib(n-1)+Fib(n-2);}"
+        "export int Probe(){return Fib(10);}"
+        "export void Empty(){}"
+        "export int Owned(){string s=tostring(4);return s.len();}", checked),
+        "compact recursive frame frontend: " + checked.errorMessage);
+    if (!checked.success) return;
+    std::vector<uint8_t> bytes;
+    Check(runtime.CompileToBytecode(Description(checked, debug), bytes).ok(), "compact recursive frame image");
+    std::string message;
+    CNeoVMProgram* program = CNeoVMProgram::Create(bytes.data(), static_cast<int>(bytes.size()), &message);
+    Check(program != nullptr, "compact recursive frame load: " + message);
+    if (!program) return;
+    bool sawCompact = false, sawPayloadReturn = false, sawOwnedReturn = false;
+    const int emptyFunction = program->FindFunction("Empty");
+    for (std::size_t i = 2; i < program->code.size(); ++i)
+    {
+        const SVMOperation& op = program->code[i];
+        if (op.op != NOP_RETURN && op.op != NOP_RETURN_L) continue;
+        const SFunctionTable& frame = program->functions[op.n2];
+        if (op.n2 == emptyFunction)
+            Check((op.n3 & RETURN_PAYLOAD_FRAME) != 0, "void result does not force an owning return path");
+        if (frame._argsCount == 1)
+        {
+            Check(frame._localAddCount == 5, "recursive frame holds only argument, result and three used temporaries");
+            sawCompact = true;
+            sawPayloadReturn |= (op.n3 & RETURN_PAYLOAD_FRAME) != 0;
+        }
+        if (frame._ownedCount != 0)
+        {
+            Check((op.n3 & RETURN_PAYLOAD_FRAME) == 0, "owning frame cannot skip cleanup");
+            sawOwnedReturn = true;
+        }
+    }
+    Check(sawCompact && sawPayloadReturn && sawOwnedReturn, "compact and owning return forms exercised");
+    program->Release();
+    Error error;
+    ProgramHandle loaded = runtime.LoadProgram(bytes, &error);
+    Check(bool(loaded), "compact frame runtime load: " + error.message);
+    if (loaded)
+    {
+        InstanceHandle instance = runtime.CreateInstance(loaded);
+        const Value result = Invoke(runtime, instance, "Probe");
+        Check(result.status == RunStatus::Completed && result.integer == 55, "compacted recursive calls preserve results");
+        runtime.DestroyInstance(instance);
+        runtime.DestroyProgram(loaded);
+    }
+    // 반환 제어값이 저장된 배치와 다르면 실행 전에 거부한다.
+    SNeoVMHeader header;
+    std::memcpy(&header, bytes.data(), sizeof(header));
+    for (int offset = 2 * sizeof(SVMOperation); offset < header._iCodeSize; offset += sizeof(SVMOperation))
+    {
+        SVMOperation op;
+        std::memcpy(&op, bytes.data() + sizeof(header) + offset, sizeof(op));
+        if (op.op != NOP_RETURN) continue;
+        op.n3 ^= RETURN_PAYLOAD_FRAME;
+        std::vector<uint8_t> invalid = bytes;
+        std::memcpy(invalid.data() + sizeof(header) + offset, &op, sizeof(op));
+        ProgramHandle rejected = runtime.LoadProgram(invalid, &error);
+        Check(!rejected && error.message.find("return storage policy") != std::string::npos,
+            "altered return policy is rejected: " + error.message);
+        if (rejected) runtime.DestroyProgram(rejected);
+        break;
+    }
+}
+
 void CallStructure()
 {
     const char* source = "struct Box{int x;};\nBox Copy(Box value){return value;}\n"
@@ -1098,6 +1168,7 @@ int main()
         ScalarWriteErrors(*runtime, debug);
         DiscardedWrites(*runtime, debug);
         DirectDestinationStructure(*runtime, debug);
+        CompactFrameStructure(*runtime, debug);
         CallTransfers(*runtime, debug);
         CallReturnKinds(*runtime, debug);
         CallErrors(*runtime, debug);

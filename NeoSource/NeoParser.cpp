@@ -3319,7 +3319,6 @@ static bool EmitCoreIRCall(const NeoCore::IRNode& node, const std::string& name,
     { SetCompileError(ar, "unresolved or inconsistent typed IR function '%s'", name.c_str()); return false; }
     CheckCompileRange("call arguments", static_cast<int64_t>(node.inputs.size()), 0, COMPILE_MAX_ARGUMENTS);
     std::vector<SOperand> arguments;
-    std::vector<int> producerOffsets, callCounts;
     std::vector<int> laterEffects(node.inputs.size(), 0);
     int effects = 0;
     for (std::size_t i = node.inputs.size(); i > 0; --i)
@@ -3329,20 +3328,12 @@ static bool EmitCoreIRCall(const NeoCore::IRNode& node, const std::string& name,
     }
     for (std::size_t i = 0; i < node.inputs.size(); ++i)
     {
-        const int start = funs._cur->_code->GetBufferOffset();
         SOperand value;
         if (!EmitCoreIRNode(node.inputs[i], value, ar, funs, vars)) return false;
         MaterializeValue(value, ar, funs);
         if (NeedsSnapshot(value, laterEffects[i])) value = SnapshotCoreIRValue(value, ar, funs, node.source.line);
         arguments.push_back(value);
-        int producer = -1;
-        if (funs._cur->_iLastOPOffset == start && !value.IsFun() &&
-            value._iArrayIndex == INVALID_ERROR_PARSEJOB && IsTempVar(value._iVar) &&
-            funs._cur->GetN(start, 0) == value._iVar &&
-            SFunctionInfo::IsRetargetableProducerOP(funs._cur->GetOP(start)))
-            producer = start;
-        producerOffsets.push_back(producer);
-        callCounts.push_back(funs._cur->_callOpEmitCount);
+
     }
     // 몸통이 전역 RETURN 하나인 함수의 인자 없는 호출은 호출 창 없이 그 전역을 복사한다.
     if (function->_globalGetterSlot != 0 && arguments.empty())

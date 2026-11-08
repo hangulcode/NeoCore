@@ -134,3 +134,59 @@ the same executable hash.
 | bench.ns | `76d29c92dd8e5e5e94366e802b301e51087325be8248742f7a95bbe2fc674b1d` |
 | bench.lua | `02ec5fd6d5a1016a31e0c5ae345232e2b6d21e904a7509f12f3ca086005e87ed` |
 | bench.cpp | `d5575fe210bb9d06267810aca1ce1e331a7a427b9b703893927e5d7a44bac2ae` |
+
+## 2026-11-08: fixed-storage copies and return specialization
+
+This experiment retains compiler-time temporary-slot compaction, raw known-reference copies,
+and separate payload-only/owning return paths. It also fixes nested synchronous sort callbacks
+and Debug compiler stack exhaustion while rendering long string concatenations. The return
+specialization is retained despite the unresolved performance regressions listed below.
+
+Windows x64 Release, MSVC 19.51, `/O2`, IPO off, static CRT. The control is commit `75ef4d2`.
+After the user stopped video playback, three immutable binaries ran in rotating order:
+control, specialized returns before the void-path fix, and the final implementation. One
+full warmup preceded seven measured rounds. Script `REPS` was 1; the table reports the
+median of seven internal execution times, excluding compilation/startup. Workloads retain
+the original iteration counts. All 16 case checksums matched in every process.
+
+| Case | Control (ms) | Before void fix (ms) | Final (ms) | Final/control |
+| --- | ---: | ---: | ---: | ---: |
+| loop_sum | 175.000 | 176.000 | 176.000 | 1.006x |
+| float_math | 154.000 | 168.999 | 167.999 | 1.091x |
+| func_call | 126.000 | 127.000 | 125.000 | 0.992x |
+| fib_recursive | 87.000 | 83.999 | 83.000 | 0.954x |
+| array_rw | 43.999 | 45.000 | 43.999 | 1.000x |
+| map_str | 40.000 | 50.000 | 50.000 | 1.250x |
+| string_ops | 45.000 | 47.999 | 46.999 | 1.044x |
+| particles | 44.999 | 47.000 | 47.000 | 1.044x |
+| call_floor | 26.000 | 25.000 | 25.000 | 0.962x |
+| call_void | 91.000 | 112.000 | 94.000 | 1.033x |
+| call_ret0 | 98.000 | 100.999 | 98.000 | 1.000x |
+| call_ret1 | 108.000 | 115.999 | 114.000 | 1.056x |
+| call_ret3 | 132.000 | 139.000 | 136.000 | 1.030x |
+| string_copy | 60.000 | 37.000 | 37.000 | 0.617x |
+| list_copy | 90.000 | 39.000 | 37.000 | 0.411x |
+| owned_call | 100.000 | 83.000 | 82.000 | 0.820x |
+
+The eight-case suite sums to 715.998 ms for the control and 739.997 ms for the final implementation (+3.35%). The reference-copy microbenchmarks are separate workloads and are not included in that total.
+
+The confirmed `call_void` regression came from treating the unused boxed return slot of
+a void function as a reason to select the owning return path. The compiler and image
+validator now permit a no-result return to specialize when all arguments, locals and
+temporaries are payload-only and there are no captures. The slow path dropped from
+112 ms to 94 ms; the control was 91 ms.
+
+**Unresolved:** `float_math`, `map_str`, `string_ops`, `particles`, and some call cases
+remain slower. Restoring the old return execution path in a diagnostic control recovered
+most of the large regressions while keeping raw copies and frame compaction; that control
+is not the retained implementation. In the final object, `RunInternal<false,false>` is
+23,960 bytes versus 25,608 bytes in the control, and reserves 928 rather than 960 bytes of
+C++ stack. The inspected floating-point operand-load/multiply instruction sequences are
+unchanged, but their addresses move. This implicates changes around interpreter code
+generation/layout; a specific cache or branch-prediction cause has not been isolated.
+Do not describe these regressions as fixed or attribute them to extra runtime type checks.
+
+Validation: Windows Release and Debug CTest each passed 84/84, including protocol and
+C ABI integration checks. Changed C++ files passed Android NDK Clang and Linux GCC C++11
+syntax checks; GCC still reports the existing anonymous-struct pedantic warnings. Image
+version 0165 requires cached scripts to be recompiled.

@@ -111,7 +111,7 @@ writes and numeric list compound updates expand into typed arithmetic and storag
 instructions at compile time, without runtime helper calls.
 Conditions use fused comparison branches, and numeric `!` preserves unordered
 comparisons through result inversion.
-The dispatch loop, call frames, eight-byte instructions, and 16-byte value slots
+The dispatch loop, call frames, eight-byte instructions, and eight-byte value slots
 remain in place. Declarations and control flow still use a transitional textual
 skeleton. Named scalar assignments, compound assignments, and prefix/postfix updates
 now carry their variable targets and flat struct-field paths in IR. Targets are

@@ -3494,6 +3494,37 @@ private:
             !child.writeTarget && !child.assignmentTarget;
     }
 
+    // 긴 왼쪽 사슬은 조각만 평탄화해도 RenderExpr의 큰 Debug 프레임이 항마다 쌓인다.
+    // 고리를 반복문으로 수집하고 왼쪽부터 방출해 결합·평가 순서와 줄 간격을 그대로 유지한다.
+    std::string RenderConcatChain(const Expr& expression, bool bare) const
+    {
+        std::vector<const Expr*> links;
+        const Expr* current = &expression;
+        std::string text = bare ? "" : "(";
+        for (;;)
+        {
+            links.push_back(current);
+            const Expr& left = *current->children[0];
+            text += Lines(current->begin, left.begin);
+            if (!ChainLink(*current, left))
+            {
+                text += RenderExpr(left);
+                break;
+            }
+            current = &left;
+        }
+        for (auto it = links.rbegin(); it != links.rend(); ++it)
+        {
+            const Expr& link = **it;
+            const Expr& left = *link.children[0];
+            const Expr& right = *link.children[1];
+            text += Lines(left.end, link.token.begin) + " " + link.op + " "
+                + Lines(link.token.end, right.begin) + RenderExpr(right) + Lines(right.end, link.end);
+        }
+        if (!bare) text += ")";
+        return text;
+    }
+
     // chainLink: 이 식이 사슬의 고리다. IR 참조와 바깥 괄호 없이 부모 조각에 이어 붙는다.
     std::string RenderExpr(const Expr& expression, bool allowIR = true, bool applyWrappers = true, bool chainLink = false) const
     {
@@ -3579,6 +3610,11 @@ private:
             const bool directCondition = expression.branchCondition && (expression.op == "&&" || expression.op == "||");
             const bool bare = directCondition || chainLink;
             const bool leftLink = ChainLink(expression, left);
+            if (leftLink)
+            {
+                text = RenderConcatChain(expression, bare);
+                break;
+            }
             text = (bare ? "" : "(") + Lines(expression.begin, left.begin) + RenderExpr(left, !leftLink, true, leftLink) + Lines(left.end, expression.token.begin)
                 + " " + expression.op + " " + Lines(expression.token.end, right.begin) + RenderExpr(right) + Lines(right.end, expression.end) + (bare ? "" : ")");
             break;

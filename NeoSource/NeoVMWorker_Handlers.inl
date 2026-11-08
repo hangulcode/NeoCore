@@ -313,20 +313,22 @@ NEOS_FORCEINLINE void StoreReturnValue(VarInfo* destination, VarInfo* source, bo
 }
 
 // 본문 공용. pSrc = 반환값 슬롯(NORESULT 면 nullptr). 결과를 먼저 옮긴 뒤 프레임의 소유 슬롯을 해제한다.
-NEOS_FORCEINLINE bool handle_RETURN_impl(VarInfo* pSrc, bool sourceLocal, int functionIndex) {
+template <bool PayloadFrame>
+NEOS_FORCEINLINE bool handle_RETURN_impl(VarInfo* pSrc, bool sourceLocal, int functionIndex, u16 control) {
     // 반환 명령의 함수 번호는 현재 프레임과 같다. 함수 표를 다시 찾지 않고 프레임 기록을 쓴다.
     assert(functionIndex == _functionIndex);
     (void)functionIndex;
     const SFunctionTable& fun = *m_pFunction;
-    const StoragePolicy resultPolicy = fun.SlotPolicy(0);
+    const StoragePolicy resultPolicy = PayloadFrame ? StoragePolicy::Payload
+        : static_cast<StoragePolicy>(control & SLOT_INFO_POLICY_MASK);
     if (m_iBreakingCallStack == (int)m_pCallStack->size())
     {
 		// 최상위/코루틴 시작 closure는 호출 프레임이 없으므로 active 상태로 판별한다.
-		if (m_pActiveClosure != nullptr)
+		if (!PayloadFrame && m_pActiveClosure != nullptr)
 			FinishClosureReturn(pSrc);
 
         StoreReturnValue(m_pVarStack_Pointer, pSrc, sourceLocal, resultPolicy);
-        LeaveFrame(fun, _iSP_Vars);
+        if (!PayloadFrame) LeaveFrame(fun, _iSP_Vars);
         // 호스트는 반환 슬롯 타입을 함수의 반환 타입으로 읽어야 한다. 남은 창 계획은 없어야 한다.
         _activePlan = nullptr;
 
@@ -341,7 +343,7 @@ NEOS_FORCEINLINE bool handle_RETURN_impl(VarInfo* pSrc, bool sourceLocal, int fu
 
     const SCallStack callStack = m_pCallStack->pop_back();
 	const u32 returnIP = callStack._ReturnIP;
-	if (m_pActiveClosure != nullptr)
+	if (!PayloadFrame && m_pActiveClosure != nullptr)
 		FinishClosureReturn(pSrc);
 
     if (callStack._iReturnValueIndex == RETURN_DISCARD)
@@ -360,7 +362,7 @@ NEOS_FORCEINLINE bool handle_RETURN_impl(VarInfo* pSrc, bool sourceLocal, int fu
         StoreReturnValue(m_pVarStack_Pointer, pSrc, sourceLocal, resultPolicy);
     }
 
-    LeaveFrame(fun, _iSP_Vars);
+    if (!PayloadFrame) LeaveFrame(fun, _iSP_Vars);
 
     if (returnIP & FLAG_ASYNCWAIT)
     {
@@ -388,14 +390,24 @@ NEOS_FORCEINLINE bool handle_RETURN_impl(VarInfo* pSrc, bool sourceLocal, int fu
     return false; // break, continue loop
 }
 
+// 소유권·캡처 정리가 있는 본문은 디스패치 루프 밖에서 한 번만 생성한다.
+NEOS_NOINLINE bool handle_RETURN_owned(VarInfo* source, bool sourceLocal, int functionIndex, u16 control) {
+    return handle_RETURN_impl<false>(source, sourceLocal, functionIndex, control);
+}
+
 NEOS_FORCEINLINE bool handle_RETURN(const SVMOperation& OP) {
-    if (OP.argFlag & NEOS_OP_CALL_NORESULT) return handle_RETURN_impl(nullptr, false, OP.n2);
-    return handle_RETURN_impl(GetVarRawF1(OP), (OP.argFlag & NEOS_ARG_N1_LOCAL) != 0, OP.n2);
+    VarInfo* source = (OP.argFlag & NEOS_OP_CALL_NORESULT) ? nullptr : GetVarRawF1(OP);
+    const bool sourceLocal = (OP.argFlag & NEOS_ARG_N1_LOCAL) != 0;
+    if (OP.n3 & RETURN_PAYLOAD_FRAME)
+        return handle_RETURN_impl<true>(source, sourceLocal, OP.n2, static_cast<u16>(OP.n3));
+    return handle_RETURN_owned(source, sourceLocal, OP.n2, static_cast<u16>(OP.n3));
 }
 
 NEOS_FORCEINLINE bool handle_RETURN_L(const SVMOperation& OP) {
     // NORESULT 면 슬롯을 안 뽑으므로 PatchLocalOps 가 _L 로 바꾸지 않는다.
-    return handle_RETURN_impl(GetVarRaw_L(OP.n1), true, OP.n2);
+    if (OP.n3 & RETURN_PAYLOAD_FRAME)
+        return handle_RETURN_impl<true>(GetVarRaw_L(OP.n1), true, OP.n2, static_cast<u16>(OP.n3));
+    return handle_RETURN_owned(GetVarRaw_L(OP.n1), true, OP.n2, static_cast<u16>(OP.n3));
 }
 
 NEOS_NOINLINE bool handle_TABLE_ALLOC(const SVMOperation& OP) {
