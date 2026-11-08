@@ -1,0 +1,699 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>NeoCore Architecture</title>
+<style>
+  /* Layout: slim sticky header, a sticky contents rail on the left and a 70ch reading column; one column under 900px. */
+  :root {
+    --bg: #f5f7f9;
+    --panel: #ffffff;
+    --fg: #1a1f26;
+    --muted: #5b6774;
+    --line: #d7dde5;
+    --accent: #0f6f7f;
+    --accent-ink: #0a4a55;
+    --accent-soft: #e2eff1;
+    --band: #eef3f5;
+    --display: "Segoe UI Variable Display", "Segoe UI", "Helvetica Neue", Arial, sans-serif;
+    --body: "Segoe UI Variable Text", "Segoe UI", "Helvetica Neue", Arial, sans-serif;
+    --mono: "Cascadia Mono", Consolas, "SF Mono", Menlo, monospace;
+    color-scheme: light;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #0f1317; --panel: #151a20; --fg: #e6eaee; --muted: #9ba6b1; --line: #28313b;
+      --accent: #5cc1cf; --accent-ink: #a9e2ea; --accent-soft: #12282d; --band: #1a2229; color-scheme: dark;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #0f1317; --panel: #151a20; --fg: #e6eaee; --muted: #9ba6b1; --line: #28313b;
+    --accent: #5cc1cf; --accent-ink: #a9e2ea; --accent-soft: #12282d; --band: #1a2229; color-scheme: dark;
+  }
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  @media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } }
+  body { margin: 0; background: var(--bg); color: var(--fg); font: 15.5px/1.6 var(--body); }
+  a { color: var(--accent); text-decoration: none; border-bottom: 1px solid transparent; }
+  a:hover, a:focus-visible { border-bottom-color: currentColor; outline: none; }
+  a:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  code { font-family: var(--mono); font-size: 0.86em; background: var(--band); padding: 1px 5px; border-radius: 4px; }
+  pre { font-family: var(--mono); font-size: 13px; line-height: 1.5; background: var(--band); padding: 12px 14px; border-radius: 8px; overflow-x: auto; margin: 10px 0; }
+  pre code { background: none; padding: 0; font-size: inherit; }
+
+  .top { position: sticky; top: 0; z-index: 5; background: var(--panel); border-bottom: 1px solid var(--line); }
+  .top-inner { max-width: 1180px; margin: 0 auto; display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 22px; padding: 10px max(16px, env(safe-area-inset-right, 0px)) 10px max(16px, env(safe-area-inset-left, 0px)); }
+  .brand { font: 600 17px/1.2 var(--display); letter-spacing: 0.01em; }
+  .brand small { font: 12px/1.2 var(--mono); color: var(--muted); margin-left: 10px; }
+  .top nav { display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: 13px; }
+  .top nav a { color: var(--muted); }
+  .top nav a:hover { color: var(--accent); }
+
+  .wrap { max-width: 1180px; margin: 0 auto; padding: 0 max(16px, env(safe-area-inset-right, 0px)) 72px max(16px, env(safe-area-inset-left, 0px)); }
+  .hero { padding: 36px 0 8px; border-bottom: 1px solid var(--line); margin-bottom: 8px; }
+  h1 { font: 600 34px/1.15 var(--display); letter-spacing: -0.01em; margin: 0 0 10px; text-wrap: balance; }
+  .lede { font-size: 17px; max-width: 70ch; color: var(--fg); margin: 0 0 18px; }
+  .facts { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 12px; margin: 18px 0 26px; }
+  .fact { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 12px 14px; }
+  .fact b { display: block; font: 600 22px/1.1 var(--display); font-variant-numeric: tabular-nums; margin-bottom: 4px; color: var(--accent-ink); }
+  .fact span { font-size: 13px; color: var(--muted); }
+
+  .cols { display: grid; grid-template-columns: 220px minmax(0, 1fr); gap: 36px; align-items: start; }
+  .rail { position: sticky; top: 58px; font-size: 13.5px; line-height: 1.5; }
+  .rail .eyebrow { font: 600 11px/1 var(--body); letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); margin: 8px 0 10px; }
+  .rail ol { list-style: none; margin: 0; padding: 0; border-left: 2px solid var(--line); }
+  .rail li a { display: block; padding: 4px 0 4px 12px; color: var(--muted); border-bottom: 0; margin-left: -2px; border-left: 2px solid transparent; }
+  .rail li a:hover { color: var(--accent); border-left-color: var(--accent); }
+  .content { min-width: 0; }
+  .content > section { max-width: 76ch; }
+  .content > section.wide { max-width: none; }
+  h2 { font: 600 24px/1.2 var(--display); letter-spacing: -0.005em; margin: 44px 0 10px; text-wrap: balance; }
+  h2 .no { color: var(--accent); font-family: var(--mono); font-size: 15px; font-weight: 600; margin-right: 10px; }
+  h3 { font: 600 17px/1.3 var(--display); margin: 26px 0 6px; }
+  p { margin: 8px 0; }
+  ul, ol { padding-left: 22px; }
+  li { margin: 4px 0; }
+  .muted { color: var(--muted); }
+  .note { border-left: 3px solid var(--accent); background: var(--accent-soft); padding: 8px 14px; border-radius: 0 8px 8px 0; margin: 14px 0; }
+  .note p { margin: 4px 0; }
+
+  figure { margin: 18px 0 24px; }
+  .diagram { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 12px; overflow-x: auto; }
+  .diagram svg { display: block; width: 100%; height: auto; min-width: 640px; }
+  figcaption { color: var(--muted); font-size: 13px; margin: 8px 2px 0; max-width: 80ch; }
+  .legend { display: flex; flex-wrap: wrap; gap: 8px 18px; font-size: 12.5px; color: var(--muted); margin: 8px 2px 0; }
+  .legend i { display: inline-block; width: 26px; height: 0; border-top: 2px solid #6b7682; vertical-align: middle; margin-right: 6px; }
+  .legend i.own { border-top-color: var(--accent); }
+
+  .tablewrap { overflow-x: auto; margin: 12px 0 18px; }
+  table { border-collapse: collapse; width: 100%; font-size: 14px; }
+  th, td { border-bottom: 1px solid var(--line); padding: 8px 10px; text-align: left; vertical-align: top; }
+  th { font-weight: 600; color: var(--muted); font-size: 12.5px; letter-spacing: 0.04em; text-transform: uppercase; }
+  td:first-child { white-space: nowrap; }
+  td code { white-space: nowrap; }
+
+  /* SVG vocabulary */
+  svg text { font: 12px var(--body); fill: var(--fg); }
+  svg .t { font: 600 13px var(--display); fill: var(--fg); }
+  svg .m { font: 11px var(--mono); fill: var(--muted); }
+  svg .lbl { font: 11px var(--body); fill: var(--muted); }
+  svg .stage { fill: var(--accent-soft); stroke: var(--accent); stroke-width: 1.2; }
+  svg .cls { fill: var(--panel); stroke: var(--line); stroke-width: 1.2; }
+  svg .head { fill: var(--band); stroke: none; }
+  svg .edge { stroke: #6b7682; stroke-width: 1.4; fill: none; }
+  svg .own { stroke: var(--accent); stroke-width: 1.7; fill: none; }
+  svg .byte { fill: var(--panel); stroke: var(--line); stroke-width: 1.2; }
+  svg .byte.hi { fill: var(--accent-soft); stroke: var(--accent); }
+  svg .slot { fill: var(--panel); stroke: var(--line); stroke-width: 1.2; }
+  svg .slot.own { fill: var(--accent-soft); stroke: var(--accent); }
+  svg .brace { stroke: var(--muted); stroke-width: 1; fill: none; }
+
+  @media (max-width: 900px) {
+    .cols { grid-template-columns: 1fr; gap: 10px; }
+    .rail { position: static; }
+    .rail ol { border-left: 0; display: flex; flex-wrap: wrap; gap: 2px 14px; }
+    .rail li a { padding: 2px 0; border-left: 0; margin-left: 0; }
+    h1 { font-size: 28px; }
+  }
+</style>
+</head>
+<body>
+<header class="top">
+  <div class="top-inner">
+    <div class="brand">NeoCore Architecture <small>dev · 2026-11-08 · image 0164</small></div>
+    <nav aria-label="Sections">
+      <a href="#pipeline">Pipeline</a><a href="#frontend">Front end</a><a href="#lowering">Lowering</a><a href="#image">Image</a><a href="#vm">VM</a><a href="#values">Values</a><a href="#api">API</a><a href="#tools">Tools</a><a href="#classes">Class diagrams</a><a href="#files">Source map</a>
+    </nav>
+  </div>
+</header>
+
+<div class="wrap">
+<div class="hero">
+  <h1>How a NeoCore script becomes an image and runs</h1>
+  <p class="lede">NeoCore pairs a statically typed front end with the NeoScript execution engine. Every program is checked before a single instruction exists, the compiler decides where each value lives, and the VM executes typed instructions over eight-byte slots that carry no tag. This page follows that path end to end and maps the classes that own each step.</p>
+  <div class="facts">
+    <div class="fact"><b>8 bytes</b><span>per VM slot (<code>VarInfo</code>), untagged</span></div>
+    <div class="fact"><b>8 bytes</b><span>per instruction, one-byte opcode</span></div>
+    <div class="fact"><b>2 pointers</b><span>in a boundary view (<code>ValueRef</code>)</span></div>
+    <div class="fact"><b>0164</b><span>current image version (<code>NEO_VER</code>)</span></div>
+  </div>
+</div>
+
+<div class="cols">
+<aside class="rail" aria-label="Contents">
+  <div class="eyebrow">Contents</div>
+  <ol>
+    <li><a href="#pipeline">1 Pipeline</a></li>
+    <li><a href="#frontend">2 Typed front end</a></li>
+    <li><a href="#lowering">3 Lowering and export</a></li>
+    <li><a href="#image">4 Image and loader</a></li>
+    <li><a href="#vm">5 Virtual machine</a></li>
+    <li><a href="#values">6 Values and storage</a></li>
+    <li><a href="#api">7 API and host boundary</a></li>
+    <li><a href="#tools">8 Tooling and tests</a></li>
+    <li><a href="#classes">9 Class diagrams</a></li>
+    <li><a href="#files">10 Source map</a></li>
+  </ol>
+  <div class="eyebrow" style="margin-top:22px">Related</div>
+  <ol>
+    <li><a href="StaticTyping.md">StaticTyping.md</a></li>
+    <li><a href="TypedStorage.md">TypedStorage.md</a></li>
+    <li><a href="HostBindings.md">HostBindings.md</a></li>
+    <li><a href="Embedding.md">Embedding.md</a></li>
+    <li><a href="FourWayBenchmark.md">FourWayBenchmark.md</a></li>
+  </ol>
+</aside>
+
+<div class="content">
+
+<section id="pipeline" class="wide">
+<h2><span class="no">01</span>Pipeline</h2>
+<p>Five stages hand plain data structures to each other. No stage keeps pointers into another stage's state after the hand-off, which is what lets the console compile without running, the loader validate images produced earlier, and hosts load an image without the front end.</p>
+<figure>
+<div class="diagram">
+<svg viewBox="0 0 1000 330" role="img" aria-label="Compilation and execution pipeline">
+  <defs>
+    <marker id="ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#6b7682"/></marker>
+  </defs>
+  <rect class="stage" x="10" y="20" width="150" height="92" rx="8"/>
+  <text class="t" x="22" y="44">Source</text>
+  <text x="22" y="64">.nc text, imports,</text>
+  <text x="22" y="80">compile defines,</text>
+  <text x="22" y="96">host schema</text>
+
+  <rect class="stage" x="200" y="20" width="180" height="92" rx="8"/>
+  <text class="t" x="212" y="44">Typed front end</text>
+  <text class="m" x="212" y="62">NeoCoreCompiler.cpp</text>
+  <text x="212" y="80">lex, parse, check types,</text>
+  <text x="212" y="96">build TypedIR</text>
+
+  <rect class="stage" x="420" y="20" width="180" height="92" rx="8"/>
+  <text class="t" x="432" y="44">Lowering</text>
+  <text class="m" x="432" y="62">NeoParser.cpp</text>
+  <text x="432" y="80">IR to instructions,</text>
+  <text x="432" y="96">slots and call plans</text>
+
+  <rect class="stage" x="640" y="20" width="160" height="92" rx="8"/>
+  <text class="t" x="652" y="44">Storage + export</text>
+  <text class="m" x="652" y="62">NeoExport.cpp</text>
+  <text x="652" y="80">slot kinds, policies,</text>
+  <text x="652" y="96">image chunks</text>
+
+  <rect class="stage" x="840" y="20" width="150" height="92" rx="8"/>
+  <text class="t" x="852" y="44">Image</text>
+  <text x="852" y="64">bytes plus checked</text>
+  <text x="852" y="80">metadata</text>
+  <text class="m" x="852" y="98">NeoCoreImage</text>
+
+  <path class="edge" d="M160,66 L200,66" marker-end="url(#ar)"/>
+  <path class="edge" d="M380,66 L420,66" marker-end="url(#ar)"/>
+  <path class="edge" d="M600,66 L640,66" marker-end="url(#ar)"/>
+  <path class="edge" d="M800,66 L840,66" marker-end="url(#ar)"/>
+
+  <rect class="stage" x="840" y="180" width="150" height="104" rx="8"/>
+  <text class="t" x="852" y="204">Loader</text>
+  <text class="m" x="852" y="222">CNeoVMProgram</text>
+  <text x="852" y="240">validate, compute</text>
+  <text x="852" y="256">layouts, patch to</text>
+  <text x="852" y="272">runtime opcodes</text>
+
+  <rect class="stage" x="560" y="180" width="240" height="104" rx="8"/>
+  <text class="t" x="572" y="204">Execution</text>
+  <text class="m" x="572" y="222">CNeoVM, CNeoVMWorker</text>
+  <text x="572" y="240">dispatch loop over VarInfo payloads,</text>
+  <text x="572" y="256">contexts, coroutines, builtins,</text>
+  <text x="572" y="272">pools and cycle collection</text>
+
+  <rect class="stage" x="280" y="180" width="240" height="104" rx="8"/>
+  <text class="t" x="292" y="204">Host boundary</text>
+  <text class="m" x="292" y="222">NeoCore.h: Runtime, Program, Instance</text>
+  <text x="292" y="240">HostSchema and HostBindings,</text>
+  <text x="292" y="256">ObjectHandle, Debugger,</text>
+  <text x="292" y="272">C ABI and Unity package</text>
+
+  <rect class="stage" x="10" y="180" width="230" height="104" rx="8"/>
+  <text class="t" x="22" y="204">Tooling</text>
+  <text class="m" x="22" y="222">Samples/neocore, Tools/vscode-neocore</text>
+  <text x="22" y="240">console runner, DAP and LSP,</text>
+  <text x="22" y="256">smoke and regression checks,</text>
+  <text x="22" y="272">benchmarks</text>
+
+  <path class="edge" d="M915,112 L915,180" marker-end="url(#ar)"/>
+  <path class="edge" d="M840,232 L800,232" marker-end="url(#ar)"/>
+  <path class="edge" d="M560,232 L520,232" marker-end="url(#ar)"/>
+  <path class="edge" d="M280,232 L240,232" marker-end="url(#ar)"/>
+  <path class="edge" d="M125,180 L125,140 L290,140 L290,112" marker-end="url(#ar)"/>
+  <text class="lbl" x="136" y="156">tools drive the same front end</text>
+  <text class="lbl" x="10" y="316">Arrows show the direction of data. The host boundary wraps the engine for C++, C and C# hosts.</text>
+</svg>
+</div>
+<figcaption>Figure 1. Source to execution. The image in the middle is the only persistent artifact; everything to its right is rebuilt from it at load time.</figcaption>
+</figure>
+
+<div class="note">
+<p><strong>Three decisions shape the rest of this page.</strong></p>
+<p><strong>Checked before lowered.</strong> The typed front end rejects a program before any instruction exists, so lowering never infers a type; it reads the typed IR and the signatures the front end recorded.</p>
+<p><strong>The compiler owns storage.</strong> Frame layouts, call windows and copy and release policies are decided at compile time and serialized. The loader validates them. The VM never writes a type tag into a frame slot.</p>
+<p><strong>Untagged payloads.</strong> A VM slot is eight bytes. Types live in the instruction, in an immutable per-function table, or in the tagged boundary values that collections and hosts use.</p>
+</div>
+</section>
+
+<section id="frontend">
+<h2><span class="no">02</span>Typed front end</h2>
+<p><code>NeoCoreCompiler.cpp</code> holds the complete static language: a tokenizer, a recursive-descent parser that builds statement and expression trees, and a checker that resolves names, types and conversions. Its output is <code>StaticCompileResult</code>: the <code>TypedIR</code>, function and global signatures, debug symbols and the diagnostics list. Compile-time definitions and the optional host schema are inputs. Imports are resolved beforehand by <code>NeoCoreModules.cpp</code>, which concatenates module sources into a <code>ModuleBundle</code> and keeps a line map so diagnostics point at the original file.</p>
+<div class="tablewrap">
+<table>
+<tr><th>Class</th><th>Role</th></tr>
+<tr><td><code>TypeRegistry</code>, <code>TypeDesc</code></td><td>Interned type identities: scalars, strings, vectors and quaternions, lists, maps, sets, typed arrays, structs with <code>StructField</code> lists, function types, host object types and builtin objects. A <code>TypeId</code> is an index; the kind decides storage later.</td></tr>
+<tr><td><code>TypedIR</code>, <code>IRFunction</code>, <code>IRNode</code></td><td>The checked expression graph. Each function records parameter and return types; each node records its value type and operands, so lowering emits fixed numeric instructions, selectors and typed element access without inference.</td></tr>
+<tr><td><code>HostSchema</code>, <code>HostBinding</code>, <code>HostProperty</code>, <code>HostGlobal</code></td><td>Host functions, properties and globals with exact signatures and binding ids. The checker treats them as part of the language; the loader and runtime validate calls against the same ids. Schemas serialize for the Unity package.</td></tr>
+<tr><td><code>NeoCoreBuiltins.h</code></td><td>The builtin surface the checker knows: string, list, map, set, array, math, time, JSON, HTTP, coroutine and system entries with their types.</td></tr>
+<tr><td><code>NeoCoreDiagnostics.h</code>, <code>NeoCompileLimits.h</code></td><td>Diagnostic records with source spans, and the fixed compile limits (argument counts, slot counts, literal sizes) that both the front end and lowering enforce.</td></tr>
+</table>
+</div>
+</section>
+
+<section id="lowering" class="wide">
+<h2><span class="no">03</span>Lowering, storage inference and export</h2>
+<p>Lowering reuses the NeoScript parser machinery (<code>NeoParser.cpp</code>, <code>NeoTextLoader.h</code>) as an instruction emitter. The source is re-read through <code>CArchiveRdWC</code>, but typed constructs are emitted from the <code>TypedIR</code> attached to the archive: numeric expressions, scalar writes, calls and returns come from the IR with exact signatures, ordered arguments and explicit value copies. Per-function state lives in <code>SFunctionInfo</code> (code buffer, locals, temporaries, captures, call plans) under <code>SFunctions</code>; globals live in <code>SVars</code>.</p>
+<ul>
+<li><strong>Call plans.</strong> Each call site records a <code>CompileCallStorage</code> plan with its argument sources, result slot and the code position at which the plan becomes active. A direct call whose window holds only payload values emits no <code>PREPARE_CALL</code>, and the last computed argument writes straight into the window slot.</li>
+<li><strong>Getter folding.</strong> A function whose whole body returns one global is remembered when it is finalized; later argument-less calls to it become a copy of that global.</li>
+<li><strong>Storage inference.</strong> <code>NeoStorageCompiler.inl</code> walks the emitted instructions and the call plans until no slot kind changes, binding every local, temporary, global and window slot to a <code>SlotKind</code>. A conflict is a compile error that names the slot and both kinds.</li>
+<li><strong>Export.</strong> <code>NeoExport.cpp</code> permutes each frame so owned slots form one block after the arguments, stamps the copy or release policy on every <code>MOV</code>, <code>LOADK</code> and <code>VAR_CLEAR</code>, renumbers operands to frame slots and writes the image chunks.</li>
+</ul>
+
+<figure>
+<div class="diagram">
+<svg viewBox="0 0 1000 150" role="img" aria-label="Instruction encoding">
+  <text class="t" x="10" y="20">SVMOperation, 8 bytes</text>
+  <rect class="byte hi" x="10" y="34" width="110" height="44" rx="6"/>
+  <text class="m" x="20" y="52">byte 0</text><text x="20" y="70">op (opcode)</text>
+  <rect class="byte hi" x="124" y="34" width="110" height="44" rx="6"/>
+  <text class="m" x="134" y="52">byte 1</text><text x="134" y="70">argFlag</text>
+  <rect class="byte" x="238" y="34" width="150" height="44" rx="6"/>
+  <text class="m" x="248" y="52">bytes 2-3</text><text x="248" y="70">n1 (short)</text>
+  <rect class="byte" x="392" y="34" width="150" height="44" rx="6"/>
+  <text class="m" x="402" y="52">bytes 4-5</text><text x="402" y="70">n2 (short)</text>
+  <rect class="byte" x="546" y="34" width="150" height="44" rx="6"/>
+  <text class="m" x="556" y="52">bytes 6-7</text><text x="556" y="70">n3 (short)</text>
+  <path class="brace" d="M392,84 L392,92 L696,92 L696,84"/>
+  <text class="lbl" x="470" y="108">or one 32-bit immediate n23 (MOVI, MOVF, LOADK index)</text>
+  <text class="t" x="740" y="20">argFlag bits</text>
+  <text class="m" x="740" y="44">7  n1 is a local slot</text>
+  <text class="m" x="740" y="60">6  n2 is a local slot</text>
+  <text class="m" x="740" y="76">5  n3 is a local slot</text>
+  <text class="m" x="740" y="92">4  modifier: in-place arithmetic, take ownership, no result</text>
+  <text class="m" x="740" y="108">3-0  sub-operation or storage policy</text>
+  <text class="lbl" x="10" y="134">Operands index the frame (local) or the global table (negative offsets, constants above). The loader rewrites op for all-local forms and runtime opcodes; the stored image keeps the compile-time numbers.</text>
+</svg>
+</div>
+<figcaption>Figure 2. The instruction word. The one-byte opcode is why the dispatch loop can select a handler with a single jump table, and the low nibble is where a copy carries its storage policy.</figcaption>
+</figure>
+</section>
+
+<section id="image">
+<h2><span class="no">04</span>Image format and loader</h2>
+<p>An image is a byte buffer stamped with <code>NEO_VER</code> from <code>NeoConfig.h</code>. Every change to opcodes, layouts or validation bumps the version, and the loader refuses older images with a message instead of guessing. <code>NeoCoreImage</code> pairs the bytes with the checked metadata a host needs to bind the program without recompiling. <code>CNeoVMProgram::Create</code> runs three passes:</p>
+<ol>
+<li><strong>Load</strong> reads the chunks into <code>SFunctionTable</code> records, <code>CallStoragePlan</code>s, switch tables, range descriptors, constants and the global type table.</li>
+<li><strong>VerifyCode</strong> checks every instruction: operand ranges against the frame, policy bytes against declared kinds, jump targets, plan indices and call signatures.</li>
+<li><strong>PatchLocalOps</strong> rewrites the code for execution: all-local operand forms, static-string map reads, one-byte runtime opcodes for the numeric families and typed range branches. These opcodes never appear in a stored image; the disassembler maps them back.</li>
+</ol>
+<p>A loaded program is immutable and reference counted. Several VMs, instances and threads share one program.</p>
+</section>
+
+<section id="vm" class="wide">
+<h2><span class="no">05</span>Virtual machine</h2>
+<p><code>CNeoVM</code> is the engine instance. It owns the allocation pools for strings, vectors, lists, maps, sets, typed arrays, closures, coroutines and async requests, the execution-context pool, the loaded programs and the cycle collector. <code>CNeoVMWorker</code> is one execution engine over a VM: it holds the current program, the globals of an instance, the active context and the registers of the running frame. Each activation runs inside a <code>CoroutineInfo</code> context from <code>NeoExecContextPool</code>; the main context and user coroutines share one representation, so <code>sleep</code>, <code>yield</code>, time slices and breakpoints only park a context.</p>
+
+<h3>Dispatch loop</h3>
+<p><code>RunInternal&lt;TIMEOUT, DEBUG&gt;</code> switches on the opcode byte of the current instruction and keeps only the frequent instructions inline: copies and clears, branches and loops, calls and returns, the runtime numeric opcodes, typed element access and map lookups. Every other opcode goes through <code>ExecuteColdOp</code>, a separate function with its own switch. Keeping the loop small is what lets the compiler hold the worker pointer in a register and lay out each handler as one block that ends in the dispatch jump. Handlers live in <code>NeoVMWorker_Handlers.inl</code> (generic), <code>NeoVMWorker_Typed.inl</code> (numeric, vector, array and container) and <code>NeoVMWorker_Move.inl</code> (copies and script calls).</p>
+
+<h3>Frames and calls</h3>
+<figure>
+<div class="diagram">
+<svg viewBox="0 0 1000 170" role="img" aria-label="Frame layout">
+  <text class="t" x="10" y="20">One frame on the context's value stack (8-byte slots)</text>
+  <rect class="slot" x="10" y="34" width="90" height="46" rx="6"/>
+  <text class="m" x="18" y="52">slot 0</text><text x="18" y="70">result</text>
+  <rect class="slot" x="104" y="34" width="150" height="46" rx="6"/>
+  <text class="m" x="112" y="52">1 .. args</text><text x="112" y="70">arguments</text>
+  <rect class="slot own" x="258" y="34" width="190" height="46" rx="6"/>
+  <text class="m" x="266" y="52">owned block</text><text x="266" y="70">strings, collections, closures</text>
+  <rect class="slot" x="452" y="34" width="230" height="46" rx="6"/>
+  <text class="m" x="460" y="52">numeric locals and temporaries</text><text x="460" y="70">int, float, bool, inline Vector2</text>
+  <rect class="slot" x="686" y="34" width="304" height="46" rx="6"/>
+  <text class="m" x="694" y="52">outgoing call windows</text><text x="694" y="70">result + arguments of each call this frame makes</text>
+  <path class="brace" d="M104,90 L104,98 L448,98 L448,90"/>
+  <text class="lbl" x="150" y="114">LeaveFrame releases [_releaseFirst, _releaseCount): only owned slots, nothing when the frame has none</text>
+  <path class="brace" d="M258,124 L258,132 L448,132 L448,124"/>
+  <text class="lbl" x="266" y="148">EnterFrame zeroes only this block</text>
+  <text class="lbl" x="686" y="114">PREPARE_CALL zeroes only the owning window slots</text>
+  <text class="lbl" x="686" y="130">(skipped entirely for numeric direct calls)</text>
+</svg>
+</div>
+<figcaption>Figure 3. Frame layout decided by the exporter. The callee's frame starts at the caller's window, so arguments are never copied twice.</figcaption>
+</figure>
+<p>Script calls push an <code>SCallStack</code> record with the return address, frame base and the caller's function index; natives run through <code>CallNative</code> with the plan that describes their window. Errors and cancellation enumerate the saved frames (<code>ForEachContextFrameSlot</code>) through the program's layouts to release owned values exactly once and then zero the used stack range. There is no per-frame runtime table and no high-water sweep.</p>
+
+<h3>Builtins, libraries and memory</h3>
+<p><code>NeoLib.cpp</code> implements the builtin natives behind the <code>neo_libs</code> tables. <code>NeoJson.cpp</code>, <code>NeoTime.cpp</code>, <code>NeoRegex.cpp</code> (vendored PCRE2) and <code>NeoHttp.h</code> (through a host-supplied <code>IHttpTransport</code>) back the library modules. Heap objects are reference counted; containers that can form cycles are tracked, <code>CollectCycles</code> frees unreachable groups, and <code>TrimMemory</code> returns empty pool pages to the system.</p>
+</section>
+
+<section id="values">
+<h2><span class="no">06</span>Values and storage</h2>
+<div class="tablewrap">
+<table>
+<tr><th>Representation</th><th>Where it lives</th><th>Type information</th></tr>
+<tr><td><code>VarInfo</code> (8 bytes)</td><td>Frame slots, globals, constants, closure captures, typed vector arrays</td><td>The instruction, the function's slot table or the call plan. Never a tag in the slot.</td></tr>
+<tr><td><code>BoundaryValue</code> (<code>VarInfo</code> plus a one-byte tag)</td><td>List, map and set entries; host transfers; native scratch values; GC work lists</td><td>Its own tag.</td></tr>
+<tr><td><code>ValueRef</code> (payload pointer plus type-byte pointer)</td><td>A borrowed view created only at boundaries: collections, natives, conversions, the debugger</td><td>The pointed-to byte. For a fixed slot it is a read-only copy of the declared type marked with <code>NEOS_TYPE_READONLY</code>, so a view can never write a tag into a frame.</td></tr>
+<tr><td>Heap objects</td><td><code>StringInfo</code>, <code>VecInfo</code>, <code>ListInfo</code>, <code>MapInfo</code>, <code>SetInfo</code>, <code>ArrayInfo</code>, <code>ClosureInfo</code>, <code>CoroutineInfo</code>, <code>AsyncInfo</code>, pooled by <code>CNeoVM</code></td><td>Reference counted; copy and release follow the storage policy carried in the instruction or layout.</td></tr>
+</table>
+</div>
+<p>Nullability follows the type: numbers, vectors, quaternions and structs never hold null; strings, collections, function values, coroutines and host objects use a zero payload for null. Structs are value types stored as lists and copied on assignment. Vectors with three or four components share <code>VecInfo</code> storage with copy-on-write; two-component vectors are inline.</p>
+</section>
+
+<section id="api">
+<h2><span class="no">07</span>Public API and host boundary</h2>
+<p><code>NeoSource/NeoCore.h</code> (namespace <code>NeoCore</code>) is the embedding API. A <code>Runtime</code> owns the backend engine, a <code>HostRuntime</code> that resolves host bindings, and an optional <code>Debugger</code>. <code>Runtime::Compile</code> runs the front end and lowering and returns a <code>Program</code>, which keeps the checked result, the module bundle, the image bytes and the backend program handle. <code>Program::CreateInstance</code> produces an <code>Instance</code> with its own globals, a <code>HostInstance</code> for per-instance host objects and the handle used to call script functions with <code>Scalar</code> arguments and <code>Result</code> values. Hosts never see <code>VarInfo</code>; values cross the boundary as <code>BoundaryValue</code> conversions in <code>NeoCoreValueBoundary</code> and <code>NeoCoreHostBridge</code>.</p>
+<ul>
+<li><strong>Bindings.</strong> <code>HostBindings</code> pairs a <code>HostSchema</code> with a resolver and functions keyed by binding id. Receivers are typed ids validated on every access; borrowed pointers cannot survive reentry or external deletion. The rules are in <a href="HostBindings.md">HostBindings.md</a>.</li>
+<li><strong>Backend shim.</strong> <code>NeoScriptShim.cpp</code> implements the backend-facing <code>IRuntime</code> over <code>NeoVMSystem</code>, <code>CNeoVM</code> and the workers, keeping handle tables for programs, instances and registered objects so the public API never exposes engine pointers.</li>
+<li><strong>Debugger.</strong> <code>Debugger</code> attaches to an instance, implements <code>INeoVMDebugListener</code> and exposes breakpoints, stepping, stack frames and variables. The DAP server in the console sits on top of it.</li>
+<li><strong>C ABI and Unity.</strong> <code>Unity/NeoCore/NeoCoreC.h</code> is the C header over the same API; <code>Unity/com.neocore.unity</code> is the C# package with managed value wrappers, schema import and callbacks.</li>
+</ul>
+</section>
+
+<section id="tools">
+<h2><span class="no">08</span>Tooling, samples and tests</h2>
+<div class="tablewrap">
+<table>
+<tr><th>Component</th><th>Location</th><th>Notes</th></tr>
+<tr><td>Console runner</td><td><code>Samples/neocore</code></td><td><code>neocore --file</code>, <code>--check</code>, <code>--asm</code>, <code>--debug</code>; sample and regression modes (<code>--smoke</code>, <code>--bench-check</code>, <code>--compiler-error-regression</code>, <code>--pooltrim-check</code>); the stdio <code>--dap</code> and <code>--lsp</code> servers. <code>ConsoleHost.cpp</code> provides the host schema the samples use.</td></tr>
+<tr><td>Benchmarks</td><td><code>Samples/bench</code></td><td><code>bench.nc</code> (timed) and <code>check.nc</code> (checksums only) with the Lua and C++ references. Results and method: <a href="FourWayBenchmark.md">FourWayBenchmark.md</a>.</td></tr>
+<tr><td>Mini game</td><td><code>Samples/neocore/minigame</code></td><td>A small C++ host that binds a schema and runs a script per frame.</td></tr>
+<tr><td>VS Code extension</td><td><code>Tools/vscode-neocore</code></td><td>Highlighting, completion and diagnostics through the LSP mode; debugging through the DAP mode.</td></tr>
+<tr><td>Tests</td><td><code>Tests</code></td><td>C++ regressions under CTest (storage, typed ops, collections, hosts, images, modules, debugger) and Python protocol and CLI regressions. Linux builds and the Android NDK syntax check guard the non-Windows paths.</td></tr>
+</table>
+</div>
+</section>
+
+<section id="classes" class="wide">
+<h2><span class="no">09</span>Class relationship diagrams</h2>
+<div class="legend"><span><i class="own"></i>owns (creates and destroys)</span><span><i></i>references or calls</span></div>
+
+<h3>Public API</h3>
+<figure>
+<div class="diagram">
+<svg viewBox="0 0 1000 470" role="img" aria-label="Public API class relationships">
+  <defs>
+    <marker id="a2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#6b7682"/></marker>
+    <marker id="o2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#0f6f7f"/></marker>
+  </defs>
+  <!-- Runtime -->
+  <rect class="cls" x="10" y="20" width="250" height="128" rx="8"/>
+  <rect class="head" x="11" y="21" width="248" height="26" rx="7"/>
+  <text class="t" x="22" y="39">NeoCore::Runtime</text>
+  <text class="m" x="22" y="66">IRuntime* runtime (backend)</text>
+  <text class="m" x="22" y="82">shared_ptr&lt;HostRuntime&gt; host</text>
+  <text class="m" x="22" y="98">unique_ptr&lt;Debugger&gt; debugger</text>
+  <text class="m" x="22" y="114">map&lt;id, Instance*&gt; instances</text>
+  <text class="m" x="22" y="130">Compile() LoadImage() TrimMemory()</text>
+  <!-- Program -->
+  <rect class="cls" x="330" y="20" width="270" height="128" rx="8"/>
+  <rect class="head" x="331" y="21" width="268" height="26" rx="7"/>
+  <text class="t" x="342" y="39">NeoCore::Program</text>
+  <text class="m" x="342" y="66">shared_ptr&lt;Runtime::Impl&gt; runtimeState</text>
+  <text class="m" x="342" y="82">StaticCompileResult checked</text>
+  <text class="m" x="342" y="98">ModuleBundle bundle, image bytes</text>
+  <text class="m" x="342" y="114">ProgramHandle program</text>
+  <text class="m" x="342" y="130">CreateInstance() Image()</text>
+  <!-- Instance -->
+  <rect class="cls" x="670" y="20" width="320" height="128" rx="8"/>
+  <rect class="head" x="671" y="21" width="318" height="26" rx="7"/>
+  <text class="t" x="682" y="39">NeoCore::Instance</text>
+  <text class="m" x="682" y="66">shared_ptr&lt;Program::Impl&gt; module</text>
+  <text class="m" x="682" y="82">InstanceHandle instance</text>
+  <text class="m" x="682" y="98">unique_ptr&lt;HostInstance&gt; host</text>
+  <text class="m" x="682" y="114">BackendInstanceContext backendContext</text>
+  <text class="m" x="682" y="130">Call() Resume() SetGlobal()</text>
+  <!-- Debugger -->
+  <rect class="cls" x="10" y="220" width="250" height="96" rx="8"/>
+  <rect class="head" x="11" y="221" width="248" height="26" rx="7"/>
+  <text class="t" x="22" y="239">NeoCore::Debugger</text>
+  <text class="m" x="22" y="266">implements INeoVMDebugListener</text>
+  <text class="m" x="22" y="282">Attach(Instance&amp;), breakpoints,</text>
+  <text class="m" x="22" y="298">stepping, frames, variables</text>
+  <!-- HostBindings -->
+  <rect class="cls" x="330" y="220" width="270" height="96" rx="8"/>
+  <rect class="head" x="331" y="221" width="268" height="26" rx="7"/>
+  <text class="t" x="342" y="239">HostBindings</text>
+  <text class="m" x="342" y="266">const HostSchema&amp; schema, HostResolver</text>
+  <text class="m" x="342" y="282">Bind(id, HostFunction)</text>
+  <text class="m" x="342" y="298">BindGlobal(name, ObjectHandle)</text>
+  <!-- HostCall -->
+  <rect class="cls" x="670" y="220" width="320" height="96" rx="8"/>
+  <rect class="head" x="671" y="221" width="318" height="26" rx="7"/>
+  <text class="t" x="682" y="239">HostCall, ObjectHandle, Scalar, Result</text>
+  <text class="m" x="682" y="266">arguments and results of one host call</text>
+  <text class="m" x="682" y="282">typed object ids, never raw pointers</text>
+  <text class="m" x="682" y="298">Error, AllocationStats</text>
+  <!-- Shim -->
+  <rect class="cls" x="330" y="370" width="270" height="86" rx="8"/>
+  <rect class="head" x="331" y="371" width="268" height="26" rx="7"/>
+  <text class="t" x="342" y="389">NeoScript::IRuntime (shim)</text>
+  <text class="m" x="342" y="416">NeoScriptShim.cpp: handle tables for</text>
+  <text class="m" x="342" y="432">programs, instances, objects over</text>
+  <text class="m" x="342" y="448">NeoVMSystem, CNeoVM, workers</text>
+  <!-- HostSchema -->
+  <rect class="cls" x="670" y="370" width="320" height="86" rx="8"/>
+  <rect class="head" x="671" y="371" width="318" height="26" rx="7"/>
+  <text class="t" x="682" y="389">HostSchema</text>
+  <text class="m" x="682" y="416">HostBinding[], HostProperty[], HostGlobal[]</text>
+  <text class="m" x="682" y="432">serialized by NeoCoreHostSchemaIO</text>
+  <text class="m" x="682" y="448">for the Unity package</text>
+
+  <path class="own" d="M260,70 L330,70" marker-end="url(#o2)"/>
+  <text class="lbl" x="268" y="62">Compile()</text>
+  <path class="own" d="M600,70 L670,70" marker-end="url(#o2)"/>
+  <text class="lbl" x="606" y="62">CreateInstance()</text>
+  <path class="edge" d="M700,148 L700,180 L465,180 L465,148" marker-end="url(#a2)"/>
+  <text class="lbl" x="476" y="174">keeps Program::Impl alive</text>
+  <path class="edge" d="M330,100 L300,100 L300,180 L135,180 L135,148" marker-end="url(#a2)"/>
+  <text class="lbl" x="142" y="174">keeps Runtime::Impl alive</text>
+  <path class="own" d="M60,148 L60,220" marker-end="url(#o2)"/>
+  <path class="edge" d="M200,220 L200,200 L760,200 L760,148" marker-end="url(#a2)"/>
+  <text class="lbl" x="560" y="214">Attach(Instance&amp;): stops arrive through the VM listener</text>
+  <path class="edge" d="M135,316 L135,413 L330,413" marker-end="url(#a2)"/>
+  <text class="lbl" x="142" y="405">backend handles</text>
+  <path class="edge" d="M465,316 L465,370" marker-end="url(#a2)"/>
+  <text class="lbl" x="472" y="347">resolves bindings</text>
+  <path class="edge" d="M600,413 L670,413" marker-end="url(#a2)"/>
+  <text class="lbl" x="608" y="405">schema</text>
+  <path class="edge" d="M465,148 L465,220" marker-end="url(#a2)"/>
+  <text class="lbl" x="472" y="202">compiled against</text>
+</svg>
+</div>
+<figcaption>Figure 4. Lifetimes compose through shared pointers: a Program keeps its Runtime state alive and an Instance keeps its Program alive, so a host never has to order destruction.</figcaption>
+</figure>
+
+<h3>Virtual machine core</h3>
+<figure>
+<div class="diagram">
+<svg viewBox="0 0 1000 540" role="img" aria-label="VM core class relationships">
+  <defs>
+    <marker id="a3" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#6b7682"/></marker>
+    <marker id="o3" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#0f6f7f"/></marker>
+  </defs>
+  <rect class="cls" x="10" y="20" width="210" height="80" rx="8"/>
+  <rect class="head" x="11" y="21" width="208" height="26" rx="7"/>
+  <text class="t" x="22" y="39">NeoVMSystem</text>
+  <text class="m" x="22" y="66">CreateVM() CreateProgram()</text>
+  <text class="m" x="22" y="82">Compile()</text>
+
+  <rect class="cls" x="270" y="20" width="310" height="138" rx="8"/>
+  <rect class="head" x="271" y="21" width="308" height="26" rx="7"/>
+  <text class="t" x="282" y="39">CNeoVM</text>
+  <text class="m" x="282" y="66">pools: StringInfo VecInfo ListInfo MapInfo</text>
+  <text class="m" x="282" y="82">SetInfo ArrayInfo ClosureInfo CoroutineInfo</text>
+  <text class="m" x="282" y="98">NeoExecContextPool, loaded programs</text>
+  <text class="m" x="282" y="114">cycle collector, allocation stats</text>
+  <text class="m" x="282" y="130">Var_Release() Move() CopyKnownStorage()</text>
+  <text class="m" x="282" y="146">IHttpTransport, regex limits</text>
+
+  <rect class="cls" x="630" y="20" width="360" height="138" rx="8"/>
+  <rect class="head" x="631" y="21" width="358" height="26" rx="7"/>
+  <text class="t" x="642" y="39">CNeoVMProgram (immutable, ref-counted)</text>
+  <text class="m" x="642" y="66">vector&lt;SVMOperation&gt; code</text>
+  <text class="m" x="642" y="82">vector&lt;SFunctionTable&gt; functions</text>
+  <text class="m" x="642" y="98">globalTypes, staticValues, switchTables</text>
+  <text class="m" x="642" y="114">rangeJumps, debugData</text>
+  <text class="m" x="642" y="130">Load() VerifyCode() PatchLocalOps()</text>
+  <text class="m" x="642" y="146">FormatDebugOperation()</text>
+
+  <rect class="cls" x="270" y="220" width="340" height="160" rx="8"/>
+  <rect class="head" x="271" y="221" width="338" height="26" rx="7"/>
+  <text class="t" x="282" y="239">CNeoVMWorker : INeoVMWorker, CoroutineBase</text>
+  <text class="m" x="282" y="266">CNeoVMProgram* _pProgram, CNeoVM* _pVM</text>
+  <text class="m" x="282" y="282">globals VarInfo[], m_pFunction, slot type pointers</text>
+  <text class="m" x="282" y="298">registers: code ptr, frame base, stack ptr, plan</text>
+  <text class="m" x="282" y="314">CoroutineInfo* m_pMainCtx, m_pCur</text>
+  <text class="m" x="282" y="330">RunInternal&lt;TIMEOUT,DEBUG&gt;() ExecuteColdOp()</text>
+  <text class="m" x="282" y="346">Call() CallNative() RunHostCall() testCall()</text>
+  <text class="m" x="282" y="362">ReleaseContextFrames() StopCoroutine()</text>
+
+  <rect class="cls" x="660" y="220" width="330" height="128" rx="8"/>
+  <rect class="head" x="661" y="221" width="328" height="26" rx="7"/>
+  <text class="t" x="672" y="239">CoroutineInfo : CoroutineBase</text>
+  <text class="m" x="672" y="266">ValueStack m_sVarStack (VarInfo[])</text>
+  <text class="m" x="672" y="282">SimpleVector&lt;SCallStack&gt; call stack</text>
+  <text class="m" x="672" y="298">SNativeFrame[], closure call states</text>
+  <text class="m" x="672" y="314">saved registers (_info), state, async waits</text>
+  <text class="m" x="672" y="330">_program for frame-walk cleanup</text>
+
+  <rect class="cls" x="10" y="220" width="210" height="112" rx="8"/>
+  <rect class="head" x="11" y="221" width="208" height="26" rx="7"/>
+  <text class="t" x="22" y="239">neo_libs, SystemFun</text>
+  <text class="m" x="22" y="266">NeoLib.cpp builtin natives</text>
+  <text class="m" x="22" y="282">NeoJson, NeoTime, NeoRegex,</text>
+  <text class="m" x="22" y="298">NeoHttp via transport</text>
+  <text class="m" x="22" y="314">entered through CallNative</text>
+
+  <rect class="cls" x="10" y="420" width="470" height="104" rx="8"/>
+  <rect class="head" x="11" y="421" width="468" height="26" rx="7"/>
+  <text class="t" x="22" y="439">Value representations</text>
+  <text class="m" x="22" y="466">VarInfo 8 B payload; BoundaryValue = VarInfo + tag</text>
+  <text class="m" x="22" y="482">ValueRef { VarInfo* value_; VAR_TYPE* type_ } borrowed view</text>
+  <text class="m" x="22" y="498">heap: StringInfo VecInfo ListInfo MapInfo SetInfo ArrayInfo</text>
+  <text class="m" x="22" y="514">ClosureInfo AsyncInfo (reference counted, pooled)</text>
+
+  <rect class="cls" x="520" y="420" width="470" height="104" rx="8"/>
+  <rect class="head" x="521" y="421" width="468" height="26" rx="7"/>
+  <text class="t" x="532" y="439">Per-function layout from the image</text>
+  <text class="m" x="532" y="466">SFunctionTable: _slotTypes, _slotTypesFlagged, _slotInfo</text>
+  <text class="m" x="532" y="482">_argsCount, _ownedCount, _releaseFirst, _releaseCount</text>
+  <text class="m" x="532" y="498">CallStoragePlan: types[], policies[], zeroFirst, zeroEnd</text>
+  <text class="m" x="532" y="514">SlotLayout, ProgramRangeJump, ProgramSwitchTable</text>
+
+  <path class="own" d="M220,60 L270,60" marker-end="url(#o3)"/>
+  <path class="own" d="M580,90 L630,90" marker-end="url(#o3)"/>
+  <text class="lbl" x="588" y="82">loads</text>
+  <path class="own" d="M440,158 L440,220" marker-end="url(#o3)"/>
+  <text class="lbl" x="448" y="194">creates workers</text>
+  <path class="edge" d="M610,280 L660,280" marker-end="url(#a3)"/>
+  <text class="lbl" x="616" y="272">binds context</text>
+  <path class="edge" d="M610,250 L625,250 L625,180 L810,180 L810,158" marker-end="url(#a3)"/>
+  <text class="lbl" x="700" y="175">executes</text>
+  <path class="edge" d="M270,290 L220,290" marker-end="url(#a3)"/>
+  <path class="edge" d="M440,380 L440,420" marker-end="url(#a3)"/>
+  <text class="lbl" x="448" y="404">reads and writes</text>
+  <path class="edge" d="M825,348 L825,420" marker-end="url(#a3)"/>
+  <text class="lbl" x="832" y="388">frames follow</text>
+  <path class="own" d="M330,158 L330,190 L245,190 L245,420" marker-end="url(#o3)"/>
+  <text class="lbl" x="130" y="404">pools own objects</text>
+</svg>
+</div>
+<figcaption>Figure 5. A worker runs one context at a time. Every frame it executes is described by the program's immutable layout, which is why cleanup after an error can walk saved frames without any per-frame runtime table.</figcaption>
+</figure>
+
+<h3>Compiler</h3>
+<figure>
+<div class="diagram">
+<svg viewBox="0 0 1000 400" role="img" aria-label="Compiler class relationships">
+  <defs>
+    <marker id="a4" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#6b7682"/></marker>
+  </defs>
+  <rect class="cls" x="10" y="20" width="300" height="138" rx="8"/>
+  <rect class="head" x="11" y="21" width="298" height="26" rx="7"/>
+  <text class="t" x="22" y="39">NeoCoreCompiler (static front end)</text>
+  <text class="m" x="22" y="66">CompileStaticSource(source, result, schema, defines)</text>
+  <text class="m" x="22" y="82">tokenizer, Statement and Expression trees, checker</text>
+  <text class="m" x="22" y="98">TypeRegistry types; TypedIR ir</text>
+  <text class="m" x="22" y="114">StaticCompileResult: signatures, symbols,</text>
+  <text class="m" x="22" y="130">diagnostics, debug symbols</text>
+  <text class="m" x="22" y="146">inputs: HostSchema, CompileDefine[], ModuleBundle</text>
+
+  <rect class="cls" x="370" y="20" width="300" height="138" rx="8"/>
+  <rect class="head" x="371" y="21" width="298" height="26" rx="7"/>
+  <text class="t" x="382" y="39">NeoParser (lowering)</text>
+  <text class="m" x="382" y="66">CArchiveRdWC source + m_coreTypedIR</text>
+  <text class="m" x="382" y="82">SFunctions { SFunctionInfo[], constants }</text>
+  <text class="m" x="382" y="98">SFunctionInfo: code, locals, temps, captures,</text>
+  <text class="m" x="382" y="114">CompileCallStorage[] plans, getter slot</text>
+  <text class="m" x="382" y="130">SVars global slots; SLayerVar scopes</text>
+  <text class="m" x="382" y="146">EmitCoreIR*() ParseFor() Push_*()</text>
+
+  <rect class="cls" x="730" y="20" width="260" height="138" rx="8"/>
+  <rect class="head" x="731" y="21" width="258" height="26" rx="7"/>
+  <text class="t" x="742" y="39">NeoExport (storage, image)</text>
+  <text class="m" x="742" y="66">StorageCompiler binds SlotKind per slot</text>
+  <text class="m" x="742" y="82">and per window (NeoStorageCompiler.inl)</text>
+  <text class="m" x="742" y="98">FrameLayout: owned block, slot info</text>
+  <text class="m" x="742" y="114">WriteFun: renumbering, policies</text>
+  <text class="m" x="742" y="130">chunks: code, FUNC, SLOT, CALL, RNGE,</text>
+  <text class="m" x="742" y="146">switch tables, constants, debug names</text>
+
+  <rect class="cls" x="370" y="240" width="300" height="88" rx="8"/>
+  <rect class="head" x="371" y="241" width="298" height="26" rx="7"/>
+  <text class="t" x="382" y="259">NeoVMTypedOps.h</text>
+  <text class="m" x="382" y="286">TypedOpInfo and AggregateOpInfo tables</text>
+  <text class="m" x="382" y="302">shared by lowering, validation,</text>
+  <text class="m" x="382" y="318">disassembly and the VM</text>
+
+  <rect class="cls" x="730" y="240" width="260" height="88" rx="8"/>
+  <rect class="head" x="731" y="241" width="258" height="26" rx="7"/>
+  <text class="t" x="742" y="259">CNeoVMProgram (loader)</text>
+  <text class="m" x="742" y="286">validates every chunk and instruction,</text>
+  <text class="m" x="742" y="302">computes slot types and owned ranges,</text>
+  <text class="m" x="742" y="318">patches runtime opcodes</text>
+
+  <rect class="cls" x="10" y="240" width="300" height="88" rx="8"/>
+  <rect class="head" x="11" y="241" width="298" height="26" rx="7"/>
+  <text class="t" x="22" y="259">NeoCoreModules, NeoCoreImage</text>
+  <text class="m" x="22" y="286">ModuleBundle: concatenated imports with</text>
+  <text class="m" x="22" y="302">a line map for diagnostics</text>
+  <text class="m" x="22" y="318">Image Data: bytes plus checked metadata</text>
+
+  <path class="edge" d="M310,90 L370,90" marker-end="url(#a4)"/>
+  <text class="lbl" x="318" y="82">TypedIR</text>
+  <path class="edge" d="M670,90 L730,90" marker-end="url(#a4)"/>
+  <text class="lbl" x="678" y="82">SFunctions</text>
+  <path class="edge" d="M860,158 L860,240" marker-end="url(#a4)"/>
+  <text class="lbl" x="868" y="204">image bytes</text>
+  <path class="edge" d="M520,240 L520,158" marker-end="url(#a4)"/>
+  <path class="edge" d="M670,284 L730,284" marker-end="url(#a4)"/>
+  <path class="edge" d="M160,240 L160,158" marker-end="url(#a4)"/>
+  <text class="lbl" x="168" y="204">bundle in, image out</text>
+  <text class="lbl" x="10" y="372">The same NeoVMTypedOps.h macros describe each typed opcode once for lowering, validation, disassembly and execution.</text>
+</svg>
+</div>
+<figcaption>Figure 6. Compiler stages exchange plain data; no stage keeps pointers into another stage's state after the hand-off.</figcaption>
+</figure>
+</section>
+
+<section id="files" class="wide">
+<h2><span class="no">10</span>Source map</h2>
+<div class="tablewrap">
+<table>
+<tr><th>Area</th><th>Files</th><th>Responsibility</th></tr>
+<tr><td>Public API</td><td><code>NeoCore.h/.cpp</code>, <code>NeoCoreHost*.h/.cpp</code>, <code>NeoCoreInstanceContext.h</code>, <code>NeoCoreValueBoundary.h/.inl</code>, <code>NeoCoreValues.inl</code>, <code>NeoCoreDebugger.h/.inl</code>, <code>NeoCoreDebugAccess.h</code>, <code>NeoCoreConsoleAccess.h</code>, <code>NeoCoreOptions.h</code></td><td>Runtime, Program, Instance, host bindings and schema, value conversion at the boundary, debugger, console and debug access points.</td></tr>
+<tr><td>Front end</td><td><code>NeoCoreCompiler.h/.cpp</code>, <code>NeoCoreTypes.h/.cpp</code>, <code>NeoCoreIR.h</code>, <code>NeoCoreBuiltins.h</code>, <code>NeoCoreDiagnostics.h</code>, <code>NeoCompileLimits.h</code>, <code>NeoCoreModules.h/.cpp</code>, <code>NeoCoreImage.h/.cpp</code>, <code>NeoCoreTextFile.h</code>, <code>NeoCoreScriptHost.h</code></td><td>Static language, type registry, typed IR, builtin surface, limits, module bundling, image container.</td></tr>
+<tr><td>Lowering and export</td><td><code>NeoParser.h/.cpp</code>, <code>NeoTextLoader.h/.cpp</code>, <code>NeoExport.h/.cpp</code>, <code>NeoStorageCompiler.inl</code>, <code>NeoNumberLiteral.h</code>, <code>NeoArchive.h</code></td><td>Instruction emission from the typed IR, storage inference, frame layout, image writing.</td></tr>
+<tr><td>Program and VM</td><td><code>NeoVM.h/.cpp</code>, <code>NeoVMInternal.h</code>, <code>NeoVMProgram.h/.cpp</code>, <code>NeoVMWorker.h/.cpp/.inl</code>, <code>NeoVMWorker_Handlers.inl</code>, <code>NeoVMWorker_Typed.inl</code>, <code>NeoVMWorker_Move.inl</code>, <code>NeoVMWorker_Var.inl</code>, <code>NeoVMTypedOps.h</code>, <code>NeoVMError.h</code>, <code>NeoConfig.h</code>, <code>NeoNumeric.h</code></td><td>Loader and validation, dispatch loop and handlers, calls and frames, errors, opcode tables, image version.</td></tr>
+<tr><td>Heap objects</td><td><code>NeoVMList.h/.cpp</code>, <code>NeoVMMap.h/.cpp</code>, <code>NeoVMSet.h/.cpp</code>, <code>NeoVMArray.h</code>, <code>NeoVMVector.h</code>, <code>NeoVMHash.h</code>, <code>NeoVMMemoryPool.h</code>, <code>NeoQueue.h</code>, <code>UTFString.h</code>, <code>NeoStringLimits.h</code></td><td>Collections, typed arrays, vector storage, hashing, pools and string utilities.</td></tr>
+<tr><td>Libraries</td><td><code>NeoLib.cpp</code>, <code>NeoLibDCall.h</code>, <code>NeoJson.h/.cpp</code>, <code>NeoJsonVendor.cpp</code>, <code>NeoTime.h/.cpp</code>, <code>NeoHttp.h</code>, <code>NeoRegex.h/.cpp</code></td><td>Builtin natives, JSON, time, HTTP transport interface, regular expressions.</td></tr>
+<tr><td>Backend shim</td><td><code>NeoScript.h</code>, <code>NeoScriptShim.cpp</code></td><td>The <code>IRuntime</code> interface and its implementation over the engine with handle tables.</td></tr>
+<tr><td>Hosts and tools</td><td><code>Samples/neocore</code>, <code>Samples/neocore/minigame</code>, <code>Samples/bench</code>, <code>Unity/NeoCore</code>, <code>Unity/com.neocore.unity</code>, <code>Tools/vscode-neocore</code>, <code>Tests</code></td><td>Console and servers, sample host, benchmarks, C ABI and Unity package, editor extension, regressions.</td></tr>
+</table>
+</div>
+<p class="muted">The typed VM migration is ongoing. <a href="StaticTyping.md">StaticTyping.md</a> lists the implemented subset and remaining milestones, and <a href="TypedStorage.md">TypedStorage.md</a> records the current storage rules; keep this page in step with both when the pipeline or ownership changes.</p>
+</section>
+
+</div>
+</div>
+</div>
+</body>
+</html>
