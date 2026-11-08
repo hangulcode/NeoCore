@@ -500,18 +500,25 @@ public:
         if (DeclaredType() == CallableStorageType()) value_->_int = static_cast<NS_INT>((NS_UINT(index) << 1) | 1);
         else { value_->_int = 0; value_->_fun_index = index; }
     }
-    VAR_TYPE DeclaredType() const { return boundary_ ? *boundary_ : fixed_; }
-    VAR_TYPE GetType() const
+    NEOS_FORCEINLINE VAR_TYPE DeclaredType() const { return boundary_ ? *boundary_ : fixed_; }
+    // 인터프리터의 경계 연산이 명령마다 부르므로 반드시 인라인한다. 숫자·없음·함수·반복자는 저장 표현이
+    // 곧 타입이라 먼저 돌려주고, 참조 저장만 고정 슬롯의 0 payload를 null로 푼다.
+    NEOS_FORCEINLINE VAR_TYPE GetType() const
     {
         const VAR_TYPE type = DeclaredType();
-        // 함수 슬롯은 같은 정적 함수 타입 안에서 이름 함수 ID와 캡처 포인터를 표현한다.
-        if (type == CallableStorageType())
-            return value_->_int == 0 ? VAR_NONE : (NS_UINT(value_->_int) & 1) ? VAR_FUN : VAR_CLOSURE;
-        if (type == ObjectIdStorageType()) return value_->_int == 0 ? VAR_NONE : VAR_INT;
+        if (type < VAR_FUN_NATIVE) return type;
+        if (type >= ObjectIdStorageType()) return StorageIdentityType(type);
         if (!boundary_ && (type >= VAR_STRING || type == VAR_FUN_NATIVE) && value_->_int == 0) return VAR_NONE;
         return type;
     }
-    void SetType(VAR_TYPE type) const
+    // 함수 슬롯은 같은 정적 함수 타입 안에서 이름 함수 ID와 캡처 포인터를 표현하고, 객체 ID 슬롯은 0을 null로 본다.
+    VAR_TYPE StorageIdentityType(VAR_TYPE type) const
+    {
+        if (type == CallableStorageType())
+            return value_->_int == 0 ? VAR_NONE : (NS_UINT(value_->_int) & 1) ? VAR_FUN : VAR_CLOSURE;
+        return value_->_int == 0 ? VAR_NONE : VAR_INT;
+    }
+    NEOS_FORCEINLINE void SetType(VAR_TYPE type) const
     {
         if (boundary_) *boundary_ = type;
         else
@@ -521,14 +528,14 @@ public:
                 (DeclaredType() == CallableStorageType() && (type == VAR_FUN || type == VAR_CLOSURE)));
         }
     }
-    void ClearType() const { value_->_int = 0; if (boundary_) *boundary_ = VAR_NONE; }
+    NEOS_FORCEINLINE void ClearType() const { value_->_int = 0; if (boundary_) *boundary_ = VAR_NONE; }
     void SetVecType(int count) const { SetType(count == 2 ? VAR_VEC : count == 3 ? VAR_VEC3 : VAR_VEC4); }
     void SetInlineVec(float x, float y) const { SetVecType(2); value_->_vecXY[0] = x; value_->_vecXY[1] = y; }
-    bool IsAllocType() const { return GetType() >= VAR_STRING; }
-    bool IsContainerType() const { return GetType() >= VAR_MAP; }
-    bool IsNumber() const { return GetType() == VAR_INT || GetType() == VAR_FLOAT; }
+    NEOS_FORCEINLINE bool IsAllocType() const { return GetType() >= VAR_STRING; }
+    NEOS_FORCEINLINE bool IsContainerType() const { return GetType() >= VAR_MAP; }
+    NEOS_FORCEINLINE bool IsNumber() const { return GetType() == VAR_INT || GetType() == VAR_FLOAT; }
     bool IsVector() const { return VectorComponentCount() != 0; }
-    bool IsTrue() const { return GetType() == VAR_BOOL && value_->_bl; }
+    NEOS_FORCEINLINE bool IsTrue() const { return GetType() == VAR_BOOL && value_->_bl; }
     int VectorComponentCount() const { const VAR_TYPE t = GetType(); return t == VAR_VEC ? 2 : t == VAR_VEC3 ? 3 : t == VAR_VEC4 ? 4 : 0; }
     NS_FLOAT GetFloatNumber() const { return GetType() == VAR_INT ? static_cast<NS_FLOAT>(value_->_int) : GetType() == VAR_FLOAT ? value_->_float : 0; }
     float VectorComponent(int index) const;

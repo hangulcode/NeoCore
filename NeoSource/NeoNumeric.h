@@ -59,14 +59,15 @@ inline NS_INT NeoFloatToInt(Float value)
 }
 #if defined(_M_X64) || defined(__x86_64__)
 // x64 변환의 최소 정수 결과만 따로 분류하여 NaN과 범위 초과를 처리한다.
-inline NS_INT NeoFloatToInt(float value)
+// 인터프리터의 변환 명령이 부른다. 디스패치 루프가 커서 컴파일러가 스스로 인라인하지 않으므로 강제한다.
+NEOS_FORCEINLINE NS_INT NeoFloatToInt(float value)
 {
 	const NS_INT r = _mm_cvttss_si64(_mm_set_ss(value));
 	if (r != NS_INT_MIN) return r;
 	if (value != value) return 0;
 	return value > 0.0f ? NS_INT_MAX : NS_INT_MIN;
 }
-inline NS_INT NeoFloatToInt(double value)
+NEOS_FORCEINLINE NS_INT NeoFloatToInt(double value)
 {
 	const NS_INT r = _mm_cvttsd_si64(_mm_set_sd(value));
 	if (r != NS_INT_MIN) return r;

@@ -13,6 +13,12 @@ NEOS_NOINLINE void StoreMapReference(ValueRef result, ValueRef found)
     *result = value;
 }
 
+// 키가 없을 때의 오류 문자열 생성은 드문 경로다. 핫 핸들러에 std::string 임시와 그 해제 코드를 남기지 않는다.
+NEOS_NOINLINE void MapKeyNotFound(VarInfo* key, VAR_TYPE keyType)
+{
+    SetErrorFormat("map key not found: %s", ToString(ValueRef(key, keyType)).c_str());
+}
+
 template<bool StringKey, bool Contains>
 NEOS_FORCEINLINE void TypedMapRead(const SVMOperation& op)
 {
@@ -30,7 +36,7 @@ NEOS_FORCEINLINE void TypedMapRead(const SVMOperation& op)
     if (Contains)
         StoreNumberBool(GetVarRawF1(op), found != nullptr);
     else if (!found)
-        SetErrorFormat("map key not found: %s", ToString(ValueRef(key, StringKey ? VAR_STRING : VAR_INT)).c_str());
+        MapKeyNotFound(key, StringKey ? VAR_STRING : VAR_INT);
     else
     {
         ValueRef result = GetVarPtr1(op);
@@ -361,8 +367,10 @@ NEOS_NOINLINE void TypedIntegerShift(const SVMOperation& op)
 }
 
 // Owner: 0은 목록, 1은 정수 키 맵, 2는 문자열 키 맵이다. 값의 타입은 템플릿으로 고정한다.
+// 원소는 태그를 가진 경계 값이므로 뷰를 만들지 않고 포인터를 돌려준다. 뷰를 거치면 24바이트 임시가
+// 스택에 내려가고 태그 판정이 함수 호출로 남았다.
 template<int Owner>
-NEOS_FORCEINLINE ValueRef ScalarContainerElement(VarInfo* receiver, VarInfo* key, bool write)
+NEOS_FORCEINLINE BoundaryValue* ScalarContainerElement(VarInfo* receiver, VarInfo* key, bool write)
 {
     if (receiver->_int == 0)
     {
@@ -377,43 +385,50 @@ NEOS_FORCEINLINE ValueRef ScalarContainerElement(VarInfo* receiver, VarInfo* key
             SetError(write ? RTE_ARRAY_INDEX_WRITE : RTE_ARRAY_INDEX_READ);
             return nullptr;
         }
-        return &receiver->_lst->_Bucket[index];
+        // operator&가 뷰를 만들므로 포인터 산술로 원소 주소를 얻는다.
+        return receiver->_lst->_Bucket + index;
     }
     if (Owner == 2 && key->_str == nullptr)
     {
         if (write) SetError("map key cannot be null");
-        else SetErrorFormat("map key not found: %s", ToString(ValueRef(key, VAR_STRING)).c_str());
+        else MapKeyNotFound(key, VAR_STRING);
         return nullptr;
     }
     ValueRef found = Owner == 1 ? receiver->_tbl->FindInt(key->_int) : receiver->_tbl->FindString(key->_str);
     if (!found && !write)
-        SetErrorFormat("map key not found: %s", ToString(ValueRef(key, Owner == 1 ? VAR_INT : VAR_STRING)).c_str());
-    return found;
+        MapKeyNotFound(key, Owner == 1 ? VAR_INT : VAR_STRING);
+    // 맵 값은 경계 값 노드다. 없으면 nullptr다.
+    return static_cast<BoundaryValue*>(found.Data());
 }
 
 template<int Owner, VAR_TYPE Value>
 NEOS_FORCEINLINE void ScalarContainerLoad(VarInfo* result, VarInfo* receiver, VarInfo* key)
 {
-    ValueRef found = ScalarContainerElement<Owner>(receiver, key, false);
-    if (!found) return;
-    assert(found.GetType() == Value);
-    if (Value == VAR_INT) StoreNumberInt(result, found->_int);
-    else if (Value == VAR_FLOAT) StoreNumberFloat(result, found->_float);
-    else StoreNumberBool(result, found->_bl);
+    const BoundaryValue* found = ScalarContainerElement<Owner>(receiver, key, false);
+    if (found == nullptr) return;
+    assert(found->GetType() == Value);
+    if (Value == VAR_INT) result->_int = found->_int;
+    else if (Value == VAR_FLOAT) result->_float = found->_float;
+    else { result->_int = 0; result->_bl = found->_bl; }
 }
 
 template<int Owner, VAR_TYPE Value>
 NEOS_FORCEINLINE void ScalarContainerStore(VarInfo* receiver, VarInfo* key, VarInfo* value)
 {
-    ValueRef target = ScalarContainerElement<Owner>(receiver, key, true);
-    if (IsErrorTrap()) return;
-    if (target)
+    BoundaryValue* target = ScalarContainerElement<Owner>(receiver, key, true);
+    if (target == nullptr)
     {
-        if (Value == VAR_INT) StoreNumberInt(target, value->_int);
-        else if (Value == VAR_FLOAT) StoreNumberFloat(target, value->_float);
-        else StoreNumberBool(target, value->_bl);
+        // 목록은 nullptr가 곧 오류다. 맵은 오류가 아니면 키가 없는 것이라 새 항목을 넣는다.
+        if (Owner != 0 && !IsErrorTrap())
+            receiver->_tbl->Insert(ValueRef(key, Owner == 1 ? VAR_INT : VAR_STRING), ValueRef(value, Value));
+        return;
     }
-    else receiver->_tbl->Insert(ValueRef(key, Owner == 1 ? VAR_INT : VAR_STRING), ValueRef(value, Value));
+    // 원소 타입이 고정된 컨테이너라 참조 값이 있을 일은 없지만, 태그 한 번으로 드문 경로를 가른다.
+    if (target->IsAllocType()) ReleaseBeforeNumber(target);
+    target->SetType(Value);
+    if (Value == VAR_INT) target->_int = value->_int;
+    else if (Value == VAR_FLOAT) target->_float = value->_float;
+    else { target->_int = 0; target->_bl = value->_bl; }
 }
 
 template<NeoArrayElementType Element>

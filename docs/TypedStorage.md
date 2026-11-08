@@ -35,6 +35,12 @@ not stored in each VM slot and the interpreter's hot paths do not construct it.
 Typed instructions take `VarInfo*` operands (`GetVarRaw*`); only generic bridge
 operations, collections and natives build the typed view (`GetVarPtr*`). For a
 fixed slot, `SetType` checks the contract in Debug and never writes a type tag.
+The view's type accessors are force-inlined: the dispatch loop is too large for
+the compiler to inline them on its own, and an out-of-line `GetType` call spills
+the whole view to the stack. Typed scalar element loads and stores address the
+container's boundary element directly and write its tag and payload without a
+view; the rare "map key not found" formatting lives in an out-of-line helper so
+the hot handlers carry no string temporaries.
 
 Null owning references use a zero pointer, and null host objects use a zero ID.
 Numeric bits are never inspected as an ownership state. A function slot uses the
