@@ -68,6 +68,10 @@ and host libraries rebuilt. Loop constant hoisting moves numeric constants used
 inside loops into hidden frame slots before inference runs; each function keeps
 its (slot, constant) pairs so that inference still resolves a struct field key
 that was hoisted, instead of binding the read result to an unrelated kind.
+Hoisting also rewrites the source operands of typed numeric instructions
+(arithmetic, comparisons, comparison jumps and conversions, taken from the
+typed-op metadata), so loop arithmetic with constants runs with local operands;
+the runtime handlers read such operands through a single frame base.
 
 Before assigning physical slots, the exporter drops temporary slots that no
 remaining instruction, aggregate window, range descriptor, capture, or debugger

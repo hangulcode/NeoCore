@@ -186,6 +186,26 @@ unchanged, but their addresses move. This implicates changes around interpreter 
 generation/layout; a specific cache or branch-prediction cause has not been isolated.
 Do not describe these regressions as fixed or attribute them to extra runtime type checks.
 
+**Follow-up (2026-11-08): code placement, not the return split.** The F64 handlers of
+`c74df0c` and of the same tree with the single return handler restored are byte-identical;
+only their addresses differ. Inserting 16, 32 or 48 bytes of `nop` at the top of
+`RunInternal<false,false>` (and nowhere else) moved `float_math` between about 151 and
+185 ms in both sources: fast when the 45-byte dispatch sequence starts at offset 0 or 16
+of a 64-byte line, slow at 32 or 48. `c74df0c` happened to land at 32 and the restored
+handler at 0. The split return handler is therefore kept. Hardware counters were not
+available, so the micro-architectural mechanism is not identified. When comparing builds,
+record the dispatch offset and compare at equal offsets.
+
+Two items of the list above were then implemented. Loop-constant hoisting now covers
+typed numeric instructions, and the runtime arithmetic and comparison-jump handlers read
+operands through one frame base when every operand is local. Compared at each of the four
+dispatch offsets against `c74df0c`, the eight-case sum fell by 6–8%, `loop_sum` by about
+15% and `func_call` by about 9%, and `float_math` stayed at 154–155 ms at every offset.
+`string_ops` moved by a few milliseconds in either direction with the offset. Keeping the
+code pointer in a register instead of the worker member was also tried and measured
+slower (extra register copies at the dispatch head), so it was not kept. The session
+record is [FourWayBenchmark.md](FourWayBenchmark.md).
+
 Validation: Windows Release and Debug CTest each passed 84/84, including protocol and
 C ABI integration checks. Changed C++ files passed Android NDK Clang and Linux GCC C++11
 syntax checks; GCC still reports the existing anonymous-struct pedantic warnings. Image

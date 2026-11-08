@@ -7012,8 +7012,18 @@ static bool IsRelativeJumpOp(OperationCode op)
 // 슬롯만 표시한다. 즉값(n23) / 점프 offset / 인자 수 / 함수 인덱스는 절대 포함하지 않는다 —
 // 그런 필드를 슬롯 인덱스로 재작성하면 코드가 조용히 깨진다.
 // bit1 = n2, bit2 = n3.
-static int HoistableOperandMask(OperationCode op)
+static int HoistableOperandMask(const SVMOperation& v)
 {
+	const OperationCode op = v.Code();
+	// 타입 있는 숫자 명령(산술·비교·비교 점프·변환)은 메타데이터의 읽기 피연산자가 곧 슬롯이다.
+	// 비교 점프의 n1은 점프 거리라 slots에 없다. 제자리 산술은 n3를 쓰지 않으므로 뺀다.
+	// 모두 지역이 된 명령은 실행 시 프레임 기준 하나로 피연산자를 읽는다.
+	if (const TypedOpInfo* typed = GetTypedOpInfo(op))
+	{
+		int mask = (typed->slots & ~typed->writes) & 0x6;
+		if (!typed->comparison && (v.argFlag & NEOS_OP_ARITH_UPDATE)) mask &= ~0x4;
+		return mask;
+	}
 	switch (op)
 	{
 	case NOP_MOV:			// n1 = dest
@@ -7074,7 +7084,7 @@ static void HoistLoopConstants(SFunctions& funs, u8* pCode, int codeSize,
 	{
 		if (inLoop[i] == 0)
 			continue;
-		const int mask = HoistableOperandMask(ops[i].Code());
+		const int mask = HoistableOperandMask(ops[i]);
 		if ((mask & 0x2) && IsStaticOperand(ops[i].n2)) useInLoop[ops[i].n2]++;
 		if ((mask & 0x4) && IsStaticOperand(ops[i].n3)) useInLoop[ops[i].n3]++;
 
@@ -7128,7 +7138,7 @@ static void HoistLoopConstants(SFunctions& funs, u8* pCode, int codeSize,
 
 	for (int i = 0; i < n; i++)
 	{
-		const int mask = HoistableOperandMask(ops[i].Code());
+		const int mask = HoistableOperandMask(ops[i]);
 		if (mask & 0x2)
 		{
 			std::map<short, short>::iterator it = remap.find(ops[i].n2);

@@ -584,9 +584,26 @@ NEOS_FORCEINLINE static bool IntegerStepCanFail(ArithmeticOp sub)
 }
 
 // 런타임 opcode 핸들러. 피연산자를 읽어 한 단계를 실행한다. 제자리 형식은 n1이 왼쪽 입력이고 n2가 오른쪽이다.
+// 쓰는 피연산자가 모두 지역이면 프레임 기준 하나로 읽는다. 피연산자마다 위치 비트를 보고 지역·전역 기준을
+// 다시 읽는 일반 경로보다 명령이 짧다. 루프 상수는 hoisting으로 지역이 되므로 반복 안의 연산 대부분이 여기로 온다.
+template<ArithmeticOp Sub, bool Update>
+NEOS_FORCEINLINE static unsigned ArithmeticLocalMask()
+{
+    return NEOS_ARG_N1_LOCAL | NEOS_ARG_N2_LOCAL | ((Update || Sub == ArithmeticOp::Neg) ? 0u : static_cast<unsigned>(NEOS_ARG_N3_LOCAL));
+}
 template<ArithmeticOp Sub, bool Update>
 NEOS_FORCEINLINE void I64ArithmeticRT(const SVMOperation& OP)
 {
+    const unsigned local = ArithmeticLocalMask<Sub, Update>();
+    if ((OP.argFlag & local) == local)
+    {
+        VarInfo* const frame = m_pVarStack_Pointer;
+        VarInfo* value = frame + OP.n1;
+        const NS_INT a = Update ? value->_int : frame[OP.n2]._int;
+        const NS_INT b = Sub == ArithmeticOp::Neg ? 0 : (Update ? frame[OP.n2]._int : frame[OP.n3]._int);
+        IntegerStep<Sub>(value, a, b);
+        return;
+    }
     VarInfo* value = GetVarRawF1(OP);
     const NS_INT a = Update ? value->_int : GetVarRaw2(OP)->_int;
     const NS_INT b = Sub == ArithmeticOp::Neg ? 0 : (Update ? GetVarRaw2(OP)->_int : GetVarRaw3(OP)->_int);
@@ -595,6 +612,16 @@ NEOS_FORCEINLINE void I64ArithmeticRT(const SVMOperation& OP)
 template<ArithmeticOp Sub, bool Update>
 NEOS_FORCEINLINE void F64ArithmeticRT(const SVMOperation& OP)
 {
+    const unsigned local = ArithmeticLocalMask<Sub, Update>();
+    if ((OP.argFlag & local) == local)
+    {
+        VarInfo* const frame = m_pVarStack_Pointer;
+        VarInfo* value = frame + OP.n1;
+        const NS_FLOAT a = Update ? value->_float : frame[OP.n2]._float;
+        const NS_FLOAT b = Sub == ArithmeticOp::Neg ? 0 : (Update ? frame[OP.n2]._float : frame[OP.n3]._float);
+        FloatStep<Sub>(value, a, b);
+        return;
+    }
     VarInfo* value = GetVarRawF1(OP);
     const NS_FLOAT a = Update ? value->_float : GetVarRaw2(OP)->_float;
     const NS_FLOAT b = Sub == ArithmeticOp::Neg ? 0 : (Update ? GetVarRaw2(OP)->_float : GetVarRaw3(OP)->_float);
@@ -610,14 +637,27 @@ NEOS_FORCEINLINE void F64CompareRT(const SVMOperation& OP)
 {
     StoreNumberBool(GetVarRawF1(OP), ((OP.argFlag & NEOS_OP_COMPARE_INVERT) == 0) == CompareStep<Sub>(GetVarRaw2(OP)->_float, GetVarRaw3(OP)->_float));
 }
+// 비교 점프의 n1은 점프 거리다. 두 입력이 지역이면 프레임 기준 하나로 읽는다.
 template<ComparisonOp Sub>
 NEOS_FORCEINLINE void I64JumpCompareRT(const SVMOperation& OP)
 {
+    if ((OP.argFlag & (NEOS_ARG_N2_LOCAL | NEOS_ARG_N3_LOCAL)) == (NEOS_ARG_N2_LOCAL | NEOS_ARG_N3_LOCAL))
+    {
+        const VarInfo* const frame = m_pVarStack_Pointer;
+        if (((OP.argFlag & NEOS_OP_COMPARE_INVERT) == 0) == CompareStep<Sub>(frame[OP.n2]._int, frame[OP.n3]._int)) SetCodeIncPtr(OP.n1);
+        return;
+    }
     if (((OP.argFlag & NEOS_OP_COMPARE_INVERT) == 0) == CompareStep<Sub>(GetVarRaw2(OP)->_int, GetVarRaw3(OP)->_int)) SetComparisonJump(OP.n1);
 }
 template<ComparisonOp Sub>
 NEOS_FORCEINLINE void F64JumpCompareRT(const SVMOperation& OP)
 {
+    if ((OP.argFlag & (NEOS_ARG_N2_LOCAL | NEOS_ARG_N3_LOCAL)) == (NEOS_ARG_N2_LOCAL | NEOS_ARG_N3_LOCAL))
+    {
+        const VarInfo* const frame = m_pVarStack_Pointer;
+        if (((OP.argFlag & NEOS_OP_COMPARE_INVERT) == 0) == CompareStep<Sub>(frame[OP.n2]._float, frame[OP.n3]._float)) SetCodeIncPtr(OP.n1);
+        return;
+    }
     if (((OP.argFlag & NEOS_OP_COMPARE_INVERT) == 0) == CompareStep<Sub>(GetVarRaw2(OP)->_float, GetVarRaw3(OP)->_float)) SetComparisonJump(OP.n1);
 }
 
