@@ -51,8 +51,11 @@ Combinations without a runtime opcode fall back to the family handler, which
 switches on the low-bit sub-operation. Disassembly maps runtime opcodes back to
 the image form. Combined operation keys remain compiler and validation metadata.
 Invalid sub-operations are rejected when loading an image. Existing images must
-be regenerated for image version `0163`. This transition preserves evaluation
-order and value-dependent runtime failures; it is not a performance claim.
+be regenerated: this transition introduced image version `0163`, and version
+`0164` followed when global getter folding moved from the exporter into the
+parser and the loader stopped accepting the exporter's folded copy form. This
+transition preserves evaluation order and value-dependent runtime failures; it
+is not a performance claim.
 
 ## Implementation boundary
 

@@ -345,19 +345,8 @@ bool CNeoVMProgram::Load(CNArchive& ar, std::string* err)
 		if (outgoing >= 0)
 			fun._stackSlotCount = (std::max)(fun._stackSlotCount, fun._localAddCount + outgoing + 1);
 	}
-	// 피연산자 값으로 프레임을 늘리면 잘못된 큰 인덱스도 정상으로 인정하게 된다.
-	// 호출 인자 수로 범위를 먼저 확정하고, 접힌 getter가 쓰는 반환 슬롯만 따로 허용한다.
-	for (size_t i = 0; i < code.size(); ++i)
-	{
-		if (codeOwners[i] < 0) continue;
-		SFunctionTable& fun = functions[codeOwners[i]];
-		const SVMOperation& op = code[i];
-		const short slots[] = { op.n1, op.n2, op.n3 };
-		const u8 flags[] = { NEOS_ARG_N1_LOCAL, NEOS_ARG_N2_LOCAL, NEOS_ARG_N3_LOCAL };
-		for (int n = 0; n < 3; ++n)
-			if ((op.argFlag & flags[n]) && slots[n] == fun._localAddCount)
-				fun._stackSlotCount = (std::max)(fun._stackSlotCount, fun._localAddCount + 1);
-	}
+	// 피연산자 값으로 프레임을 늘리면 잘못된 큰 인덱스도 정상으로 인정하게 된다. 범위는 호출 인자 수로만 정한다.
+	// 내보내기가 접던 getter의 창 반환 슬롯 쓰기는 파서 접기로 사라져 따로 허용하지 않는다.
 	// WREF consumes its next instruction only for stored vectors. Validate the
 	// immutable pair once here, so ordinary collection writes need no hot checks.
 	auto IsRefWriteOpcode = [](OperationCode op) {
