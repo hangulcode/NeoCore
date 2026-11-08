@@ -1,0 +1,109 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 540" width="1000" height="540" role="img" aria-label="VM core class relationships">
+<rect width="100%" height="100%" fill="#ffffff"/>
+<style>
+  text { font: 12px "Segoe UI", "Helvetica Neue", Arial, sans-serif; fill: #1a1f26; }
+  .t { font: 600 13px "Segoe UI", "Helvetica Neue", Arial, sans-serif; fill: #1a1f26; }
+  .m { font: 11px "Cascadia Mono", Consolas, Menlo, monospace; fill: #5b6774; }
+  .lbl { font: 11px "Segoe UI", "Helvetica Neue", Arial, sans-serif; fill: #5b6774; }
+  .stage { fill: #e2eff1; stroke: #0f6f7f; stroke-width: 1.2; }
+  .cls { fill: #ffffff; stroke: #c9d1da; stroke-width: 1.2; }
+  .head { fill: #eef3f5; stroke: none; }
+  .edge { stroke: #6b7682; stroke-width: 1.4; fill: none; }
+  .own { stroke: #0f6f7f; stroke-width: 1.7; fill: none; }
+  .byte { fill: #ffffff; stroke: #c9d1da; stroke-width: 1.2; }
+  .byte.hi { fill: #e2eff1; stroke: #0f6f7f; }
+  .slot { fill: #ffffff; stroke: #c9d1da; stroke-width: 1.2; }
+  .slot.own { fill: #e2eff1; stroke: #0f6f7f; }
+  .brace { stroke: #5b6774; stroke-width: 1; fill: none; }
+</style>
+  <defs>
+    <marker id="a3" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#6b7682"/></marker>
+    <marker id="o3" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#0f6f7f"/></marker>
+  </defs>
+  <rect class="cls" x="10" y="20" width="210" height="80" rx="8"/>
+  <rect class="head" x="11" y="21" width="208" height="26" rx="7"/>
+  <text class="t" x="22" y="39">NeoVMSystem</text>
+  <text class="m" x="22" y="66">CreateVM() CreateProgram()</text>
+  <text class="m" x="22" y="82">Compile()</text>
+
+  <rect class="cls" x="270" y="20" width="310" height="138" rx="8"/>
+  <rect class="head" x="271" y="21" width="308" height="26" rx="7"/>
+  <text class="t" x="282" y="39">CNeoVM</text>
+  <text class="m" x="282" y="66">pools: StringInfo VecInfo ListInfo MapInfo</text>
+  <text class="m" x="282" y="82">SetInfo ArrayInfo ClosureInfo CoroutineInfo</text>
+  <text class="m" x="282" y="98">NeoExecContextPool, loaded programs</text>
+  <text class="m" x="282" y="114">cycle collector, allocation stats</text>
+  <text class="m" x="282" y="130">Var_Release() Move() CopyKnownStorage()</text>
+  <text class="m" x="282" y="146">IHttpTransport, regex limits</text>
+
+  <rect class="cls" x="630" y="20" width="360" height="138" rx="8"/>
+  <rect class="head" x="631" y="21" width="358" height="26" rx="7"/>
+  <text class="t" x="642" y="39">CNeoVMProgram (immutable, ref-counted)</text>
+  <text class="m" x="642" y="66">vector&lt;SVMOperation&gt; code</text>
+  <text class="m" x="642" y="82">vector&lt;SFunctionTable&gt; functions</text>
+  <text class="m" x="642" y="98">globalTypes, staticValues, switchTables</text>
+  <text class="m" x="642" y="114">rangeJumps, debugData</text>
+  <text class="m" x="642" y="130">Load() VerifyCode() PatchLocalOps()</text>
+  <text class="m" x="642" y="146">FormatDebugOperation()</text>
+
+  <rect class="cls" x="270" y="220" width="340" height="160" rx="8"/>
+  <rect class="head" x="271" y="221" width="338" height="26" rx="7"/>
+  <text class="t" x="282" y="239">CNeoVMWorker : INeoVMWorker, CoroutineBase</text>
+  <text class="m" x="282" y="266">CNeoVMProgram* _pProgram, CNeoVM* _pVM</text>
+  <text class="m" x="282" y="282">globals VarInfo[], m_pFunction, slot type pointers</text>
+  <text class="m" x="282" y="298">registers: code ptr, frame base, stack ptr, plan</text>
+  <text class="m" x="282" y="314">CoroutineInfo* m_pMainCtx, m_pCur</text>
+  <text class="m" x="282" y="330">RunInternal&lt;TIMEOUT,DEBUG&gt;() ExecuteColdOp()</text>
+  <text class="m" x="282" y="346">Call() CallNative() RunHostCall() testCall()</text>
+  <text class="m" x="282" y="362">ReleaseContextFrames() StopCoroutine()</text>
+
+  <rect class="cls" x="660" y="220" width="330" height="128" rx="8"/>
+  <rect class="head" x="661" y="221" width="328" height="26" rx="7"/>
+  <text class="t" x="672" y="239">CoroutineInfo : CoroutineBase</text>
+  <text class="m" x="672" y="266">ValueStack m_sVarStack (VarInfo[])</text>
+  <text class="m" x="672" y="282">SimpleVector&lt;SCallStack&gt; call stack</text>
+  <text class="m" x="672" y="298">SNativeFrame[], closure call states</text>
+  <text class="m" x="672" y="314">saved registers (_info), state, async waits</text>
+  <text class="m" x="672" y="330">_program for frame-walk cleanup</text>
+
+  <rect class="cls" x="10" y="220" width="210" height="112" rx="8"/>
+  <rect class="head" x="11" y="221" width="208" height="26" rx="7"/>
+  <text class="t" x="22" y="239">neo_libs, SystemFun</text>
+  <text class="m" x="22" y="266">NeoLib.cpp builtin natives</text>
+  <text class="m" x="22" y="282">NeoJson, NeoTime, NeoRegex,</text>
+  <text class="m" x="22" y="298">NeoHttp via transport</text>
+  <text class="m" x="22" y="314">entered through CallNative</text>
+
+  <rect class="cls" x="10" y="420" width="470" height="104" rx="8"/>
+  <rect class="head" x="11" y="421" width="468" height="26" rx="7"/>
+  <text class="t" x="22" y="439">Value representations</text>
+  <text class="m" x="22" y="466">VarInfo 8 B payload; BoundaryValue = VarInfo + tag</text>
+  <text class="m" x="22" y="482">ValueRef { VarInfo* value_; VAR_TYPE* type_ } borrowed view</text>
+  <text class="m" x="22" y="498">heap: StringInfo VecInfo ListInfo MapInfo SetInfo ArrayInfo</text>
+  <text class="m" x="22" y="514">ClosureInfo AsyncInfo (reference counted, pooled)</text>
+
+  <rect class="cls" x="520" y="420" width="470" height="104" rx="8"/>
+  <rect class="head" x="521" y="421" width="468" height="26" rx="7"/>
+  <text class="t" x="532" y="439">Per-function layout from the image</text>
+  <text class="m" x="532" y="466">SFunctionTable: _slotTypes, _slotTypesFlagged, _slotInfo</text>
+  <text class="m" x="532" y="482">_argsCount, _ownedCount, _releaseFirst, _releaseCount</text>
+  <text class="m" x="532" y="498">CallStoragePlan: types[], policies[], zeroFirst, zeroEnd</text>
+  <text class="m" x="532" y="514">SlotLayout, ProgramRangeJump, ProgramSwitchTable</text>
+
+  <path class="own" d="M220,60 L270,60" marker-end="url(#o3)"/>
+  <path class="own" d="M580,90 L630,90" marker-end="url(#o3)"/>
+  <text class="lbl" x="588" y="82">loads</text>
+  <path class="own" d="M440,158 L440,220" marker-end="url(#o3)"/>
+  <text class="lbl" x="448" y="194">creates workers</text>
+  <path class="edge" d="M610,280 L660,280" marker-end="url(#a3)"/>
+  <text class="lbl" x="616" y="272">binds context</text>
+  <path class="edge" d="M610,250 L625,250 L625,180 L810,180 L810,158" marker-end="url(#a3)"/>
+  <text class="lbl" x="700" y="175">executes</text>
+  <path class="edge" d="M270,290 L220,290" marker-end="url(#a3)"/>
+  <path class="edge" d="M440,380 L440,420" marker-end="url(#a3)"/>
+  <text class="lbl" x="448" y="404">reads and writes</text>
+  <path class="edge" d="M825,348 L825,420" marker-end="url(#a3)"/>
+  <text class="lbl" x="832" y="388">frames follow</text>
+  <path class="own" d="M330,158 L330,190 L245,190 L245,420" marker-end="url(#o3)"/>
+  <text class="lbl" x="130" y="404">pools own objects</text>
+</svg>

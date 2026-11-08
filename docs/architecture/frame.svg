@@ -1,0 +1,36 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 170" width="1000" height="170" role="img" aria-label="Frame layout">
+<rect width="100%" height="100%" fill="#ffffff"/>
+<style>
+  text { font: 12px "Segoe UI", "Helvetica Neue", Arial, sans-serif; fill: #1a1f26; }
+  .t { font: 600 13px "Segoe UI", "Helvetica Neue", Arial, sans-serif; fill: #1a1f26; }
+  .m { font: 11px "Cascadia Mono", Consolas, Menlo, monospace; fill: #5b6774; }
+  .lbl { font: 11px "Segoe UI", "Helvetica Neue", Arial, sans-serif; fill: #5b6774; }
+  .stage { fill: #e2eff1; stroke: #0f6f7f; stroke-width: 1.2; }
+  .cls { fill: #ffffff; stroke: #c9d1da; stroke-width: 1.2; }
+  .head { fill: #eef3f5; stroke: none; }
+  .edge { stroke: #6b7682; stroke-width: 1.4; fill: none; }
+  .own { stroke: #0f6f7f; stroke-width: 1.7; fill: none; }
+  .byte { fill: #ffffff; stroke: #c9d1da; stroke-width: 1.2; }
+  .byte.hi { fill: #e2eff1; stroke: #0f6f7f; }
+  .slot { fill: #ffffff; stroke: #c9d1da; stroke-width: 1.2; }
+  .slot.own { fill: #e2eff1; stroke: #0f6f7f; }
+  .brace { stroke: #5b6774; stroke-width: 1; fill: none; }
+</style>
+  <text class="t" x="10" y="20">One frame on the context's value stack (8-byte slots)</text>
+  <rect class="slot" x="10" y="34" width="90" height="46" rx="6"/>
+  <text class="m" x="18" y="52">slot 0</text><text x="18" y="70">result</text>
+  <rect class="slot" x="104" y="34" width="150" height="46" rx="6"/>
+  <text class="m" x="112" y="52">1 .. args</text><text x="112" y="70">arguments</text>
+  <rect class="slot own" x="258" y="34" width="190" height="46" rx="6"/>
+  <text class="m" x="266" y="52">owned block</text><text x="266" y="70">strings, collections, closures</text>
+  <rect class="slot" x="452" y="34" width="230" height="46" rx="6"/>
+  <text class="m" x="460" y="52">numeric locals and temporaries</text><text x="460" y="70">int, float, bool, inline Vector2</text>
+  <rect class="slot" x="686" y="34" width="304" height="46" rx="6"/>
+  <text class="m" x="694" y="52">outgoing call windows</text><text x="694" y="70">result + arguments of each call this frame makes</text>
+  <path class="brace" d="M104,90 L104,98 L448,98 L448,90"/>
+  <text class="lbl" x="150" y="114">LeaveFrame releases [_releaseFirst, _releaseCount): only owned slots, nothing when the frame has none</text>
+  <path class="brace" d="M258,124 L258,132 L448,132 L448,124"/>
+  <text class="lbl" x="266" y="148">EnterFrame zeroes only this block</text>
+  <text class="lbl" x="686" y="114">PREPARE_CALL zeroes only the owning window slots</text>
+  <text class="lbl" x="686" y="130">(skipped entirely for numeric direct calls)</text>
+</svg>

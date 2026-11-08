@@ -360,7 +360,7 @@ Debug controls configure the next stop; execution remains in the instance API.
 
 | Document or tool | Status |
 | --- | --- |
-| [Architecture](docs/Architecture.html) | Pipeline from source to execution, VM and API class relationship diagrams, source map (open the HTML file in a browser) |
+| [Architecture](docs/Architecture.md) | Pipeline from source to execution, VM and API class relationship diagrams, source map; [Architecture.html](docs/Architecture.html) is the same content with page styling for local viewing |
 | [Static language](docs/StaticTyping.md) | NeoCore rules, current scope, and remaining work |
 | [Typed host bindings](docs/HostBindings.md) | C++ schema, object IDs, property calls, and lifetime/reentry contract |
 | `NeoSource/NeoCore.h`, `neocore` | Static frontend entry points |

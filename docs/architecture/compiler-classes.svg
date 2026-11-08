@@ -1,0 +1,84 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 400" width="1000" height="400" role="img" aria-label="Compiler class relationships">
+<rect width="100%" height="100%" fill="#ffffff"/>
+<style>
+  text { font: 12px "Segoe UI", "Helvetica Neue", Arial, sans-serif; fill: #1a1f26; }
+  .t { font: 600 13px "Segoe UI", "Helvetica Neue", Arial, sans-serif; fill: #1a1f26; }
+  .m { font: 11px "Cascadia Mono", Consolas, Menlo, monospace; fill: #5b6774; }
+  .lbl { font: 11px "Segoe UI", "Helvetica Neue", Arial, sans-serif; fill: #5b6774; }
+  .stage { fill: #e2eff1; stroke: #0f6f7f; stroke-width: 1.2; }
+  .cls { fill: #ffffff; stroke: #c9d1da; stroke-width: 1.2; }
+  .head { fill: #eef3f5; stroke: none; }
+  .edge { stroke: #6b7682; stroke-width: 1.4; fill: none; }
+  .own { stroke: #0f6f7f; stroke-width: 1.7; fill: none; }
+  .byte { fill: #ffffff; stroke: #c9d1da; stroke-width: 1.2; }
+  .byte.hi { fill: #e2eff1; stroke: #0f6f7f; }
+  .slot { fill: #ffffff; stroke: #c9d1da; stroke-width: 1.2; }
+  .slot.own { fill: #e2eff1; stroke: #0f6f7f; }
+  .brace { stroke: #5b6774; stroke-width: 1; fill: none; }
+</style>
+  <defs>
+    <marker id="a4" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#6b7682"/></marker>
+  </defs>
+  <rect class="cls" x="10" y="20" width="300" height="138" rx="8"/>
+  <rect class="head" x="11" y="21" width="298" height="26" rx="7"/>
+  <text class="t" x="22" y="39">NeoCoreCompiler (static front end)</text>
+  <text class="m" x="22" y="66">CompileStaticSource(source, result, schema, defines)</text>
+  <text class="m" x="22" y="82">tokenizer, Statement and Expression trees, checker</text>
+  <text class="m" x="22" y="98">TypeRegistry types; TypedIR ir</text>
+  <text class="m" x="22" y="114">StaticCompileResult: signatures, symbols,</text>
+  <text class="m" x="22" y="130">diagnostics, debug symbols</text>
+  <text class="m" x="22" y="146">inputs: HostSchema, CompileDefine[], ModuleBundle</text>
+
+  <rect class="cls" x="370" y="20" width="300" height="138" rx="8"/>
+  <rect class="head" x="371" y="21" width="298" height="26" rx="7"/>
+  <text class="t" x="382" y="39">NeoParser (lowering)</text>
+  <text class="m" x="382" y="66">CArchiveRdWC source + m_coreTypedIR</text>
+  <text class="m" x="382" y="82">SFunctions { SFunctionInfo[], constants }</text>
+  <text class="m" x="382" y="98">SFunctionInfo: code, locals, temps, captures,</text>
+  <text class="m" x="382" y="114">CompileCallStorage[] plans, getter slot</text>
+  <text class="m" x="382" y="130">SVars global slots; SLayerVar scopes</text>
+  <text class="m" x="382" y="146">EmitCoreIR*() ParseFor() Push_*()</text>
+
+  <rect class="cls" x="730" y="20" width="260" height="138" rx="8"/>
+  <rect class="head" x="731" y="21" width="258" height="26" rx="7"/>
+  <text class="t" x="742" y="39">NeoExport (storage, image)</text>
+  <text class="m" x="742" y="66">StorageCompiler binds SlotKind per slot</text>
+  <text class="m" x="742" y="82">and per window (NeoStorageCompiler.inl)</text>
+  <text class="m" x="742" y="98">FrameLayout: owned block, slot info</text>
+  <text class="m" x="742" y="114">WriteFun: renumbering, policies</text>
+  <text class="m" x="742" y="130">chunks: code, FUNC, SLOT, CALL, RNGE,</text>
+  <text class="m" x="742" y="146">switch tables, constants, debug names</text>
+
+  <rect class="cls" x="370" y="240" width="300" height="88" rx="8"/>
+  <rect class="head" x="371" y="241" width="298" height="26" rx="7"/>
+  <text class="t" x="382" y="259">NeoVMTypedOps.h</text>
+  <text class="m" x="382" y="286">TypedOpInfo and AggregateOpInfo tables</text>
+  <text class="m" x="382" y="302">shared by lowering, validation,</text>
+  <text class="m" x="382" y="318">disassembly and the VM</text>
+
+  <rect class="cls" x="730" y="240" width="260" height="88" rx="8"/>
+  <rect class="head" x="731" y="241" width="258" height="26" rx="7"/>
+  <text class="t" x="742" y="259">CNeoVMProgram (loader)</text>
+  <text class="m" x="742" y="286">validates every chunk and instruction,</text>
+  <text class="m" x="742" y="302">computes slot types and owned ranges,</text>
+  <text class="m" x="742" y="318">patches runtime opcodes</text>
+
+  <rect class="cls" x="10" y="240" width="300" height="88" rx="8"/>
+  <rect class="head" x="11" y="241" width="298" height="26" rx="7"/>
+  <text class="t" x="22" y="259">NeoCoreModules, NeoCoreImage</text>
+  <text class="m" x="22" y="286">ModuleBundle: concatenated imports with</text>
+  <text class="m" x="22" y="302">a line map for diagnostics</text>
+  <text class="m" x="22" y="318">Image Data: bytes plus checked metadata</text>
+
+  <path class="edge" d="M310,90 L370,90" marker-end="url(#a4)"/>
+  <text class="lbl" x="318" y="82">TypedIR</text>
+  <path class="edge" d="M670,90 L730,90" marker-end="url(#a4)"/>
+  <text class="lbl" x="678" y="82">SFunctions</text>
+  <path class="edge" d="M860,158 L860,240" marker-end="url(#a4)"/>
+  <text class="lbl" x="868" y="204">image bytes</text>
+  <path class="edge" d="M520,240 L520,158" marker-end="url(#a4)"/>
+  <path class="edge" d="M670,284 L730,284" marker-end="url(#a4)"/>
+  <path class="edge" d="M160,240 L160,158" marker-end="url(#a4)"/>
+  <text class="lbl" x="168" y="204">bundle in, image out</text>
+  <text class="lbl" x="10" y="372">The same NeoVMTypedOps.h macros describe each typed opcode once for lowering, validation, disassembly and execution.</text>
+</svg>

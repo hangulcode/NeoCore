@@ -1,0 +1,39 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 150" width="1000" height="150" role="img" aria-label="Instruction encoding">
+<rect width="100%" height="100%" fill="#ffffff"/>
+<style>
+  text { font: 12px "Segoe UI", "Helvetica Neue", Arial, sans-serif; fill: #1a1f26; }
+  .t { font: 600 13px "Segoe UI", "Helvetica Neue", Arial, sans-serif; fill: #1a1f26; }
+  .m { font: 11px "Cascadia Mono", Consolas, Menlo, monospace; fill: #5b6774; }
+  .lbl { font: 11px "Segoe UI", "Helvetica Neue", Arial, sans-serif; fill: #5b6774; }
+  .stage { fill: #e2eff1; stroke: #0f6f7f; stroke-width: 1.2; }
+  .cls { fill: #ffffff; stroke: #c9d1da; stroke-width: 1.2; }
+  .head { fill: #eef3f5; stroke: none; }
+  .edge { stroke: #6b7682; stroke-width: 1.4; fill: none; }
+  .own { stroke: #0f6f7f; stroke-width: 1.7; fill: none; }
+  .byte { fill: #ffffff; stroke: #c9d1da; stroke-width: 1.2; }
+  .byte.hi { fill: #e2eff1; stroke: #0f6f7f; }
+  .slot { fill: #ffffff; stroke: #c9d1da; stroke-width: 1.2; }
+  .slot.own { fill: #e2eff1; stroke: #0f6f7f; }
+  .brace { stroke: #5b6774; stroke-width: 1; fill: none; }
+</style>
+  <text class="t" x="10" y="20">SVMOperation, 8 bytes</text>
+  <rect class="byte hi" x="10" y="34" width="110" height="44" rx="6"/>
+  <text class="m" x="20" y="52">byte 0</text><text x="20" y="70">op (opcode)</text>
+  <rect class="byte hi" x="124" y="34" width="110" height="44" rx="6"/>
+  <text class="m" x="134" y="52">byte 1</text><text x="134" y="70">argFlag</text>
+  <rect class="byte" x="238" y="34" width="150" height="44" rx="6"/>
+  <text class="m" x="248" y="52">bytes 2-3</text><text x="248" y="70">n1 (short)</text>
+  <rect class="byte" x="392" y="34" width="150" height="44" rx="6"/>
+  <text class="m" x="402" y="52">bytes 4-5</text><text x="402" y="70">n2 (short)</text>
+  <rect class="byte" x="546" y="34" width="150" height="44" rx="6"/>
+  <text class="m" x="556" y="52">bytes 6-7</text><text x="556" y="70">n3 (short)</text>
+  <path class="brace" d="M392,84 L392,92 L696,92 L696,84"/>
+  <text class="lbl" x="470" y="108">or one 32-bit immediate n23 (MOVI, MOVF, LOADK index)</text>
+  <text class="t" x="740" y="20">argFlag bits</text>
+  <text class="m" x="740" y="44">7  n1 is a local slot</text>
+  <text class="m" x="740" y="60">6  n2 is a local slot</text>
+  <text class="m" x="740" y="76">5  n3 is a local slot</text>
+  <text class="m" x="740" y="92">4  modifier: in-place arithmetic, take ownership, no result</text>
+  <text class="m" x="740" y="108">3-0  sub-operation or storage policy</text>
+  <text class="lbl" x="10" y="134">Operands index the frame (local) or the global table (negative offsets, constants above). The loader rewrites op for all-local forms and runtime opcodes; the stored image keeps the compile-time numbers.</text>
+</svg>
