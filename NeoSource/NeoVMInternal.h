@@ -282,6 +282,10 @@ enum eNOperation : OpType
 #define NEOCORE_RT_ENUM_JMP_IMM(T, N, S) NOP_RT_JMP_##T##_##N##_IMM,
 	NEOCORE_RUNTIME_COMPARE(NEOCORE_RT_ENUM_JMP_IMM, I64)
 #undef NEOCORE_RT_ENUM_JMP_IMM
+	// 지역 슬롯끼리의 payload 복사와 지역 슬롯에 쓰는 즉값. 정책·위치 비트를 실행 중에 보지 않는다.
+	NOP_RT_MOV_PAYLOAD_L,
+	NOP_RT_MOVI_L,
+	NOP_RT_MOVF_L,
 
 	NOP_MAX,
 }; // Operation length
@@ -495,6 +499,10 @@ inline bool NormalizeRuntimeOp(SVMOperation& op)
 #define NEOCORE_RT_UNMAP_JMP_IMM(T, N, S) case NOP_RT_JMP_##T##_##N##_IMM: meaning = OP_JMP_##T##_##N; break;
     NEOCORE_RUNTIME_COMPARE(NEOCORE_RT_UNMAP_JMP_IMM, I64)
 #undef NEOCORE_RT_UNMAP_JMP_IMM
+    // 하위 4비트 0은 StoragePolicy::Payload다(NeoVMProgram.h).
+    case NOP_RT_MOV_PAYLOAD_L: meaning = MakeOperation(NOP_MOV, 0u); break;
+    case NOP_RT_MOVI_L: meaning = MakeOperation(NOP_MOV, MOV_SUB_IMMEDIATE_INT); break;
+    case NOP_RT_MOVF_L: meaning = MakeOperation(NOP_MOV, MOV_SUB_IMMEDIATE_FLOAT); break;
     default: return false;
     }
     op.SetCode(meaning);

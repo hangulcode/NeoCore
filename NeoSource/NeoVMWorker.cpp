@@ -2452,6 +2452,10 @@ bool	CNeoVMWorker::RunInternal(int iBreakingCallStack)
 		switch (OP.op)
 		{
 		case NOP_MOV:           handle_MOV(OP); break;
+		// 로드가 고른 지역 전용 복사·즉값 저장. 프레임 기준 하나로 쓴다.
+		case NOP_RT_MOV_PAYLOAD_L: m_pVarStack_Pointer[OP.n1]._int = m_pVarStack_Pointer[OP.n2]._int; break;
+		case NOP_RT_MOVI_L:     m_pVarStack_Pointer[OP.n1]._int = OP.n23; break;
+		case NOP_RT_MOVF_L:     MoveF(m_pVarStack_Pointer + OP.n1, OP.n23); break;
 		case NOP_VAR_CLEAR:     handle_VAR_CLEAR(OP); break;
 		case NOP_JMP:           SetCodeIncPtr(OP.n1); break;
 		// 조건은 컴파일러가 bool로 확정했다. payload만 읽는다.

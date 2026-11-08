@@ -1142,6 +1142,17 @@ bool CNeoVMProgram::PatchLocalOps(std::string* err)
 		const bool noResult = (f & NEOS_OP_CALL_NORESULT) != 0;
 		OperationCode to = NOP_NONE;
 
+		// 지역 슬롯끼리의 payload 복사와 지역 슬롯 즉값 저장은 전용 opcode로 바꾼다. 핸들러가 정책·위치 비트를
+		// 보지 않고 프레임 기준만으로 쓴다. 표기와 검증은 NormalizeRuntimeOp이 원래 MOV로 되돌린다.
+		if (op.op == NOP_MOV)
+		{
+			const unsigned sub = f & NEOS_OP_SUB_MASK;
+			if (sub == static_cast<unsigned>(StoragePolicy::Payload) && (f & (L1|L2)) == (L1|L2) && (f & NEOS_OP_MODIFIER) == 0)
+			{ op.op = NOP_RT_MOV_PAYLOAD_L; ++patched; continue; }
+			if (sub == MOV_SUB_IMMEDIATE_INT && (f & L1)) { op.op = NOP_RT_MOVI_L; ++patched; continue; }
+			if (sub == MOV_SUB_IMMEDIATE_FLOAT && (f & L1)) { op.op = NOP_RT_MOVF_L; ++patched; continue; }
+		}
+
 		switch (op.Code())
 		{
 

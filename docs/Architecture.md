@@ -108,9 +108,10 @@ checked metadata a host needs to bind the program without recompiling.
 2. **VerifyCode** checks every instruction: operand ranges against the frame, policy
    bytes against declared kinds, jump targets, plan indices and call signatures.
 3. **PatchLocalOps** rewrites the code for execution: all-local operand forms,
-   static-string map reads, one-byte runtime opcodes for the numeric families and
-   typed range branches. These opcodes never appear in a stored image; the
-   disassembler maps them back.
+   static-string map reads, one-byte runtime opcodes for the numeric families,
+   integer immediate forms, local copy and immediate-store forms, and typed range
+   branches. These opcodes never appear in a stored image; the disassembler maps
+   them back.
 
 A loaded program is immutable and reference counted. Several VMs, instances and
 threads share one program.

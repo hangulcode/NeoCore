@@ -207,7 +207,14 @@ policy-carrying copy instructions and frame-walk cleanup are implemented. The
 opcode-family and in-place arithmetic changes are retained; the loader expands
 the numeric families into one-byte runtime opcodes so the dispatch loop selects
 each operation with one switch. The general fusion pass was removed on
-2026-11-08 because it was slower than plain dispatch.
+2026-11-08 because it was slower than plain dispatch. Three-operand integer
+arithmetic (add, subtract, multiply, bitwise operations and shifts by 0-63) and
+integer comparison jumps whose right operand is a 16-bit integer constant become
+immediate forms that carry the value in `n3`; division and remainder keep their
+zero check and are not converted. Payload copies between local slots and integer
+or float immediates stored into a local slot get dedicated opcodes that read no
+policy or location bits. Loop-constant hoisting leaves such immediate-eligible
+integer constants in place.
 List/map/set entry storage and some generic bridge operations remain transitional,
 as described above. Property hosts no longer sweep their scratch window; a host
 getter or setter must not leave owned values in VM stack slots. No performance

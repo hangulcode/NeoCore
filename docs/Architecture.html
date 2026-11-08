@@ -209,7 +209,7 @@
 <ol>
 <li><strong>Load</strong> reads the chunks into <code>SFunctionTable</code> records, <code>CallStoragePlan</code>s, switch tables, range descriptors, constants and the global type table.</li>
 <li><strong>VerifyCode</strong> checks every instruction: operand ranges against the frame, policy bytes against declared kinds, jump targets, plan indices and call signatures.</li>
-<li><strong>PatchLocalOps</strong> rewrites the code for execution: all-local operand forms, static-string map reads, one-byte runtime opcodes for the numeric families and typed range branches. These opcodes never appear in a stored image; the disassembler maps them back.</li>
+<li><strong>PatchLocalOps</strong> rewrites the code for execution: all-local operand forms, static-string map reads, one-byte runtime opcodes for the numeric families, integer immediate forms, local copy and immediate-store forms, and typed range branches. These opcodes never appear in a stored image; the disassembler maps them back.</li>
 </ol>
 <p>A loaded program is immutable and reference counted. Several VMs, instances and threads share one program.</p>
 </section>

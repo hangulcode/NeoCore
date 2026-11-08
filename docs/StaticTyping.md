@@ -56,7 +56,9 @@ typed element access and map lookups); every other opcode is handled by a
 separate non-inlined function, which keeps the loop small enough for the
 compiler to hold its registers and lay out each handler without shared tails.
 Combinations without a runtime opcode fall back to the family handler, which
-switches on the low-bit sub-operation. Disassembly maps runtime opcodes back to
+switches on the low-bit sub-operation. Integer arithmetic and comparison jumps
+with a 16-bit constant right operand, local payload copies and local immediate
+stores also get load-time opcodes. Disassembly maps runtime opcodes back to
 the image form. Combined operation keys remain compiler and validation metadata.
 Invalid sub-operations are rejected when loading an image. Existing images must
 be regenerated: this transition introduced image version `0163`, and version
