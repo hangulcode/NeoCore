@@ -296,6 +296,9 @@ struct SFunctionInfo
     SlotType _returnStorage;
     std::vector<SlotType> _parameterStorage;
     std::vector<CompileCallStorage> _calls;
+    // 몸통이 전역 하나를 돌려주는 RETURN뿐인 함수의 그 전역 슬롯. 0이면 그런 함수가 아니다.
+    // 뒤에 오는 인자 없는 호출은 호출 창 없이 이 전역을 복사한다.
+    int _globalGetterSlot = 0;
 
 
 	int							_localVarCount;
@@ -320,6 +323,7 @@ struct SFunctionInfo
 		_debugVarNames.clear();
 		_captures.clear();
         _storage.clear(); _calls.clear();
+        _globalGetterSlot = 0;
 		_localVarCount = 0;
 		_localTempMax = _localTempCount = 0;
 		_tempStorage.clear(); _tempBusy.clear(); _tempOrder.clear();

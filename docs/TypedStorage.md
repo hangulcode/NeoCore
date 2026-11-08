@@ -94,9 +94,10 @@ returning; `coroutine.resume` leaves the parent's window in place until the
 parent runs again, which keeps a temporary coroutine alive while it executes.
 Async dispatch similarly selects its fixed `void(bool,string)` callback window
 before writing the completion values. Named and captured callbacks use the same
-argument contract. When the exporter folds a one-line global getter call into a
-policy copy, it also blanks that call's `PREPARE_CALL` if one was emitted, and a
-top-level return clears the selected plan before the host reads the result slot.
+argument contract. A call without arguments to a function defined earlier whose
+whole body returns one global is folded by the parser into a policy copy of that
+global, so no call plan or instruction exists for it; a top-level return clears
+the selected plan before the host reads the result slot.
 
 The runtime keeps no per-frame range table. The current function index, a
 pointer to its function record and the program's slot type table are VM

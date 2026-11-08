@@ -2061,6 +2061,16 @@ bool ParseFunCall(SOperand& iResultStack, TK_TYPE tkTypePre, SFunctionInfo* pFun
 				break;
 		}
 
+        // 몸통이 전역 RETURN 하나인 함수의 인자 없는 호출은 호출 창 없이 그 전역을 임시로 복사한다.
+        // 복사 시점이 호출 시점과 같아 뒤의 식이 원본을 바꿔도 평가 순서가 같다.
+        if (pFun != NULL && pFun->_funType != FUNT_BUILT_IN && pFun->_globalGetterSlot != 0 && iParamCount == 0)
+        {
+            iResultStack = funs._cur->AllocLocalTempVar();
+            funs._cur->Push_OP2(ar, NOP_MOV, iResultStack._iVar, pFun->_globalGetterSlot, false, iCallLine);
+            if (tkTypePre == TK_MINUS)
+                funs._cur->Push_OP2(ar, RejectLegacyArithmetic(ar), iResultStack._iVar, iResultStack._iVar, false);
+            return true;
+        }
         // 호출 창은 모든 인자 평가가 끝난 뒤에만 선택한다. 다른 호출의 참조와 겹치지 않는다.
         std::vector<int> callSources;
         for (SOperand& argument : argOperands) callSources.push_back(argument.IsFun() ? -1 : argument._iVar);
@@ -3333,6 +3343,15 @@ static bool EmitCoreIRCall(const NeoCore::IRNode& node, const std::string& name,
             producer = start;
         producerOffsets.push_back(producer);
         callCounts.push_back(funs._cur->_callOpEmitCount);
+    }
+    // 몸통이 전역 RETURN 하나인 함수의 인자 없는 호출은 호출 창 없이 그 전역을 복사한다.
+    if (function->_globalGetterSlot != 0 && arguments.empty())
+    {
+        const bool directCopy = !ar._debug && destination != INVALID_ERROR_PARSEJOB &&
+            ((destination > 0 && destination < COMPILE_LOCALTMP_VAR_BEGIN) || destination <= COMPILE_GLOBAL_VAR_BEGIN);
+        result = SOperand(directCopy ? destination : funs._cur->AllocLocalTempVar(CoreStorageType(ar.m_coreTypedIR->types, node.typeId)));
+        funs._cur->Push_OP2(ar, NOP_MOV, result._iVar, function->_globalGetterSlot, false, node.source.line);
+        return true;
     }
     std::vector<int> callSources;
     for (const SOperand& argument : arguments) callSources.push_back(argument._iVar);
@@ -5355,6 +5374,13 @@ bool ParseFor(CArchiveRdWC& ar, SFunctions& funs, SVars& vars)
 	return true;
 }
 #else
+// 범위 루프의 시작·끝·증분 슬롯을 정수로 맞추는 명령. 타입 검사기가 세 식을 모두 int로 확정하는 .nc에서는
+// 할 일이 없어 내지 않는다. 내보내기가 빈 명령으로 바꾸던 자리가 그대로 사라진다. 동적 경로만 실수 경계를 바꾼다.
+static void PushRangeIntConversion(CArchiveRdWC& ar, SFunctions& funs, int slot)
+{
+	if (ar.m_coreTypedIR != nullptr) return;
+	funs._cur->Push_OP(ar, NOP_CHANGE_INT, slot, 0, 0);
+}
 bool ParseFor(CArchiveRdWC& ar, SFunctions& funs, SVars& vars)
 {
     ParserDepthGuard depth(ar);
@@ -5449,7 +5475,7 @@ bool ParseFor(CArchiveRdWC& ar, SFunctions& funs, SVars& vars)
 			funs._cur->Push_OP2(ar, NOP_MOV, i_Begin, iTempVar._iVar, false);
 		else
 			ReadElement(iTempVar, i_Begin, ar, funs);
-		funs._cur->Push_OP(ar, NOP_CHANGE_INT, i_Begin, 0, 0);
+		PushRangeIntConversion(ar, funs, i_Begin);
 	}
 
 	int iDebugLoopLine = ar.CurLine();
@@ -5482,7 +5508,7 @@ bool ParseFor(CArchiveRdWC& ar, SFunctions& funs, SVars& vars)
 			funs._cur->Push_OP2(ar, NOP_MOV, i_End, iTempVar._iVar, false);
 		else
 			ReadElement(iTempVar, i_End, ar, funs);
-		funs._cur->Push_OP(ar, NOP_CHANGE_INT, i_End, 0, 0);
+		PushRangeIntConversion(ar, funs, i_End);
 	}
 
 	// step 은 선택 인자. 생략하면 1 (Lua/Python 과 동일한 관례).
@@ -5518,7 +5544,7 @@ bool ParseFor(CArchiveRdWC& ar, SFunctions& funs, SVars& vars)
 				funs._cur->Push_OP2(ar, NOP_MOV, i_Step, iTempVar._iVar, false);
 			else
 				ReadElement(iTempVar, i_Step, ar, funs);
-			funs._cur->Push_OP(ar, NOP_CHANGE_INT, i_Step, 0, 0);
+			PushRangeIntConversion(ar, funs, i_Step);
 		}
 	}
 
@@ -7184,6 +7210,20 @@ void FinalizeFuction(SFunctions& funs)
 	// 호출 계획의 활성 위치도 프롤로그만큼 뒤로 민다.
 	for (CompileCallStorage& call : funs._cur->_calls)
 		call.prepareOffset += (int)prologue.size() * (int)sizeof(SVMOperation);
+	// 모듈 경계를 지키려고 둔 `int Get() { return value; }`는 호출 비용이 필요 없다. 몸통이 전역 RETURN 하나이고
+	// 인자·캡처가 없으면 기억해 두고, 뒤에 오는 호출 자리에서 전역 복사로 접는다. 함수값 호출과 부작용은 제외다.
+	{
+		SFunctionInfo* cur = funs._cur;
+		cur->_globalGetterSlot = 0;
+		if ((cur->_funType == FUNT_NORMAL || cur->_funType == FUNT_EXPORT) && cur->_args.empty() && cur->_captures.empty() &&
+			cur->_iCode_Size == (int)sizeof(SVMOperation))
+		{
+			SVMOperation op;
+			memcpy(&op, (u8*)funs._codeFinal.GetData() + cur->_iCode_Begin, sizeof(op));
+			if (op.Code() == NOP_RETURN && op.argFlag == 0 && op.n1 <= COMPILE_GLOBAL_VAR_BEGIN)
+				cur->_globalGetterSlot = op.n1;
+		}
+	}
 
 	funs._funSequence.push_back(funs.FindFun(funs.GetCurFunName()));
 }

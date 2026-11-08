@@ -504,7 +504,7 @@ void WriteFun(CArchiveRdWC& arText, CNArchive& ar, SFunctions& funs, SFunctionIn
 		case NOP_YIELD:
 			break;
 		case NOP_NONE:
-			// 접힌 getter 호출의 PREPARE_CALL 자리. 피연산자가 없다.
+			// 피연산자가 없는 빈 명령. 파서는 내지 않지만 로더와 디스어셈블러가 받아들이므로 그대로 쓴다.
 			break;
 		case NOP_JMP_RANGE_INSIDE:
 		case NOP_JMP_RANGE_OUTSIDE:
@@ -932,62 +932,8 @@ static void WriteDebugFunctionNames(CNArchive& ar, SFunctions& funs)
 	}
 }
 
-static void FoldGlobalGetters(SFunctions& funs)
-{
-	// 모듈 경계를 지키려고 둔 `fun Get(){ return value; }`는 호출 비용이
-	// 필요 없다. 전체 몸통이 전역 RETURN 하나인 직접 호출만 MOV로 바꾼다.
-	// 결과를 임시 슬롯에 복사하므로 뒤의 식이 원본을 바꿔도 평가 순서가 같다.
-	// 함수값 호출, 인자, 부작용, 클로저는 제외한다. 디버그 정보 유무와 무관하게 적용한다.
-	std::map<int, short> getters;
-	u8* code = static_cast<u8*>(funs._codeFinal.GetData());
-	for (SFunctionInfo* function : funs._funSequence)
-	{
-		if ((function->_funType != FUNT_NORMAL && function->_funType != FUNT_EXPORT) ||
-			!function->_args.empty() || !function->_captures.empty() ||
-			function->_iCode_Size != sizeof(SVMOperation))
-			continue;
-		SVMOperation op;
-		memcpy(&op, code + function->_iCode_Begin, sizeof(op));
-		if (op.Code() == NOP_RETURN && op.argFlag == 0 && op.n1 <= COMPILE_GLOBAL_VAR_BEGIN)
-			getters[function->_funID] = op.n1;
-	}
-	if (getters.empty()) return;
-	for (SFunctionInfo* function : funs._funSequence)
-	{
-		for (int offset = function->_iCode_Begin; offset < function->_iCode_Begin + function->_iCode_Size;
-			offset += sizeof(SVMOperation))
-		{
-			SVMOperation op;
-			memcpy(&op, code + offset, sizeof(op));
-			if (op.Code() != NOP_CALL || op.argFlag != 0 || op.n2 != 0)
-				continue;
-			auto getter = getters.find(op.n1);
-			if (getter == getters.end()) continue;
-			op.SetCode(PrimaryOperation(NOP_MOV));
-			op.n1 = op.n3;
-			op.n2 = getter->second;
-			op.n3 = 0;
-			memcpy(code + offset, &op, sizeof(op));
-			// 인자가 없는 호출이라 창 계획을 고르는 PREPARE_CALL이 바로 앞에 있다. 호출이 사라졌으므로
-			// 같이 비운다. 남겨 두면 계획이 선택된 채로 남아 반환 슬롯 타입과 오류 정리가 어긋난다.
-			if (offset - static_cast<int>(sizeof(SVMOperation)) >= function->_iCode_Begin)
-			{
-				SVMOperation previous;
-				memcpy(&previous, code + offset - sizeof(SVMOperation), sizeof(previous));
-				if (previous.Code() == NOP_PREPARE_CALL)
-				{
-					previous.SetCode(NOP_NONE);
-					memcpy(code + offset - sizeof(SVMOperation), &previous, sizeof(previous));
-				}
-			}
-		}
-	}
-}
-
 bool Write(CArchiveRdWC& arText, CNArchive& ar, SFunctions& funs, SVars& vars)
 {
-	// 디버그 정보가 있어도 접는다(에디터 플레이). 한 줄 getter 안에는 중단점을 걸 수 없다.
-	FoldGlobalGetters(funs);
 	int iSaveOffset1 = ar.GetBufferOffset();
 	SNeoVMHeader header;
 	memset(&header, 0, sizeof(header));
