@@ -270,6 +270,11 @@ enum eNOperation : OpType
 	NEOCORE_RUNTIME_COMPARE(NEOCORE_RT_ENUM_COMPARE, I64)
 	NEOCORE_RUNTIME_COMPARE(NEOCORE_RT_ENUM_COMPARE, F64)
 #undef NEOCORE_RT_ENUM_COMPARE
+	// 검사값과 두 경계가 모두 같은 숫자 타입인 범위 점프. 로드 시 배치표로 고르며 뷰 없이 payload만 비교한다.
+	NOP_RT_JMP_I64_RANGE_INSIDE,
+	NOP_RT_JMP_I64_RANGE_OUTSIDE,
+	NOP_RT_JMP_F64_RANGE_INSIDE,
+	NOP_RT_JMP_F64_RANGE_OUTSIDE,
 
 	NOP_MAX,
 }; // Operation length
@@ -472,6 +477,10 @@ inline bool NormalizeRuntimeOp(SVMOperation& op)
     NEOCORE_RUNTIME_COMPARE(NEOCORE_RT_UNMAP_COMPARE, I64)
     NEOCORE_RUNTIME_COMPARE(NEOCORE_RT_UNMAP_COMPARE, F64)
 #undef NEOCORE_RT_UNMAP_COMPARE
+    case NOP_RT_JMP_I64_RANGE_INSIDE:
+    case NOP_RT_JMP_F64_RANGE_INSIDE: meaning = MakeOperation(NOP_JMP_RANGE_INSIDE, 0u); break;
+    case NOP_RT_JMP_I64_RANGE_OUTSIDE:
+    case NOP_RT_JMP_F64_RANGE_OUTSIDE: meaning = MakeOperation(NOP_JMP_RANGE_OUTSIDE, 0u); break;
     default: return false;
     }
     op.SetCode(meaning);

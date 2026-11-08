@@ -47,6 +47,10 @@ same opcode/sub-operation pair. When an image is loaded, the numeric families
 comparisons and comparison branches) are expanded into one-byte runtime-only
 opcodes that never appear in an image, so the VM dispatch loop selects the exact
 operation with one switch and the handler body is fixed by a template argument.
+The loader also replaces a range branch whose test value and both bounds are
+all `int` or all `float` slots with a runtime-only typed range branch that
+compares payloads without building typed views; mixed operand types keep the
+generic range branch.
 Combinations without a runtime opcode fall back to the family handler, which
 switches on the low-bit sub-operation. Disassembly maps runtime opcodes back to
 the image form. Combined operation keys remain compiler and validation metadata.

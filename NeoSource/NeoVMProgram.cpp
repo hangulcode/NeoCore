@@ -1095,6 +1095,31 @@ bool CNeoVMProgram::PatchLocalOps(std::string* err)
 	const u8 L1 = NEOS_ARG_N1_LOCAL, L2 = NEOS_ARG_N2_LOCAL, L3 = NEOS_ARG_N3_LOCAL;
 	const int opCount = (int)code.size();
 	int patched = 0;
+	// 범위 점프의 타입 선택은 명령이 속한 함수의 배치표를 본다. 함수 시작 위치로 소유 함수를 매긴다.
+	std::vector<int> owners(code.size(), -1);
+	{
+		std::vector<std::pair<int, int> > starts;
+		for (size_t i = 0; i < functions.size(); ++i)
+			starts.push_back(std::make_pair(functions[i]._codePtr / (int)sizeof(SVMOperation), (int)i));
+		std::sort(starts.begin(), starts.end());
+		for (size_t i = 0; i < starts.size(); ++i)
+		{
+			const int begin = starts[i].first;
+			const int end = (i + 1 < starts.size()) ? starts[i + 1].first : opCount;
+			for (int opIndex = begin; opIndex < end && opIndex >= 0; ++opIndex) owners[opIndex] = starts[i].second;
+		}
+	}
+	auto SlotTypeOf = [&](int owner, short slot, bool local) -> VAR_TYPE
+	{
+		if (local)
+		{
+			if (owner < 0 || slot < 0 || slot >= (short)functions[owner]._slotTypes.size()) return VAR_NONE;
+			return functions[owner]._slotTypes[slot];
+		}
+		const int index = ConstantBase() + slot;
+		if (index < 0 || index >= (int)globalTypes.size()) return VAR_NONE;
+		return globalTypes[index];
+	};
 	for (int i = 0; i < opCount; ++i)
 	{
 		SVMOperation& op = code[i];
@@ -1123,23 +1148,33 @@ bool CNeoVMProgram::PatchLocalOps(std::string* err)
 		case NOP_CHANGE_INT:   if (f & L1) to = NOP_CHANGE_INT_L;                   break;
 
 		case NOP_JMP_RANGE_INSIDE:
-			if ((f & L2) && (size_t)(u16)op.n3 < rangeJumps.size())
-			{
-				const ProgramRangeJump& range = rangeJumps[(u16)op.n3];
-				if ((range.flags & (NEOS_RANGE_LOWER_LOCAL | NEOS_RANGE_UPPER_LOCAL)) ==
-					(NEOS_RANGE_LOWER_LOCAL | NEOS_RANGE_UPPER_LOCAL))
-					to = NOP_JMP_RANGE_INSIDE_L;
-			}
-			break;
 		case NOP_JMP_RANGE_OUTSIDE:
-			if ((f & L2) && (size_t)(u16)op.n3 < rangeJumps.size())
+		{
+			if ((size_t)(u16)op.n3 >= rangeJumps.size()) break;
+			const ProgramRangeJump& range = rangeJumps[(u16)op.n3];
+			const bool inside = op.Code() == NOP_JMP_RANGE_INSIDE;
+			// 검사값과 두 경계가 모두 int이거나 모두 float이면 뷰와 타입 검사 없이 payload만 비교하는
+			// 런타임 opcode로 바꾼다. 섞인 타입은 기존 범용 경로에 남긴다.
+			const VAR_TYPE test = SlotTypeOf(owners[i], op.n2, (f & L2) != 0);
+			const VAR_TYPE lower = SlotTypeOf(owners[i], range.lower, (range.flags & NEOS_RANGE_LOWER_LOCAL) != 0);
+			const VAR_TYPE upper = SlotTypeOf(owners[i], range.upper, (range.flags & NEOS_RANGE_UPPER_LOCAL) != 0);
+			if (test == VAR_INT && lower == VAR_INT && upper == VAR_INT)
 			{
-				const ProgramRangeJump& range = rangeJumps[(u16)op.n3];
-				if ((range.flags & (NEOS_RANGE_LOWER_LOCAL | NEOS_RANGE_UPPER_LOCAL)) ==
-					(NEOS_RANGE_LOWER_LOCAL | NEOS_RANGE_UPPER_LOCAL))
-					to = NOP_JMP_RANGE_OUTSIDE_L;
+				op.op = inside ? NOP_RT_JMP_I64_RANGE_INSIDE : NOP_RT_JMP_I64_RANGE_OUTSIDE;
+				++patched;
+				continue;
 			}
+			if (test == VAR_FLOAT && lower == VAR_FLOAT && upper == VAR_FLOAT)
+			{
+				op.op = inside ? NOP_RT_JMP_F64_RANGE_INSIDE : NOP_RT_JMP_F64_RANGE_OUTSIDE;
+				++patched;
+				continue;
+			}
+			if ((f & L2) && (range.flags & (NEOS_RANGE_LOWER_LOCAL | NEOS_RANGE_UPPER_LOCAL)) ==
+				(NEOS_RANGE_LOWER_LOCAL | NEOS_RANGE_UPPER_LOCAL))
+				to = inside ? NOP_JMP_RANGE_INSIDE_L : NOP_JMP_RANGE_OUTSIDE_L;
 			break;
+		}
 		case OP_JMP_LESS:     if ((f & (L2|L3)) == (L2|L3)) to = OP_JMP_LESS_L;     break;
 		case OP_JMP_LESS_EQ:  if ((f & (L2|L3)) == (L2|L3)) to = OP_JMP_LESS_EQ_L;  break;
 		case OP_JMP_NEQUAL:   if ((f & (L2|L3)) == (L2|L3)) to = OP_JMP_NEQUAL_L;   break;

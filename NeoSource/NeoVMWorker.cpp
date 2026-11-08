@@ -2402,6 +2402,11 @@ bool	CNeoVMWorker::RunInternal(int iBreakingCallStack)
 		case NOP_JMP_RANGE_OUTSIDE: if (IsRangeInside(OP, false) == false) SetComparisonJump(OP.n1); break;
 		case NOP_JMP_RANGE_INSIDE_L: if (IsRangeInside<true>(OP, true)) SetComparisonJump(OP.n1); break;
 		case NOP_JMP_RANGE_OUTSIDE_L: if (IsRangeInside(OP, true) == false) SetComparisonJump(OP.n1); break;
+		// 타입이 확정된 범위 점프는 오류가 없어 점프 자체만 한다.
+		case NOP_RT_JMP_I64_RANGE_INSIDE: if (IsRangeInsideRT<false, true>(OP)) SetCodeIncPtr(OP.n1); break;
+		case NOP_RT_JMP_I64_RANGE_OUTSIDE: if (!IsRangeInsideRT<false, false>(OP)) SetCodeIncPtr(OP.n1); break;
+		case NOP_RT_JMP_F64_RANGE_INSIDE: if (IsRangeInsideRT<true, true>(OP)) SetCodeIncPtr(OP.n1); break;
+		case NOP_RT_JMP_F64_RANGE_OUTSIDE: if (!IsRangeInsideRT<true, false>(OP)) SetCodeIncPtr(OP.n1); break;
 
 		case NOP_CLT_WRITE_REF: handle_CLT_WRITE_REF(OP); break;
 		// 로드가 펼친 런타임 opcode. 세부 연산이 템플릿 인자라 switch 한 번으로 끝난다.

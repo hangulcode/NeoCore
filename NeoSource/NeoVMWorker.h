@@ -193,6 +193,27 @@ private:
 		outOffset = t[tableIndex].Find(pKey);
 		return true;
 	}
+	// 검사값과 두 경계가 모두 같은 숫자 타입인 범위 점프(로드 시 선택). 뷰와 타입 검사 없이 payload만
+	// 비교한다. 실수 비교식은 아래 IsRangeInside의 실수 경로와 같아 NaN 결과가 같고, 오류가 없어 순서도 무관하다.
+	template<bool Float, bool negateOutside>
+	NEOS_FORCEINLINE bool IsRangeInsideRT(const SVMOperation& op)
+	{
+		const ProgramRangeJump& range = _pProgram->rangeJumps[(u16)op.n3];
+		const VarInfo* test = GetVarRaw2(op);
+		const VarInfo* lower = (range.flags & NEOS_RANGE_LOWER_LOCAL) ? GetVarRaw_L(range.lower) : GetVarRaw_G(range.lower);
+		const VarInfo* upper = (range.flags & NEOS_RANGE_UPPER_LOCAL) ? GetVarRaw_L(range.upper) : GetVarRaw_G(range.upper);
+		const bool lowerInclusive = (range.flags & NEOS_RANGE_LOWER_INCLUSIVE) != 0;
+		const bool upperInclusive = (range.flags & NEOS_RANGE_UPPER_INCLUSIVE) != 0;
+		if (Float)
+		{
+			const NS_FLOAT v = test->_float, lo = lower->_float, hi = upper->_float;
+			if (negateOutside)
+				return !((lowerInclusive ? lo > v : lo >= v) || (upperInclusive ? v > hi : v >= hi));
+			return (lowerInclusive ? v >= lo : v > lo) && (upperInclusive ? hi >= v : hi > v);
+		}
+		const NS_INT v = test->_int, lo = lower->_int, hi = upper->_int;
+		return (lowerInclusive ? v >= lo : v > lo) && (upperInclusive ? hi >= v : hi > v);
+	}
 	template<bool negateOutside = false>
 	NEOS_FORCEINLINE bool IsRangeInside(const SVMOperation& op, bool allLocal)
 	{
