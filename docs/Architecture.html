@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>NeoCore Architecture</title>
 <style>
-  /* Layout: slim sticky header, a sticky contents rail on the left and a 70ch reading column; one column under 900px. */
+  /* Layout: slim sticky header, a contents block under the title, then one wide reading column with full-width figures. */
   :root {
     --bg: #f5f7f9;
     --panel: #ffffff;
@@ -59,14 +59,15 @@
   .fact b { display: block; font: 600 22px/1.1 var(--display); font-variant-numeric: tabular-nums; margin-bottom: 4px; color: var(--accent-ink); }
   .fact span { font-size: 13px; color: var(--muted); }
 
-  .cols { display: grid; grid-template-columns: 220px minmax(0, 1fr); gap: 36px; align-items: start; }
-  .rail { position: sticky; top: 58px; font-size: 13.5px; line-height: 1.5; }
-  .rail .eyebrow { font: 600 11px/1 var(--body); letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); margin: 8px 0 10px; }
-  .rail ol { list-style: none; margin: 0; padding: 0; border-left: 2px solid var(--line); }
-  .rail li a { display: block; padding: 4px 0 4px 12px; color: var(--muted); border-bottom: 0; margin-left: -2px; border-left: 2px solid transparent; }
-  .rail li a:hover { color: var(--accent); border-left-color: var(--accent); }
+  .toc { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 12px 16px; margin: 22px 0 10px; display: grid; grid-template-columns: minmax(0, 3fr) minmax(0, 2fr); gap: 10px 28px; font-size: 14px; }
+  .toc .eyebrow { font: 600 11px/1 var(--body); letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); margin: 2px 0 8px; }
+  .toc ol { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 4px 18px; }
+  .toc li { margin: 0; }
+  .toc li a { color: var(--fg); border-bottom: 0; }
+  .toc li a:hover { color: var(--accent); }
+  .toc li a .no { color: var(--accent); font-family: var(--mono); font-size: 12px; margin-right: 6px; }
   .content { min-width: 0; }
-  .content > section { max-width: 76ch; }
+  .content > section { max-width: 96ch; }
   .content > section.wide { max-width: none; }
   h2 { font: 600 24px/1.2 var(--display); letter-spacing: -0.005em; margin: 44px 0 10px; text-wrap: balance; }
   h2 .no { color: var(--accent); font-family: var(--mono); font-size: 15px; font-weight: 600; margin-right: 10px; }
@@ -109,11 +110,8 @@
   svg .slot.own { fill: var(--accent-soft); stroke: var(--accent); }
   svg .brace { stroke: var(--muted); stroke-width: 1; fill: none; }
 
-  @media (max-width: 900px) {
-    .cols { grid-template-columns: 1fr; gap: 10px; }
-    .rail { position: static; }
-    .rail ol { border-left: 0; display: flex; flex-wrap: wrap; gap: 2px 14px; }
-    .rail li a { padding: 2px 0; border-left: 0; margin-left: 0; }
+  @media (max-width: 760px) {
+    .toc { grid-template-columns: 1fr; }
     h1 { font-size: 28px; }
   }
 </style>
@@ -140,30 +138,33 @@
   </div>
 </div>
 
-<div class="cols">
-<aside class="rail" aria-label="Contents">
-  <div class="eyebrow">Contents</div>
-  <ol>
-    <li><a href="#pipeline">1 Pipeline</a></li>
-    <li><a href="#frontend">2 Typed front end</a></li>
-    <li><a href="#lowering">3 Lowering and export</a></li>
-    <li><a href="#image">4 Image and loader</a></li>
-    <li><a href="#vm">5 Virtual machine</a></li>
-    <li><a href="#values">6 Values and storage</a></li>
-    <li><a href="#api">7 API and host boundary</a></li>
-    <li><a href="#tools">8 Tooling and tests</a></li>
-    <li><a href="#classes">9 Class diagrams</a></li>
-    <li><a href="#files">10 Source map</a></li>
-  </ol>
-  <div class="eyebrow" style="margin-top:22px">Related</div>
-  <ol>
-    <li><a href="StaticTyping.md">StaticTyping.md</a></li>
-    <li><a href="TypedStorage.md">TypedStorage.md</a></li>
-    <li><a href="HostBindings.md">HostBindings.md</a></li>
-    <li><a href="Embedding.md">Embedding.md</a></li>
-    <li><a href="FourWayBenchmark.md">FourWayBenchmark.md</a></li>
-  </ol>
-</aside>
+<nav class="toc" aria-label="Contents">
+  <div>
+    <div class="eyebrow">Contents</div>
+    <ol>
+      <li><a href="#pipeline"><span class="no">01</span>Pipeline</a></li>
+      <li><a href="#frontend"><span class="no">02</span>Typed front end</a></li>
+      <li><a href="#lowering"><span class="no">03</span>Lowering and export</a></li>
+      <li><a href="#image"><span class="no">04</span>Image and loader</a></li>
+      <li><a href="#vm"><span class="no">05</span>Virtual machine</a></li>
+      <li><a href="#values"><span class="no">06</span>Values and storage</a></li>
+      <li><a href="#api"><span class="no">07</span>API and host boundary</a></li>
+      <li><a href="#tools"><span class="no">08</span>Tooling and tests</a></li>
+      <li><a href="#classes"><span class="no">09</span>Class diagrams</a></li>
+      <li><a href="#files"><span class="no">10</span>Source map</a></li>
+    </ol>
+  </div>
+  <div>
+    <div class="eyebrow">Related documents</div>
+    <ol>
+      <li><a href="StaticTyping.md">StaticTyping.md</a></li>
+      <li><a href="TypedStorage.md">TypedStorage.md</a></li>
+      <li><a href="HostBindings.md">HostBindings.md</a></li>
+      <li><a href="Embedding.md">Embedding.md</a></li>
+      <li><a href="FourWayBenchmark.md">FourWayBenchmark.md</a></li>
+    </ol>
+  </div>
+</nav>
 
 <div class="content">
 
@@ -172,7 +173,7 @@
 <p>Five stages hand plain data structures to each other. No stage keeps pointers into another stage's state after the hand-off, which is what lets the console compile without running, the loader validate images produced earlier, and hosts load an image without the front end.</p>
 <figure>
 <div class="diagram">
-<svg viewBox="0 0 1000 330" role="img" aria-label="Compilation and execution pipeline">
+<svg viewBox="0 0 1000 345" role="img" aria-label="Compilation and execution pipeline">
   <defs>
     <marker id="ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#6b7682"/></marker>
   </defs>
@@ -211,41 +212,43 @@
   <path class="edge" d="M600,66 L640,66" marker-end="url(#ar)"/>
   <path class="edge" d="M800,66 L840,66" marker-end="url(#ar)"/>
 
-  <rect class="stage" x="840" y="180" width="150" height="104" rx="8"/>
+  <rect class="stage" x="840" y="180" width="150" height="120" rx="8"/>
   <text class="t" x="852" y="204">Loader</text>
   <text class="m" x="852" y="222">CNeoVMProgram</text>
   <text x="852" y="240">validate, compute</text>
   <text x="852" y="256">layouts, patch to</text>
   <text x="852" y="272">runtime opcodes</text>
 
-  <rect class="stage" x="560" y="180" width="240" height="104" rx="8"/>
+  <rect class="stage" x="560" y="180" width="240" height="120" rx="8"/>
   <text class="t" x="572" y="204">Execution</text>
   <text class="m" x="572" y="222">CNeoVM, CNeoVMWorker</text>
-  <text x="572" y="240">dispatch loop over VarInfo payloads,</text>
-  <text x="572" y="256">contexts, coroutines, builtins,</text>
-  <text x="572" y="272">pools and cycle collection</text>
+  <text x="572" y="240">dispatch loop over VarInfo</text>
+  <text x="572" y="256">payloads, contexts, coroutines,</text>
+  <text x="572" y="272">builtins, pools, cycle collection</text>
 
-  <rect class="stage" x="280" y="180" width="240" height="104" rx="8"/>
-  <text class="t" x="292" y="204">Host boundary</text>
-  <text class="m" x="292" y="222">NeoCore.h: Runtime, Program, Instance</text>
-  <text x="292" y="240">HostSchema and HostBindings,</text>
-  <text x="292" y="256">ObjectHandle, Debugger,</text>
-  <text x="292" y="272">C ABI and Unity package</text>
+  <rect class="stage" x="270" y="180" width="260" height="120" rx="8"/>
+  <text class="t" x="282" y="204">Host boundary</text>
+  <text class="m" x="282" y="222">NeoCore.h: Runtime, Program,</text>
+  <text class="m" x="282" y="238">Instance</text>
+  <text x="282" y="256">HostSchema and HostBindings,</text>
+  <text x="282" y="272">ObjectHandle, Debugger,</text>
+  <text x="282" y="288">C ABI and Unity package</text>
 
-  <rect class="stage" x="10" y="180" width="230" height="104" rx="8"/>
+  <rect class="stage" x="10" y="180" width="220" height="120" rx="8"/>
   <text class="t" x="22" y="204">Tooling</text>
-  <text class="m" x="22" y="222">Samples/neocore, Tools/vscode-neocore</text>
-  <text x="22" y="240">console runner, DAP and LSP,</text>
-  <text x="22" y="256">smoke and regression checks,</text>
-  <text x="22" y="272">benchmarks</text>
+  <text class="m" x="22" y="222">Samples/neocore</text>
+  <text class="m" x="22" y="238">Tools/vscode-neocore</text>
+  <text x="22" y="256">console runner, DAP and LSP,</text>
+  <text x="22" y="272">smoke and regression checks,</text>
+  <text x="22" y="288">benchmarks</text>
 
   <path class="edge" d="M915,112 L915,180" marker-end="url(#ar)"/>
-  <path class="edge" d="M840,232 L800,232" marker-end="url(#ar)"/>
-  <path class="edge" d="M560,232 L520,232" marker-end="url(#ar)"/>
-  <path class="edge" d="M280,232 L240,232" marker-end="url(#ar)"/>
-  <path class="edge" d="M125,180 L125,140 L290,140 L290,112" marker-end="url(#ar)"/>
-  <text class="lbl" x="136" y="156">tools drive the same front end</text>
-  <text class="lbl" x="10" y="316">Arrows show the direction of data. The host boundary wraps the engine for C++, C and C# hosts.</text>
+  <path class="edge" d="M840,240 L800,240" marker-end="url(#ar)"/>
+  <path class="edge" d="M560,240 L530,240" marker-end="url(#ar)"/>
+  <path class="edge" d="M270,240 L230,240" marker-end="url(#ar)"/>
+  <path class="edge" d="M120,180 L120,140 L290,140 L290,112" marker-end="url(#ar)"/>
+  <text class="lbl" x="132" y="156">tools drive the same front end</text>
+  <text class="lbl" x="10" y="330">Arrows show the direction of data. The host boundary wraps the engine for C++, C and C# hosts.</text>
 </svg>
 </div>
 <figcaption>Figure 1. Source to execution. The image in the middle is the only persistent artifact; everything to its right is rebuilt from it at load time.</figcaption>
@@ -692,7 +695,6 @@
 <p class="muted">The typed VM migration is ongoing. <a href="StaticTyping.md">StaticTyping.md</a> lists the implemented subset and remaining milestones, and <a href="TypedStorage.md">TypedStorage.md</a> records the current storage rules; keep this page in step with both when the pipeline or ownership changes.</p>
 </section>
 
-</div>
 </div>
 </div>
 </body>
