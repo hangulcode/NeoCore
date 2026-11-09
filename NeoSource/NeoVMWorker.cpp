@@ -3156,15 +3156,36 @@ bool CNeoVMWorker::CallDefaultNativeByIndex(int nativeIndex, int n3, VarInfo* pR
 	if (!EnsureStackRange(_iSP_VarsMax, n3))
 		return false;
     // 스택 범위 검사는 유지한다. 등록된 숫자 함수의 인자 계약은 컴파일러가 보증한다.
+    // 순수 수학 네이티브(인자 1~3개, float 반환)는 프레임 전환과 라이브러리 래퍼 없이 창 슬롯에서 바로 계산한다.
     // 정수와 실수 모두 허용하는 내부 명령이므로 두 숫자 표현의 선택은 호출 계획이 준다.
-    if (n3 == 1)
+    if (n3 >= 1 && n3 <= 3)
     {
-        CNeoVM::ScalarNativeFunction scalar = CNeoVM::GetDefaultNativeScalar(nativeIndex);
-        if (scalar)
+        VarInfo* const window = m_pVarStackData + _iSP_VarsMax;
+        auto argument = [&](int index) -> NS_FLOAT
         {
-            const ValueRef argument(m_pVarStack_Base->data() + _iSP_VarsMax + 1, PlanType(1));
-            assert(argument.IsNumber());
-            const NS_FLOAT value = scalar(argument.GetFloatNumber());
+            const ValueRef value(window + index, PlanType(index));
+            assert(value.IsNumber());
+            return value.GetFloatNumber();
+        };
+        bool computed = false;
+        NS_FLOAT value = 0;
+        if (n3 == 1)
+        {
+            if (CNeoVM::ScalarNativeFunction scalar = CNeoVM::GetDefaultNativeScalar(nativeIndex))
+            { value = scalar(argument(1)); computed = true; }
+        }
+        else if (n3 == 2)
+        {
+            if (CNeoVM::ScalarNativeFunction2 scalar = CNeoVM::GetDefaultNativeScalar2(nativeIndex))
+            { const NS_FLOAT a = argument(1), b = argument(2); value = scalar(a, b); computed = true; }
+        }
+        else
+        {
+            if (CNeoVM::ScalarNativeFunction3 scalar = CNeoVM::GetDefaultNativeScalar3(nativeIndex))
+            { const NS_FLOAT a = argument(1), b = argument(2), c = argument(3); value = scalar(a, b, c); computed = true; }
+        }
+        if (computed)
+        {
             if (pRet) StoreNumberFloat(pRet, value);
             _activePlan = nullptr;
             return true;

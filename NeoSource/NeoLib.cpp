@@ -775,7 +775,7 @@ struct neo_libs
 		assert(args == 1);
 
 		NS_FLOAT v = FloatArgument(pN, 1);
-		pN->ReturnValue(::abs(v));
+		pN->ReturnValue(AbsValue(v));
 		return true;
 	}
 	static bool Math_acos(CNeoVMWorker* pN, ValueRef pVar, short args)
@@ -888,7 +888,7 @@ struct neo_libs
 		assert(args == 1);
 
 		NS_FLOAT radian = FloatArgument(pN, 1);
-		pN->ReturnValue(((radian) * (180.0f / MATH_PI)));
+		pN->ReturnValue(DegValue(radian));
 		return true;
 	}
 	static bool Math_rad(CNeoVMWorker* pN, ValueRef pVar, short args)
@@ -896,7 +896,7 @@ struct neo_libs
 		assert(args == 1);
 
 		NS_FLOAT degree = FloatArgument(pN, 1);
-		pN->ReturnValue(((degree) * (MATH_PI / 180.0f)));
+		pN->ReturnValue(RadValue(degree));
 		return true;
 	}
 	static bool Math_sqrt(CNeoVMWorker* pN, ValueRef pVar, short args)
@@ -966,7 +966,7 @@ struct neo_libs
 		assert(args == 2);
 		NS_FLOAT x = FloatArgument(pN, 1);
 		NS_FLOAT y = FloatArgument(pN, 2);
-		pN->ReturnValue(::sqrt(x * x + y * y));
+		pN->ReturnValue(HypotValue(x, y));
 		return true;
 	}
 	static bool Math_fmod(CNeoVMWorker* pN, ValueRef pVar, short args)
@@ -974,8 +974,7 @@ struct neo_libs
 		assert(args == 2);
 		NS_FLOAT x = FloatArgument(pN, 1);
 		NS_FLOAT y = FloatArgument(pN, 2);
-		// C 의 fmod(x, 0) 은 NaN 이다. 스크립트에 NaN 을 흘리지 않는다.
-		pN->ReturnValue(y == (NS_FLOAT)0 ? (NS_FLOAT)0 : ::fmod(x, y));
+		pN->ReturnValue(FmodValue(x, y));
 		return true;
 	}
 	static bool Math_trunc(CNeoVMWorker* pN, ValueRef pVar, short args)
@@ -987,12 +986,7 @@ struct neo_libs
 	static bool Math_fract(CNeoVMWorker* pN, ValueRef pVar, short args)
 	{
 		assert(args == 1);
-		NS_FLOAT x = FloatArgument(pN, 1);
-		NS_FLOAT result = x - ::floor(x);
-		// The exact fraction is below one, but a tiny negative input can round
-		// up to one in binary32. Keep finite results inside the promised range.
-		if (result == (NS_FLOAT)1.0) result = std::nextafter((NS_FLOAT)1.0, (NS_FLOAT)0.0);
-		pN->ReturnValue(result);
+		pN->ReturnValue(FractValue(FloatArgument(pN, 1)));
 		return true;
 	}
 	static bool Math_sinh(CNeoVMWorker* pN, ValueRef pVar, short args)
@@ -1017,7 +1011,7 @@ struct neo_libs
 	{
 		assert(args == 1);
 		NS_FLOAT x = FloatArgument(pN, 1);
-		pN->ReturnValue(x > (NS_FLOAT)0 ? (NS_FLOAT)1 : (x < (NS_FLOAT)0 ? (NS_FLOAT)-1 : (NS_FLOAT)0));
+		pN->ReturnValue(SignValue(x));
 		return true;
 	}
 	static bool Math_Min(CNeoVMWorker* pN, ValueRef pVar, short args)
@@ -1025,7 +1019,7 @@ struct neo_libs
 		assert(args == 2);
 		NS_FLOAT a = FloatArgument(pN, 1);
 		NS_FLOAT b = FloatArgument(pN, 2);
-		pN->ReturnValue(a < b ? a : b);
+		pN->ReturnValue(MinValue(a, b));
 		return true;
 	}
 	static bool Math_Max(CNeoVMWorker* pN, ValueRef pVar, short args)
@@ -1033,7 +1027,7 @@ struct neo_libs
 		assert(args == 2);
 		NS_FLOAT a = FloatArgument(pN, 1);
 		NS_FLOAT b = FloatArgument(pN, 2);
-		pN->ReturnValue(a > b ? a : b);
+		pN->ReturnValue(MaxValue(a, b));
 		return true;
 	}
 	static bool Math_Repeat(CNeoVMWorker* pN, ValueRef pVar, short args)
@@ -1138,7 +1132,7 @@ struct neo_libs
 		NS_FLOAT a = FloatArgument(pN, 1);
 		NS_FLOAT b = FloatArgument(pN, 2);
 		NS_FLOAT v = FloatArgument(pN, 3);
-		pN->ReturnValue(b == a ? (NS_FLOAT)0 : (v - a) / (b - a));
+		pN->ReturnValue(InverseLerpValue(a, b, v));
 		return true;
 	}
 	static bool Math_Remap(CNeoVMWorker* pN, ValueRef pVar, short args)
@@ -1159,8 +1153,7 @@ struct neo_libs
 		NS_FLOAT e0 = FloatArgument(pN, 1);
 		NS_FLOAT e1 = FloatArgument(pN, 2);
 		NS_FLOAT x = FloatArgument(pN, 3);
-		NS_FLOAT t = e1 == e0 ? (x < e0 ? (NS_FLOAT)0 : (NS_FLOAT)1) : MathClamp01Value((x - e0) / (e1 - e0));
-		pN->ReturnValue(t * t * ((NS_FLOAT)3.0 - (NS_FLOAT)2.0 * t));
+		pN->ReturnValue(SmoothStepValue(e0, e1, x));
 		return true;
 	}
 	static bool Math_Distance2(CNeoVMWorker* pN, ValueRef pVar, short args)
@@ -1238,6 +1231,36 @@ struct neo_libs
 		if (v > maxValue) return maxValue;
 		return v;
 	}
+	// 아래 값 함수는 네이티브 래퍼와 워커의 직접 계산 경로(kScalarNatives)가 함께 쓴다. 한 곳에서만 고친다.
+	static NS_FLOAT AbsValue(NS_FLOAT v) { return ::abs(v); }
+	static NS_FLOAT DegValue(NS_FLOAT radian) { return ((radian) * (180.0f / MATH_PI)); }
+	static NS_FLOAT RadValue(NS_FLOAT degree) { return ((degree) * (MATH_PI / 180.0f)); }
+	static NS_FLOAT HypotValue(NS_FLOAT x, NS_FLOAT y) { return ::sqrt(x * x + y * y); }
+	// C 의 fmod(x, 0) 은 NaN 이다. 스크립트에 NaN 을 흘리지 않는다.
+	static NS_FLOAT FmodValue(NS_FLOAT x, NS_FLOAT y) { return y == (NS_FLOAT)0 ? (NS_FLOAT)0 : ::fmod(x, y); }
+	static NS_FLOAT FractValue(NS_FLOAT x)
+	{
+		NS_FLOAT result = x - ::floor(x);
+		// The exact fraction is below one, but a tiny negative input can round
+		// up to one in binary32. Keep finite results inside the promised range.
+		if (result == (NS_FLOAT)1.0) result = std::nextafter((NS_FLOAT)1.0, (NS_FLOAT)0.0);
+		return result;
+	}
+	static NS_FLOAT SignValue(NS_FLOAT x) { return x > (NS_FLOAT)0 ? (NS_FLOAT)1 : (x < (NS_FLOAT)0 ? (NS_FLOAT)-1 : (NS_FLOAT)0); }
+	static NS_FLOAT MinValue(NS_FLOAT a, NS_FLOAT b) { return a < b ? a : b; }
+	static NS_FLOAT MaxValue(NS_FLOAT a, NS_FLOAT b) { return a > b ? a : b; }
+	static NS_FLOAT SmoothStep01Value(NS_FLOAT v)
+	{
+		NS_FLOAT x = MathClamp01Value(v);
+		return x * x * ((NS_FLOAT)3.0 - (NS_FLOAT)2.0 * x);
+	}
+	static NS_FLOAT LerpValue(NS_FLOAT a, NS_FLOAT b, NS_FLOAT t) { return a + (b - a) * t; }
+	static NS_FLOAT InverseLerpValue(NS_FLOAT a, NS_FLOAT b, NS_FLOAT v) { return b == a ? (NS_FLOAT)0 : (v - a) / (b - a); }
+	static NS_FLOAT SmoothStepValue(NS_FLOAT e0, NS_FLOAT e1, NS_FLOAT x)
+	{
+		NS_FLOAT t = e1 == e0 ? (x < e0 ? (NS_FLOAT)0 : (NS_FLOAT)1) : MathClamp01Value((x - e0) / (e1 - e0));
+		return t * t * ((NS_FLOAT)3.0 - (NS_FLOAT)2.0 * t);
+	}
 	static bool Math_Clamp01(CNeoVMWorker* pN, ValueRef pVar, short args)
 	{
 		assert(args == 1);
@@ -1253,8 +1276,7 @@ struct neo_libs
 	static bool Math_SmoothStep01(CNeoVMWorker* pN, ValueRef pVar, short args)
 	{
 		assert(args == 1);
-		NS_FLOAT x = MathClamp01Value(FloatArgument(pN, 1));
-		pN->ReturnValue(x * x * ((NS_FLOAT)3.0 - (NS_FLOAT)2.0 * x));
+		pN->ReturnValue(SmoothStep01Value(FloatArgument(pN, 1)));
 		return true;
 	}
 	static bool Math_Lerp(CNeoVMWorker* pN, ValueRef pVar, short args)
@@ -1263,7 +1285,7 @@ struct neo_libs
 		NS_FLOAT a = FloatArgument(pN, 1);
 		NS_FLOAT b = FloatArgument(pN, 2);
 		NS_FLOAT t = FloatArgument(pN, 3);
-		pN->ReturnValue(a + (b - a) * t);
+		pN->ReturnValue(LerpValue(a, b, t));
 		return true;
 	}
 	// Read 는 BoundaryValue::GetVec* 로 벡터 값타입(VAR_VEC*)만 받는다 (리스트 폴백 없음).
@@ -2292,6 +2314,8 @@ static VMHash<TYPE_NeoLib> g_sNeoFunLib_Set;
 static VMHash<TYPE_NeoLib> g_sNeoFunLib_Async;
 static std::vector<TYPE_NeoLib> g_sNeoFunLib_DefaultNative;
 static std::vector<CNeoVM::ScalarNativeFunction> g_sNeoFunLib_DefaultScalar;
+static std::vector<CNeoVM::ScalarNativeFunction2> g_sNeoFunLib_DefaultScalar2;
+static std::vector<CNeoVM::ScalarNativeFunction3> g_sNeoFunLib_DefaultScalar3;
 static std::vector<u8> g_sNeoFunLib_DefaultIntrinsic; // native index 별 intrinsic opcode (기본 NOP_NONE)
 static std::unordered_map<std::string, int> g_sNeoFunLib_DefaultNativeIndex;
 
@@ -2363,6 +2387,57 @@ static bool Fun_Async(INeoVMWorker* pN, void* pUserData, const VMString* pStr, s
 std::map<std::string, std::list< SystemFun>> g_sSystemFuns;
 std::string g_sCurrentSystem;
 
+// 직접 계산이 허용되는 순수 수학 네이티브. 래퍼(Math_*)와 같은 값 함수를 가리켜 두 경로의 결과가 같다.
+// 인자 수에 맞는 칸 하나만 채운다. rand·time 처럼 상태를 쓰는 함수와 벡터·각도 보간처럼 분기가 긴 함수는 넣지 않는다.
+struct ScalarNativeEntry
+{
+	TYPE_NeoLib fun;
+	CNeoVM::ScalarNativeFunction f1;
+	CNeoVM::ScalarNativeFunction2 f2;
+	CNeoVM::ScalarNativeFunction3 f3;
+};
+typedef NS_FLOAT (*LibmUnary)(NS_FLOAT);
+typedef NS_FLOAT (*LibmBinary)(NS_FLOAT, NS_FLOAT);
+static const ScalarNativeEntry kScalarNatives[] = {
+	{ &neo_libs::Math_abs,   &neo_libs::AbsValue, nullptr, nullptr },
+	{ &neo_libs::Math_acos,  static_cast<LibmUnary>(&::acos), nullptr, nullptr },
+	{ &neo_libs::Math_asin,  static_cast<LibmUnary>(&::asin), nullptr, nullptr },
+	{ &neo_libs::Math_atan,  static_cast<LibmUnary>(&::atan), nullptr, nullptr },
+	{ &neo_libs::Math_ceil,  static_cast<LibmUnary>(&::ceil), nullptr, nullptr },
+	{ &neo_libs::Math_floor, static_cast<LibmUnary>(&::floor), nullptr, nullptr },
+	{ &neo_libs::Math_round, static_cast<LibmUnary>(&::round), nullptr, nullptr },
+	{ &neo_libs::Math_sin,   static_cast<LibmUnary>(&::sin), nullptr, nullptr },
+	{ &neo_libs::Math_cos,   static_cast<LibmUnary>(&::cos), nullptr, nullptr },
+	{ &neo_libs::Math_tan,   static_cast<LibmUnary>(&::tan), nullptr, nullptr },
+	{ &neo_libs::Math_log,   static_cast<LibmUnary>(&::log), nullptr, nullptr },
+	{ &neo_libs::Math_log10, static_cast<LibmUnary>(&::log10), nullptr, nullptr },
+	{ &neo_libs::Math_exp,   static_cast<LibmUnary>(&::exp), nullptr, nullptr },
+	{ &neo_libs::Math_deg,   &neo_libs::DegValue, nullptr, nullptr },
+	{ &neo_libs::Math_rad,   &neo_libs::RadValue, nullptr, nullptr },
+	{ &neo_libs::Math_sqrt,  static_cast<LibmUnary>(&::sqrt), nullptr, nullptr },
+	{ &neo_libs::Math_trunc, static_cast<LibmUnary>(&::trunc), nullptr, nullptr },
+	{ &neo_libs::Math_fract, &neo_libs::FractValue, nullptr, nullptr },
+	{ &neo_libs::Math_sinh,  static_cast<LibmUnary>(&::sinh), nullptr, nullptr },
+	{ &neo_libs::Math_cosh,  static_cast<LibmUnary>(&::cosh), nullptr, nullptr },
+	{ &neo_libs::Math_tanh,  static_cast<LibmUnary>(&::tanh), nullptr, nullptr },
+	{ &neo_libs::Math_Sign,  &neo_libs::SignValue, nullptr, nullptr },
+	{ &neo_libs::Math_WrapAngle, &neo_libs::NsWrapAngle, nullptr, nullptr },
+	{ &neo_libs::Math_Clamp01, &neo_libs::MathClamp01Value, nullptr, nullptr },
+	{ &neo_libs::Math_SmoothStep01, &neo_libs::SmoothStep01Value, nullptr, nullptr },
+	{ &neo_libs::Math_pow,   nullptr, static_cast<LibmBinary>(&::pow), nullptr },
+	{ &neo_libs::Math_atan2, nullptr, static_cast<LibmBinary>(&::atan2), nullptr },
+	{ &neo_libs::Math_hypot, nullptr, &neo_libs::HypotValue, nullptr },
+	{ &neo_libs::Math_fmod,  nullptr, &neo_libs::FmodValue, nullptr },
+	{ &neo_libs::Math_Min,   nullptr, &neo_libs::MinValue, nullptr },
+	{ &neo_libs::Math_Max,   nullptr, &neo_libs::MaxValue, nullptr },
+	{ &neo_libs::Math_Repeat, nullptr, &neo_libs::NsRepeat, nullptr },
+	{ &neo_libs::Math_Clamp, nullptr, nullptr, &neo_libs::MathClampValue },
+	{ &neo_libs::Math_Lerp,  nullptr, nullptr, &neo_libs::LerpValue },
+	{ &neo_libs::Math_MoveToward, nullptr, nullptr, &neo_libs::NsMoveToward },
+	{ &neo_libs::Math_InverseLerp, nullptr, nullptr, &neo_libs::InverseLerpValue },
+	{ &neo_libs::Math_SmoothStep, nullptr, nullptr, &neo_libs::SmoothStepValue },
+};
+
 static int AddDefaultNativeFun(const std::string& nativeName, TYPE_NeoLib fun)
 {
 	auto it = g_sNeoFunLib_DefaultNativeIndex.find(nativeName);
@@ -2371,11 +2446,19 @@ static int AddDefaultNativeFun(const std::string& nativeName, TYPE_NeoLib fun)
 
 	int nativeIndex = (int)g_sNeoFunLib_DefaultNative.size();
 	g_sNeoFunLib_DefaultNative.push_back(fun);
-    // 호스트 콜백이나 VM 상태를 사용하지 않는 내장 수학 함수만 직접 계산을 허용한다.
-    CNeoVM::ScalarNativeFunction scalar = nullptr;
-    if (fun == &neo_libs::Math_sin) scalar = static_cast<CNeoVM::ScalarNativeFunction>(&::sin);
-    else if (fun == &neo_libs::Math_cos) scalar = static_cast<CNeoVM::ScalarNativeFunction>(&::cos);
-    g_sNeoFunLib_DefaultScalar.push_back(scalar);
+	// 호스트 콜백이나 VM 상태를 사용하지 않는 내장 수학 함수만 직접 계산을 허용한다(kScalarNatives).
+	CNeoVM::ScalarNativeFunction scalar = nullptr;
+	CNeoVM::ScalarNativeFunction2 scalar2 = nullptr;
+	CNeoVM::ScalarNativeFunction3 scalar3 = nullptr;
+	for (size_t i = 0; i < sizeof(kScalarNatives) / sizeof(kScalarNatives[0]); ++i)
+	{
+		if (kScalarNatives[i].fun != fun) continue;
+		scalar = kScalarNatives[i].f1; scalar2 = kScalarNatives[i].f2; scalar3 = kScalarNatives[i].f3;
+		break;
+	}
+	g_sNeoFunLib_DefaultScalar.push_back(scalar);
+	g_sNeoFunLib_DefaultScalar2.push_back(scalar2);
+	g_sNeoFunLib_DefaultScalar3.push_back(scalar3);
 	g_sNeoFunLib_DefaultIntrinsic.push_back(NOP_NONE);
 	g_sNeoFunLib_DefaultNativeIndex[nativeName] = nativeIndex;
 	g_sNeoFunLib_Default.Add(nativeName, fun);
@@ -2470,6 +2553,16 @@ CNeoVM::ScalarNativeFunction CNeoVM::GetDefaultNativeScalar(int nativeIndex)
 {
     return nativeIndex >= 0 && nativeIndex < static_cast<int>(g_sNeoFunLib_DefaultScalar.size())
         ? g_sNeoFunLib_DefaultScalar[nativeIndex] : nullptr;
+}
+CNeoVM::ScalarNativeFunction2 CNeoVM::GetDefaultNativeScalar2(int nativeIndex)
+{
+    return nativeIndex >= 0 && nativeIndex < static_cast<int>(g_sNeoFunLib_DefaultScalar2.size())
+        ? g_sNeoFunLib_DefaultScalar2[nativeIndex] : nullptr;
+}
+CNeoVM::ScalarNativeFunction3 CNeoVM::GetDefaultNativeScalar3(int nativeIndex)
+{
+    return nativeIndex >= 0 && nativeIndex < static_cast<int>(g_sNeoFunLib_DefaultScalar3.size())
+        ? g_sNeoFunLib_DefaultScalar3[nativeIndex] : nullptr;
 }
 bool CNeoVM::CallDefaultNativeByIndex(int nativeIndex, CNeoVMWorker* pWorker, short args)
 {

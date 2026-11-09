@@ -1370,8 +1370,14 @@ public:
 	static int FindDefaultNativeIndex(const std::string& name);
 	static int GetDefaultNativeIntrinsic(int nativeIndex);
 	static const char* GetDefaultNativeName(int nativeIndex);
+	// 호스트 콜백이나 VM 상태를 쓰지 않는 순수 수학 네이티브의 직접 계산 함수. 인자 수(1~3)별로 표가 있고,
+	// 워커의 NATIVECALL 이 프레임 전환·뷰 없이 창 슬롯에서 바로 계산한다. 등록은 NeoLib.cpp 의 kScalarNatives 표가 한다.
 	typedef NS_FLOAT (*ScalarNativeFunction)(NS_FLOAT);
+	typedef NS_FLOAT (*ScalarNativeFunction2)(NS_FLOAT, NS_FLOAT);
+	typedef NS_FLOAT (*ScalarNativeFunction3)(NS_FLOAT, NS_FLOAT, NS_FLOAT);
 	static ScalarNativeFunction GetDefaultNativeScalar(int nativeIndex);
+	static ScalarNativeFunction2 GetDefaultNativeScalar2(int nativeIndex);
+	static ScalarNativeFunction3 GetDefaultNativeScalar3(int nativeIndex);
 	static bool CallDefaultNativeByIndex(int nativeIndex, CNeoVMWorker* pWorker, short args);
 	void RegLibrary(ValueRef pSystem, const char* pLibName);// , SNeoFunLib* pFuns);
 	static void RegObjLibrary();

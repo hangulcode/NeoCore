@@ -81,6 +81,10 @@ int main()
         // 점프(건너뛴 if 뒤의 대입)는 둘째만 실행해야 하고 continue 는 반복 점검으로 바로 가야 한다.
         Expect("export int Probe(){int x=0;int y=0;int s=0;for(int i in 0,5){if((i&1)==0)x=1;y=2;s+=x+y;x=0;}return s;}", 13, "paired instructions keep incoming jump targets", debug);
         Expect("export int Probe(){int s=0;for(int i in 0,10){if(i==3)continue;s+=i;}return s;}", 42, "loop entry test in place keeps continue", debug);
+        // 순수 수학 네이티브는 창 슬롯에서 바로 계산한다(NeoLib kScalarNatives). 인자 1·2·3개, 정수 인자, fmod 의 0 보호를 함께 본다.
+        Expect("import math;export int Probe(){float h=math.hypot(3,4);float c=math.Clamp(5,0,3);float f=math.fmod(1,0);float m=math.Min(2,1.5);"
+            "float l=math.Lerp(0,10,0.25);float s=math.sqrt(16);float a=math.abs(-2.5);return int(h*1000)+int(c*100)+int(f)+int(m*10)+int(l*10)+int(s)+int(a*2);}",
+            5349, "scalar natives compute in place", debug);
         // while 조건은 본문 뒤로 옮겨 쓴다. 조건 안의 직접 호출(PREPARE_CALL 없음) 계획도 함께 옮겨야
         // 본문의 문자열 인자 호출 계획이 조건의 float 인자 복사에 쓰이지 않는다.
         Expect("float Gap(float a,float b){return a-b;}int notes=0;void Note(string s){notes+=s.len();}"

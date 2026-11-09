@@ -249,7 +249,11 @@ second stays in the code, so a branch into it executes it alone, and the
 disassembly shows the original two instructions. Images with debug information
 keep one instruction per dispatch so breakpoints stop on every instruction. The
 pair list was chosen from dynamic adjacent-opcode counts of the benchmark suite
-and a game project's headless run.
+and a game project's headless run. Pure math natives with one to three float
+arguments (`abs`, `sqrt`, `hypot`, `atan2`, `Min`, `Clamp`, `Lerp`, ...) are computed
+by the `NATIVECALL` handler directly from the call window, without the native frame
+switch or the library wrapper; `kScalarNatives` in `NeoLib.cpp` lists them and shares
+its value functions with the wrappers, so both paths return the same results.
 List/map/set entry storage and some generic bridge operations remain transitional,
 as described above. Property hosts no longer sweep their scratch window; a host
 getter or setter must not leave owned values in VM stack slots. No performance
