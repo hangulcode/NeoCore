@@ -3525,14 +3525,28 @@ private:
         return text;
     }
 
+    // 분기 문맥(if/while 조건)의 논리식 아래에 있는 논리식 자식을 괄호 없이 이어 써도 되는가. `||` 아래의 `||`·`&&`와
+    // `&&` 아래의 `&&`는 괄호를 빼도 우선순위와 왼쪽 결합이 같은 단락 평가 순서를 만든다. `&&` 아래의 `||`는 괄호가
+    // 있어야 한다. 괄호로 감싸면 파서가 그 묶음을 불린 값으로 만들었다가 다시 검사한다(MOV true/JMP/MOV false/JT).
+    bool BareLogicalChild(const Expr& parent, const Expr& child) const
+    {
+        if (child.kind != ExprKind::Binary || (child.op != "&&" && child.op != "||")) return false;
+        if (child.op != parent.op && !(parent.op == "||" && child.op == "&&")) return false;
+        return child.callName.empty() && !child.evaluatedConstant && !child.constantInitializer && !child.widen && !child.box &&
+            !child.clone && !child.writeTarget && !child.assignmentTarget;
+    }
+
     // chainLink: 이 식이 사슬의 고리다. IR 참조와 바깥 괄호 없이 부모 조각에 이어 붙는다.
-    std::string RenderExpr(const Expr& expression, bool allowIR = true, bool applyWrappers = true, bool chainLink = false) const
+    // bareLogical: 분기 문맥 논리식의 자식 논리식이다(BareLogicalChild). 괄호와 IR 참조 없이 부모 조건에 이어 붙어
+    //              파서가 조건 전체를 한 단락 평가 사슬로 보고 분기 점프만 낸다.
+    std::string RenderExpr(const Expr& expression, bool allowIR = true, bool applyWrappers = true, bool chainLink = false,
+        bool bareLogical = false) const
     {
         if (expression.evaluatedConstant)
             return ConstantLiteral(*expression.evaluatedConstant) + Lines(expression.begin, expression.end);
         std::string text;
         IROp operation;
-        if (allowIR && !chainLink && !expression.constantInitializer &&
+        if (allowIR && !chainLink && !bareLogical && !expression.constantInitializer &&
             (NumericIROp(expression, operation) || ScalarMutationIROp(expression, operation) || ScalarCollectionIR(expression)
                 || (!expression.writeTarget && !expression.assignmentTarget && !expression.branchCondition &&
                     expression.type != InvalidType && types_.Get(expression.type).kind != TypeKind::Void && expression.kind != ExprKind::Name && expression.kind != ExprKind::Literal)
@@ -3606,8 +3620,9 @@ private:
                 break;
             }
             // 조건문의 최상위 논리식은 바깥 if/while 괄호로 충분하다. 추가 괄호는 분기를 불린 값 생성으로 바꾼다.
-            // 자식 식의 괄호는 그대로 두어 중첩 논리식의 결합 순서와 단락 평가를 보존한다.
-            const bool directCondition = expression.branchCondition && (expression.op == "&&" || expression.op == "||");
+            // 같은 결합으로 이어지는 자식 논리식도 괄호 없이 이어 쓴다(BareLogicalChild). 그 밖의 자식 괄호는 그대로
+            // 두어 중첩 논리식의 결합 순서와 단락 평가를 보존한다.
+            const bool directCondition = (expression.branchCondition || bareLogical) && (expression.op == "&&" || expression.op == "||");
             const bool bare = directCondition || chainLink;
             const bool leftLink = ChainLink(expression, left);
             if (leftLink)
@@ -3615,8 +3630,11 @@ private:
                 text = RenderConcatChain(expression, bare);
                 break;
             }
-            text = (bare ? "" : "(") + Lines(expression.begin, left.begin) + RenderExpr(left, !leftLink, true, leftLink) + Lines(left.end, expression.token.begin)
-                + " " + expression.op + " " + Lines(expression.token.end, right.begin) + RenderExpr(right) + Lines(right.end, expression.end) + (bare ? "" : ")");
+            const bool leftBare = directCondition && BareLogicalChild(expression, left);
+            const bool rightBare = directCondition && BareLogicalChild(expression, right);
+            text = (bare ? "" : "(") + Lines(expression.begin, left.begin) + RenderExpr(left, !leftLink && !leftBare, true, leftLink, leftBare)
+                + Lines(left.end, expression.token.begin) + " " + expression.op + " " + Lines(expression.token.end, right.begin)
+                + RenderExpr(right, !rightBare, true, false, rightBare) + Lines(right.end, expression.end) + (bare ? "" : ")");
             break;
         }
         case ExprKind::Conditional:

@@ -254,6 +254,10 @@ arguments (`abs`, `sqrt`, `hypot`, `atan2`, `Min`, `Clamp`, `Lerp`, ...) are com
 by the `NATIVECALL` handler directly from the call window, without the native frame
 switch or the library wrapper; `kScalarNatives` in `NeoLib.cpp` lists them and shares
 its value functions with the wrappers, so both paths return the same results.
+Nested `&&`/`||` groups inside an `if` or `while` condition (`a || b || c`,
+`a && b || c`) compile to direct branch jumps like the top-level group instead of
+producing a boolean that is tested again; only a `||` group under `&&` still needs
+its own value.
 List/map/set entry storage and some generic bridge operations remain transitional,
 as described above. Property hosts no longer sweep their scratch window; a host
 getter or setter must not leave owned values in VM stack slots. No performance

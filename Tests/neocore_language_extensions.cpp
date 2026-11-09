@@ -85,6 +85,13 @@ int main()
         Expect("import math;export int Probe(){float h=math.hypot(3,4);float c=math.Clamp(5,0,3);float f=math.fmod(1,0);float m=math.Min(2,1.5);"
             "float l=math.Lerp(0,10,0.25);float s=math.sqrt(16);float a=math.abs(-2.5);return int(h*1000)+int(c*100)+int(f)+int(m*10)+int(l*10)+int(s)+int(a*2);}",
             5349, "scalar natives compute in place", debug);
+        // if/while 조건의 중첩 논리식(`a||b||c`, `a&&b||c`, `a&&(b||c)`)은 불린 값을 만들지 않고 분기 점프로만 컴파일된다.
+        // 진리표와 단락 평가(함수 호출 횟수)가 그대로여야 한다.
+        Expect("int K(int a,int b){if(a==1||a<0||a>=10)return 1;if(a<3&&b<3||a>8)return 2;if(a<3&&(b<3||b>8))return 3;return 0;}"
+            "export int Probe(){return K(1,9)*1000+K(5,1)*100+K(9,9)*10+K(2,9);}", 1023, "nested condition groups branch directly", debug);
+        Expect("int calls=0;bool T(bool v){calls+=1;return v;}int W(int a){int n=0;while(a<5||a==7){a+=1;n+=1;}return n;}"
+            "export int Probe(){int r=0;if(T(true)||T(false)||T(true))r+=1;if(T(false)&&T(true)||T(true))r+=10;return r*1000+calls*100+W(0)*10+W(7)+W(6);}",
+            11351, "nested condition groups keep short-circuit order", debug);
         // while 조건은 본문 뒤로 옮겨 쓴다. 조건 안의 직접 호출(PREPARE_CALL 없음) 계획도 함께 옮겨야
         // 본문의 문자열 인자 호출 계획이 조건의 float 인자 복사에 쓰이지 않는다.
         Expect("float Gap(float a,float b){return a-b;}int notes=0;void Note(string s){notes+=s.len();}"
