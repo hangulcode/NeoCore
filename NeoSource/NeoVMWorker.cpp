@@ -601,7 +601,7 @@ std::string CNeoVMWorker::FormatStackTrace(int currentOpIndex)
 				trace += argName;
 				trace += ":";
 				if (varIndex >= 0 && varIndex < (int)m_pVarStack_Base->size())
-					trace += GetDataType(ValueRef(&(*m_pVarStack_Base)[varIndex], fun._slotTypes[1 + argIndex]).GetType());
+					trace += GetDataType(ValueRef((m_pVarStackData + (varIndex)), fun._slotTypes[1 + argIndex]).GetType());
 				else
 					trace += "out_of_range";
 			}
@@ -836,7 +836,7 @@ void CNeoVMWorker::BindContext(CoroutineInfo* ctx)
 	SetVarStackBase(&ctx->m_sVarStack);
 	m_pCallStack = &ctx->m_sCallStack;
 	m_pClosureCallStack = &ctx->m_sClosureCallStack;
-	m_pVarStack_Pointer = &(*m_pVarStack_Base)[0];
+	m_pVarStack_Pointer = (m_pVarStackData + (0));
 }
 
 // 컨텍스트의 모든 프레임이 소유한 참조를 정책으로 해제하고 사용 구간을 0으로 채운다.
@@ -881,7 +881,7 @@ static NEOS_FORCEINLINE ClosureInfo* CallableClosure(const VarInfo* slot)
 NEOS_NOINLINE void CNeoVMWorker::ReleaseFrameOwned(const SFunctionTable& fun, int base)
 {
 	const u8* info = fun._slotInfo.data();
-	VarInfo* slots = &(*m_pVarStack_Base)[base];
+	VarInfo* slots = (m_pVarStackData + (base));
 	for (int i = fun._releaseFirst; i < fun._releaseCount; ++i)
 	{
 		const StoragePolicy policy = SlotInfoPolicy(info[i]);
@@ -1000,7 +1000,7 @@ NEOS_FORCEINLINE void CNeoVMWorker::CopyKnownStorage(CNeoVM* vm, VarInfo* target
 // 호스트가 준 태그 있는 값을 피호출자의 인자 슬롯에 넣는다. 선언 타입과 다른 값은 거부한다.
 bool CNeoVMWorker::StoreArgument(const SFunctionTable& fun, int base, int index, ValueRef value)
 {
-	VarInfo* slot = &(*m_pVarStack_Base)[base + 1 + index];
+	VarInfo* slot = (m_pVarStackData + (base + 1 + index));
 	const VAR_TYPE declared = fun._slotTypes[1 + index];
 	const VAR_TYPE actual = value ? value.GetType() : VAR_NONE;
 	if (declared == VAR_NONE)
@@ -1566,7 +1566,7 @@ bool	CNeoVMWorker::Setup(int iFunctionID, std::vector<BoundaryValue>& _args)
 	if (!EnsureStackRange(_iSP_Vars, fun._stackSlotCount - 1))
 		return false;
 	// 호스트 진입 프레임은 깨끗한 구간에서 시작한다. 인자 슬롯도 비운 뒤 채운다.
-	memset(&(*m_pVarStack_Base)[_iSP_Vars], 0, sizeof(VarInfo) * fun._localAddCount);
+	memset((m_pVarStackData + (_iSP_Vars)), 0, sizeof(VarInfo) * fun._localAddCount);
 	EnterFrame(iFunctionID, _iSP_Vars);
 	_activePlan = nullptr;
 
@@ -2120,7 +2120,7 @@ void CNeoVMWorker::DebugGetFrameVariables(int frameId, std::vector<NeoDebugVaria
 		}
 
 		var.stackIndex = stackIndex;
-		NeoDebugFormatValue(ValueRef(&(*m_pVarStack_Base)[stackIndex], slotType(i)), var, budget);
+		NeoDebugFormatValue(ValueRef((m_pVarStackData + (stackIndex)), slotType(i)), var, budget);
 		if (i == 0 && var.type == "none")
 			continue;
 		vars.push_back(var);
@@ -2808,7 +2808,7 @@ bool CNeoVMWorker::BeginTestCall(const SFunctionTable& fun, int functionIndex, i
 	SetCodePtr(fun._codePtr);
 	_iSP_Vars = base;
 	SetStackPointer(_iSP_Vars);
-	memset(&(*m_pVarStack_Base)[base], 0, sizeof(VarInfo) * fun._localAddCount);
+	memset((m_pVarStackData + (base)), 0, sizeof(VarInfo) * fun._localAddCount);
 	EnterFrame(functionIndex, base);
 	_activePlan = nullptr;
 	_iSP_VarsMax = base + fun._localAddCount;
@@ -2831,7 +2831,7 @@ ValueRef CNeoVMWorker::FinishTestCall(const SFunctionTable& fun, int base, bool 
 	Var_Release(&m_sTestCallResult);
 	if (ok)
 	{
-		VarInfo* slot = &(*m_pVarStack_Base)[base];
+		VarInfo* slot = (m_pVarStackData + (base));
 		m_sTestCallResult = BoundaryFromSlot(slot, fun._resultType);
 		slot->_int = 0;
 	}

@@ -427,7 +427,7 @@ NEOS_FORCEINLINE bool handle_RETURN_impl(VarInfo* pSrc, bool sourceLocal, int fu
     else if (callStack._iReturnValueIndex != -1)
     {
         VarInfo* pReturnValue = (callStack._iReturnValueIndex >= 0)
-            ? &(*m_pVarStack_Base)[callStack._iReturnValueIndex]
+            ? m_pVarStackData + callStack._iReturnValueIndex
             : m_pVarGlobal_Pointer + callStack._iReturnValueIndex;
         StoreReturnValue(pReturnValue, pSrc, sourceLocal, resultPolicy);
     }

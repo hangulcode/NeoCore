@@ -303,7 +303,11 @@ private:
 	{
 		m_pVarStack_Base = p;
 		m_iVarStackSize = (p != nullptr) ? (int)p->size() : 0;
+		// 컨텍스트의 값 스택은 만들 때 한 번 크기가 정해지고 그 뒤 재할당되지 않는다(EnsureStackRange는 넘치면
+		// 오류다). 원소 주소를 기준 포인터에서 바로 계산해 호출·반환마다 두 단 간접 참조를 피한다.
+		m_pVarStackData = (p != nullptr) ? p->data() : nullptr;
 	}
+	VarInfo* m_pVarStackData = nullptr;
 	SimpleVector<SCallStack>* m_pCallStack;
 	SimpleVector<SClosureCallState>* m_pClosureCallStack;
 	// 현재 실행 프레임이 어떤 값 캡처 closure에서 시작됐는지. 호출 중에는
@@ -334,7 +338,7 @@ private:
     {
         const CallStoragePlan& selected = m_pFunction->_calls[plan];
         _activePlan = &selected;
-        VarInfo* window = m_pVarStack_Base->data() + _iSP_VarsMax;
+        VarInfo* window = m_pVarStackData + _iSP_VarsMax;
         assert(_iSP_VarsMax + static_cast<int>(selected.types.size()) <= m_iVarStackSize);
         for (int i = selected.zeroFirst; i < selected.zeroEnd; ++i) window[i]._int = 0;
     }
@@ -342,7 +346,7 @@ private:
     NEOS_FORCEINLINE void EnterFrame(int functionIndex, const SFunctionTable& fun, int base)
     {
         if (fun._ownedCount)
-            memset(&(*m_pVarStack_Base)[base + 1 + fun._argsCount], 0, sizeof(VarInfo) * fun._ownedCount);
+            memset(m_pVarStackData + base + 1 + fun._argsCount, 0, sizeof(VarInfo) * fun._ownedCount);
         SelectFunction(functionIndex, fun);
     }
     NEOS_FORCEINLINE void EnterFrame(int functionIndex, int base)
@@ -502,7 +506,7 @@ private:
 	NEOS_FORCEINLINE ValueRef GetVarPtr2(const SVMOperation& OP) { return (OP.argFlag & NEOS_ARG_N2_LOCAL) ? GetVarPtr_L(OP.n2) : GetVarPtr_G(OP.n2); }
 	NEOS_FORCEINLINE ValueRef GetVarPtr3(const SVMOperation& OP) { return (OP.argFlag & NEOS_ARG_N3_LOCAL) ? GetVarPtr_L(OP.n3) : GetVarPtr_G(OP.n3); }
 
-	NEOS_FORCEINLINE void SetStackPointer(int n) { m_pVarStack_Pointer = &(*m_pVarStack_Base)[n]; }
+	NEOS_FORCEINLINE void SetStackPointer(int n) { m_pVarStack_Pointer = m_pVarStackData + n; }
 	// base부터 lastOffset까지(반환값 슬롯은 offset 0) 접근 가능한지 확인한다.
 	bool EnsureStackRange(int base, int lastOffset);
 public:
@@ -637,7 +641,7 @@ public:
 		return _functionIndex >= 0 ? _pProgram->functions[_functionIndex]._resultType : VAR_NONE;
 	}
 	NEOS_FORCEINLINE ValueRef GetStack(int idx) { return ValueRef(m_pVarStack_Pointer + idx, idx == 0 ? ReturnSlotType() : PlanType(idx)); }
-	NEOS_FORCEINLINE VarInfo* GetStackFromBase(int idx) { return &(*m_pVarStack_Base)[idx]; }
+	NEOS_FORCEINLINE VarInfo* GetStackFromBase(int idx) { return m_pVarStackData + idx; }
 
 	template<typename T>
 	T read(int idx) { T r; _read(GetStack(idx), r); return r; }

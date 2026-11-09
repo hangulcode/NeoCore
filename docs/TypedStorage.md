@@ -160,8 +160,10 @@ global, so no call plan or instruction exists for it; a top-level return clears
 the selected plan before the host reads the result slot.
 
 The runtime keeps no per-frame range table. The current function index, a
-pointer to its function record and the program's slot type table are VM
-registers; each call-stack entry records the caller's function index. A return
+pointer to its function record, the program's slot type table and the base
+address of the context's value stack are VM registers (a context's stack is
+sized once and never reallocated, so the base stays valid); each call-stack
+entry records the caller's function index. A return
 releases only the owned part of the frame, starting at the first owned slot the
 loader found, so a function with numeric arguments and locals releases nothing.
 Cancellation, errors and context release enumerate the saved frames (call
