@@ -1954,6 +1954,9 @@ static int ScanExpressionEffects(CArchiveRdWC& ar, TK_TYPE e1, TK_TYPE e2, TK_TY
     TK_TYPE e4, TK_TYPE e5, TK_TYPE e6);
 // '(' 바로 뒤에서 호출 인자 목록을 짝 ')' 까지 훑어 인자별 부작용 플래그를 모은다. EOF 면 false.
 static bool ScanCallArguments(CArchiveRdWC& ar, std::vector<int>& argEffects);
+// 타입 IR 표식과 노드 방출(정의는 뒤에). 레거시 호출 경로가 IR 뿌리 하나인 인자를 창 슬롯에 바로 만들 때 쓴다.
+static bool ParseCoreIRIndex(const std::string& name, const std::string& prefix, std::size_t count, std::size_t& index, CArchiveRdWC& ar);
+static bool EmitCoreIRNode(std::size_t index, SOperand& result, CArchiveRdWC& ar, SFunctions& funs, SVars& vars, int destination);
 // 뒤따르는 코드가 실행되기 전에 이 피연산자의 값을 지금 확정해 둬야 하는가.
 //  - 임시/상수: 아무도 바꾸지 못한다.
 //  - 컨테이너 원소 읽기(a[i], m.k, 체인): 뒤에 호출·선택자·대입이 하나라도 오면 지금 읽는다.
@@ -1975,6 +1978,25 @@ static bool NeedsSnapshot(const SOperand& operand, int effects)
     if (slot <= COMPILE_GLOBAL_VAR_BEGIN)
         return true;
     return (effects & EXPR_EFFECT_ASSIGN) != 0;
+}
+
+// 다음 인자가 IR 표식 하나(`$irN()`)로 끝나는가. 밀어 둔 토큰 하나(표식 이름)와 그 뒤 원문 `( )` 그리고 `,`/`)`를
+// 소비하지 않고 본다. 맞으면 그 IR 계산이 창 슬롯을 목적지로 받을 수 있다.
+static bool PeekLoneCoreIRReference(CArchiveRdWC& ar)
+{
+    if (ar.m_coreTypedIR == nullptr || ar.m_coreTypedIR->prefix.empty() || ar.m_sTokenQueue.size() != 1) return false;
+    const SToken& queued = ar.m_sTokenQueue.front();
+    const std::string& prefix = ar.m_coreTypedIR->prefix;
+    if (queued._type != TK_STRING || queued._tk.size() <= prefix.size() || queued._tk.compare(0, prefix.size(), prefix) != 0) return false;
+    for (std::size_t i = prefix.size(); i < queued._tk.size(); ++i)
+        if (queued._tk[i] < '0' || queued._tk[i] > '9') return false;
+    int k = 0;
+    auto Skip = [&]() { for (;;) { const u16 c = ar.PeekData(k); if (c != ' ' && c != '\t' && c != '\r' && c != '\n') return; ++k; } };
+    Skip(); if (ar.PeekData(k) != '(') return false; ++k;
+    Skip(); if (ar.PeekData(k) != ')') return false; ++k;
+    Skip();
+    const u16 next = ar.PeekData(k);
+    return next == ',' || next == ')';
 }
 
 bool ParseFunCall(SOperand& iResultStack, TK_TYPE tkTypePre, SFunctionInfo* pFun, CArchiveRdWC& ar, SFunctions& funs, SVars& vars)
@@ -2007,7 +2029,25 @@ bool ParseFunCall(SOperand& iResultStack, TK_TYPE tkTypePre, SFunctionInfo* pFun
 		// 각 인자를 평가하되, 호출-인자 슬롯(COMPILE_CALLARG_VAR_BEGIN)으로의 복사는
 		// 모든 인자 평가가 끝난 뒤로 미룬다. 인자식이 그 자체로 함수 호출이면 내부 호출이
 		// 같은 호출-인자 윈도우를 재사용하므로, 즉시 복사할 경우 먼저 평가된 인자가 덮어써진다.
+		// 다만 뒤쪽 인자에 호출이 없으면(스캔한 부작용에 CALL 없음) 그 인자부터는 창을 먼저 고르고 창 슬롯에 바로
+		// 만든다(EmitCoreIRCall 과 같은 규칙). 평가 순서는 그대로이고, 값이 생기는 즉시 창에 놓이므로 더 뒤의
+		// 인자가 바꾸는 변수도 따로 복사하지 않는다.
 		std::vector<SOperand> argOperands;
+		std::size_t directBegin = argEffects.size();
+		if (argsScanned)
+			while (directBegin > 0 && (argEffects[directBegin - 1] & EXPR_EFFECT_CALL) == 0) --directBegin;
+		bool windowPrepared = false;
+		auto StageArgument = [&](SOperand& arg, int index)
+		{
+			const int slot = COMPILE_CALLARG_VAR_BEGIN + 1 + index;
+			if (arg.IsFun())
+			{
+				funs._cur->_calls.back().types[index].kind = SlotKind::Function;
+				funs._cur->Push_OP2(ar, NOP_FMOV1, slot, arg._iVar, false, iCallLine);
+			}
+			else if (!TryPushImmediate(ar, funs, slot, arg, iCallLine))
+				funs._cur->Push_OP2(ar, NOP_MOV, slot, arg._iVar, arg.IsShort(), iCallLine);
+		};
 		while (true)
 		{
 			tkType2 = GetToken(ar, tk2);
@@ -2029,22 +2069,61 @@ bool ParseFunCall(SOperand& iResultStack, TK_TYPE tkTypePre, SFunctionInfo* pFun
                 const int thisArgEffects = (argsScanned && iParamCount < (int)argEffects.size()) ? argEffects[iParamCount] : EXPR_EFFECT_ALL;
                 int laterArgEffects = argsScanned ? 0 : EXPR_EFFECT_ALL;
                 for (size_t later = (size_t)iParamCount + 1; later < argEffects.size(); ++later) laterArgEffects |= argEffects[later];
+				const bool direct = windowPrepared ||
+					(argsScanned && iParamCount < (int)argEffects.size() && static_cast<std::size_t>(iParamCount) >= directBegin);
+				if (direct && !windowPrepared)
+				{
+					// 첫 직접 인자 앞에서 창을 고르고, 임시에 둔 앞 인자들을 옮긴다. 창에 바로 만드는 인자의 원본은
+					// 없으므로(-1) 저장소 추론이 피호출자 서명으로 그 슬롯의 종류를 정한다.
+					std::vector<int> callSources(argEffects.size(), -1);
+					for (std::size_t s = 0; s < argOperands.size(); ++s) callSources[s] = argOperands[s].IsFun() ? -1 : argOperands[s]._iVar;
+					funs._cur->PrepareCall(ar, callSources, iCallLine, SFunctionInfo::CallWindowNeedsPrepare(pFun, argEffects.size()));
+					for (std::size_t s = 0; s < argOperands.size(); ++s) StageArgument(argOperands[s], static_cast<int>(s));
+					windowPrepared = true;
+				}
 				iTempVar.Reset();
-				// 인자 식의 ParseJob 은 방금 훑은 이 인자의 비트를 그대로 쓴다(재스캔 생략).
-				funs._presetExprEffects = thisArgEffects;
-				funs._presetExprOffset = ar.GetBufferOffset();
-				tkType3 = ParseShortCircuitLogic(true, iTempVar, ar, funs, vars);
-				funs._presetExprEffects = -1;
+				const int slot = COMPILE_CALLARG_VAR_BEGIN + 1 + iParamCount;
+				if (direct && PeekLoneCoreIRReference(ar))
+				{
+					// 인자가 IR 뿌리 하나면 그 계산(숫자 연산·컨테이너 읽기)이 창 슬롯을 목적지로 받는다.
+					std::size_t irIndex = 0;
+					if (GetToken(ar, tk2) != TK_STRING ||
+						!ParseCoreIRIndex(tk2, ar.m_coreTypedIR->prefix, ar.m_coreTypedIR->nodes.size(), irIndex, ar) ||
+						!EmitCoreIRNode(irIndex, iTempVar, ar, funs, vars, slot))
+						return false;
+					tkType3 = GetToken(ar, tk2);
+				}
+				else
+				{
+					// 인자 식의 ParseJob 은 방금 훑은 이 인자의 비트를 그대로 쓴다(재스캔 생략).
+					funs._presetExprEffects = thisArgEffects;
+					funs._presetExprOffset = ar.GetBufferOffset();
+					tkType3 = ParseShortCircuitLogic(true, iTempVar, ar, funs, vars);
+					funs._presetExprEffects = -1;
+				}
 				if (iTempVar.IsInvalidValue())
 				{
 					SetParserCompileError(ar, PCE_INVALID_CALL_ARGUMENT);
 					return false;
 				}
-				// 컨테이너 읽기는 여기서 실체화하고, 변수는 뒤 인자가 그 값을 바꿀 수 있을 때만 복사한다.
-				MaterializeValue(iTempVar, ar, funs);
-				if (NeedsSnapshot(iTempVar, laterArgEffects))
-					SnapshotValue(iTempVar, ar, funs);
-				argOperands.push_back(iTempVar);
+				if (direct)
+				{
+					if (iTempVar.IsArray() || iTempVar._iVar != slot)
+					{
+						MaterializeValue(iTempVar, ar, funs);
+						if (!iTempVar.IsFun()) funs._cur->_calls.back().sources[iParamCount] = iTempVar._iVar;
+						StageArgument(iTempVar, iParamCount);
+					}
+					argOperands.push_back(SOperand(slot));
+				}
+				else
+				{
+					// 컨테이너 읽기는 여기서 실체화하고, 변수는 뒤 인자가 그 값을 바꿀 수 있을 때만 복사한다.
+					MaterializeValue(iTempVar, ar, funs);
+					if (NeedsSnapshot(iTempVar, laterArgEffects))
+						SnapshotValue(iTempVar, ar, funs);
+					argOperands.push_back(iTempVar);
+				}
 
 
 			}
@@ -2071,20 +2150,13 @@ bool ParseFunCall(SOperand& iResultStack, TK_TYPE tkTypePre, SFunctionInfo* pFun
                 funs._cur->Push_OP2(ar, RejectLegacyArithmetic(ar), iResultStack._iVar, iResultStack._iVar, false);
             return true;
         }
-        // 호출 창은 모든 인자 평가가 끝난 뒤에만 선택한다. 다른 호출의 참조와 겹치지 않는다.
-        std::vector<int> callSources;
-        for (SOperand& argument : argOperands) callSources.push_back(argument.IsFun() ? -1 : argument._iVar);
-        funs._cur->PrepareCall(ar, callSources, iCallLine, SFunctionInfo::CallWindowNeedsPrepare(pFun, argOperands.size()));
-        for (int i = 0; i < iParamCount; ++i)
+        // 직접 쓰기가 없었으면 호출 창은 모든 인자 평가가 끝난 뒤에만 선택한다. 다른 호출의 참조와 겹치지 않는다.
+        if (!windowPrepared)
         {
-            SOperand& arg = argOperands[i];
-            if (arg.IsFun())
-            {
-                funs._cur->_calls.back().types[i].kind = SlotKind::Function;
-                funs._cur->Push_OP2(ar, NOP_FMOV1, COMPILE_CALLARG_VAR_BEGIN + 1 + i, arg._iVar, false, iCallLine);
-            }
-            else if (!TryPushImmediate(ar, funs, COMPILE_CALLARG_VAR_BEGIN + 1 + i, arg, iCallLine))
-                funs._cur->Push_OP2(ar, NOP_MOV, COMPILE_CALLARG_VAR_BEGIN + 1 + i, arg._iVar, arg.IsShort(), iCallLine);
+            std::vector<int> callSources;
+            for (SOperand& argument : argOperands) callSources.push_back(argument.IsFun() ? -1 : argument._iVar);
+            funs._cur->PrepareCall(ar, callSources, iCallLine, SFunctionInfo::CallWindowNeedsPrepare(pFun, argOperands.size()));
+            for (int i = 0; i < iParamCount; ++i) StageArgument(argOperands[i], i);
         }
 		if (pFun != NULL)
 		{
@@ -3317,16 +3389,22 @@ static bool EmitCoreIRCall(const NeoCore::IRNode& node, const std::string& name,
     SFunctionInfo* function = funs.FindFun(name);
     if (!function || function->_funType == FUNT_BUILT_IN || function->_args.size() != node.inputs.size())
     { SetCompileError(ar, "unresolved or inconsistent typed IR function '%s'", name.c_str()); return false; }
-    CheckCompileRange("call arguments", static_cast<int64_t>(node.inputs.size()), 0, COMPILE_MAX_ARGUMENTS);
+    const std::size_t count = node.inputs.size();
+    CheckCompileRange("call arguments", static_cast<int64_t>(count), 0, COMPILE_MAX_ARGUMENTS);
+    // 뒤쪽 인자에 호출이 없으면(EXPR_EFFECT_CALL 없음) 그 인자들은 임시를 거치지 않고 창 슬롯에 바로 만든다. 앞쪽
+    // 인자는 중첩 호출이 같은 창을 다시 쓰므로 임시에 두었다가 계획을 고른 뒤 옮긴다. 평가 순서는 앞 인자 전부 → 뒤
+    // 인자 순서 그대로이고, 뒤 인자는 값이 생기는 즉시 창에 놓이므로 더 뒤의 인자가 바꾸는 변수도 따로 복사하지 않는다.
+    std::size_t directBegin = count;
+    while (directBegin > 0 && ((*ar.m_coreIREffects)[node.inputs[directBegin - 1]] & EXPR_EFFECT_CALL) == 0) --directBegin;
     std::vector<SOperand> arguments;
-    std::vector<int> laterEffects(node.inputs.size(), 0);
+    std::vector<int> laterEffects(count, 0);
     int effects = 0;
-    for (std::size_t i = node.inputs.size(); i > 0; --i)
+    for (std::size_t i = count; i > 0; --i)
     {
         laterEffects[i - 1] = effects;
         effects |= (*ar.m_coreIREffects)[node.inputs[i - 1]];
     }
-    for (std::size_t i = 0; i < node.inputs.size(); ++i)
+    for (std::size_t i = 0; i < directBegin; ++i)
     {
         SOperand value;
         if (!EmitCoreIRNode(node.inputs[i], value, ar, funs, vars)) return false;
@@ -3336,7 +3414,7 @@ static bool EmitCoreIRCall(const NeoCore::IRNode& node, const std::string& name,
 
     }
     // 몸통이 전역 RETURN 하나인 함수의 인자 없는 호출은 호출 창 없이 그 전역을 복사한다.
-    if (function->_globalGetterSlot != 0 && arguments.empty())
+    if (function->_globalGetterSlot != 0 && count == 0)
     {
         const bool directCopy = !ar._debug && destination != INVALID_ERROR_PARSEJOB &&
             ((destination > 0 && destination < COMPILE_LOCALTMP_VAR_BEGIN) || destination <= COMPILE_GLOBAL_VAR_BEGIN);
@@ -3344,20 +3422,33 @@ static bool EmitCoreIRCall(const NeoCore::IRNode& node, const std::string& name,
         funs._cur->Push_OP2(ar, NOP_MOV, result._iVar, function->_globalGetterSlot, false, node.source.line);
         return true;
     }
-    std::vector<int> callSources;
-    for (const SOperand& argument : arguments) callSources.push_back(argument._iVar);
-    funs._cur->PrepareCall(ar, callSources, node.source.line, SFunctionInfo::CallWindowNeedsPrepare(function, arguments.size()));
-    for (std::size_t i = 0; i < arguments.size(); ++i)
+    // 창에 바로 만드는 인자의 원본은 없다(-1). 저장소 추론은 피호출자 서명으로 그 창 슬롯의 종류를 정한다.
+    std::vector<int> callSources(count, -1);
+    for (std::size_t i = 0; i < directBegin; ++i) callSources[i] = arguments[i]._iVar;
+    funs._cur->PrepareCall(ar, callSources, node.source.line, SFunctionInfo::CallWindowNeedsPrepare(function, count));
+    for (std::size_t i = 0; i < directBegin; ++i)
     {
         const int slot = COMPILE_CALLARG_VAR_BEGIN + 1 + static_cast<int>(i);
         if (!TryPushImmediate(ar, funs, slot, arguments[i], node.source.line))
             funs._cur->Push_OP2(ar, NOP_MOV, slot, arguments[i]._iVar, arguments[i].IsShort(), node.source.line);
     }
+    for (std::size_t i = directBegin; i < count; ++i)
+    {
+        const int slot = COMPILE_CALLARG_VAR_BEGIN + 1 + static_cast<int>(i);
+        SOperand value;
+        if (!EmitCoreIRNode(node.inputs[i], value, ar, funs, vars, slot)) return false;
+        // 숫자 연산과 컨테이너 읽기는 창 슬롯을 목적지로 받아 바로 썼다. 나머지는 값을 옮긴다.
+        if (!value.IsArray() && value._iVar == slot) continue;
+        MaterializeValue(value, ar, funs);
+        funs._cur->_calls.back().sources[i] = value._iVar;
+        if (!TryPushImmediate(ar, funs, slot, value, node.source.line))
+            funs._cur->Push_OP2(ar, NOP_MOV, slot, value._iVar, value.IsShort(), node.source.line);
+    }
     // 일반 변수의 최종 대입만 직접 반환한다. 디버그에서는 복귀와 대입 사이의 중단 위치를 유지한다.
     const bool direct = !ar._debug && destination != INVALID_ERROR_PARSEJOB &&
         ((destination > 0 && destination < COMPILE_LOCALTMP_VAR_BEGIN) || destination <= COMPILE_GLOBAL_VAR_BEGIN);
     result = SOperand(direct ? destination : funs._cur->AllocLocalTempVar(CoreStorageType(ar.m_coreTypedIR->types, node.typeId)));
-    funs._cur->Push_Call(ar, NOP_CALL, function->_funID, static_cast<int>(arguments.size()), result._iVar, node.source.line);
+    funs._cur->Push_Call(ar, NOP_CALL, function->_funID, static_cast<int>(count), result._iVar, node.source.line);
     return true;
 }
 
@@ -4095,9 +4186,24 @@ static bool IsAssignmentToken(TK_TYPE type)
 // 숫자 리터럴은 ScanNumberLiteral 과 같은 규칙으로 지나간다(0x1e+F() 의 '+' 는 연산자다).
 // 해석할 수 없는 상황이면 보수적으로 EXPR_EFFECT_ALL 을 돌려준다.
 // ---------------------------------------------------------------------------
+// IR 표식(`$irN`)의 부작용은 프런트엔드가 노드별로 모아 둔 비트를 쓴다(하위 트리 포함). 표가 없거나 번호를 읽지
+// 못하면 보수적으로 전부로 본다. 숫자 식 하나인 인자가 뒤따르는 인자의 복사·직접 쓰기 판정을 막지 않게 한다.
+static int CoreIRReferenceEffects(const CArchiveRdWC& ar, const std::string& digits)
+{
+    if (ar.m_coreIREffects == nullptr || digits.empty()) return EXPR_EFFECT_ALL;
+    std::size_t index = 0;
+    for (std::size_t i = 0; i < digits.size(); ++i)
+    {
+        const int digit = digits[i] - '0';
+        if (digit < 0 || digit > 9 || index > ((std::numeric_limits<std::size_t>::max)() - digit) / 10) return EXPR_EFFECT_ALL;
+        index = index * 10 + digit;
+    }
+    return index < ar.m_coreIREffects->size() ? (*ar.m_coreIREffects)[index] : EXPR_EFFECT_ALL;
+}
+
 namespace
 {
-enum EffectPrev { EP_NONE, EP_IDENT, EP_CLOSE };   // 직전 토큰: 이름 / ')' ']' / 그 외
+enum EffectPrev { EP_NONE, EP_IDENT, EP_CLOSE, EP_IRREF };   // 직전 토큰: 이름 / ')' ']' / 그 외 / IR 표식(뒤의 `()`는 호출이 아니다)
 
 struct EffectScanner
 {
@@ -4163,7 +4269,10 @@ struct EffectScanner
                 // IR 표식 뒤에는 원문에서 보이지 않는 대입이나 호스트 호출이 있을 수 있다.
                 if (ar.m_coreTypedIR && !ar.m_coreTypedIR->prefix.empty() &&
                     st._tk.compare(0, ar.m_coreTypedIR->prefix.size(), ar.m_coreTypedIR->prefix) == 0)
-                    Add(EXPR_EFFECT_ALL);
+                {
+                    Add(CoreIRReferenceEffects(ar, st._tk.substr(ar.m_coreTypedIR->prefix.size())));
+                    prev = EP_IRREF; continue;
+                }
                 prev = EP_IDENT; continue;
             case TK_QUOTE1: pendingQuote = '\''; prev = EP_NONE; continue;
             case TK_QUOTE2: pendingQuote = '"'; prev = EP_NONE; continue;
@@ -4270,13 +4379,25 @@ struct EffectScanner
             if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '_' || c >= 0x80 ||
                 (c == '$' && ar.m_coreTypedIR))
             {
+                bool irReference = false;
                 if (ar.m_coreTypedIR && !ar.m_coreTypedIR->prefix.empty())
                 {
                     const std::string& prefix = ar.m_coreTypedIR->prefix;
                     bool matches = true;
                     for (std::size_t i = 0; i < prefix.size(); ++i)
                         if (Peek(static_cast<int>(i)) != static_cast<unsigned char>(prefix[i])) { matches = false; break; }
-                    if (matches) Add(EXPR_EFFECT_ALL);
+                    if (matches)
+                    {
+                        std::string digits;
+                        for (int d = static_cast<int>(prefix.size()); !AtEnd(); ++d)
+                        {
+                            const u16 digit = Peek(d);
+                            if (digit < '0' || digit > '9') break;
+                            digits.push_back(static_cast<char>(digit));
+                        }
+                        Add(CoreIRReferenceEffects(ar, digits));
+                        irReference = true;
+                    }
                 }
                 if (c == '$') ++k;
                 while (!AtEnd())
@@ -4285,7 +4406,7 @@ struct EffectScanner
                     if (!((d >= 'a' && d <= 'z') || (d >= 'A' && d <= 'Z') || (d >= '0' && d <= '9') || d == '_' || d >= 0x80)) break;
                     ++k;
                 }
-                prev = EP_IDENT;
+                prev = irReference ? EP_IRREF : EP_IDENT;
                 continue;
             }
             if (IsDig(c)) { SkipNumber(); prev = EP_NONE; continue; }

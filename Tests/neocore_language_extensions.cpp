@@ -92,6 +92,20 @@ int main()
         Expect("int calls=0;bool T(bool v){calls+=1;return v;}int W(int a){int n=0;while(a<5||a==7){a+=1;n+=1;}return n;}"
             "export int Probe(){int r=0;if(T(true)||T(false)||T(true))r+=1;if(T(false)&&T(true)||T(true))r+=10;return r*1000+calls*100+W(0)*10+W(7)+W(6);}",
             11351, "nested condition groups keep short-circuit order", debug);
+        // 호출 인자 중 뒤쪽에 호출이 없는 것은 임시 없이 창 슬롯에 바로 계산된다. 값, 왼쪽부터의 평가 순서, 중첩 호출과
+        // 섞인 자리, 소유 인자(PREPARE_CALL) 뒤의 직접 계산을 함께 본다.
+        Expect("int F(int a,int b){return a*10+b;}int H(int y){return y+1;}list<int> arr=[1,2,3];int c=0;int Next(){c+=1;return c;}"
+            "int G3(int a,int b,int d){return a*100+b*10+d;}export int Probe(){int i=1;int x=5;int r=F(x+1,x*2);r=r*100+F(arr[i],x);"
+            "r=r*100+F(x,H(x));r=r*100+F(H(x),x);r=r*1000+G3(x-4,Next(),x+Next()*10);return r;}",
+            70255665135LL, "arguments computed in the call window", debug);
+        Expect("int S(string s,int n){return s.len()+n;}float G(float a,float b){return a*b;}export int Probe(){string s=\"ab\";int n=2;"
+            "float c=-3;return S(s..\"a\",n+1)*100+int(G(1.0+2.0,c>0?c:-c));}", 609, "owned and conditional arguments keep staging order", debug);
+        // 네이티브·선택자 호출(레거시 경로)도 같은 규칙으로 인자를 창에 바로 만든다. 호출이 섞인 인자(F(1), Next())는 임시로 남는다.
+        Expect("import math;float Dist(float x0,float y0,float x1,float y1){return math.hypot(x1-x0,y1-y0);}int F(int a){return a*2;}"
+            "int c=0;int Next(){c+=1;return c;}export int Probe(){list<int> lst=[];string s=\"abcdef\";float x=3;float y=4;int n=2;"
+            "int r=int(Dist(0,0,x,y)*100);r=r*10+int(math.Clamp(x*2,1,n+3));r=r*10+int(math.Max(F(1),x+2));r=r*10+int(math.Min(x+Next(),F(Next())));"
+            "lst.append(n*3);lst.append(F(n)+1);lst.append(lst[0]+lst[1]);r=r*100000+lst[0]*10000+lst[1]*100+lst[2];return r*100+s.find(\"c\")+s.len()*10;}",
+            5005546051162LL, "native and selector arguments computed in the call window", debug);
         // while 조건은 본문 뒤로 옮겨 쓴다. 조건 안의 직접 호출(PREPARE_CALL 없음) 계획도 함께 옮겨야
         // 본문의 문자열 인자 호출 계획이 조건의 float 인자 복사에 쓰이지 않는다.
         Expect("float Gap(float a,float b){return a-b;}int notes=0;void Note(string s){notes+=s.len();}"
