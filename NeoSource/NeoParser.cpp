@@ -3464,6 +3464,37 @@ static bool TryFuseContainerLoadAdd(SFunctions& funs, const SOperand& target, SO
     return true;
 }
 
+// `s = s .. a .. b;`: 왼쪽 결합 연결 사슬이 대상 변수에서 시작해 대상에 끝나고 중간 임시만 거치면 고리마다 대상에
+// 직접 쓴다. 참조 하나뿐인 문자열의 제자리 덧붙이기가 사슬 전체에 적용되어 누적이 길이에 비례해 복사하지 않는다.
+// 고리는 연속 명령이어야 하고(오른쪽 피연산자가 모두 먼저 계산되어 있음), 오른쪽 피연산자는 대상이 아니어야 하며,
+// 사슬 중간으로 들어오는 점프가 없어야 한다.
+static void FuseConcatChainIntoTarget(SFunctions& funs, int target)
+{
+    SFunctionInfo& fun = *funs._cur;
+    const int size = static_cast<int>(sizeof(SVMOperation));
+    const int end = fun._code->GetBufferOffset();
+    if (fun._iLastOPOffset < 0 || fun._iLastOPOffset + size != end) return;
+    std::vector<SVMOperation*> links;
+    int expected = target;
+    bool head = false;
+    for (int offset = fun._iLastOPOffset; offset >= fun._iCode_Begin; offset -= size)
+    {
+        SVMOperation* link = fun.GetOPPointer(offset);
+        if (link->op != NOP_STR_ADD || link->n1 != expected || link->n3 == target) return;
+        if (!links.empty() && fun._jumpTargetOffsets.count(offset) != 0) return;
+        links.push_back(link);
+        if (link->n2 == target) { head = true; break; }
+        if (!IsTempVar(link->n2)) return;
+        expected = link->n2;
+    }
+    if (!head || links.size() < 2) return;
+    for (SVMOperation* link : links)
+    {
+        link->n1 = CompileShort("concatenation target", target);
+        link->n2 = CompileShort("concatenation target", target);
+    }
+}
+
 static bool EmitCoreIRStorage(const NeoCore::IRNode& node, SOperand& result,
     CArchiveRdWC& ar, SFunctions& funs, SVars& vars)
 {
@@ -3526,6 +3557,7 @@ static bool EmitCoreIRStorage(const NeoCore::IRNode& node, SOperand& result,
         if (value._iVar != target._iVar && !TryStoreCallResult(ar, funs, target._iVar, value) &&
             !TryPushImmediate(ar, funs, target._iVar, value, node.source.line))
             funs._cur->Push_OP2(ar, NOP_MOV, target._iVar, value._iVar, false, node.source.line);
+        if (node.op == IROp::Assign && plainVariable) FuseConcatChainIntoTarget(funs, target._iVar);
         result = target;
         return true;
     }

@@ -101,6 +101,18 @@ String-key map reads hit interned keys through a pointer-returning lookup; null,
 non-interned and missing keys go through one out-of-line helper so the hot handler
 carries no call.
 
+String concatenation reuses the destination's buffer when the destination holds a
+string that nothing else references (reference count one, not interned) and the
+right operand is not that string: `s = s .. x` appends in place, and any other
+`s = a .. b` rebuilds the buffer. Integer operands are formatted straight into the
+destination, and the character count of the result is the sum of the operands'
+counts unless the right operand starts with a UTF-8 continuation byte, in which
+case it is recounted. Aliases, arguments, captures and constants hold their own
+references, so they never see an in-place change. The compiler additionally rewrites
+a statement `s = s .. a .. b ...` whose links are consecutive instructions and whose
+right operands are not `s` so that every link writes `s` directly; the intermediate
+temporaries disappear and long accumulations no longer copy the growing string.
+
 Copy and clear instructions carry their storage policy in the low four bits of
 `argFlag`: `MOV` (twelve policies, two immediate forms, and a boxed fallback that
 the exporter counts), `LOADK` and `VAR_CLEAR`. A `MOV` from a call result with the

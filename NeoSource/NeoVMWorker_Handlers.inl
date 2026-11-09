@@ -5,17 +5,87 @@
 // --- Instruction Handlers ---
 // Return 'true' to exit the RunInternal loop, 'false' to continue.
 
-NEOS_FORCEINLINE void ConcatenateStrings(ValueRef result, ValueRef first, ValueRef second) {
-    if (first.GetType() == VAR_STRING && second.GetType() == VAR_STRING)
-        _pVM->Var_SetStringConcat(result, first->_str->_str, second->_str->_str);
-    else
+// 연결 피연산자 하나의 텍스트. 문자열은 그 버퍼를 가리키고, 정수는 임시 std::string 없이 자릿수를 만든다.
+// 그 밖의 값(실수·bool·null 등)은 기존 ToString 표기를 그대로 쓴다.
+struct ConcatPiece
+{
+    const char* data = nullptr;
+    size_t size = 0;
+    int chars = 0;      // UTF-8 글자 수. 문자열은 저장된 값을, 정수 자릿수는 바이트 수를 쓴다.
+    char digits[24];
+    std::string storage;
+};
+NEOS_FORCEINLINE void MakeConcatPiece(ConcatPiece& piece, ValueRef value)
+{
+    const VAR_TYPE type = value.GetType();
+    if (type == VAR_STRING)
     {
-        // null 문자열과 내부 변환 경로는 기존 표기를 유지한다.
-        std::string leftStorage, rightStorage;
-        const std::string& left = first.GetType() == VAR_STRING ? first->_str->_str : (leftStorage = ToString(first));
-        const std::string& right = second.GetType() == VAR_STRING ? second->_str->_str : (rightStorage = ToString(second));
-        _pVM->Var_SetStringConcat(result, left, right);
+        piece.data = value->_str->_str.data();
+        piece.size = value->_str->_str.size();
+        piece.chars = value->_str->_StringLen;
+        return;
     }
+    if (type == VAR_INT)
+    {
+        char* end = piece.digits + sizeof(piece.digits);
+        char* begin = end;
+        NS_UINT magnitude = value->_int < 0 ? NS_UINT(0) - NS_UINT(value->_int) : NS_UINT(value->_int);
+        do { *--begin = char('0' + magnitude % 10); magnitude /= 10; } while (magnitude);
+        if (value->_int < 0) *--begin = '-';
+        piece.data = begin;
+        piece.size = static_cast<size_t>(end - begin);
+        piece.chars = static_cast<int>(piece.size);
+        return;
+    }
+    piece.storage = ToString(value);
+    piece.data = piece.storage.data();
+    piece.size = piece.storage.size();
+    piece.chars = utf_string::UTF8_LENGTH(piece.storage);
+}
+// 두 조각을 이은 글자 수는 조각 글자 수의 합이다. 단, 오른쪽이 이어지는 바이트(10xxxxxx)로 시작하면 왼쪽 끝의
+// 불완전한 글자와 합쳐질 수 있으므로 그때만 다시 센다(-1).
+NEOS_FORCEINLINE int ConcatChars(int leftChars, const ConcatPiece& right)
+{
+    if (right.size != 0 && (static_cast<u8>(right.data[0]) & 0xC0) == 0x80) return -1;
+    return leftChars + right.chars;
+}
+
+// 목적지가 참조 하나뿐인 일반 문자열이면 그 버퍼를 다시 쓴다. `s = s .. x` 는 뒤에 붙이기만 하므로 반복 누적이
+// 길이에 비례하는 복사·할당 없이 끝난다. 오른쪽 피연산자가 목적지 자신이면(`s = x .. s`) 일반 경로로 간다.
+// 참조가 둘 이상이거나 정규(인터닝) 문자열이면 다른 소유자가 보고 있으므로 새 문자열을 만든다.
+NEOS_FORCEINLINE void ConcatenateStrings(ValueRef result, ValueRef first, ValueRef second) {
+    StringInfo* own = result.GetType() == VAR_STRING ? result->_str : nullptr;
+    if (own != nullptr && own->_refCount == 1 && !own->_interned &&
+        !(second.GetType() == VAR_STRING && second->_str == own))
+    {
+        ConcatPiece right;
+        MakeConcatPiece(right, second);
+        if (first.GetType() == VAR_STRING && first->_str == own)
+        {
+            CheckRuntimeStringGrowth(own->_str.size(), right.size);
+            own->_str.reserve(own->_str.size() + right.size);
+            const int chars = ConcatChars(own->_StringLen, right);
+            own->_str.append(right.data, right.size);
+            own->_StringLen = chars >= 0 ? chars : utf_string::UTF8_LENGTH(own->_str);
+        }
+        else
+        {
+            ConcatPiece left;
+            MakeConcatPiece(left, first);
+            CheckRuntimeStringGrowth(left.size, right.size);
+            own->_str.reserve(left.size + right.size);
+            own->_str.assign(left.data, left.size);
+            own->_str.append(right.data, right.size);
+            const int chars = ConcatChars(left.chars, right);
+            own->_StringLen = chars >= 0 ? chars : utf_string::UTF8_LENGTH(own->_str);
+        }
+        own->_hash = 0;
+        return;
+    }
+    ConcatPiece left, right;
+    MakeConcatPiece(left, first);
+    MakeConcatPiece(right, second);
+    _pVM->Var_SetStringConcat(result, left.data, left.size, right.data, right.size, ConcatChars(left.chars, right));
 }
 
 NEOS_NOINLINE bool handle_STR_ADD(const SVMOperation& OP) {

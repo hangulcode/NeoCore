@@ -269,8 +269,12 @@ public:
 /////////////////////////////////////////////////////////////////////////
 	static int UTF8_LENGTH(const std::string& utf8)
 	{
-		const u8* bytes = reinterpret_cast<const u8*>(utf8.data());
-		const int length = static_cast<int>(utf8.size());
+		return UTF8_LENGTH(utf8.data(), static_cast<int>(utf8.size()));
+	}
+	// 바이트 구간의 글자 수. 연결 명령이 붙인 조각의 길이만 더할 때 쓴다.
+	static int UTF8_LENGTH(const char* data, int length)
+	{
+		const u8* bytes = reinterpret_cast<const u8*>(data);
 		int count = 0;
 		for (int offset = 0; offset < length; ++count)
 		{

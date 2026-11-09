@@ -96,6 +96,17 @@ int main()
         FailsAtRuntime("export int Probe(){map<string,int> m={\"a\":1};int s=0;s+=m[\"zz\"];return s;}", "map key not found", "fused load add reports a missing map key", debug);
         FailsAtRuntime("export int Probe(){list<int> l=[1];int s=0;s+=l[3];return s;}", "out of range", "fused load add reports a list index error", debug);
         FailsAtRuntime("export int Probe(){map<string,int> m;int s=0;s+=m[\"a\"];return s;}", "null map", "fused load add reports a null map", debug);
+        // 참조 하나뿐인 문자열에 .. 결과를 쓰면 버퍼를 다시 쓴다. 별칭·인자·캡처·상수가 보는 값은 바뀌지 않아야 한다.
+        Expect("export int Probe(){string s=\"\";for(int i in 0,1000)s=s..\"x\";return s.len();}", 1000, "in-place string accumulation", debug);
+        Expect("export int Probe(){string s=\"ab\";string t=s;s=s..\"c\";return t.len()*10+s.len();}", 23, "aliased string keeps its value when the other is appended", debug);
+        Expect("void F(string a){a=a..\"!\";}export int Probe(){string s=\"hi\";F(s);if(s!=\"hi\")return 0;return s.len();}", 2, "argument copy is not appended in place", debug);
+        Expect("export int Probe(){string s=\"a\";fn()->string f=fn()->string{return s;};s=s..\"b\";if(f()!=\"a\")return 0;return s.len();}", 2, "capture keeps the value before the append", debug);
+        Expect("export int Probe(){string s=\"k\";s=s..\"x\";string c=\"k\";if(s!=\"kx\"||c!=\"k\")return 0;return s.len();}", 2, "constant string is not rewritten", debug);
+        Expect("export int Probe(){string s=\"ab\";s=s..s;s=s..s;if(s!=\"abababab\")return 0;s=\"<\"..s;if(s!=\"<abababab\")return 0;return s.len();}", 9, "self and prepend concatenation", debug);
+        Expect("export int Probe(){string s=\"\";for(int i in 0,3)s=s..\"a\"..tostring(i)..\"b\";if(s!=\"a0ba1ba2b\")return 0;return s.len();}", 9, "chain into target keeps order and content", debug);
+        Expect("export int Probe(){string s=\"ab\";s=s..\"-\"..s;if(s!=\"ab-ab\")return 0;return s.len();}", 5, "chain whose right side is the target stays separate", debug);
+        Expect(u8"export int Probe(){string s=\"가\";for(int i in 0,3)s=s..\"나\"..tostring(i);string t=\"é\";t=t..\"x\";return s.len()*10+t.len();}", 72, "character counts after appends", debug);
+        Expect("export int Probe(){string s=\"hp \"..tostring(12)..\" / 100\";if(s!=\"hp 12 / 100\")return 0;return s.len();}", 11, "literal-led chain builds the full text", debug);
         // 긴 .. 사슬은 항마다 조각 파싱을 중첩하지 않아야 파서 깊이 한도에 걸리지 않는다.
         {
             std::string chain = "export int Probe(){string s=\"x\"";

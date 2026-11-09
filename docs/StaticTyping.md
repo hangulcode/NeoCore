@@ -60,7 +60,9 @@ switches on the low-bit sub-operation. Integer arithmetic and comparison jumps
 with a 16-bit constant right operand, local payload copies and local immediate
 stores also get load-time opcodes. A statement `x += c[k];` on a list or map of
 `int` or `float` compiles to one accumulating read instruction instead of a read
-and an in-place add. Disassembly maps runtime opcodes back to the image form. Combined operation keys remain compiler and validation metadata.
+and an in-place add, and a statement `s = s .. a .. b` writes every concatenation
+link into `s` so the runtime can append in place. Disassembly maps runtime opcodes
+back to the image form. Combined operation keys remain compiler and validation metadata.
 Invalid sub-operations are rejected when loading an image. Existing images must
 be regenerated: this transition introduced image version `0163`, and version
 `0164` followed when global getter folding moved from the exporter into the

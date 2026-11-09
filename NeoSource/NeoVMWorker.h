@@ -8,6 +8,7 @@
 #include "NeoStringLimits.h"
 #include "NeoNumeric.h"
 #include "NeoVMError.h"
+#include "UTFString.h"   // 연결 핸들러가 붙인 조각의 글자 수를 센다.
 
 #include "NeoVMProgram.h"
 

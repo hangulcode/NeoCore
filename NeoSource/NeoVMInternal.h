@@ -1136,7 +1136,9 @@ public:
 	void GetAllocStats(SNeoVMAllocStats& outStats);
 	void Var_SetString(ValueRef d, const char* str);
 	void Var_SetStringA(ValueRef d, const std::string& str);
-	void Var_SetStringConcat(ValueRef d, const std::string& left, const std::string& right);
+	// 두 조각을 이은 새 문자열을 d에 넣는다. 조각은 d가 가리키는 문자열 안을 가리켜도 된다(완성 뒤에 해제한다).
+	// chars 는 결과의 UTF-8 글자 수이고, 호출자가 모르면 -1 을 넘겨 여기서 센다.
+	void Var_SetStringConcat(ValueRef d, const char* left, size_t leftSize, const char* right, size_t rightSize, int chars);
 	void Var_SetTable(ValueRef d, MapInfo* p);
 
 
