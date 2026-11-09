@@ -183,7 +183,8 @@ Lower is better. **ms** is the median of five rotated serial rounds after a warm
 each process reports the best of five in-process repetitions. The `vs NeoCore`
 columns give NeoCore's time divided by that language's time, so `0.49x` means the
 language needed about twice NeoCore's time. Per-round ranges, executable hashes and
-the dispatch-loop position are in [docs/FourWayBenchmark.md](docs/FourWayBenchmark.md).
+the dispatch-loop position are in [docs/FourWayBenchmark.md](docs/FourWayBenchmark.md);
+the procedure and its rules are in [docs/Benchmarking.md](docs/Benchmarking.md).
 
 | Benchmark | What it stresses | NeoCore (ms) | NeoScript (ms) | Lua (ms) | C++ (ms) | Lua vs NeoCore | C++ vs NeoCore |
 | :-------- | :--------------- | -----------: | -------------: | -------: | -------: | -------------: | -------------: |

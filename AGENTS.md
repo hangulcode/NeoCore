@@ -64,7 +64,8 @@ ctest --test-dir Build/neocore -C Release --output-on-failure
 ## Performance
 
 - Ask the user before starting timed benchmarks so video playback and other builds can stop.
-- Run baseline/trial binaries alternately in the same session. For the inherited eight-case suite, run NeoScript/Lua/C++ from `Samples/bench` and verify all checksums.
+- Timed runs follow [Benchmarking.md](docs/Benchmarking.md): `Tools/bench/measure.py`, one warmup plus five rotated rounds, median per case with per-round ranges, all checksums verified.
+- Run baseline/trial binaries alternately in the same session. Record each NeoCore build's dispatch offset (`Tools/bench/dispatch_offset.py`) and compare builds only at equal offsets or when the ranges separate.
 - Build layout can change timings. Do not compare separate sessions as proof of an improvement, or report unmeasured numbers.
 - Inherited NeoScript benchmarks are not NeoCore performance claims. Static checking alone does not demonstrate faster VM execution.
 
