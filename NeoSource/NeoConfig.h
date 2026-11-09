@@ -115,7 +115,8 @@ struct debug_info
 // 0163: 퓨전(FUSED/EXTEND, FUSE 청크)을 제거해 opcode 번호가 바뀐다. 이전 캐시는 다시 만든다.
 // 0164: getter 접기가 파서로 옮겨가 창 반환 슬롯에 쓰는 복사가 없다. 로더가 그 형태를 더 받지 않으므로 이전 캐시는 다시 만든다.
 // 0165: 반환 명령에 결과 정책과 무소유 프레임 표시를 넣는다. 이전 캐시는 다시 만든다.
-#define NEO_VER (('0' << 24) | ('1' << 16) | ('6' << 8) | ('5'))
+// 0166: 스칼라 컨테이너 누적 읽기(LOAD_ADD) 명령이 추가되어 opcode 번호가 바뀐다. 이전 캐시는 다시 만든다.
+#define NEO_VER (('0' << 24) | ('1' << 16) | ('6' << 8) | ('6'))
 
 #if defined(_MSC_VER) && !defined(_DEBUG)
 #define NEOS_FORCEINLINE __forceinline

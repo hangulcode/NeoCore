@@ -74,6 +74,8 @@ struct MapInfo : AllocBase
 	ValueRef Find(ValueRef pKey);
 	ValueRef Find(const std::string& key);
 	ValueRef FindString(StringInfo* pKeyStr); // 문자열 키 전용 fast path (NeoVMInternal.h 에 인라인 정의)
+	// 정규화된(인터닝된) 키 전용. 뷰 없이 값 노드 포인터를 돌려주고 없으면 nullptr다(NeoVMInternal.h 에 인라인 정의).
+	BoundaryValue* FindInternedString(StringInfo* pKeyStr);
 	ValueRef FindInt(NS_INT key);                // 정수 키 전용 fast path (NeoVMInternal.h 에 인라인 정의)
 
 	CollectionIterator FirstNode();

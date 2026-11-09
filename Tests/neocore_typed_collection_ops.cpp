@@ -434,7 +434,11 @@ void MapCompounds(IRuntime& runtime, bool debug)
             const OperationCode read = stringKey ? (floating ? NOP_MAP_STR_F64_LOAD : NOP_MAP_STR_I64_LOAD)
                 : (floating ? NOP_MAP_INT_F64_LOAD : NOP_MAP_INT_I64_LOAD);
             const OperationCode arithmetic = static_cast<OperationCode>((floating ? OP_F64_ADD : OP_I64_ADD) + (operation << 8));
-            CheckShape(runtime, shape.c_str(), {read, arithmetic}, debug, "map compound primitive shape");
+            // `x += m[k];` 문장은 읽기와 제자리 덧셈이 누적 읽기 한 명령으로 합쳐진다. 다른 연산자는 두 명령 그대로다.
+            const OperationCode fused = stringKey ? (floating ? NOP_MAP_STR_F64_LOAD_ADD : NOP_MAP_STR_I64_LOAD_ADD)
+                : (floating ? NOP_MAP_INT_F64_LOAD_ADD : NOP_MAP_INT_I64_LOAD_ADD);
+            if (operation == 0) CheckShape(runtime, shape.c_str(), {fused}, debug, "map compound add shape");
+            else CheckShape(runtime, shape.c_str(), {read, arithmetic}, debug, "map compound primitive shape");
             const std::string source = "export " + type + " Probe(){" + mapType + " m={" + key + ":4};" + type + " x=12;" + update + "return x;}";
             Compare(runtime, source.c_str(), floating ? Float(answers[operation]) : Int(answers[operation]), debug, "typed map compound result");
         }

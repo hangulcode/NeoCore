@@ -366,6 +366,24 @@ NEOS_NOINLINE void TypedIntegerShift(const SVMOperation& op)
         StoreNumberInt(GetVarRawF1(op), Left ? NeoShiftLeft(value, count) : NeoShiftRight(value, count));
 }
 
+// 문자열 키 맵의 드문 경로: null 키, 아직 정규화되지 않은 키, 없는 키. 핫 핸들러 안에 호출이 남으면
+// 컴파일러가 디스패치 루프의 레지스터 상수를 핸들러 끝에서 다시 적재하므로 본문을 루프 밖에 둔다.
+template<bool Write>
+NEOS_NOINLINE BoundaryValue* ScalarMapStringRare(MapInfo* table, VarInfo* key)
+{
+    StringInfo* name = key->_str;
+    if (name == nullptr)
+    {
+        if (Write) SetError("map key cannot be null");
+        else MapKeyNotFound(key, VAR_STRING);
+        return nullptr;
+    }
+    if (!name->_interned) name = FindCanonicalString(GetVM(), name);
+    BoundaryValue* found = name != nullptr ? table->FindInternedString(name) : nullptr;
+    if (found == nullptr && !Write) MapKeyNotFound(key, VAR_STRING);
+    return found;
+}
+
 // Owner: 0은 목록, 1은 정수 키 맵, 2는 문자열 키 맵이다. 값의 타입은 템플릿으로 고정한다.
 // 원소는 태그를 가진 경계 값이므로 뷰를 만들지 않고 포인터를 돌려준다. 뷰를 거치면 24바이트 임시가
 // 스택에 내려가고 태그 판정이 함수 호출로 남았다.
@@ -388,17 +406,31 @@ NEOS_FORCEINLINE BoundaryValue* ScalarContainerElement(VarInfo* receiver, VarInf
         // operator&가 뷰를 만들므로 포인터 산술로 원소 주소를 얻는다.
         return receiver->_lst->_Bucket + index;
     }
-    if (Owner == 2 && key->_str == nullptr)
+    if (Owner == 2)
     {
-        if (write) SetError("map key cannot be null");
-        else MapKeyNotFound(key, VAR_STRING);
-        return nullptr;
+        // 정규화된 키의 적중이 핫 경로다. 리터럴 키는 상수 풀에서 인터닝되어 있다.
+        StringInfo* name = key->_str;
+        if (name != nullptr && name->_interned)
+            if (BoundaryValue* found = receiver->_tbl->FindInternedString(name)) return found;
+        return write ? ScalarMapStringRare<true>(receiver->_tbl, key) : ScalarMapStringRare<false>(receiver->_tbl, key);
     }
-    ValueRef found = Owner == 1 ? receiver->_tbl->FindInt(key->_int) : receiver->_tbl->FindString(key->_str);
+    ValueRef found = receiver->_tbl->FindInt(key->_int);
     if (!found && !write)
-        MapKeyNotFound(key, Owner == 1 ? VAR_INT : VAR_STRING);
+        MapKeyNotFound(key, VAR_INT);
     // 맵 값은 경계 값 노드다. 없으면 nullptr다.
     return static_cast<BoundaryValue*>(found.Data());
+}
+
+// `x += c[k];` 문장의 결합 명령. 읽기와 제자리 덧셈 사이의 디스패치와 임시 슬롯이 사라진다.
+// 정수 덧셈은 제자리 I64_ADD2 와 같이 감싼다(NeoIntAdd).
+template<int Owner, VAR_TYPE Value>
+NEOS_FORCEINLINE void ScalarContainerLoadAdd(VarInfo* accumulator, VarInfo* receiver, VarInfo* key)
+{
+    const BoundaryValue* found = ScalarContainerElement<Owner>(receiver, key, false);
+    if (found == nullptr) return;
+    assert(found->GetType() == Value);
+    if (Value == VAR_INT) accumulator->_int = NeoIntAdd(accumulator->_int, found->_int);
+    else accumulator->_float += found->_float;
 }
 
 template<int Owner, VAR_TYPE Value>

@@ -71,6 +71,11 @@
     X(NOP_##OWNER##_##VALUE##_LOAD, #OWNER "_" #VALUE "_LOAD", SUFFIX "load", 2, Binary, 0, 0) \
     X(NOP_##OWNER##_##VALUE##_STORE, #OWNER "_" #VALUE "_STORE", "", 3, Store, 0, 0)
 
+// 누적 읽기 n1 += n2[n3]. 컴파일러가 `x += c[k];` 문장의 읽기와 제자리 덧셈을 하나로 합칠 때 낸다.
+// 접미사에 load가 들어 있어 저장 종류 추론이 읽기와 같은 규칙(n1 = 원소 종류)을 적용한다.
+#define NEOCORE_SCALAR_ACCUMULATE_FOR(X, OWNER, VALUE, SUFFIX) \
+    X(NOP_##OWNER##_##VALUE##_LOAD_ADD, #OWNER "_" #VALUE "_LOAD_ADD", SUFFIX "loadadd", 2, Binary, 0, 0)
+
 #define NEOCORE_SCALAR_ACCESS_OPS(X) \
     NEOCORE_SCALAR_ACCESS_FOR(X, LIST, I64, "li") \
     NEOCORE_SCALAR_ACCESS_FOR(X, LIST, F64, "lf") \
@@ -81,6 +86,12 @@
     NEOCORE_SCALAR_ACCESS_FOR(X, MAP_STR, I64, "msi") \
     NEOCORE_SCALAR_ACCESS_FOR(X, MAP_STR, F64, "msf") \
     NEOCORE_SCALAR_ACCESS_FOR(X, MAP_STR, BOOL, "msb") \
+    NEOCORE_SCALAR_ACCUMULATE_FOR(X, LIST, I64, "li") \
+    NEOCORE_SCALAR_ACCUMULATE_FOR(X, LIST, F64, "lf") \
+    NEOCORE_SCALAR_ACCUMULATE_FOR(X, MAP_INT, I64, "mii") \
+    NEOCORE_SCALAR_ACCUMULATE_FOR(X, MAP_INT, F64, "mif") \
+    NEOCORE_SCALAR_ACCUMULATE_FOR(X, MAP_STR, I64, "msi") \
+    NEOCORE_SCALAR_ACCUMULATE_FOR(X, MAP_STR, F64, "msf") \
     X(NOP_ARRAY_I64_STORE, "ARRAY_I64_STORE", "", 3, Store, 0, 0) \
     X(NOP_ARRAY_F64_STORE, "ARRAY_F64_STORE", "", 3, Store, 0, 0) \
     X(NOP_ARRAY_BOOL_STORE, "ARRAY_BOOL_STORE", "", 3, Store, 0, 0) \

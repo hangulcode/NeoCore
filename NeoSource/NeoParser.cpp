@@ -3430,6 +3430,40 @@ static bool EmitCoreIRCollection(const NeoCore::IRNode& node, SOperand& result,
     result = value; return true;
 }
 
+// `x += c[k];` 문장: 직전 명령이 우변 하나를 임시에 적재한 스칼라 컨테이너 읽기이고 대상이 일반 변수이면,
+// 그 읽기를 누적 형식(x += c[k])으로 바꿔 제자리 덧셈 명령과 임시를 없앤다. 우변 임시는 다른 곳에서 읽히지 않는다.
+// 결과를 쓰는 식(`y = (x += c[k])`)과 변환이 끼는 우변(실수 += 정수 원소)은 마지막 명령이 읽기가 아니므로 대상이 아니다.
+static bool TryFuseContainerLoadAdd(SFunctions& funs, const SOperand& target, SOperand& value, NeoCore::IRValueType type)
+{
+    SFunctionInfo& fun = *funs._cur;
+    const int end = fun._code->GetBufferOffset();
+    if (value.IsFun() || value._iArrayIndex != INVALID_ERROR_PARSEJOB || !IsTempVar(value._iVar) ||
+        target._iVar == INVALID_ERROR_PARSEJOB || IsTempVar(target._iVar) || IsCompileConstant(target._iVar) ||
+        fun._iLastOPOffset < 0 || fun._iLastOPOffset + static_cast<int>(sizeof(SVMOperation)) != end ||
+        fun._jumpTargetOffsets.count(end) != 0)
+        return false;
+    SVMOperation* load = fun.GetOPPointer(fun._iLastOPOffset);
+    if (load->n1 != value._iVar) return false;
+    OperationCode fused = NOP_NONE;
+    switch (load->Code())
+    {
+#define NEOCORE_FUSE_LOAD_ADD(OWNER, VALUE, TYPE) \
+    case NOP_##OWNER##_##VALUE##_LOAD: if (type == NeoCore::IRValueType::TYPE) fused = NOP_##OWNER##_##VALUE##_LOAD_ADD; break;
+    NEOCORE_FUSE_LOAD_ADD(LIST, I64, Int)
+    NEOCORE_FUSE_LOAD_ADD(LIST, F64, Float)
+    NEOCORE_FUSE_LOAD_ADD(MAP_INT, I64, Int)
+    NEOCORE_FUSE_LOAD_ADD(MAP_INT, F64, Float)
+    NEOCORE_FUSE_LOAD_ADD(MAP_STR, I64, Int)
+    NEOCORE_FUSE_LOAD_ADD(MAP_STR, F64, Float)
+#undef NEOCORE_FUSE_LOAD_ADD
+    default: break;
+    }
+    if (fused == NOP_NONE) return false;
+    load->SetCode(fused);
+    load->n1 = CompileShort("accumulate destination", target._iVar);
+    return true;
+}
+
 static bool EmitCoreIRStorage(const NeoCore::IRNode& node, SOperand& result,
     CArchiveRdWC& ar, SFunctions& funs, SVars& vars)
 {
@@ -3458,6 +3492,12 @@ static bool EmitCoreIRStorage(const NeoCore::IRNode& node, SOperand& result,
     SOperand old;
     if (node.op != IROp::Assign)
     {
+        if (node.op == IROp::AddAssign && plainVariable && node.discardResult && !node.inputs.empty() &&
+            TryFuseContainerLoadAdd(funs, target, value, node.type))
+        {
+            result = target;
+            return true;
+        }
         old = ReadCoreIRStorage(node, target, ar, funs);
         const bool postfix = node.op == IROp::PostIncrement || node.op == IROp::PostDecrement;
         // 결과를 버리는 후위 증감은 옛 값을 돌려줄 필요가 없다.

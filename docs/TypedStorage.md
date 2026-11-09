@@ -90,6 +90,17 @@ restoration, caller closure restoration, and debugger boundaries still use the
 normal return protocol. Other returns use the recorded policy without looking
 it up in the frame's slot-info vector.
 
+Image version 0166 adds accumulating scalar container reads (`LIST`, `MAP_INT` and
+`MAP_STR` with `I64` or `F64` values): `n1 += n2[n3]`. The compiler emits one when a
+statement `x += c[k];` writes a plain variable and the right side is exactly one
+element read into a temporary, which replaces the read, the in-place add and the
+temporary. Compound expressions whose value is used, widened elements and field or
+cell targets keep the separate instructions. The element lookup, bounds and
+missing-key errors and the wrapping integer add are those of the two instructions.
+String-key map reads hit interned keys through a pointer-returning lookup; null,
+non-interned and missing keys go through one out-of-line helper so the hot handler
+carries no call.
+
 Copy and clear instructions carry their storage policy in the low four bits of
 `argFlag`: `MOV` (twelve policies, two immediate forms, and a boxed fallback that
 the exporter counts), `LOADK` and `VAR_CLEAR`. A `MOV` from a call result with the

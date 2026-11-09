@@ -956,6 +956,26 @@ NEOS_FORCEINLINE void Move_DestNoRelease(ValueRef v1, ValueRef v2)
 
 // 문자열 키 전용 fast path.
 // MapInfo::Find의 문자열 의미론을 인라인해 타입 switch / GetHashCode 디스패치를 생략한다.
+// 정규 문자열 키의 적중 경로. _hash 는 인터닝 시점에 이미 채워졌으므로 GetHash() 의 "아직 계산 안 됨(0)"
+// 분기는 여기서 죽은 분기다. 뷰를 만들지 않아 타입 있는 맵 읽기의 핫 경로가 포인터 하나로 끝난다.
+NEOS_FORCEINLINE BoundaryValue* MapInfo::FindInternedString(StringInfo* pKeyStr)
+{
+	if (_BucketCapa <= 0)
+		return nullptr;
+	const u32 hash = pKeyStr->_hash;
+	MapNode* node = _Bucket + (hash & _HashBase);
+	while (node->next != MAP_NODE_EMPTY)
+	{
+		// 경계 값의 operator&는 뷰를 만들므로 주소는 addressof로 얻는다.
+		if (node->hash == hash && node->data->key.GetType() == VAR_STRING && node->data->key._str == pKeyStr)
+			return std::addressof(node->data->value);
+		if (node->next == MAP_NODE_END)
+			break;
+		node = _Bucket + node->next;
+	}
+	return nullptr;
+}
+
 NEOS_FORCEINLINE ValueRef MapInfo::FindString(StringInfo* pKeyStr)
 {
 	if (pKeyStr == nullptr)
@@ -966,25 +986,7 @@ NEOS_FORCEINLINE ValueRef MapInfo::FindString(StringInfo* pKeyStr)
 		if (pKeyStr == nullptr)
 			return nullptr;
 	}
-	if (_BucketCapa <= 0)
-		return nullptr;
-	// 여기 도달했다면 pKeyStr 은 정규 문자열이고, _hash 는 인터닝 시점에 이미 채워졌다.
-	// GetHash() 의 "아직 계산 안 됨(0)" 분기는 인터닝되지 않은 문자열용이라 여기서는 죽은 분기다.
-	u32 hash = pKeyStr->_hash;
-	MapNode* node = _Bucket + (hash & _HashBase);
-	while (node->next != MAP_NODE_EMPTY)
-	{
-		if (node->hash == hash && node->data->key.GetType() == VAR_STRING)
-		{
-			StringInfo* pCurStr = node->data->key._str;
-			if (pCurStr == pKeyStr)
-				return &node->data->value;
-		}
-		if (node->next == MAP_NODE_END)
-			break;
-		node = _Bucket + node->next;
-	}
-	return nullptr;
+	return ValueRef(FindInternedString(pKeyStr));
 }
 
 // 정수 키 전용 fast path. 문자열 키와 대칭 — 없으면 CltReadRare -> GetTableItem ->

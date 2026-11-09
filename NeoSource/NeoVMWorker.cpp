@@ -2278,10 +2278,14 @@ void CNeoVMWorker::JumpAsyncMsg()
 #define NEOCORE_SCALAR_CONTAINER_DISPATCH(OWNER, INDEX, TYPE, TAG) \
         case NOP_##OWNER##_##TYPE##_LOAD: { VarInfo *a, *b, *c; GetVarRaw123(OP, a, b, c); ScalarContainerLoad<INDEX, TAG>(a, b, c); } break; \
         case NOP_##OWNER##_##TYPE##_STORE: { VarInfo *a, *b, *c; GetVarRaw123(OP, a, b, c); ScalarContainerStore<INDEX, TAG>(a, b, c); } break;
+#define NEOCORE_SCALAR_ACCUMULATE_DISPATCH(OWNER, INDEX, TYPE, TAG) \
+        case NOP_##OWNER##_##TYPE##_LOAD_ADD: { VarInfo *a, *b, *c; GetVarRaw123(OP, a, b, c); ScalarContainerLoadAdd<INDEX, TAG>(a, b, c); } break;
 #define NEOCORE_SCALAR_OWNER_DISPATCH(OWNER, INDEX) \
         NEOCORE_SCALAR_CONTAINER_DISPATCH(OWNER, INDEX, I64, VAR_INT) \
         NEOCORE_SCALAR_CONTAINER_DISPATCH(OWNER, INDEX, F64, VAR_FLOAT) \
-        NEOCORE_SCALAR_CONTAINER_DISPATCH(OWNER, INDEX, BOOL, VAR_BOOL)
+        NEOCORE_SCALAR_CONTAINER_DISPATCH(OWNER, INDEX, BOOL, VAR_BOOL) \
+        NEOCORE_SCALAR_ACCUMULATE_DISPATCH(OWNER, INDEX, I64, VAR_INT) \
+        NEOCORE_SCALAR_ACCUMULATE_DISPATCH(OWNER, INDEX, F64, VAR_FLOAT)
 #define NEOCORE_SCALAR_ARRAY_STORE(TYPE, ELEMENT) \
         case NOP_ARRAY_##TYPE##_STORE: { VarInfo *a, *b, *c; GetVarRaw123(OP, a, b, c); ScalarArrayStore<NeoArrayElementType::ELEMENT>(a, b, c); } break;
 
@@ -2548,6 +2552,7 @@ bool	CNeoVMWorker::RunInternal(int iBreakingCallStack)
 #undef NEOCORE_ARRAY_COLD_DISPATCH
 #undef NEOCORE_SCALAR_ARRAY_STORE
 #undef NEOCORE_SCALAR_CONTAINER_DISPATCH
+#undef NEOCORE_SCALAR_ACCUMULATE_DISPATCH
 #undef NEOCORE_SCALAR_OWNER_DISPATCH
 
 void	CNeoVMWorker::DeadCoroutine(CoroutineInfo* pCI)

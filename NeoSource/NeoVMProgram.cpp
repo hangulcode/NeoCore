@@ -5,6 +5,7 @@
 #include "NeoArchive.h"
 #include "NeoTextLoader.h"   // FormatAsm / FormatBytes
 #include <algorithm>
+#include <cstring>
 #include <memory>
 #include <stdexcept>
 
@@ -1593,7 +1594,8 @@ bool FormatDebugOperation(const DebugInstructionFormatContext& context, std::str
 		{
 			byteCount = static_cast<int>(sizeof(SVMOperation));
 			if (aggregate->shape == AggregateOpShape::Binary)
-				outAssembly = FormatAsm("%s %s = %s, %s", aggregate->name, context.operand(1).c_str(), context.operand(2).c_str(), context.operand(3).c_str());
+				outAssembly = FormatAsm(strstr(aggregate->name, "_LOAD_ADD") != nullptr ? "%s %s += %s, %s" : "%s %s = %s, %s",
+					aggregate->name, context.operand(1).c_str(), context.operand(2).c_str(), context.operand(3).c_str());
             else if (aggregate->shape == AggregateOpShape::Store)
                 outAssembly = FormatAsm("%s %s[%s] = %s", aggregate->name, context.operand(1).c_str(), context.operand(2).c_str(), context.operand(3).c_str());
 			else if (aggregate->shape == AggregateOpShape::Window)

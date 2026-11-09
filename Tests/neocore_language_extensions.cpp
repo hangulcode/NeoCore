@@ -82,6 +82,20 @@ int main()
         Expect("float Gap(float a,float b){return a-b;}int notes=0;void Note(string s){notes+=s.len();}"
             "export int Probe(){int t=0;float x=10.0;while(t<20&&Gap(x,1.0)>2.0){Note(\"fly\");x-=1.0;t++;}return t*100+notes;}",
             721, "relocated while condition keeps its own call plan", debug);
+        // `x += c[k];` 문장은 읽기와 제자리 덧셈을 합친 명령 하나가 된다. 결과·오류·감싸기는 두 명령일 때와 같아야 한다.
+        Expect("int total=0;export int Probe(){map<string,int> m={\"a\":1,\"b\":2};list<int> l=[3,4];map<int,int> mi={7:5};int s=0;"
+            "for(int i in 0,3){s+=m[\"a\"];s+=m[\"b\"];s+=l[1];s+=mi[7];total+=m[\"b\"];}return s*10+total;}",
+            366, "fused container load add into local and global", debug);
+        Expect("export int Probe(){map<string,float> m={\"a\":1.5};list<float> l=[2.5];map<int,float> mi={1:0.25};float f=0.0;"
+            "for(int i in 0,4){f+=m[\"a\"];f+=l[0];f+=mi[1];}return int(f*100);}",
+            1700, "fused float container load add", debug);
+        Expect("export int Probe(){map<string,int> m={\"a\":1};int s=9223372036854775807;s+=m[\"a\"];if(s<0)return 1;return 0;}",
+            1, "fused load add wraps like the in-place add", debug);
+        Expect("export int Probe(){map<string,int> m={\"a\":2};int s=3;int t=(s+=m[\"a\"]);return s*10+t;}", 55, "used compound result stays a plain load and add", debug);
+        Expect("export int Probe(){map<string,int> m={\"a\":2};float f=0.5;f+=m[\"a\"];return int(f*10);}", 25, "widened element keeps conversion before the add", debug);
+        FailsAtRuntime("export int Probe(){map<string,int> m={\"a\":1};int s=0;s+=m[\"zz\"];return s;}", "map key not found", "fused load add reports a missing map key", debug);
+        FailsAtRuntime("export int Probe(){list<int> l=[1];int s=0;s+=l[3];return s;}", "out of range", "fused load add reports a list index error", debug);
+        FailsAtRuntime("export int Probe(){map<string,int> m;int s=0;s+=m[\"a\"];return s;}", "null map", "fused load add reports a null map", debug);
         // 긴 .. 사슬은 항마다 조각 파싱을 중첩하지 않아야 파서 깊이 한도에 걸리지 않는다.
         {
             std::string chain = "export int Probe(){string s=\"x\"";
