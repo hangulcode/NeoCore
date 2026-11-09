@@ -96,3 +96,6 @@ crashlytics-build.properties
 # Ignore generated plugins left over from the removed dynamic package.
 /Unity/com.neoscript.unity/Runtime/Plugins/
 /Unity/com.neoscript.unity/Runtime/Plugins.meta
+
+# Python bytecode caches from Tools/bench and the test scripts.
+__pycache__/
