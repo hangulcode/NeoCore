@@ -227,6 +227,14 @@ NEOS_FORCEINLINE bool handle_CALL_L(const SVMOperation& OP) {
     return false;
 }
 
+// 대상이 JMP_FOR인 무조건 점프(로드가 NOP_RT_JMP_TO_FOR로 바꿈). 점프한 뒤 JMP_FOR를 실행한 것과 같다:
+// 점검 뒤 위치는 JMP_FOR 다음이고, 반복 몸체 오프셋은 JMP_FOR 기준이다.
+NEOS_FORCEINLINE void handle_JMP_TO_FOR(const SVMOperation& jump) {
+    const SVMOperation* loop = _pCodeCurrent + jump.n1;
+    _pCodeCurrent = loop + 1;
+    if (For(GetVarRaw_L(loop->n2))) SetCodeIncPtr(loop->n1);
+}
+
 // 본문은 base/_L 공용. pFunNamePre 가 있으면 그것을 쓰고(=_L, 로컬 확정),
 // nullptr 이면 기존대로 필요한 분기에서만 늦게 뽑는다(n2 == -1 센티널 보호).
 // 네이티브 라이브러리 디스패치. 본문 명령어의 대부분이 여기이고 PTRCALL/PTRCALL_L 두 곳에

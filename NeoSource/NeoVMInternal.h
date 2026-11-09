@@ -286,6 +286,13 @@ enum eNOperation : OpType
 	NOP_RT_MOV_PAYLOAD_L,
 	NOP_RT_MOVI_L,
 	NOP_RT_MOVF_L,
+	// 대상이 범위 반복 점검(JMP_FOR)인 무조건 점프. 점검을 제자리에서 해 반복 진입마다 디스패치 하나를 줄인다.
+	// n1은 원래 점프 오프셋 그대로다.
+	NOP_RT_JMP_TO_FOR,
+	// 인접 두 명령을 한 디스패치로 실행하는 쌍 명령(NEOCORE_RUNTIME_PAIRS). 둘째 명령은 바로 뒤에 그대로 있다.
+#define NEOCORE_RT_ENUM_PAIR(NAME, FIRST, SECOND) NOP_RT_PAIR_##NAME,
+	NEOCORE_RUNTIME_PAIRS(NEOCORE_RT_ENUM_PAIR)
+#undef NEOCORE_RT_ENUM_PAIR
 
 	NOP_MAX,
 }; // Operation length
@@ -468,6 +475,16 @@ inline bool IsFixedArithmetic(const SVMOperation& op)
 inline bool NormalizeRuntimeOp(SVMOperation& op)
 {
     if (!IsRuntimeOpcode(op.op)) return false;
+    // 쌍 명령은 첫 명령으로 표기한다. 둘째 명령은 뒤에 그대로 있어 따로 표기된다. 첫 명령이 런타임 opcode면
+    // 아래에서 다시 이미지 형식으로 되돌린다.
+    switch (op.op)
+    {
+#define NEOCORE_RT_UNMAP_PAIR(NAME, FIRST, SECOND) case NOP_RT_PAIR_##NAME: op.op = FIRST; break;
+    NEOCORE_RUNTIME_PAIRS(NEOCORE_RT_UNMAP_PAIR)
+#undef NEOCORE_RT_UNMAP_PAIR
+    default: break;
+    }
+    if (!IsRuntimeOpcode(op.op)) return true;
     OperationCode meaning = NOP_NONE;
     bool arithmetic = false, update = false;
     switch (op.op)
@@ -503,6 +520,7 @@ inline bool NormalizeRuntimeOp(SVMOperation& op)
     case NOP_RT_MOV_PAYLOAD_L: meaning = MakeOperation(NOP_MOV, 0u); break;
     case NOP_RT_MOVI_L: meaning = MakeOperation(NOP_MOV, MOV_SUB_IMMEDIATE_INT); break;
     case NOP_RT_MOVF_L: meaning = MakeOperation(NOP_MOV, MOV_SUB_IMMEDIATE_FLOAT); break;
+    case NOP_RT_JMP_TO_FOR: meaning = MakeOperation(NOP_JMP, 0u); break;
     default: return false;
     }
     op.SetCode(meaning);

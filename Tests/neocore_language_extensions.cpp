@@ -77,6 +77,10 @@ int main()
             "export int Probe(){return Lt(-3)*1000+Lt(-2)*100+Ge(5)*10+Ge(4)+Eq(32767)*10000+Big(39999)*100000;}",
             111010, "immediate integer comparison jumps keep inversion and range", debug);
         Expect("export int Probe(){int s=0;for(int i in 0,1000,1)s+=(i&255)+1;return s;}", 125716, "loop integer constants stay immediate", debug);
+        // 로드가 인접 명령 쌍(MOVI·MOVI, ADD·ADD2, MOVI·JMP→JFOR)을 한 디스패치로 묶어도, 둘째 명령으로 들어오는
+        // 점프(건너뛴 if 뒤의 대입)는 둘째만 실행해야 하고 continue 는 반복 점검으로 바로 가야 한다.
+        Expect("export int Probe(){int x=0;int y=0;int s=0;for(int i in 0,5){if((i&1)==0)x=1;y=2;s+=x+y;x=0;}return s;}", 13, "paired instructions keep incoming jump targets", debug);
+        Expect("export int Probe(){int s=0;for(int i in 0,10){if(i==3)continue;s+=i;}return s;}", 42, "loop entry test in place keeps continue", debug);
         // while 조건은 본문 뒤로 옮겨 쓴다. 조건 안의 직접 호출(PREPARE_CALL 없음) 계획도 함께 옮겨야
         // 본문의 문자열 인자 호출 계획이 조건의 float 인자 복사에 쓰이지 않는다.
         Expect("float Gap(float a,float b){return a-b;}int notes=0;void Note(string s){notes+=s.len();}"

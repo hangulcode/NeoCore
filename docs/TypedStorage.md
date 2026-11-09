@@ -239,7 +239,17 @@ immediate forms that carry the value in `n3`; division and remainder keep their
 zero check and are not converted. Payload copies between local slots and integer
 or float immediates stored into a local slot get dedicated opcodes that read no
 policy or location bits. Loop-constant hoisting leaves such immediate-eligible
-integer constants in place.
+integer constants in place. Since 2026-11-10 the loader also executes frequent
+adjacent instruction pairs with one dispatch: local payload copies and local
+immediates before another copy, a local call or a native call, `PREPARE_CALL`
+before a copy, `x += a + b`, `k * c + i` index arithmetic and an integer add that
+feeds an array store. A range-loop entry jump whose target is the loop test
+performs the test in place. Only the first instruction's opcode changes; the
+second stays in the code, so a branch into it executes it alone, and the
+disassembly shows the original two instructions. Images with debug information
+keep one instruction per dispatch so breakpoints stop on every instruction. The
+pair list was chosen from dynamic adjacent-opcode counts of the benchmark suite
+and a game project's headless run.
 List/map/set entry storage and some generic bridge operations remain transitional,
 as described above. Property hosts no longer sweep their scratch window; a host
 getter or setter must not leave owned values in VM stack slots. No performance

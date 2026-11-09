@@ -143,6 +143,24 @@
 #define NEOCORE_RUNTIME_COMPARE(X, T) \
     X(T, EQ, Equal) X(T, LT, Less) X(T, LE, LessEqual) X(T, NE, NotEqual) X(T, GT, Greater) X(T, GE, GreaterEqual)
 
+// 로드 시 인접한 두 명령을 한 디스패치로 실행하는 쌍 명령 목록. 첫 명령의 opcode만 NOP_RT_PAIR_NAME으로
+// 바뀌고 둘째 명령은 바로 뒤에 그대로 남는다. 둘째로 들어오는 점프는 둘째만 실행하고, 둘째가 다시 다음 쌍의
+// 첫 명령이어도 된다(쌍 핸들러는 둘째를 원래 의미로 실행한다). 첫 명령은 제어를 옮기지 않고 오류도 내지 않는
+// 종류만 쓴다. X(NAME, FIRST, SECOND). 목록은 벤치와 게임 스크립트의 동적 인접 빈도로 골랐다(PatchLocalOps 참조).
+#define NEOCORE_RUNTIME_PAIRS(X) \
+    X(MOVL_MOVL,         NOP_RT_MOV_PAYLOAD_L, NOP_RT_MOV_PAYLOAD_L) \
+    X(MOVL_CALL_L,       NOP_RT_MOV_PAYLOAD_L, NOP_CALL_L) \
+    X(MOVL_NATIVECALL,   NOP_RT_MOV_PAYLOAD_L, NOP_NATIVECALL) \
+    X(MOV_MOVL,          NOP_MOV,              NOP_RT_MOV_PAYLOAD_L) \
+    X(PREPARE_MOVL,      NOP_PREPARE_CALL,     NOP_RT_MOV_PAYLOAD_L) \
+    X(MOVI_L_JMP,        NOP_RT_MOVI_L,        NOP_JMP) \
+    X(MOVI_L_JMP_TO_FOR, NOP_RT_MOVI_L,        NOP_RT_JMP_TO_FOR) \
+    X(I64_ADD_ADD2,      NOP_RT_I64_ADD,       NOP_RT_I64_ADD2) \
+    X(I64_MUL_IMM_ADD,   NOP_RT_I64_MUL_IMM,   NOP_RT_I64_ADD) \
+    X(MOVI_L_MOVI_L,     NOP_RT_MOVI_L,        NOP_RT_MOVI_L) \
+    X(MOVL_I64_MUL_IMM,  NOP_RT_MOV_PAYLOAD_L, NOP_RT_I64_MUL_IMM) \
+    X(I64_ADD_ARRAY_I64_STORE, NOP_RT_I64_ADD, NOP_ARRAY_I64_STORE)
+
 namespace NeoScript
 {
 typedef unsigned short OperationCode;

@@ -58,7 +58,10 @@ compiler to hold its registers and lay out each handler without shared tails.
 Combinations without a runtime opcode fall back to the family handler, which
 switches on the low-bit sub-operation. Integer arithmetic and comparison jumps
 with a 16-bit constant right operand, local payload copies and local immediate
-stores also get load-time opcodes. A statement `x += c[k];` on a list or map of
+stores also get load-time opcodes, and frequent adjacent instruction pairs (copy
+and immediate staging before copies and calls, `x += a + b`, index arithmetic)
+execute with one dispatch while the second instruction stays in place for
+incoming branches; debug images are not paired. A statement `x += c[k];` on a list or map of
 `int` or `float` compiles to one accumulating read instruction instead of a read
 and an in-place add, and a statement `s = s .. a .. b` writes every concatenation
 link into `s` so the runtime can append in place. Disassembly maps runtime opcodes

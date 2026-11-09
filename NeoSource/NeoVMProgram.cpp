@@ -1233,6 +1233,39 @@ bool CNeoVMProgram::PatchLocalOps(std::string* err)
 			op.n3 = static_cast<short>(staticValues[op.n3]._int);
 		}
 	}
+	// 디버그 정보가 있는 이미지는 명령마다 정지 검사를 하므로 두 명령을 한 디스패치로 묶지 않는다.
+	if (!IsDebugInfo())
+	{
+		// 대상이 JMP_FOR인 무조건 점프(범위 반복 진입)는 점검을 제자리에서 하는 형식으로 바꾼다. 오프셋은 그대로다.
+		for (int i = 0; i < opCount; ++i)
+		{
+			SVMOperation& op = code[i];
+			if (op.op != NOP_JMP) continue;
+			const int target = i + 1 + op.n1;
+			if (target < 0 || target >= opCount || owners[target] != owners[i] || code[target].op != NOP_JMP_FOR) continue;
+			op.op = NOP_RT_JMP_TO_FOR;
+			++patched;
+		}
+		// 인접 쌍은 첫 명령만 쌍 opcode로 바꾸고 둘째는 남긴다(NEOCORE_RUNTIME_PAIRS 참조). 둘째의 원래 opcode로
+		// 판정하므로 둘째가 다음 쌍의 첫 명령이 되어도 된다. 같은 함수 안의 두 명령만 묶는다.
+		static const struct { eNOperation first, second, pair; } rules[] = {
+#define NEOCORE_RT_PAIR_RULE(NAME, FIRST, SECOND) { FIRST, SECOND, NOP_RT_PAIR_##NAME },
+			NEOCORE_RUNTIME_PAIRS(NEOCORE_RT_PAIR_RULE)
+#undef NEOCORE_RT_PAIR_RULE
+		};
+		for (int i = 0; i + 1 < opCount; ++i)
+		{
+			if (owners[i] < 0 || owners[i] != owners[i + 1]) continue;
+			const eNOperation first = code[i].op, second = code[i + 1].op;
+			for (size_t r = 0; r < sizeof(rules) / sizeof(rules[0]); ++r)
+			{
+				if (rules[r].first != first || rules[r].second != second) continue;
+				code[i].op = rules[r].pair;
+				++patched;
+				break;
+			}
+		}
+	}
 	localOpCount = patched;
 	return true;
 }

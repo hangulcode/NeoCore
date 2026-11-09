@@ -109,9 +109,10 @@ checked metadata a host needs to bind the program without recompiling.
    bytes against declared kinds, jump targets, plan indices and call signatures.
 3. **PatchLocalOps** rewrites the code for execution: all-local operand forms,
    static-string map reads, one-byte runtime opcodes for the numeric families,
-   integer immediate forms, local copy and immediate-store forms, and typed range
-   branches. These opcodes never appear in a stored image; the disassembler maps
-   them back.
+   integer immediate forms, local copy and immediate-store forms, typed range
+   branches, in-place loop-entry tests and paired adjacent instructions (the
+   second instruction stays in place for incoming branches). These opcodes never
+   appear in a stored image; the disassembler maps them back.
 
 A loaded program is immutable and reference counted. Several VMs, instances and
 threads share one program.

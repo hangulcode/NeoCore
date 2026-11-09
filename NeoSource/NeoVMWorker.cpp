@@ -2451,6 +2451,8 @@ bool	CNeoVMWorker::RunInternal(int iBreakingCallStack)
 		}
 
 		const SVMOperation& OP = *GetOP();
+		// 쌍 명령이 둘째 명령을 공용 본문(call_local)으로 넘길 때 쓰는 포인터.
+		const SVMOperation* pairedOp;
 		// 뜨거운 명령만 이 switch에 둔다. 드문 명령은 ExecuteColdOp으로 보내 루프를 작게 유지한다.
 		// 루프가 크면 컴파일러가 레지스터를 잃고 꼬리를 합쳐 뜨거운 명령마다 점프가 하나씩 늘었다(실측).
 		switch (OP.op)
@@ -2477,7 +2479,9 @@ bool	CNeoVMWorker::RunInternal(int iBreakingCallStack)
 		case NOP_TOSTRING:      handle_TOSTRING(OP); break;
 		case NOP_TOSIZE:        handle_TOSIZE(OP); break;
 		case NOP_CALL:          handle_CALL(OP); break;
-		case NOP_CALL_L:        handle_CALL_L(OP); break;
+		// 호출 본문은 한 벌만 둔다. 쌍 명령(MOVL_CALL_L)이 둘째 명령 포인터로 여기에 합류한다.
+		case NOP_CALL_L:        pairedOp = &OP;
+		call_local:             handle_CALL_L(*pairedOp); break;
 		case NOP_PTRCALL2:      handle_PTRCALL2(OP); break;
 		case NOP_PTRCALL2_L:    handle_PTRCALL2_L(OP); break;
 		case NOP_NATIVECALL:    handle_NATIVECALL(OP); break;
@@ -2537,6 +2541,76 @@ bool	CNeoVMWorker::RunInternal(int iBreakingCallStack)
 		NEOCORE_ARRAY_ACCESS_DISPATCH(I32, Int32)
 		NEOCORE_ARRAY_ACCESS_DISPATCH(F32, Float32)
 		case NOP_PREPARE_CALL: SelectCallPlan(OP.n1); break;
+		case NOP_RT_JMP_TO_FOR: handle_JMP_TO_FOR(OP); break;
+		// 로드가 묶은 쌍 명령(NEOCORE_RUNTIME_PAIRS). 첫 명령을 실행한 뒤 바로 뒤의 둘째 명령을 디스패치 없이
+		// 원래 의미로 실행한다. 둘째의 opcode 바이트는 보지 않는다(다음 쌍의 첫 명령일 수 있다).
+		case NOP_RT_PAIR_MOVL_MOVL:
+		{
+			m_pVarStack_Pointer[OP.n1]._int = m_pVarStack_Pointer[OP.n2]._int;
+			const SVMOperation& next = *GetOP();
+			m_pVarStack_Pointer[next.n1]._int = m_pVarStack_Pointer[next.n2]._int;
+			break;
+		}
+		case NOP_RT_PAIR_MOVL_CALL_L:
+			m_pVarStack_Pointer[OP.n1]._int = m_pVarStack_Pointer[OP.n2]._int;
+			pairedOp = GetOP();
+			goto call_local;
+		case NOP_RT_PAIR_MOVL_NATIVECALL:
+			m_pVarStack_Pointer[OP.n1]._int = m_pVarStack_Pointer[OP.n2]._int;
+			handle_NATIVECALL(*GetOP());
+			break;
+		case NOP_RT_PAIR_MOV_MOVL:
+		{
+			handle_MOV(OP);
+			const SVMOperation& next = *GetOP();
+			m_pVarStack_Pointer[next.n1]._int = m_pVarStack_Pointer[next.n2]._int;
+			break;
+		}
+		case NOP_RT_PAIR_PREPARE_MOVL:
+		{
+			SelectCallPlan(OP.n1);
+			const SVMOperation& next = *GetOP();
+			m_pVarStack_Pointer[next.n1]._int = m_pVarStack_Pointer[next.n2]._int;
+			break;
+		}
+		case NOP_RT_PAIR_MOVI_L_JMP:
+		{
+			m_pVarStack_Pointer[OP.n1]._int = OP.n23;
+			const SVMOperation& next = *GetOP();
+			SetCodeIncPtr(next.n1);
+			break;
+		}
+		case NOP_RT_PAIR_MOVI_L_JMP_TO_FOR:
+			m_pVarStack_Pointer[OP.n1]._int = OP.n23;
+			handle_JMP_TO_FOR(*GetOP());
+			break;
+		case NOP_RT_PAIR_I64_ADD_ADD2:
+			I64ArithmeticRT<ArithmeticOp::Add, false>(OP);
+			I64ArithmeticRT<ArithmeticOp::Add, true>(*GetOP());
+			break;
+		case NOP_RT_PAIR_I64_MUL_IMM_ADD:
+			I64ArithmeticImmRT<ArithmeticOp::Mul>(OP);
+			I64ArithmeticRT<ArithmeticOp::Add, false>(*GetOP());
+			break;
+		case NOP_RT_PAIR_MOVI_L_MOVI_L:
+		{
+			m_pVarStack_Pointer[OP.n1]._int = OP.n23;
+			const SVMOperation& next = *GetOP();
+			m_pVarStack_Pointer[next.n1]._int = next.n23;
+			break;
+		}
+		case NOP_RT_PAIR_MOVL_I64_MUL_IMM:
+			m_pVarStack_Pointer[OP.n1]._int = m_pVarStack_Pointer[OP.n2]._int;
+			I64ArithmeticImmRT<ArithmeticOp::Mul>(*GetOP());
+			break;
+		case NOP_RT_PAIR_I64_ADD_ARRAY_I64_STORE:
+		{
+			I64ArithmeticRT<ArithmeticOp::Add, false>(OP);
+			const SVMOperation& next = *GetOP();
+			VarInfo *a, *b, *c; GetVarRaw123(next, a, b, c);
+			ScalarArrayStore<NeoArrayElementType::Int>(a, b, c);
+			break;
+		}
 		case NOP_ERROR:
 			handle_ERROR(OP);
 			return false;
