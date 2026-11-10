@@ -112,6 +112,18 @@ int main()
             "export int Probe(){int s=0;for(int f in 0,4){for(int r in 0,K)g[f*K+r]=f+r;}for(int i in 0,32)s+=g[i];float x=3;"
             "if(ON&&x*H>1.0)s+=1000;int i=2;int v=i*K+(i=5);int w=i*K+Next();return s*10000+v*100+w;}",
             11602141, "named constants are literals in typed expressions", debug);
+        // bool 상수와의 ==, != 는 값 검사로, `!x` 뒤의 조건 점프는 반대 점프 하나로 컴파일된다(비디버그). 진리표, 값 문맥,
+        // while 조건(뒤로 가는 점프), 배열 원소, 단락 평가의 호출 횟수가 디버그 컴파일과 같아야 한다.
+        Expect("int A(bool f){if(f==true)return 1;return 2;}int B(bool f){if(f==false)return 1;return 2;}int C(bool f){if(!f)return 1;return 2;}"
+            "int E(bool f){if(true!=f)return 1;return 2;}int G(bool f){bool r=f==false;bool s=(f==true);bool t=!f;int v=0;if(r)v+=1;if(s)v+=10;if(t)v+=100;return v;}"
+            "export int Probe(){int r=A(true)*10+A(false);r=r*100+B(true)*10+B(false);r=r*100+C(true)*10+C(false);r=r*100+E(true)*10+E(false);"
+            "return r*100000+G(true)*1000+G(false);}", 1221212110101LL, "bool constant comparisons and negations test the value", debug);
+        Expect("array<bool> flags=array<bool>(8,false);int calls=0;bool T(bool v){calls+=1;return v;}"
+            "int J(int n){int c=0;bool done=false;while(!done){c+=1;if(c>=n)done=true;}while(done==true){c+=10;done=false;}return c;}"
+            "int K(int k){int s=0;for(int i in 0,8){if(flags[i]==true)s+=1;if(!flags[i])s+=10;if(flags[i]!=false&&i>k)s+=100;}return s;}"
+            "int N(){calls=0;int r=0;if(T(true)==true||T(false)==true)r+=1;if(T(false)==true&&T(true)==false)r+=10;if(!T(false)&&!T(true))r+=100;return r*100+calls;}"
+            "export int Probe(){flags[1]=true;flags[4]=true;flags[6]=true;return J(3)*1000000+K(3)*1000+N();}",
+            13253104, "folded bool conditions keep loops, elements and short-circuit order", debug);
         // 범위 점프 합치기(`x < 0 || x > 10`)는 둘째 비교로 들어오는 점프가 없을 때만 한다. `a && x < 0 || x > 10` 에서
         // a 가 거짓이면 둘째 비교만 봐야 한다(합치면 몸통으로 떨어졌다).
         Expect("int K(bool a,int x){if(a&&x<0||x>10)return 1;return 0;}int M(bool a,int dx,int dy){if(a&&dx>0||dy<0)return 1;return 0;}"

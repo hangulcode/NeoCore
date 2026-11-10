@@ -1999,6 +1999,16 @@ static bool PeekLoneCoreIRReference(CArchiveRdWC& ar)
     return next == ',' || next == ')';
 }
 
+// 피연산자가 상수 풀의 bool 값인가. `x == true` 같은 비교를 값 검사로 줄일 때 쓴다.
+static bool StaticBoolOperand(SFunctions& funs, SOperand& operand, bool& value)
+{
+    if (operand.IsArray() || operand.IsFun() || !IsCompileConstant(operand._iVar)) return false;
+    const BoundaryValue& constant = funs._staticVars[StaticPoolIndex(operand._iVar)];
+    if (constant.GetType() != VAR_BOOL) return false;
+    value = constant._bl;
+    return true;
+}
+
 bool ParseFunCall(SOperand& iResultStack, TK_TYPE tkTypePre, SFunctionInfo* pFun, CArchiveRdWC& ar, SFunctions& funs, SVars& vars)
 {
 	std::string tk1, tk2;
@@ -4564,6 +4574,28 @@ TK_TYPE ParseJob(bool bReqReturn, SOperand& sResultStack, std::vector<SJumpValue
 			MaterializeValue(b, ar, funs);
 			ElideImmediateSnapshot(a, ar, funs);
 			if (op == NOP_STR_ADD) ElideConcatConversion(a, b, ar, funs);
+			// `x == true`, `x != false` 는 x 자체이고 `x == false`, `x != true` 는 !x 다. 정적 타입이 양쪽을 bool로
+			// 보증하므로 태그를 읽는 범용 비교를 내지 않는다. 뒤따르는 조건 점프는 NOT 을 반대 점프로 접는다.
+			if (op == OP_EQUAL2 || op == OP_NEQUAL)
+			{
+				bool constant = false;
+				SOperand* other = nullptr;
+				if (StaticBoolOperand(funs, b, constant)) other = &a;
+				else if (StaticBoolOperand(funs, a, constant)) other = &b;
+				if (other != nullptr)
+				{
+					if ((op == OP_EQUAL2) == constant)
+						operands[iFindOffset] = SOperand(*other);
+					else
+					{
+						const int negated = funs._cur->AllocLocalTempVar();
+						funs._cur->Push_OP2(ar, NOP_LOG_NOT, negated, other->_iVar, false);
+						operands[iFindOffset] = negated;
+					}
+					RemoveAt<SOperand>(operands, iFindOffset + 1);
+					continue;
+				}
+			}
 			const int iTempOffset2 = funs._cur->AllocLocalTempVar();
 			funs._cur->Push_OP(ar, op, iTempOffset2, a._iVar, b._iVar, a.IsShort(), b.IsShort());
 			operands[iFindOffset] = iTempOffset2;

@@ -821,8 +821,24 @@ struct SFunctionInfo
 		//_code->Write(&add, sizeof(add));
 		Push_NoFlag(add, 0, 0);
 	}
+	// 직전 명령이 `t = !x` 이고 t 가 지금 검사할 임시면 NOT 을 반대 방향 조건 점프로 바꿔 쓴다. NOT 은 디스패치 루프
+	// 밖의 드문 명령이라 `if (!x)` 가 명령 둘(하나는 함수 호출)이던 것이 점프 하나가 된다. 점프 명령은 방금 그 자리에서
+	// 끝나므로 호출자가 계산하는 패치 위치는 그대로다. 디버그 컴파일은 명령과 줄 정보의 대응을 유지하려고 접지 않는다.
+	bool	FoldNotIntoJump(CArchiveRdWC& ar, int var, int destOffset, OperationCode jump)
+	{
+		if (ar._debug || _iLastOPOffset < 0 || !IsTempVar(var) || GetLastOP() != NOP_LOG_NOT) return false;
+		const int end = _code->GetBufferOffset();
+		if (_iLastOPOffset + static_cast<int>(sizeof(SVMOperation)) != end || _jumpTargetOffsets.count(end) != 0) return false;
+		SVMOperation* op = GetOPPointer(_iLastOPOffset);
+		if (op->n1 != var) return false;
+		op->SetCode(jump);
+		op->n1 = destOffset == 0 ? 0 : CompileShort("jump distance", (destOffset - end) / (int)sizeof(SVMOperation));
+		op->n3 = 0;
+		return true;
+	}
 	void	Push_JMPFalse(CArchiveRdWC& ar, int var, int destOffset)
 	{
+		if (FoldNotIntoJump(ar, var, destOffset, NOP_JMP_TRUE)) return;
 		OperandTemps temps(*this);
 		var = ReadOperand(ar, var);
 		AddDebugData(ar);
@@ -838,6 +854,7 @@ struct SFunctionInfo
 	}
 	void	Push_JMPTrue(CArchiveRdWC& ar, int var, int destOffset, int iDebugLoopLine)
 	{
+		if (FoldNotIntoJump(ar, var, destOffset, NOP_JMP_FALSE)) return;
 		OperandTemps temps(*this);
 		var = ReadOperand(ar, var);
 		AddDebugData(ar, iDebugLoopLine);
