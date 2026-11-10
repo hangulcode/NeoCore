@@ -2462,6 +2462,7 @@ bool	CNeoVMWorker::RunInternal(int iBreakingCallStack)
 		case NOP_RT_MOV_PAYLOAD_L: m_pVarStack_Pointer[OP.n1]._int = m_pVarStack_Pointer[OP.n2]._int; break;
 		case NOP_RT_MOVI_L:     m_pVarStack_Pointer[OP.n1]._int = OP.n23; break;
 		case NOP_RT_MOVF_L:     MoveF(m_pVarStack_Pointer + OP.n1, OP.n23); break;
+		case NOP_RT_MOV_PAYLOAD_GL: m_pVarStack_Pointer[OP.n1]._int = m_pVarGlobal_Pointer[OP.n2]._int; break;
 		case NOP_VAR_CLEAR:     handle_VAR_CLEAR(OP); break;
 		case NOP_JMP:           SetCodeIncPtr(OP.n1); break;
 		// 조건은 컴파일러가 bool로 확정했다. payload만 읽는다.
@@ -2559,11 +2560,18 @@ bool	CNeoVMWorker::RunInternal(int iBreakingCallStack)
 			m_pVarStack_Pointer[OP.n1]._int = m_pVarStack_Pointer[OP.n2]._int;
 			handle_NATIVECALL(*GetOP());
 			break;
-		case NOP_RT_PAIR_MOV_MOVL:
+		case NOP_RT_PAIR_MOVG_MOVL:
 		{
-			handle_MOV(OP);
+			m_pVarStack_Pointer[OP.n1]._int = m_pVarGlobal_Pointer[OP.n2]._int;
 			const SVMOperation& next = *GetOP();
 			m_pVarStack_Pointer[next.n1]._int = m_pVarStack_Pointer[next.n2]._int;
+			break;
+		}
+		case NOP_RT_PAIR_MOVG_MOVG:
+		{
+			m_pVarStack_Pointer[OP.n1]._int = m_pVarGlobal_Pointer[OP.n2]._int;
+			const SVMOperation& next = *GetOP();
+			m_pVarStack_Pointer[next.n1]._int = m_pVarGlobal_Pointer[next.n2]._int;
 			break;
 		}
 		case NOP_RT_PAIR_PREPARE_MOVL:

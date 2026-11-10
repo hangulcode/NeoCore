@@ -145,13 +145,17 @@
 
 // 로드 시 인접한 두 명령을 한 디스패치로 실행하는 쌍 명령 목록. 첫 명령의 opcode만 NOP_RT_PAIR_NAME으로
 // 바뀌고 둘째 명령은 바로 뒤에 그대로 남는다. 둘째로 들어오는 점프는 둘째만 실행하고, 둘째가 다시 다음 쌍의
-// 첫 명령이어도 된다(쌍 핸들러는 둘째를 원래 의미로 실행한다). 첫 명령은 제어를 옮기지 않고 오류도 내지 않는
-// 종류만 쓴다. X(NAME, FIRST, SECOND). 목록은 벤치와 게임 스크립트의 동적 인접 빈도로 골랐다(PatchLocalOps 참조).
+// 첫 명령이어도 된다(쌍 핸들러는 둘째를 원래 의미로 실행한다). X(NAME, FIRST, SECOND). 목록은 벤치와 게임
+// 스크립트의 동적 인접 빈도로 골랐다(PatchLocalOps 참조).
+// 첫 명령은 제어를 옮기지 않고, 오류를 내지 않고, VM에 다시 들어오지 않는 종류만 쓴다(payload 복사·즉값 저장·
+// PREPARE_CALL·넘침이 감기는 정수 산술). 첫 명령이 오류 트랩을 세우면 핸들러가 트랩 명령을 둘째로 실행해 버리므로
+// 소유 값을 놓는 일반 MOV, 나눗셈, 컨테이너 접근, 호출은 첫 명령이 될 수 없다. IsPairFirstOpcode가 이를 검사한다.
 #define NEOCORE_RUNTIME_PAIRS(X) \
     X(MOVL_MOVL,         NOP_RT_MOV_PAYLOAD_L, NOP_RT_MOV_PAYLOAD_L) \
     X(MOVL_CALL_L,       NOP_RT_MOV_PAYLOAD_L, NOP_CALL_L) \
     X(MOVL_NATIVECALL,   NOP_RT_MOV_PAYLOAD_L, NOP_NATIVECALL) \
-    X(MOV_MOVL,          NOP_MOV,              NOP_RT_MOV_PAYLOAD_L) \
+    X(MOVG_MOVL,         NOP_RT_MOV_PAYLOAD_GL, NOP_RT_MOV_PAYLOAD_L) \
+    X(MOVG_MOVG,         NOP_RT_MOV_PAYLOAD_GL, NOP_RT_MOV_PAYLOAD_GL) \
     X(PREPARE_MOVL,      NOP_PREPARE_CALL,     NOP_RT_MOV_PAYLOAD_L) \
     X(MOVI_L_JMP,        NOP_RT_MOVI_L,        NOP_JMP) \
     X(MOVI_L_JMP_TO_FOR, NOP_RT_MOVI_L,        NOP_RT_JMP_TO_FOR) \

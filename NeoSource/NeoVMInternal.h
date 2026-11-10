@@ -286,6 +286,8 @@ enum eNOperation : OpType
 	NOP_RT_MOV_PAYLOAD_L,
 	NOP_RT_MOVI_L,
 	NOP_RT_MOVF_L,
+	// 전역 변수·상수 풀에서 지역 슬롯으로 가는 payload 복사. 일반 MOV의 정책 분기 없이 두 기준 포인터만 쓴다.
+	NOP_RT_MOV_PAYLOAD_GL,
 	// 대상이 범위 반복 점검(JMP_FOR)인 무조건 점프. 점검을 제자리에서 해 반복 진입마다 디스패치 하나를 줄인다.
 	// n1은 원래 점프 오프셋 그대로다.
 	NOP_RT_JMP_TO_FOR,
@@ -520,6 +522,7 @@ inline bool NormalizeRuntimeOp(SVMOperation& op)
     case NOP_RT_MOV_PAYLOAD_L: meaning = MakeOperation(NOP_MOV, 0u); break;
     case NOP_RT_MOVI_L: meaning = MakeOperation(NOP_MOV, MOV_SUB_IMMEDIATE_INT); break;
     case NOP_RT_MOVF_L: meaning = MakeOperation(NOP_MOV, MOV_SUB_IMMEDIATE_FLOAT); break;
+    case NOP_RT_MOV_PAYLOAD_GL: meaning = MakeOperation(NOP_MOV, 0u); break;
     case NOP_RT_JMP_TO_FOR: meaning = MakeOperation(NOP_JMP, 0u); break;
     default: return false;
     }
@@ -527,6 +530,34 @@ inline bool NormalizeRuntimeOp(SVMOperation& op)
     if (arithmetic)
         op.argFlag = static_cast<u8>((op.argFlag & ~NEOS_OP_ARITH_UPDATE) | (update ? NEOS_OP_ARITH_UPDATE : 0));
     return true;
+}
+// 쌍 명령의 첫 명령이 될 수 있는 런타임 opcode인가. 제어를 옮기지 않고, 오류 트랩을 세우지 않고, VM에 다시
+// 들어오지 않는 것만 허용한다(NEOCORE_RUNTIME_PAIRS 참조). 로더가 쌍 규칙을 쓰기 전에 검사한다.
+inline bool IsPairFirstOpcode(eNOperation op)
+{
+    switch (op)
+    {
+    case NOP_PREPARE_CALL:
+    case NOP_RT_I64_ADD:
+    case NOP_RT_I64_MUL_IMM:
+    case NOP_RT_MOV_PAYLOAD_L:
+    case NOP_RT_MOVI_L:
+    case NOP_RT_MOV_PAYLOAD_GL:
+        return true;
+    default:
+        return false;
+    }
+}
+// 쌍 명령이면 첫 명령의 opcode, 아니면 그대로. 표기가 첫 명령의 형식(즉값 n3 등)을 알아야 할 때 쓴다.
+inline eNOperation PairFirstRuntimeOpcode(eNOperation op)
+{
+    switch (op)
+    {
+#define NEOCORE_RT_PAIR_FIRST(NAME, FIRST, SECOND) case NOP_RT_PAIR_##NAME: return FIRST;
+    NEOCORE_RUNTIME_PAIRS(NEOCORE_RT_PAIR_FIRST)
+#undef NEOCORE_RT_PAIR_FIRST
+    default: return op;
+    }
 }
 // n3에 정수 상수 값을 담은 런타임 opcode인가. 표기와 피연산자 해석은 n3를 슬롯으로 읽으면 안 된다.
 inline bool IsImmediateRuntimeOp(OpType op)

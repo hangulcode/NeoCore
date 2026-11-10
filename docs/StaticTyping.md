@@ -203,8 +203,10 @@ existed between image versions `0160` and `0162` and was removed in version
 `0163`: paired measurements on 2026-11-08 showed that its execution plan cost
 more per primitive than the dispatch it saved, so plain dispatch through the
 load-time runtime opcodes was faster in every benchmark case. Instruction budgets
-and timeouts are therefore checked at every instruction, and debug stepping sees
-exactly the instructions in the image.
+and timeouts are checked at every dispatch. In non-debug images a paired dispatch
+or an in-place loop-entry test executes two image instructions between checks, so a
+budget counts dispatches rather than image instructions; debug images are not
+paired, and debug stepping sees exactly the instructions in the image.
 
 String concatenation writes directly into the final string buffer and retains
 both input values until the result is complete. Null spelling, byte-length limits,

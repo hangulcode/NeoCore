@@ -1150,6 +1150,9 @@ bool CNeoVMProgram::PatchLocalOps(std::string* err)
 			const unsigned sub = f & NEOS_OP_SUB_MASK;
 			if (sub == static_cast<unsigned>(StoragePolicy::Payload) && (f & (L1|L2)) == (L1|L2) && (f & NEOS_OP_MODIFIER) == 0)
 			{ op.op = NOP_RT_MOV_PAYLOAD_L; ++patched; continue; }
+			// 전역 변수·상수 풀 → 지역 슬롯의 payload 복사(전역 읽기, true/false 같은 상수 적재).
+			if (sub == static_cast<unsigned>(StoragePolicy::Payload) && (f & (L1|L2)) == L1 && (f & NEOS_OP_MODIFIER) == 0)
+			{ op.op = NOP_RT_MOV_PAYLOAD_GL; ++patched; continue; }
 			if (sub == MOV_SUB_IMMEDIATE_INT && (f & L1)) { op.op = NOP_RT_MOVI_L; ++patched; continue; }
 			if (sub == MOV_SUB_IMMEDIATE_FLOAT && (f & L1)) { op.op = NOP_RT_MOVF_L; ++patched; continue; }
 		}
@@ -1253,6 +1256,13 @@ bool CNeoVMProgram::PatchLocalOps(std::string* err)
 			NEOCORE_RUNTIME_PAIRS(NEOCORE_RT_PAIR_RULE)
 #undef NEOCORE_RT_PAIR_RULE
 		};
+		for (size_t r = 0; r < sizeof(rules) / sizeof(rules[0]); ++r)
+		{
+			// 첫 명령이 오류나 제어 이동을 낼 수 있는 규칙은 쓰지 않는다(목록을 고칠 때의 안전판).
+			if (IsPairFirstOpcode(rules[r].first)) continue;
+			SetLoadError(err, "Invalid runtime pair rule");
+			return false;
+		}
 		for (int i = 0; i + 1 < opCount; ++i)
 		{
 			if (owners[i] < 0 || owners[i] != owners[i + 1]) continue;
@@ -1330,7 +1340,7 @@ bool FormatDebugOperation(const DebugInstructionFormatContext& context, std::str
 	SVMOperation v = *context.operation;
 	bool isLocalVariant = false;
 	// 즉값 형식의 n3는 슬롯이 아니라 상수 값이다. 되돌리기 전에 기억해 그대로 찍는다.
-	const bool immediate3 = IsImmediateRuntimeOp(v.op);
+	const bool immediate3 = IsImmediateRuntimeOp(PairFirstRuntimeOpcode(v.op));
 	// 로드가 펼친 런타임 opcode는 이미지 형식으로 되돌려 같은 표기를 쓴다.
 	NormalizeRuntimeOp(v);
 	v.SetCode(NormalizeLocalOp((OperationCode)v.Code(), &isLocalVariant));
