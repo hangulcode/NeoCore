@@ -53,6 +53,13 @@ NEOS_FORCEINLINE int ConcatChars(int leftChars, const ConcatPiece& right)
 // 목적지가 참조 하나뿐인 일반 문자열이면 그 버퍼를 다시 쓴다. `s = s .. x` 는 뒤에 붙이기만 하므로 반복 누적이
 // 길이에 비례하는 복사·할당 없이 끝난다. 오른쪽 피연산자가 목적지 자신이면(`s = x .. s`) 일반 경로로 간다.
 // 참조가 둘 이상이거나 정규(인터닝) 문자열이면 다른 소유자가 보고 있으므로 새 문자열을 만든다.
+// 제자리 덧붙이기의 용량 확보. reserve(n)은 구현에 따라 정확히 n만 잡으므로(libc++) 누적 덧붙이기가 매번 다시
+// 할당된다. 모자랄 때 최소 1.5배로 늘려 어느 표준 라이브러리에서도 분할 상환 선형이 되게 한다.
+NEOS_FORCEINLINE void ReserveConcat(std::string& text, size_t needed)
+{
+    const size_t capacity = text.capacity();
+    if (needed > capacity) text.reserve((std::max)(needed, capacity + capacity / 2));
+}
 NEOS_FORCEINLINE void ConcatenateStrings(ValueRef result, ValueRef first, ValueRef second) {
     StringInfo* own = result.GetType() == VAR_STRING ? result->_str : nullptr;
     if (own != nullptr && own->_refCount == 1 && !own->_interned &&
@@ -63,7 +70,7 @@ NEOS_FORCEINLINE void ConcatenateStrings(ValueRef result, ValueRef first, ValueR
         if (first.GetType() == VAR_STRING && first->_str == own)
         {
             CheckRuntimeStringGrowth(own->_str.size(), right.size);
-            own->_str.reserve(own->_str.size() + right.size);
+            ReserveConcat(own->_str, own->_str.size() + right.size);
             const int chars = ConcatChars(own->_StringLen, right);
             own->_str.append(right.data, right.size);
             own->_StringLen = chars >= 0 ? chars : utf_string::UTF8_LENGTH(own->_str);
@@ -73,7 +80,7 @@ NEOS_FORCEINLINE void ConcatenateStrings(ValueRef result, ValueRef first, ValueR
             ConcatPiece left;
             MakeConcatPiece(left, first);
             CheckRuntimeStringGrowth(left.size, right.size);
-            own->_str.reserve(left.size + right.size);
+            ReserveConcat(own->_str, left.size + right.size);
             own->_str.assign(left.data, left.size);
             own->_str.append(right.data, right.size);
             const int chars = ConcatChars(left.chars, right);
