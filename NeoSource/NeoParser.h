@@ -1169,8 +1169,12 @@ struct SFunctions
 	}
 
 	// 방금 만든 상수 슬롯의 출처를 기록한다(회수 판정용).
+	// 마지막 상수를 두 곳 이상에서 받아 갔는가. 같은 리터럴이 아직 방출되지 않은 바깥 피연산자와 지금의 즉값
+	// 인자에 함께 쓰이면(`7 + F(7, 1)`) 되돌릴 수 없다: 바깥 피연산자의 색인이 다음 상수를 가리키게 된다.
+	bool _lastStaticShared = false;
 	void MarkLastStaticOrigin()
 	{
+		_lastStaticShared = false;
 		const int off = (_cur != nullptr && _cur->_code != nullptr)
 			? _cur->_code->GetBufferOffset() : -1;
 		if (_lastStaticFun != _cur || _lastStaticCodeOffset != off)
@@ -1192,6 +1196,8 @@ struct SFunctions
 			return false;
 		if (idx < _staticRunBegin)
 			return false;   // 이 묶음보다 앞선 상수는 참조하는 코드가 있을 수 있다
+		if (_lastStaticShared)
+			return false;   // 아직 방출되지 않은 다른 피연산자가 같은 상수를 들고 있다
 		if (_cur == nullptr || _cur->_code == nullptr || _lastStaticFun != _cur)
 			return false;
 		return _lastStaticCodeOffset == _cur->_code->GetBufferOffset();
@@ -1199,6 +1205,8 @@ struct SFunctions
 	// 마지막 상수를 되돌린다. 색인도 함께 지워야 같은 값이 다시 올 때 새 슬롯을 만든다.
 	void PopLastStatic()
 	{
+		// 되돌린 뒤 마지막이 되는 상수를 누가 들고 있는지는 알 수 없다. 새 상수가 추가될 때까지 되돌리지 않는다.
+		_lastStaticShared = true;
 		const BoundaryValue& v = _staticVars.back();
 		if (v.GetType() == VAR_FLOAT)
 		{
@@ -1231,7 +1239,10 @@ struct SFunctions
 	{
 		auto found = _intConstants.find(num);
 		if (found != _intConstants.end())
+		{
+			if (found->second == (int)_staticVars.size() - 1) _lastStaticShared = true;
 			return StaticCompileIndex(found->second);
+		}
 		const int idx = NextStaticIndex();
 		BoundaryValue v;
 		v.SetType(VAR_INT);
@@ -1274,7 +1285,10 @@ struct SFunctions
 		std::memcpy(&bits, &f, sizeof(bits));
 		auto found = _floatConstants.find(bits);
 		if (found != _floatConstants.end())
+		{
+			if (found->second == (int)_staticVars.size() - 1) _lastStaticShared = true;
 			return StaticCompileIndex(found->second);
+		}
 		const int idx = NextStaticIndex();
 		BoundaryValue v;
 		v.SetType(VAR_FLOAT);

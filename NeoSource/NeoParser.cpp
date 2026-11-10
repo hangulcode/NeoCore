@@ -5162,6 +5162,10 @@ static bool TryFuseRangeJump(SFunctions& funs, const std::vector<SJumpValue>& tr
 	{
 		return false;
 	}
+	// 둘째 비교로 들어오는 점프가 있으면 합칠 수 없다. `a && x < lo || x > hi` 에서 a 가 거짓이면 둘째 비교만
+	// 봐야 하는데, 합치면 그 점프의 대상이던 둘째 비교가 사라져 바로 몸통으로 떨어진다.
+	if (funs._cur->_jumpTargetOffsets.count(secondOpOffset) != 0)
+		return false;
 
 	SVMOperation* firstOp = funs._cur->GetOPPointer(firstOpOffset);
 	SVMOperation* secondOp = funs._cur->GetOPPointer(secondOpOffset);

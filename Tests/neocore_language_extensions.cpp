@@ -106,6 +106,18 @@ int main()
             "int r=int(Dist(0,0,x,y)*100);r=r*10+int(math.Clamp(x*2,1,n+3));r=r*10+int(math.Max(F(1),x+2));r=r*10+int(math.Min(x+Next(),F(Next())));"
             "lst.append(n*3);lst.append(F(n)+1);lst.append(lst[0]+lst[1]);r=r*100000+lst[0]*10000+lst[1]*100+lst[2];return r*100+s.find(\"c\")+s.len()*10;}",
             5005546051162LL, "native and selector arguments computed in the call window", debug);
+        // 범위 점프 합치기(`x < 0 || x > 10`)는 둘째 비교로 들어오는 점프가 없을 때만 한다. `a && x < 0 || x > 10` 에서
+        // a 가 거짓이면 둘째 비교만 봐야 한다(합치면 몸통으로 떨어졌다).
+        Expect("int K(bool a,int x){if(a&&x<0||x>10)return 1;return 0;}int M(bool a,int dx,int dy){if(a&&dx>0||dy<0)return 1;return 0;}"
+            "int P(bool a,int x){if((a&&x<0)||x>10)return 1;return 0;}int Q(int x){if(x<0||x>10)return 1;return 0;}"
+            "export int Probe(){return K(false,5)*10000000+M(false,3,3)*1000000+P(false,5)*100000+K(true,-1)*10000+K(false,11)*1000+K(true,5)*100+Q(-1)*10+Q(5);}",
+            11010, "range jump fusion leaves a targeted second comparison alone", debug);
+        // 즉값으로 창에 놓은 리터럴은 상수 풀에서 되돌린다. 같은 리터럴을 아직 방출되지 않은 바깥 피연산자가 들고
+        // 있으면 되돌리지 않는다(되돌리면 바깥 피연산자가 다음 상수를 읽었다).
+        Expect("int A1(int a){return a*3;}int A2(int a,int b){return a*3+b;}int A3(int a,int b,int c){return a+b*2+c*5;}int R(){return 41+A2(41,77);}"
+            "export int Probe(){int x=1;if(43<A2(43,79))x=5;int y=A2(45,A2(45,81));"
+            "return (7+A3(7,255,0))*1000000000+R()*1000000+x*100000+(9+A1(9))*1000+y;}",
+            524241536351LL, "immediate arguments keep a literal shared with a pending operand", debug);
         // while 조건은 본문 뒤로 옮겨 쓴다. 조건 안의 직접 호출(PREPARE_CALL 없음) 계획도 함께 옮겨야
         // 본문의 문자열 인자 호출 계획이 조건의 float 인자 복사에 쓰이지 않는다.
         Expect("float Gap(float a,float b){return a-b;}int notes=0;void Note(string s){notes+=s.len();}"
