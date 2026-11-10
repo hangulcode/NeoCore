@@ -8,6 +8,9 @@ class StorageCompiler
     SFunctionInfo* activeFunction_ = nullptr;
     CompileCallStorage* activeCall_ = nullptr;
     std::map<const SFunctionInfo*, std::map<int, SlotType>> legacyLocals_;
+    std::map<int, const NeoCore::IRFunction*> nativeByReceiver_;
+    bool nativeIndexed_ = false;
+    std::map<char, SlotType> builtinResults_;
 
     SlotType Primitive(NeoCore::TypeKind kind) const
     {
@@ -104,22 +107,47 @@ class StorageCompiler
             element = static_cast<NeoCore::TypeId>(NeoCore::TypeKind::Float);
         return CoreStorageType(functions_._typedIR->types, element);
     }
+    // 수신자 슬롯으로 네이티브 호출 서명을 찾는다. 서명 이름의 전역 슬롯은 추론 중에 바뀌지 않으므로 표를 한 번만
+    // 만든다. 호출마다 모든 서명의 이름을 다시 찾으면 호출 수 × 서명 수만큼 문자열 조회가 든다. 같은 슬롯을 가리키는
+    // 서명이 여럿이면 앞선 것이 남는다(순서대로 처음 맞는 서명을 쓰던 것과 같다).
+    const NeoCore::IRFunction* NativeSignature(int receiver)
+    {
+        if (!nativeIndexed_)
+        {
+            nativeIndexed_ = true;
+            for (const NeoCore::IRFunction& signature : functions_._typedIR->nativeCalls)
+            {
+                const int slot = variables_.FindVar(signature.backendName);
+                if (slot != -1) nativeByReceiver_.insert(std::make_pair(slot, &signature));
+            }
+        }
+        const auto found = nativeByReceiver_.find(receiver);
+        return found != nativeByReceiver_.end() ? found->second : nullptr;
+    }
+    // 내장 멤버 서명의 결과 저장형. 결과 타입이 타입 표에 없으면 새로 만들어야 해서 표의 사본에서 구하는데, 값은
+    // 결과 코드에만 달려 있으므로 코드마다 한 번만 계산한다(호출마다 표 전체를 복사하지 않는다).
+    SlotType BuiltinResult(char code)
+    {
+        const auto found = builtinResults_.find(code);
+        if (found != builtinResults_.end()) return found->second;
+        NeoCore::TypeRegistry types = functions_._typedIR->types;
+        const SlotType result = CoreStorageType(types, NeoCore::BuiltinSignatureType(types, code));
+        builtinResults_.insert(std::make_pair(code, result));
+        return result;
+    }
     void BindNativeCall(SFunctionInfo& function, CompileCallStorage& call)
     {
         if (!functions_._typedIR || call.receiver == -1) return;
         const auto& ir = *functions_._typedIR;
         SlotType result;
-        for (const NeoCore::IRFunction& signature : ir.nativeCalls)
+        if (const NeoCore::IRFunction* signature = NativeSignature(call.receiver))
         {
-            const int receiver = variables_.FindVar(signature.backendName);
-            if (receiver != call.receiver) continue;
-            result = CoreStorageType(ir.types, signature.returnType);
-            for (std::size_t i = 0; i < call.sources.size() && i < signature.parameterTypes.size(); ++i)
+            result = CoreStorageType(ir.types, signature->returnType);
+            for (std::size_t i = 0; i < call.sources.size() && i < signature->parameterTypes.size(); ++i)
             {
-                call.types[i] = CoreStorageType(ir.types, signature.parameterTypes[i]);
+                call.types[i] = CoreStorageType(ir.types, signature->parameterTypes[i]);
                 Bind(function, call.sources[i], call.types[i]);
             }
-            break;
         }
         if (IsCompileConstant(call.member))
         {
@@ -130,10 +158,7 @@ class StorageCompiler
                 const SlotType receiver = Get(function, call.receiver);
                 const auto& type = ir.types.Get(receiver.typeId);
                 if (const NeoCore::BuiltinSignature* signature = NeoCore::FindBuiltinSignature(type.name, name))
-                {
-                    NeoCore::TypeRegistry types = ir.types;
-                    result = CoreStorageType(types, NeoCore::BuiltinSignatureType(types, signature->result));
-                }
+                    result = BuiltinResult(signature->result);
                 if (type.kind == NeoCore::TypeKind::Set)
                 {
                     if (name == "add" || name == "remove" || name == "contains") result = Primitive(NeoCore::TypeKind::Bool);
