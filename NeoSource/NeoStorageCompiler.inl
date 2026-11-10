@@ -11,6 +11,53 @@ class StorageCompiler
     std::map<int, const NeoCore::IRFunction*> nativeByReceiver_;
     bool nativeIndexed_ = false;
     std::map<char, SlotType> builtinResults_;
+    // 기본 타입의 저장형. 추론 중에 바뀌지 않으므로 명령마다 다시 구하지 않는다.
+    SlotType integer_, number_, boolean_;
+    // 슬롯 번호로 저장형 자리(맵 노드)를 바로 찾는 표. 맵은 그대로 두고 조회만 빠르게 한다: 맵 노드의 주소는 바뀌지
+    // 않으므로 처음 찾은 자리를 번호로 적어 둔다. 없는 슬롯도 적어 두었다가(Absent) Bind가 만들 때 바꾼다.
+    // 추론 중에는 이 클래스만 맵에 항목을 넣는다. 타입 IR이 있는 컴파일에서만 쓴다.
+    struct SlotCache
+    {
+        std::vector<SlotType*> locals, temporaries;
+    };
+    mutable std::unordered_map<const SFunctionInfo*, SlotCache> slotCaches_;
+    mutable const SFunctionInfo* cachedFunction_ = nullptr;
+    mutable SlotCache* cachedSlots_ = nullptr;
+    mutable std::vector<SlotType*> globalSlots_;
+    static SlotType* Absent() { static SlotType marker; return &marker; }
+
+    SlotType* FindSlot(const SFunctionInfo& function, int slot, bool create) const
+    {
+        std::vector<SlotType*>* table;
+        std::size_t index;
+        if (slot < 0)
+        {
+            table = &globalSlots_;
+            index = static_cast<std::size_t>(-slot);
+        }
+        else
+        {
+            if (&function != cachedFunction_)
+            {
+                cachedFunction_ = &function;
+                cachedSlots_ = &slotCaches_[&function];
+            }
+            const bool temporary = slot >= COMPILE_LOCALTMP_VAR_BEGIN;
+            table = temporary ? &cachedSlots_->temporaries : &cachedSlots_->locals;
+            index = static_cast<std::size_t>(temporary ? slot - COMPILE_LOCALTMP_VAR_BEGIN : slot);
+        }
+        if (index >= table->size()) table->resize(index + 16, nullptr);
+        SlotType*& entry = (*table)[index];
+        if (entry && entry != Absent()) return entry;
+        std::map<int, SlotType>& slots = slot < 0 ? variables_._globalStorage : const_cast<SFunctionInfo&>(function)._storage;
+        if (create) { entry = &slots[slot]; return entry; }
+        if (!entry)
+        {
+            const auto found = slots.find(slot);
+            entry = found != slots.end() ? &found->second : Absent();
+        }
+        return entry != Absent() ? entry : nullptr;
+    }
 
     SlotType Primitive(NeoCore::TypeKind kind) const
     {
@@ -42,6 +89,11 @@ class StorageCompiler
             default: return SlotType();
             }
         }
+        if (functions_._typedIR)
+        {
+            const SlotType* const known = FindSlot(function, slot, false);
+            return known ? *known : SlotType();
+        }
         const auto* locals = &function._storage;
         const auto legacy = legacyLocals_.find(&function);
         if (!functions_._typedIR && legacy != legacyLocals_.end()) locals = &legacy->second;
@@ -63,8 +115,8 @@ class StorageCompiler
             return;
         }
         if (slot >= COMPILE_STATIC_VAR_BEGIN) return;
-        auto& slots = slot < 0 ? variables_._globalStorage : functions_._typedIR ? function._storage : legacyLocals_[&function];
-        SlotType& current = slots[slot];
+        SlotType& current = functions_._typedIR ? *FindSlot(function, slot, true)
+            : (slot < 0 ? variables_._globalStorage : legacyLocals_[&function])[slot];
         if (current.kind != SlotKind::Boxed && current.kind != type.kind)
         {
             // 어느 슬롯이 어떤 종류끼리 부딪혔는지 남긴다. 호출 창 슬롯이면 활성 계획 번호도 적는다.
@@ -130,8 +182,20 @@ class StorageCompiler
     {
         const auto found = builtinResults_.find(code);
         if (found != builtinResults_.end()) return found->second;
-        NeoCore::TypeRegistry types = functions_._typedIR->types;
-        const SlotType result = CoreStorageType(types, NeoCore::BuiltinSignatureType(types, code));
+        // 새 타입을 만들 수 있는 코드(함수·목록·맵·nullable 목록)만 사본이 필요하다. 나머지는 표를 읽기만 한다.
+        const bool creates = code == 'h' || code == 'l' || code == 'm' || code == 'r';
+        SlotType result;
+        if (creates)
+        {
+            NeoCore::TypeRegistry types = functions_._typedIR->types;
+            result = CoreStorageType(types, NeoCore::BuiltinSignatureType(types, code));
+        }
+        else
+        {
+            // 읽기만 하는 경로다(BuiltinSignatureType이 비상수 참조를 받을 뿐이다).
+            NeoCore::TypeRegistry& types = const_cast<NeoCore::TypeRegistry&>(functions_._typedIR->types);
+            result = CoreStorageType(types, NeoCore::BuiltinSignatureType(types, code));
+        }
         builtinResults_.insert(std::make_pair(code, result));
         return result;
     }
@@ -200,7 +264,7 @@ class StorageCompiler
         if (op.op == NOP_PREPARE_CALL)
         { activeCall_ = &function._calls[op.n1]; return; }
         using NeoCore::TypeKind;
-        const SlotType integer = Primitive(TypeKind::Int), number = Primitive(TypeKind::Float), boolean = Primitive(TypeKind::Bool);
+        const SlotType& integer = integer_, & number = number_, & boolean = boolean_;
         if (const TypedOpInfo* typed = GetTypedOpInfo(op.Code()))
         {
             const bool floating = op.op == NOP_F64_ARITH || op.op == NOP_F64_COMPARE || op.op == NOP_JMP_F64_COMPARE || op.Code() == OP_F64_TO_I64;
@@ -329,6 +393,9 @@ public:
     StorageCompiler(SFunctions& functions, SVars& variables) : functions_(functions), variables_(variables) {}
     void Run()
     {
+        integer_ = Primitive(NeoCore::TypeKind::Int);
+        number_ = Primitive(NeoCore::TypeKind::Float);
+        boolean_ = Primitive(NeoCore::TypeKind::Bool);
         do
         {
             changed_ = false;
