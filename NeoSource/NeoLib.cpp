@@ -2564,6 +2564,16 @@ CNeoVM::ScalarNativeFunction3 CNeoVM::GetDefaultNativeScalar3(int nativeIndex)
     return nativeIndex >= 0 && nativeIndex < static_cast<int>(g_sNeoFunLib_DefaultScalar3.size())
         ? g_sNeoFunLib_DefaultScalar3[nativeIndex] : nullptr;
 }
+bool CNeoVM::HasDefaultNativeScalar(int nativeIndex, int argumentCount)
+{
+    switch (argumentCount)
+    {
+    case 1: return GetDefaultNativeScalar(nativeIndex) != nullptr;
+    case 2: return GetDefaultNativeScalar2(nativeIndex) != nullptr;
+    case 3: return GetDefaultNativeScalar3(nativeIndex) != nullptr;
+    default: return false;
+    }
+}
 bool CNeoVM::CallDefaultNativeByIndex(int nativeIndex, CNeoVMWorker* pWorker, short args)
 {
 	if (nativeIndex < 0 || nativeIndex >= (int)g_sNeoFunLib_DefaultNative.size())

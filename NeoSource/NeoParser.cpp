@@ -1982,6 +1982,16 @@ static bool NeedsSnapshot(const SOperand& operand, int effects)
     return (effects & EXPR_EFFECT_ASSIGN) != 0;
 }
 
+// 호출 앞에 PREPARE_CALL이 필요한가. 순수 수학 네이티브(인자 1~3개의 float → float)는 창의 float payload를
+// 바로 읽고 놓을 소유 슬롯도 없어 호출 계획을 고를 필요가 없다. 정수 인자는 프런트엔드가 float으로 바꿔 창에 넣는다.
+static bool CallNeedsPrepare(const SFunctionInfo* callee, std::size_t argumentCount)
+{
+    if (callee != nullptr && callee->_funType == FUNT_BUILT_IN &&
+        CNeoVM::HasDefaultNativeScalar(CNeoVM::FindDefaultNativeIndex(callee->_name), static_cast<int>(argumentCount)))
+        return false;
+    return SFunctionInfo::CallWindowNeedsPrepare(callee, argumentCount);
+}
+
 // 다음 인자가 IR 표식 하나(`$irN()`)로 끝나는가. 밀어 둔 토큰 하나(표식 이름)와 그 뒤 원문 `( )` 그리고 `,`/`)`를
 // 소비하지 않고 본다. 맞으면 그 IR 계산이 창 슬롯을 목적지로 받을 수 있다.
 static bool PeekLoneCoreIRReference(CArchiveRdWC& ar)
@@ -2089,7 +2099,7 @@ bool ParseFunCall(SOperand& iResultStack, TK_TYPE tkTypePre, SFunctionInfo* pFun
 					// 없으므로(-1) 저장소 추론이 피호출자 서명으로 그 슬롯의 종류를 정한다.
 					std::vector<int> callSources(argEffects.size(), -1);
 					for (std::size_t s = 0; s < argOperands.size(); ++s) callSources[s] = argOperands[s].IsFun() ? -1 : argOperands[s]._iVar;
-					funs._cur->PrepareCall(ar, callSources, iCallLine, SFunctionInfo::CallWindowNeedsPrepare(pFun, argEffects.size()));
+					funs._cur->PrepareCall(ar, callSources, iCallLine, CallNeedsPrepare(pFun, argEffects.size()));
 					for (std::size_t s = 0; s < argOperands.size(); ++s) StageArgument(argOperands[s], static_cast<int>(s));
 					windowPrepared = true;
 				}
@@ -2167,7 +2177,7 @@ bool ParseFunCall(SOperand& iResultStack, TK_TYPE tkTypePre, SFunctionInfo* pFun
         {
             std::vector<int> callSources;
             for (SOperand& argument : argOperands) callSources.push_back(argument.IsFun() ? -1 : argument._iVar);
-            funs._cur->PrepareCall(ar, callSources, iCallLine, SFunctionInfo::CallWindowNeedsPrepare(pFun, argOperands.size()));
+            funs._cur->PrepareCall(ar, callSources, iCallLine, CallNeedsPrepare(pFun, argOperands.size()));
             for (int i = 0; i < iParamCount; ++i) StageArgument(argOperands[i], i);
         }
 		if (pFun != NULL)

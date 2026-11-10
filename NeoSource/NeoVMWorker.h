@@ -282,6 +282,8 @@ private:
 	const SFunctionTable*	m_pFunction = nullptr;
 	const VAR_TYPE*			m_pSlotTypes = nullptr;
 	const VAR_TYPE*			m_pGlobalTypes = nullptr;
+	// 프로그램의 순수 수학 네이티브 함수 포인터 표(NOP_RT_NATIVE_F*_L). 프로그램을 묶을 때 정한다.
+	const ProgramNativeFunction*	m_pScalarNatives = nullptr;
 	NEOS_FORCEINLINE void SelectFunction(int index, const SFunctionTable& fun)
 	{
 		_functionIndex = index;

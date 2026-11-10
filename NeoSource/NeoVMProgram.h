@@ -246,6 +246,9 @@ struct ProgramSwitchTable
 
 // NOP_JMP_RANGE_*의 lower/upper operand. Program은 여러 VM이 공유되므로
 // BoundaryValue/포인터가 아니라 슬롯 번호와 descriptor flag만 보관한다.
+// 순수 수학 네이티브의 계산 함수를 인자 수와 무관하게 담는 포인터 형식. 쓸 때 원래 형식으로 되돌려 부른다.
+typedef void (*ProgramNativeFunction)();
+
 struct ProgramRangeJump
 {
 	short	lower = 0;
@@ -292,6 +295,8 @@ public:
 	std::vector<SStaticConst>	staticValues;
 	std::vector<ProgramSwitchTable>	switchTables;      // NOP_SWITCH.n1 이 이 배열의 인덱스
 	std::vector<ProgramRangeJump>	rangeJumps;          // NOP_JMP_RANGE_*.n3 이 이 배열의 인덱스
+	// NOP_RT_NATIVE_F*_L.n1 이 이 배열의 인덱스다. 로드가 순수 수학 네이티브의 계산 함수를 넣는다(No Save).
+	std::vector<ProgramNativeFunction>	scalarNatives;
 
 	// 디버그 정보 (IsDebugInfo() 일 때만 채워진다)
 	std::vector<debug_info>		debugData;

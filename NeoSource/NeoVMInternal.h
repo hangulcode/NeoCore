@@ -288,6 +288,11 @@ enum eNOperation : OpType
 	NOP_RT_MOVF_L,
 	// 전역 변수·상수 풀에서 지역 슬롯으로 가는 payload 복사. 일반 MOV의 정책 분기 없이 두 기준 포인터만 쓴다.
 	NOP_RT_MOV_PAYLOAD_GL,
+	// 순수 수학 네이티브(인자 1·2·3개, float 반환)의 결과를 지역 슬롯에 받는 호출. 호출 창의 float payload를 바로
+	// 읽고 호출 계획을 쓰지 않는다. n1은 프로그램의 함수 포인터 표(scalarNatives) 색인, n2는 인자 수, n3는 결과 슬롯이다.
+	NOP_RT_NATIVE_F1_L,
+	NOP_RT_NATIVE_F2_L,
+	NOP_RT_NATIVE_F3_L,
 	// 대상이 범위 반복 점검(JMP_FOR)인 무조건 점프. 점검을 제자리에서 해 반복 진입마다 디스패치 하나를 줄인다.
 	// n1은 원래 점프 오프셋 그대로다.
 	NOP_RT_JMP_TO_FOR,
@@ -523,6 +528,9 @@ inline bool NormalizeRuntimeOp(SVMOperation& op)
     case NOP_RT_MOVI_L: meaning = MakeOperation(NOP_MOV, MOV_SUB_IMMEDIATE_INT); break;
     case NOP_RT_MOVF_L: meaning = MakeOperation(NOP_MOV, MOV_SUB_IMMEDIATE_FLOAT); break;
     case NOP_RT_MOV_PAYLOAD_GL: meaning = MakeOperation(NOP_MOV, 0u); break;
+    case NOP_RT_NATIVE_F1_L:
+    case NOP_RT_NATIVE_F2_L:
+    case NOP_RT_NATIVE_F3_L: meaning = MakeOperation(NOP_NATIVECALL, 0u); break;
     case NOP_RT_JMP_TO_FOR: meaning = MakeOperation(NOP_JMP, 0u); break;
     default: return false;
     }
@@ -1409,6 +1417,8 @@ public:
 	static ScalarNativeFunction GetDefaultNativeScalar(int nativeIndex);
 	static ScalarNativeFunction2 GetDefaultNativeScalar2(int nativeIndex);
 	static ScalarNativeFunction3 GetDefaultNativeScalar3(int nativeIndex);
+	// 인자 수에 맞는 직접 계산 함수가 있는가. 컴파일러가 PREPARE_CALL 생략을 정할 때와 로더가 전용 명령을 고를 때 쓴다.
+	static bool HasDefaultNativeScalar(int nativeIndex, int argumentCount);
 	static bool CallDefaultNativeByIndex(int nativeIndex, CNeoVMWorker* pWorker, short args);
 	void RegLibrary(ValueRef pSystem, const char* pLibName);// , SNeoFunLib* pFuns);
 	static void RegObjLibrary();

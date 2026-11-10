@@ -149,6 +149,11 @@ int main()
             "void Skip(int k,string s){if(k<0)return;string t=s..\"y\";calls+=t.len();}"
             "export int Probe(){string s=\"ab\";list<int> l=[1,2,3];int r=0;for(int i in 0,200){r+=Early(i%2==0?-1:1,s,l);Skip(i%3==0?-1:1,s);}"
             "return r*1000+calls+s.len()*1000000+l.len()*10000000;}", 32600499, "frames with owned slots return early and late", debug);
+        // 순수 수학 네이티브는 PREPARE_CALL 없이 호출한다. 결과를 지역(전용 명령)·전역·버림(일반 경로)으로 받는 경우와
+        // 정수 인자, 중첩 호출을 함께 본다.
+        Expect("import math;float gf=0.0;export int Probe(){int n=16;gf=math.sqrt(n);math.sqrt(2.0);float h=math.hypot(3,n-12);"
+            "float c=math.Clamp(n,0,10)+math.atan2(0,1);float m=math.Max(math.abs(-3.5),math.Min(2,9));return int(gf*1000+h*100+c*10+m);}",
+            4603, "scalar natives run without a call plan", debug);
         // while 조건은 본문 뒤로 옮겨 쓴다. 조건 안의 직접 호출(PREPARE_CALL 없음) 계획도 함께 옮겨야
         // 본문의 문자열 인자 호출 계획이 조건의 float 인자 복사에 쓰이지 않는다.
         Expect("float Gap(float a,float b){return a-b;}int notes=0;void Note(string s){notes+=s.len();}"

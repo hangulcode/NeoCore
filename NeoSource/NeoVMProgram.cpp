@@ -1074,6 +1074,29 @@ void CNeoVMProgram::PatchNativeCalls()
 			continue;
 		}
 
+		// 순수 수학 네이티브의 결과를 지역 슬롯에 받는 호출은 전용 명령으로 바꾼다. 컴파일러는 이런 호출 앞에
+		// PREPARE_CALL을 내지 않으므로 핸들러는 호출 계획 없이 창의 float payload만 읽는다.
+		ProgramNativeFunction scalar = nullptr;
+		eNOperation scalarOp = NOP_NONE;
+		if ((op.argFlag & NEOS_OP_CALL_NORESULT) == 0 && (op.argFlag & NEOS_ARG_N3_LOCAL))
+		{
+			if (op.n2 == 1) { scalar = reinterpret_cast<ProgramNativeFunction>(CNeoVM::GetDefaultNativeScalar(nativeIndex)); scalarOp = NOP_RT_NATIVE_F1_L; }
+			else if (op.n2 == 2) { scalar = reinterpret_cast<ProgramNativeFunction>(CNeoVM::GetDefaultNativeScalar2(nativeIndex)); scalarOp = NOP_RT_NATIVE_F2_L; }
+			else if (op.n2 == 3) { scalar = reinterpret_cast<ProgramNativeFunction>(CNeoVM::GetDefaultNativeScalar3(nativeIndex)); scalarOp = NOP_RT_NATIVE_F3_L; }
+		}
+		if (scalar != nullptr)
+		{
+			std::size_t entry = 0;
+			while (entry < scalarNatives.size() && scalarNatives[entry] != scalar) ++entry;
+			if (entry == scalarNatives.size() && entry < static_cast<std::size_t>(SHRT_MAX)) scalarNatives.push_back(scalar);
+			if (entry < scalarNatives.size())
+			{
+				op.op = scalarOp;
+				op.n1 = static_cast<short>(entry);
+				continue;
+			}
+		}
+
 		op.SetCode(NOP_NATIVECALL);
 		op.n1 = (short)nativeIndex;
 	}

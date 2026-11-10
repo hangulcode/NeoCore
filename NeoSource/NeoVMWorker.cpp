@@ -463,6 +463,7 @@ bool CNeoVMWorker::Init(const NeoLoadVMParam* vparam, CNeoVMProgram* pProgram, i
 	m_pVarGlobal_Pointer = m_sVarGlobal.data() + pProgram->ConstantBase();
 	// 전역 뷰가 원소를 바로 가리키는 읽기 전용 사본이다. 값으로 쓸 때는 SlotType_G가 비트를 벗긴다.
 	m_pGlobalTypes = pProgram->globalTypesFlagged.data() + pProgram->ConstantBase();
+	m_pScalarNatives = pProgram->scalarNatives.data();
 	// 전역은 모두 0(숫자 0, null 참조)에서 시작한다. 선언 초기화는 전역 초기화 함수가 한다.
 
 	for (int i = 0; i < staticCount; i++)
@@ -2494,6 +2495,29 @@ bool	CNeoVMWorker::RunInternal(int iBreakingCallStack)
 		case NOP_PTRCALL2:      handle_PTRCALL2(OP); break;
 		case NOP_PTRCALL2_L:    handle_PTRCALL2_L(OP); break;
 		case NOP_NATIVECALL:    handle_NATIVECALL(OP); break;
+		// 순수 수학 네이티브(로드가 고름). 인자는 호출 창의 float payload이고 결과는 지역 슬롯이다. 호출 계획과
+		// 네이티브 프레임을 쓰지 않는다. 창은 함수 진입 때 확보한 스택 범위 안에 있다.
+		case NOP_RT_NATIVE_F1_L:
+		{
+			const VarInfo* const window = m_pVarStackData + _iSP_VarsMax;
+			m_pVarStack_Pointer[OP.n3]._float =
+				reinterpret_cast<CNeoVM::ScalarNativeFunction>(m_pScalarNatives[OP.n1])(window[1]._float);
+			break;
+		}
+		case NOP_RT_NATIVE_F2_L:
+		{
+			const VarInfo* const window = m_pVarStackData + _iSP_VarsMax;
+			m_pVarStack_Pointer[OP.n3]._float =
+				reinterpret_cast<CNeoVM::ScalarNativeFunction2>(m_pScalarNatives[OP.n1])(window[1]._float, window[2]._float);
+			break;
+		}
+		case NOP_RT_NATIVE_F3_L:
+		{
+			const VarInfo* const window = m_pVarStackData + _iSP_VarsMax;
+			m_pVarStack_Pointer[OP.n3]._float =
+				reinterpret_cast<CNeoVM::ScalarNativeFunction3>(m_pScalarNatives[OP.n1])(window[1]._float, window[2]._float, window[3]._float);
+			break;
+		}
 		case NOP_RETURN:
 			if (handle_RETURN(OP)) return true;
 			break;
@@ -3174,16 +3198,12 @@ bool CNeoVMWorker::CallDefaultNativeByIndex(int nativeIndex, int n3, VarInfo* pR
 		return false;
     // 스택 범위 검사는 유지한다. 등록된 숫자 함수의 인자 계약은 컴파일러가 보증한다.
     // 순수 수학 네이티브(인자 1~3개, float 반환)는 프레임 전환과 라이브러리 래퍼 없이 창 슬롯에서 바로 계산한다.
-    // 정수와 실수 모두 허용하는 내부 명령이므로 두 숫자 표현의 선택은 호출 계획이 준다.
+    // 컴파일러는 이런 호출 앞에 PREPARE_CALL을 내지 않으므로 호출 계획을 읽지 않는다. 인자는 프런트엔드가 float으로
+    // 바꿔 창에 넣는다(래퍼의 FloatArgument와 같은 전제). 결과를 쓰지 않거나 전역에 받는 호출이 이 길로 온다.
     if (n3 >= 1 && n3 <= 3)
     {
         VarInfo* const window = m_pVarStackData + _iSP_VarsMax;
-        auto argument = [&](int index) -> NS_FLOAT
-        {
-            const ValueRef value(window + index, PlanType(index));
-            assert(value.IsNumber());
-            return value.GetFloatNumber();
-        };
+        auto argument = [&](int index) -> NS_FLOAT { return window[index]._float; };
         bool computed = false;
         NS_FLOAT value = 0;
         if (n3 == 1)
