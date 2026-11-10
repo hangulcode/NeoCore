@@ -884,6 +884,10 @@ NEOS_NOINLINE void CNeoVMWorker::ReleaseFrameOwned(const SFunctionTable& fun, in
 	VarInfo* slots = (m_pVarStackData + (base));
 	for (int i = fun._releaseFirst; i < fun._releaseCount; ++i)
 	{
+		// 빈 슬롯(아직 쓰지 않은 임시, 소유권을 넘긴 값)은 놓을 것이 없다. payload 0은 모든 소유 정책에서 null이고
+		// 숫자 슬롯은 어차피 보지 않는다. 조기 반환에서는 소유 슬롯 대부분이 비어 있어 슬롯마다 정책 분기 함수를
+		// 부르던 비용이 비교 한 번이 된다.
+		if (slots[i]._int == 0) continue;
 		const StoragePolicy policy = SlotInfoPolicy(info[i]);
 		if (policy != StoragePolicy::Payload) ReleaseByPolicy(slots + i, policy);
 	}

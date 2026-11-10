@@ -136,6 +136,12 @@ int main()
             "export int Probe(){int x=1;if(43<A2(43,79))x=5;int y=A2(45,A2(45,81));"
             "return (7+A3(7,255,0))*1000000000+R()*1000000+x*100000+(9+A1(9))*1000+y;}",
             524241536351LL, "immediate arguments keep a literal shared with a pending operand", debug);
+        // 소유 슬롯이 있는 프레임의 반환은 빈 슬롯을 건너뛴다. 조기 반환(임시가 아직 비어 있음)과 늦은 반환이 섞여도
+        // 값과 인자 참조의 수명은 그대로다.
+        Expect("int calls=0;int Early(int k,string s,list<int> l){if(k<0)return 0;string t=s..\"x\";list<int> c=l;calls+=1;return t.len()+c.len();}"
+            "void Skip(int k,string s){if(k<0)return;string t=s..\"y\";calls+=t.len();}"
+            "export int Probe(){string s=\"ab\";list<int> l=[1,2,3];int r=0;for(int i in 0,200){r+=Early(i%2==0?-1:1,s,l);Skip(i%3==0?-1:1,s);}"
+            "return r*1000+calls+s.len()*1000000+l.len()*10000000;}", 32600499, "frames with owned slots return early and late", debug);
         // while 조건은 본문 뒤로 옮겨 쓴다. 조건 안의 직접 호출(PREPARE_CALL 없음) 계획도 함께 옮겨야
         // 본문의 문자열 인자 호출 계획이 조건의 float 인자 복사에 쓰이지 않는다.
         Expect("float Gap(float a,float b){return a-b;}int notes=0;void Note(string s){notes+=s.len();}"
