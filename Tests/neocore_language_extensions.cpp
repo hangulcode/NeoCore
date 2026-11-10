@@ -106,6 +106,12 @@ int main()
             "int r=int(Dist(0,0,x,y)*100);r=r*10+int(math.Clamp(x*2,1,n+3));r=r*10+int(math.Max(F(1),x+2));r=r*10+int(math.Min(x+Next(),F(Next())));"
             "lst.append(n*3);lst.append(F(n)+1);lst.append(lst[0]+lst[1]);r=r*100000+lst[0]*10000+lst[1]*100+lst[2];return r*100+s.find(\"c\")+s.len()*10;}",
             5005546051162LL, "native and selector arguments computed in the call window", debug);
+        // 이름 붙은 숫자·불린 상수는 타입 IR의 리터럴이다. 색인 산술에 상수가 끼어도 앞서 읽은 지역 변수와 전역 배열을
+        // 복사하지 않고, 값과 평가 순서(상수 뒤의 대입·호출)는 그대로다.
+        Expect("const int K=8;const float H=0.5;const bool ON=true;array<int> g=array<int>(64,0);int c=0;int Next(){c+=1;return c;}"
+            "export int Probe(){int s=0;for(int f in 0,4){for(int r in 0,K)g[f*K+r]=f+r;}for(int i in 0,32)s+=g[i];float x=3;"
+            "if(ON&&x*H>1.0)s+=1000;int i=2;int v=i*K+(i=5);int w=i*K+Next();return s*10000+v*100+w;}",
+            11602141, "named constants are literals in typed expressions", debug);
         // 범위 점프 합치기(`x < 0 || x > 10`)는 둘째 비교로 들어오는 점프가 없을 때만 한다. `a && x < 0 || x > 10` 에서
         // a 가 거짓이면 둘째 비교만 봐야 한다(합치면 몸통으로 떨어졌다).
         Expect("int K(bool a,int x){if(a&&x<0||x>10)return 1;return 0;}int M(bool a,int dx,int dy){if(a&&dx>0||dy<0)return 1;return 0;}"

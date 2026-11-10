@@ -3430,6 +3430,23 @@ private:
             node.number = expression.floatValue;
             node.boolean = expression.op == "true";
         }
+        else if (expression.kind == ExprKind::Name && expression.symbol && !expression.symbol->hostGlobal &&
+            expression.symbol->constantValue &&
+            ((node.type == IRValueType::Int && expression.symbol->constantValue->kind == ConstantValue::Int) ||
+             (node.type == IRValueType::Float && (expression.symbol->constantValue->kind == ConstantValue::Float ||
+                 expression.symbol->constantValue->kind == ConstantValue::Int)) ||
+             (node.type == IRValueType::Bool && expression.symbol->constantValue->kind == ConstantValue::Bool)))
+        {
+            // 이름 붙은 숫자·불린 상수(다른 모듈의 것 포함)도 리터럴 노드로 낸다. 이전 식(LegacyExpression)으로 남기면
+            // 부작용을 알 수 없다고 보아, 같은 식에서 먼저 읽은 지역 변수와 수신 컨테이너(전역 배열 참조)를 식마다
+            // 복사한다. 아래 문자열 상수와 같은 이유다.
+            const ConstantValue& value = *expression.symbol->constantValue;
+            node.op = node.type == IRValueType::Int ? IROp::IntLiteral
+                : node.type == IRValueType::Float ? IROp::FloatLiteral : IROp::BoolLiteral;
+            node.integer = value.integer;
+            node.number = value.Number();
+            node.boolean = value.boolean;
+        }
         else if ((expression.kind == ExprKind::Literal && expression.token.kind == TokenKind::String) ||
             (expression.kind == ExprKind::Name && expression.symbol && expression.symbol->constantValue &&
                 expression.symbol->constantValue->kind == ConstantValue::String))
