@@ -4,10 +4,13 @@
 #include <algorithm>
 #include <cctype>
 #include <cstdlib>
+#include <cstring>
 #include <map>
 #include <memory>
 #include <set>
 #include <stdexcept>
+#include <unordered_map>
+#include <unordered_set>
 #include <utility>
 
 namespace NeoCore
@@ -15,13 +18,24 @@ namespace NeoCore
 namespace
 {
 
+// 토큰 글자는 모듈 소스(또는 define 치환 문자열) 안의 구간을 가리킨다. 소유하지 않으므로 토큰마다 문자열을
+// 복사하지 않는다. 가리키는 문자열은 Unit이 살아 있는 동안 바뀌지 않는다.
 struct Token
 {
-    std::string text;
+    const char* text = "";
+    std::size_t size = 0;
     std::size_t begin = 0, end = 0;
     int line = 1, column = 1;
     bool identifier = false;
     bool expanded = false;
+
+    bool Is(const char* word) const
+    {
+        const std::size_t length = std::strlen(word);
+        return length == size && std::memcmp(text, word, length) == 0;
+    }
+    bool Is(const std::string& word) const { return word.size() == size && std::memcmp(text, word.data(), size) == 0; }
+    std::string Text() const { return std::string(text, size); }
 };
 
 struct Diagnostic
@@ -62,10 +76,30 @@ static bool ReservedImportName(const std::string& name)
     return false;
 }
 
-// 문자열·주석을 그대로 두고 식별자 경계만 읽는다. 문법과 타입 판정은 정적 컴파일러의 일이다.
-static std::vector<Token> Tokenize(const std::string& source, const std::string& name)
+// 이름 표의 열쇠. 가리키는 글자는 표보다 오래 사는 문자열(모듈 소스, 보존 이름 저장소)에 있다.
+struct NameRef
 {
-    std::vector<Token> tokens;
+    const char* data;
+    std::size_t size;
+};
+struct NameHash
+{
+    std::size_t operator()(const NameRef& name) const
+    {
+        std::size_t hash = static_cast<std::size_t>(1469598103934665603ull);
+        for (std::size_t i = 0; i < name.size; ++i)
+            hash = (hash ^ static_cast<unsigned char>(name.data[i])) * static_cast<std::size_t>(1099511628211ull);
+        return hash;
+    }
+};
+struct NameEqual
+{
+    bool operator()(const NameRef& a, const NameRef& b) const { return a.size == b.size && std::memcmp(a.data, b.data, a.size) == 0; }
+};
+
+// 문자열·주석을 그대로 두고 식별자 경계만 읽는다. 문법과 타입 판정은 정적 컴파일러의 일이다.
+static void Tokenize(const std::string& source, const std::string& name, std::vector<Token>& tokens)
+{
     std::size_t at = source.compare(0, 3, "\xef\xbb\xbf") == 0 ? 3 : 0;
     int line = 1, column = 1;
     const auto advance = [&]()
@@ -146,10 +180,10 @@ static std::vector<Token> Tokenize(const std::string& source, const std::string&
             if (pair) advance();
         }
         token.end = at;
-        token.text = source.substr(token.begin, token.end - token.begin);
+        token.text = source.data() + token.begin;
+        token.size = token.end - token.begin;
         tokens.push_back(token);
     }
-    return tokens;
 }
 
 struct Import
@@ -160,32 +194,41 @@ struct Import
     bool builtin = false;
 };
 
+// 토큰을 내보낼 때의 처리. 식별자 대부분이 모듈 접두사를 받으므로 토큰마다 치환 문자열을 만들어 두지 않고
+// 종류만 적는다. 다른 모듈의 멤버로 바뀌는 드문 토큰만 문자열(Unit::memberNames)을 가진다.
+enum TokenAction : unsigned char { KeepToken, DropToken, PrefixToken, MemberToken };
+
 struct Unit
 {
     ModuleSource input;
+    // define 치환 토큰이 가리키는 문자열. 토큰을 만든 뒤에는 바꾸지 않는다.
+    std::vector<StaticDefineReplacement> defineValues;
     std::vector<Token> tokens;
     std::vector<std::size_t> lineStarts;
     std::vector<Import> imports;
     std::map<std::string, bool> symbols;
     std::set<std::size_t> fieldNames, strippedExports;
-    std::map<std::size_t, std::string> replacements;
+    std::vector<unsigned char> actions;
+    std::map<std::size_t, std::string> memberNames;
     std::string prefix, diagnosticName;
+    // 줄 찾기의 시작 위치. 한 모듈의 내보내기는 앞에서 뒤로 가므로 직전 줄부터 찾는다.
+    mutable std::size_t lineCursor = 0;
     bool visiting = false, visited = false, emitted = false;
 };
 
 static bool At(const std::vector<Token>& tokens, std::size_t index, const char* value)
 {
-    return index < tokens.size() && tokens[index].text == value;
+    return index < tokens.size() && tokens[index].Is(value);
 }
 
 // 타입의 모양만 건너뛰며 지원 여부는 합친 소스의 타입 검사에서 결정한다.
 static bool SkipType(const std::vector<Token>& tokens, std::size_t& index, unsigned depth = 0)
 {
     if (depth > 128 || index >= tokens.size() || !tokens[index].identifier) return false;
-    const std::string type = tokens[index++].text;
+    const bool function = tokens[index++].Is("fn");
     // 다른 모듈의 공개 구조체는 alias.Type 으로 쓴다. 제네릭 인자와 함수 타입 안에서도 같은 규칙이다.
-    if (type != "fn" && At(tokens, index, ".") && index + 1 < tokens.size() && tokens[index + 1].identifier) index += 2;
-    if (type == "fn")
+    if (!function && At(tokens, index, ".") && index + 1 < tokens.size() && tokens[index + 1].identifier) index += 2;
+    if (function)
     {
         if (!At(tokens, index++, "(")) return false;
         if (!At(tokens, index, ")"))
@@ -216,57 +259,68 @@ static bool SkipType(const std::vector<Token>& tokens, std::size_t& index, unsig
 
 static void Analyze(Unit& unit, const std::vector<CompileDefine>* defines)
 {
-    unit.tokens = Tokenize(unit.input.source, unit.input.sourceName);
+    // 토큰 수는 소스 크기로 어림해 미리 잡는다. 늘리면서 옮기는 일과 그동안의 두 벌 메모리를 피한다.
+    unit.tokens.reserve(unit.input.source.size() / 4 + 16);
+    Tokenize(unit.input.source, unit.input.sourceName, unit.tokens);
     if (defines)
     {
-        std::vector<StaticDefineReplacement> replacements;
         std::string error;
         Token at;
-        if (!ExpandStaticDefines(unit.input.source, *defines, replacements, error, at.line, at.column))
+        if (!ExpandStaticDefines(unit.input.source, *defines, unit.defineValues, error, at.line, at.column))
             Fail(unit.input.sourceName, at, error);
-        std::vector<Token> expanded;
-        std::size_t replacement = 0;
-        for (const Token& original : unit.tokens)
+        // 치환할 자리가 없으면 토큰은 그대로다.
+        if (!unit.defineValues.empty())
         {
-            if (replacement == replacements.size() || replacements[replacement].begin != original.begin)
-            { expanded.push_back(original); continue; }
-            std::vector<Token> values = Tokenize(replacements[replacement++].text, unit.input.sourceName);
-            for (std::size_t i = 0; i < values.size(); ++i)
+            std::vector<Token> expanded;
+            expanded.reserve(unit.tokens.size() + unit.defineValues.size());
+            std::vector<Token> values;
+            std::size_t replacement = 0;
+            for (const Token& original : unit.tokens)
             {
-                values[i].begin = original.begin;
-                values[i].end = i + 1 == values.size() ? original.end : original.begin;
-                values[i].line = original.line; values[i].column = original.column; values[i].expanded = true;
-                expanded.push_back(values[i]);
+                if (replacement == unit.defineValues.size() || unit.defineValues[replacement].begin != original.begin)
+                { expanded.push_back(original); continue; }
+                values.clear();
+                Tokenize(unit.defineValues[replacement++].text, unit.input.sourceName, values);
+                for (std::size_t i = 0; i < values.size(); ++i)
+                {
+                    values[i].begin = original.begin;
+                    values[i].end = i + 1 == values.size() ? original.end : original.begin;
+                    values[i].line = original.line; values[i].column = original.column; values[i].expanded = true;
+                    expanded.push_back(values[i]);
+                }
             }
+            unit.tokens.swap(expanded);
         }
-        unit.tokens.swap(expanded);
     }
+    if (unit.tokens.capacity() > unit.tokens.size() + unit.tokens.size() / 4 + 16)
+        std::vector<Token>(unit.tokens).swap(unit.tokens);
     unit.lineStarts.push_back(unit.input.source.compare(0, 3, "\xef\xbb\xbf") == 0 ? 3 : 0);
     for (std::size_t i = 0; i < unit.input.source.size(); ++i)
         if (unit.input.source[i] == '\n') unit.lineStarts.push_back(i + 1);
     const std::vector<Token>& tokens = unit.tokens;
     int braces = 0, parentheses = 0, brackets = 0;
     std::set<std::string> aliases;
-    std::vector<std::pair<std::string, std::size_t>> delimiters;
+    // 여는 괄호 글자와 그 토큰 위치.
+    std::vector<std::pair<char, std::size_t>> delimiters;
     for (std::size_t i = 0; i < tokens.size(); ++i)
     {
         if (!braces && !parentheses && !brackets)
         {
-            if (tokens[i].text == "import")
+            if (tokens[i].Is("import"))
             {
-                if (i && tokens[i - 1].text != ";" && tokens[i - 1].text != "}")
+                if (i && !tokens[i - 1].Is(";") && !tokens[i - 1].Is("}"))
                     Fail(unit.input.sourceName, tokens[i], "import is only allowed at file scope");
                 Import import;
                 import.first = i;
                 if (i + 2 >= tokens.size() || !tokens[i + 1].identifier)
                     Fail(unit.input.sourceName, tokens[i], "expected a module name after import");
-                import.name = import.alias = tokens[i + 1].text;
+                import.name = import.alias = tokens[i + 1].Text();
                 std::size_t end = i + 2;
                 if (At(tokens, end, "as"))
                 {
                     if (end + 1 >= tokens.size() || !tokens[end + 1].identifier)
                         Fail(unit.input.sourceName, tokens[end], "expected a module alias");
-                    import.alias = tokens[end + 1].text;
+                    import.alias = tokens[end + 1].Text();
                     end += 2;
                 }
                 if (!At(tokens, end, ";")) Fail(unit.input.sourceName, tokens[i], "expected ';' after import");
@@ -287,20 +341,21 @@ static void Analyze(Unit& unit, const std::vector<CompileDefine>* defines)
             std::vector<std::size_t> exports;
             while (name < tokens.size())
             {
-                const std::string modifier = tokens[name].text;
-                if (modifier != "public" && modifier != "export" && modifier != "const") break;
-                bool& seen = modifier == "public" ? publicSymbol : modifier == "export" ? exported : constant;
+                const Token& modifier = tokens[name];
+                const bool isPublic = modifier.Is("public"), isExport = !isPublic && modifier.Is("export");
+                if (!isPublic && !isExport && !modifier.Is("const")) break;
+                bool& seen = isPublic ? publicSymbol : isExport ? exported : constant;
                 if (seen) Fail(unit.input.sourceName, tokens[name], "duplicate declaration modifier");
                 seen = true;
-                if (modifier == "export") exports.push_back(name);
+                if (isExport) exports.push_back(name);
                 ++name;
             }
-            if ((publicSymbol || exported || constant) && i && tokens[i - 1].text != ";" && tokens[i - 1].text != "}")
+            if ((publicSymbol || exported || constant) && i && !tokens[i - 1].Is(";") && !tokens[i - 1].Is("}"))
                 Fail(unit.input.sourceName, tokens[i], "public, export and const are only allowed at file scope");
             if (exported && constant) Fail(unit.input.sourceName, tokens[i], "export const is not supported");
             if (At(tokens, name, "struct") && name + 2 < tokens.size() && tokens[name + 1].identifier && At(tokens, name + 2, "{"))
             {
-                unit.symbols[tokens[name + 1].text] = publicSymbol;
+                unit.symbols[tokens[name + 1].Text()] = publicSymbol;
                 std::size_t field = name + 3;
                 while (field < tokens.size() && !At(tokens, field, "}"))
                 {
@@ -312,10 +367,10 @@ static void Analyze(Unit& unit, const std::vector<CompileDefine>* defines)
                         int nesting = 0;
                         while (field < tokens.size())
                         {
-                            const std::string& text = tokens[field].text;
-                            if (text == "(" || text == "[" || text == "{") ++nesting;
-                            else if (text == ")" || text == "]" || text == "}") --nesting;
-                            else if (text == ";" && nesting == 0) break;
+                            const Token& text = tokens[field];
+                            if (text.Is("(") || text.Is("[") || text.Is("{")) ++nesting;
+                            else if (text.Is(")") || text.Is("]") || text.Is("}")) --nesting;
+                            else if (text.Is(";") && nesting == 0) break;
                             ++field;
                         }
                     }
@@ -327,27 +382,28 @@ static void Analyze(Unit& unit, const std::vector<CompileDefine>* defines)
             else if (SkipType(tokens, name) && name < tokens.size() && tokens[name].identifier &&
                 (At(tokens, name + 1, "(") || At(tokens, name + 1, "=") || At(tokens, name + 1, ";")))
             {
-                unit.symbols[tokens[name].text] = publicSymbol;
+                unit.symbols[tokens[name].Text()] = publicSymbol;
                 unit.strippedExports.insert(exports.begin(), exports.end());
                 i = name;
             }
         }
-        const std::string delimiter = tokens[i].text;
-        if (delimiter == "{" || delimiter == "(" || delimiter == "[")
+        // 괄호 글자는 모두 한 글자 토큰이다.
+        const char delimiter = tokens[i].size == 1 ? tokens[i].text[0] : '\0';
+        if (delimiter == '{' || delimiter == '(' || delimiter == '[')
             delimiters.push_back(std::make_pair(delimiter, i));
-        else if (delimiter == "}" || delimiter == ")" || delimiter == "]")
+        else if (delimiter == '}' || delimiter == ')' || delimiter == ']')
         {
-            const std::string expected = delimiter == "}" ? "{" : delimiter == ")" ? "(" : "[";
+            const char expected = delimiter == '}' ? '{' : delimiter == ')' ? '(' : '[';
             if (delimiters.empty() || delimiters.back().first != expected)
                 Fail(unit.input.sourceName, tokens[i], "unmatched delimiter in module source");
             delimiters.pop_back();
         }
-        if (tokens[i].text == "{") ++braces;
-        else if (tokens[i].text == "}") --braces;
-        else if (tokens[i].text == "(") ++parentheses;
-        else if (tokens[i].text == ")") --parentheses;
-        else if (tokens[i].text == "[") ++brackets;
-        else if (tokens[i].text == "]") --brackets;
+        if (delimiter == '{') ++braces;
+        else if (delimiter == '}') --braces;
+        else if (delimiter == '(') ++parentheses;
+        else if (delimiter == ')') --parentheses;
+        else if (delimiter == '[') ++brackets;
+        else if (delimiter == ']') --brackets;
     }
     if (!delimiters.empty())
         Fail(unit.input.sourceName, tokens[delimiters.back().second], "unclosed delimiter in module source");
@@ -358,21 +414,34 @@ class Writer
 public:
     explicit Writer(ModuleBundle& output) : output_(output) {}
 
-    void Append(const std::string& text, const Unit& unit, std::size_t originalOffset, bool fixed = false)
+    void Append(const char* text, std::size_t size, const Unit& unit, std::size_t originalOffset, bool fixed = false)
     {
-        if (text.empty()) return;
-        std::size_t sourceLine = static_cast<std::size_t>(std::upper_bound(unit.lineStarts.begin(), unit.lineStarts.end(), originalOffset) - unit.lineStarts.begin());
+        if (!size) return;
+        // 원본 위치의 줄. 직전에 찾은 줄에서 이어 찾고, 뒤로 간 위치만 처음부터 다시 찾는다.
+        const std::vector<std::size_t>& starts = unit.lineStarts;
+        std::size_t cursor = unit.lineCursor;
+        if (cursor >= starts.size() || starts[cursor] > originalOffset)
+            cursor = static_cast<std::size_t>(std::upper_bound(starts.begin(), starts.end(), originalOffset) - starts.begin());
+        else
+        {
+            while (cursor < starts.size() && starts[cursor] <= originalOffset) ++cursor;
+        }
+        // cursor는 originalOffset보다 뒤에서 시작하는 첫 줄의 번호(= 1부터 세는 줄 번호)다.
+        std::size_t sourceLine = cursor;
+        unit.lineCursor = cursor ? cursor - 1 : 0;
         if (!sourceLine) sourceLine = 1;
-        int sourceColumn = static_cast<int>(originalOffset - unit.lineStarts[sourceLine - 1]) + 1;
+        int sourceColumn = static_cast<int>(originalOffset - starts[sourceLine - 1]) + 1;
         bool mapping = true;
-        for (char character : text)
+        std::size_t position = 0;
+        while (position < size)
         {
             if (newLine_)
             {
-                ModuleSourceLine line;
+                FlushColumns();
+                output_.lines.push_back(ModuleSourceLine());
+                ModuleSourceLine& line = output_.lines.back();
                 line.sourceName = unit.input.sourceName;
                 line.line = static_cast<int>(sourceLine);
-                output_.lines.push_back(line);
                 newLine_ = false;
                 column_ = 1;
                 mapping = true;
@@ -383,30 +452,35 @@ public:
                 location.generatedColumn = column_;
                 location.sourceColumn = sourceColumn;
                 location.fixed = fixed;
-                output_.lines.back().columns.push_back(location);
+                columns_.push_back(location);
                 mapping = false;
             }
-            output_.source += character;
-            if (character == '\n')
+            // 줄 끝까지를 한 번에 붙인다.
+            const char* const newline = static_cast<const char*>(std::memchr(text + position, '\n', size - position));
+            const std::size_t end = newline ? static_cast<std::size_t>(newline - text) + 1 : size;
+            const int plain = static_cast<int>(end - position) - (newline ? 1 : 0);
+            output_.source.append(text + position, end - position);
+            column_ += plain;
+            if (!fixed) sourceColumn += plain;
+            if (newline)
             {
                 newLine_ = true;
                 if (!fixed) { ++sourceLine; sourceColumn = 1; }
             }
-            else
-            {
-                ++column_;
-                if (!fixed) ++sourceColumn;
-            }
+            position = end;
         }
     }
+    void Append(const std::string& text, const Unit& unit, std::size_t originalOffset, bool fixed = false)
+    { Append(text.data(), text.size(), unit, originalOffset, fixed); }
 
     void Newline(const Unit& unit, std::size_t offset)
     {
-        if (!output_.source.empty() && output_.source.back() != '\n') Append("\n", unit, offset, true);
+        if (!output_.source.empty() && output_.source.back() != '\n') Append("\n", 1, unit, offset, true);
     }
 
     void Finish(const Unit& unit)
     {
+        FlushColumns();
         if (!newLine_) return;
         ModuleSourceLine line;
         line.sourceName = unit.input.sourceName;
@@ -420,8 +494,17 @@ public:
 
 private:
     ModuleBundle& output_;
+    // 지금 쓰는 줄의 열 대응. 줄이 끝날 때 꼭 맞는 크기로 한 번에 옮겨, 줄마다 벡터를 여러 번 늘리지 않는다.
+    std::vector<ModuleSourceColumn> columns_;
     bool newLine_ = true;
     int column_ = 1;
+
+    void FlushColumns()
+    {
+        if (columns_.empty()) return;
+        output_.lines.back().columns.assign(columns_.begin(), columns_.end());
+        columns_.clear();
+    }
 };
 
 class Bundler
@@ -440,8 +523,14 @@ public:
             "sleep", "yield", "list", "map", "array", "array32", "set", "fn", "Vector2", "Vector3",
             "Vector4", "Quaternion", "TimeSpan", "Stopwatch", "AsyncRequest", "Coroutine", "math", "system", "coroutine"
         };
-        preserved_.insert(words, words + sizeof(words) / sizeof(words[0]));
-        preserved_.insert(externalNames.begin(), externalNames.end());
+        // 저장소를 다 채운 뒤에 표를 만든다. 표의 열쇠가 저장소의 문자열을 가리킨다.
+        preservedNames_.assign(words, words + sizeof(words) / sizeof(words[0]));
+        preservedNames_.insert(preservedNames_.end(), externalNames.begin(), externalNames.end());
+        for (const std::string& name : preservedNames_)
+        {
+            NameRef key; key.data = name.data(); key.size = name.size();
+            preserved_.insert(key);
+        }
     }
 
     void Build(const std::string& source, const std::string& sourceName, ModuleBundle& output)
@@ -468,24 +557,53 @@ public:
             bool collision = false;
             for (const std::unique_ptr<Unit>& unit : units_)
                 for (const Token& token : unit->tokens)
-                    if (token.identifier && token.text.compare(0, prefix.size(), prefix) == 0) collision = true;
+                    if (token.identifier && token.size >= prefix.size() && std::memcmp(token.text, prefix.data(), prefix.size()) == 0) collision = true;
             if (!collision) break;
             prefix += "x";
         }
+        std::size_t total = 0;
+        for (std::size_t i = 0; i < units_.size(); ++i) total += units_[i]->input.source.size();
         for (std::size_t i = 1; i < units_.size(); ++i) units_[i]->prefix = prefix + std::to_string(i) + "_";
-        for (std::size_t i = 1; i < units_.size(); ++i)
-            for (const Token& token : units_[i]->tokens)
-                if (token.identifier && !preserved_.count(token.text))
-                    output.symbolNames[units_[i]->prefix + token.text] = token.text;
+        for (std::size_t i = 0; i < units_.size(); ++i)
+        {
+            // 식별자가 접두사를 받는지는 글자만으로 정해진다. 모듈 안에서 같은 이름은 한 번만 판정하고, 원래 이름
+            // 표(symbolNames)에도 한 번만 넣는다.
+            Unit& unit = *units_[i];
+            unit.actions.assign(unit.tokens.size(), KeepToken);
+            if (!i) continue;
+            std::unordered_map<NameRef, bool, NameHash, NameEqual> renamed;
+            for (std::size_t index = 0; index < unit.tokens.size(); ++index)
+            {
+                const Token& token = unit.tokens[index];
+                if (!token.identifier) continue;
+                NameRef key; key.data = token.text; key.size = token.size;
+                const auto known = renamed.find(key);
+                bool rename;
+                if (known != renamed.end()) rename = known->second;
+                else
+                {
+                    rename = preserved_.count(key) == 0;
+                    renamed.insert(std::make_pair(key, rename));
+                    if (rename)
+                    {
+                        const std::string name = token.Text();
+                        output.symbolNames[unit.prefix + name] = name;
+                    }
+                }
+                if (rename) unit.actions[index] = PrefixToken;
+            }
+        }
         // 구조체 표시 이름은 첫 import의 모듈 이름으로 고정한다. 별칭과 내부 타입 정체성은 바꾸지 않는다.
         for (std::size_t i = 1; i < units_.size(); ++i)
             for (std::size_t token = 0; token + 1 < units_[i]->tokens.size(); ++token)
                 if (At(units_[i]->tokens, token, "struct") && units_[i]->tokens[token + 1].identifier)
                 {
-                    const std::string& name = units_[i]->tokens[token + 1].text;
+                    const std::string name = units_[i]->tokens[token + 1].Text();
                     output.symbolNames[units_[i]->prefix + name] = units_[i]->diagnosticName + "." + name;
                 }
         for (std::size_t i = 0; i < units_.size(); ++i) Rewrite(i);
+        // 접두사가 붙어 원본보다 길어진다. 넉넉히 잡아 두고 모자라면 늘린다.
+        output.source.reserve(total + total / 2 + 64);
         Writer writer(output);
         Emit(0, writer);
         writer.Finish(*units_[0]);
@@ -496,16 +614,24 @@ private:
     const std::vector<CompileDefine>* defines_;
     std::vector<std::unique_ptr<Unit>> units_;
     std::map<std::string, std::size_t> identities_;
-    std::set<std::string> preserved_;
+    std::vector<std::string> preservedNames_;
+    std::unordered_set<NameRef, NameHash, NameEqual> preserved_;
     std::vector<CompileDiagnostic> diagnostics_;
     std::size_t diagnosticLimit_;
     std::string privateEntrySource_;
+
+    bool Preserved(const std::string& name) const
+    {
+        NameRef key; key.data = name.data(); key.size = name.size();
+        return preserved_.count(key) != 0;
+    }
 
     void Visit(std::size_t index, unsigned depth)
     {
         Unit& unit = *units_[index];
         if (depth > 128) Fail(unit.input.sourceName, Token(), "module import nesting exceeds compiler limit");
         unit.visiting = true;
+        // 반복 중에 units_ 가 늘어도 Unit 자체는 옮겨지지 않는다(unique_ptr).
         for (Import& import : unit.imports)
         {
             if (diagnostics_.size() >= diagnosticLimit_) break;
@@ -537,7 +663,7 @@ private:
                 loaded->diagnosticName = import.name;
                 loaded->input = std::move(input);
                 Analyze(*loaded, defines_);
-                if (!loaded->tokens.empty() && loaded->tokens.back().text != ";" && loaded->tokens.back().text != "}")
+                if (!loaded->tokens.empty() && !loaded->tokens.back().Is(";") && !loaded->tokens.back().Is("}"))
                     Fail(loaded->input.sourceName, loaded->tokens.back(), "incomplete statement at end of module source");
                 import.target = units_.size();
                 identities_[loaded->input.sourceName] = import.target;
@@ -559,48 +685,61 @@ private:
         Unit& unit = *units_[index];
         // 호스트 구현을 합친 실행용 루트가 아니라 원래 지정한 시험 파일 하나에만 적용한다.
         const bool entryAccess = !privateEntrySource_.empty() && unit.input.sourceName == privateEntrySource_;
-        std::map<std::string, const Import*> aliases;
-        std::set<std::size_t> importTokens;
+        // 같은 별칭이 여럿이면 앞선 import를 쓴다. import 수가 적어 차례로 찾는다.
+        std::vector<const Import*> aliases;
+        std::vector<char> importTokens(unit.tokens.size(), 0);
         for (const Import& import : unit.imports)
         {
-            if (!import.builtin && preserved_.count(import.alias))
+            if (!import.builtin && Preserved(import.alias))
                 Fail(unit.input.sourceName, unit.tokens[import.first], "module alias conflicts with a built-in or host name: " + import.alias);
-            if (!aliases.count(import.alias)) aliases[import.alias] = &import;
+            bool known = false;
+            for (const Import* previous : aliases) if (previous->alias == import.alias) { known = true; break; }
+            if (!known) aliases.push_back(&import);
             for (std::size_t i = import.first; i <= import.last; ++i)
             {
-                importTokens.insert(i);
-                if (!import.builtin) unit.replacements[i] = "";
+                importTokens[i] = 1;
+                if (!import.builtin) unit.actions[i] = DropToken;
             }
         }
         for (std::size_t i = 0; i < unit.tokens.size(); ++i)
         {
             const Token& token = unit.tokens[i];
-            if (importTokens.count(i) || !token.identifier || unit.fieldNames.count(i) || (i && At(unit.tokens, i - 1, "."))) continue;
-            const std::map<std::string, const Import*>::const_iterator imported = aliases.find(token.text);
-            if (imported != aliases.end())
+            if (importTokens[i] || !token.identifier || unit.fieldNames.count(i) || (i && At(unit.tokens, i - 1, "."))) { ResetAction(unit, i); continue; }
+            const Import* imported = nullptr;
+            for (const Import* candidate : aliases) if (token.Is(candidate->alias)) { imported = candidate; break; }
+            if (imported)
             {
-                const Import& import = *imported->second;
-                if (i < import.last) Fail(unit.input.sourceName, token, "module must be imported before use: " + token.text);
-                if (import.builtin && token.text == "coroutine" && At(unit.tokens, i + 1, "<")) continue;
+                const Import& import = *imported;
+                if (i < import.last) Fail(unit.input.sourceName, token, "module must be imported before use: " + token.Text());
+                if (import.builtin && token.Is("coroutine") && At(unit.tokens, i + 1, "<")) { ResetAction(unit, i); continue; }
                 if (!At(unit.tokens, i + 1, ".") || i + 2 >= unit.tokens.size() || !unit.tokens[i + 2].identifier)
-                    Fail(unit.input.sourceName, token, "a module alias cannot be hidden or used as a value: " + token.text);
-                if (import.builtin) continue;
+                    Fail(unit.input.sourceName, token, "a module alias cannot be hidden or used as a value: " + token.Text());
+                if (import.builtin) { ResetAction(unit, i); continue; }
                 const Unit& target = *units_[import.target];
                 const Token& member = unit.tokens[i + 2];
-                const std::map<std::string, bool>::const_iterator symbol = target.symbols.find(member.text);
-                if (symbol == target.symbols.end()) Fail(unit.input.sourceName, member, "module has no member: " + member.text);
-                if (!symbol->second && !entryAccess) Fail(unit.input.sourceName, member, "module member is not public: " + member.text);
-                unit.replacements[i] = target.prefix + member.text;
-                unit.replacements[i + 1] = "";
-                unit.replacements[i + 2] = "";
+                const std::string memberName = member.Text();
+                const std::map<std::string, bool>::const_iterator symbol = target.symbols.find(memberName);
+                if (symbol == target.symbols.end()) Fail(unit.input.sourceName, member, "module has no member: " + memberName);
+                if (!symbol->second && !entryAccess) Fail(unit.input.sourceName, member, "module member is not public: " + memberName);
+                unit.memberNames[i] = target.prefix + memberName;
+                unit.actions[i] = MemberToken;
+                unit.actions[i + 1] = DropToken;
+                unit.actions[i + 2] = DropToken;
                 i += 2;
                 continue;
             }
-            if ((token.text == "math" || token.text == "system" || token.text == "coroutine") && At(unit.tokens, i + 1, "."))
-                Fail(unit.input.sourceName, token, token.text + " must be imported before use");
-            if (index && unit.strippedExports.count(i)) unit.replacements[i] = "";
-            else if (index && !preserved_.count(token.text)) unit.replacements[i] = unit.prefix + token.text;
+            if ((token.Is("math") || token.Is("system") || token.Is("coroutine")) && At(unit.tokens, i + 1, "."))
+                Fail(unit.input.sourceName, token, token.Text() + " must be imported before use");
+            // 나머지 식별자는 Build가 적어 둔 대로다: 보존 이름이 아니면 모듈 접두사를 받는다.
+            if (index && unit.strippedExports.count(i)) unit.actions[i] = DropToken;
         }
+    }
+
+    // 접두사 판정(PrefixToken)은 Build가 글자만 보고 미리 적어 둔 것이다. 이름을 바꾸지 않는 자리(import 문,
+    // 필드 이름, 멤버 이름, 내장 모듈 별칭)의 토큰은 원래 글자로 되돌린다. 지우기로 한 토큰은 그대로 둔다.
+    static void ResetAction(Unit& unit, std::size_t index)
+    {
+        if (unit.actions[index] == PrefixToken) unit.actions[index] = KeepToken;
     }
 
     void Emit(std::size_t index, Writer& writer)
@@ -608,29 +747,41 @@ private:
         Unit& unit = *units_[index];
         if (unit.emitted) return;
         unit.emitted = true;
-        std::map<std::size_t, const Import*> imports;
-        for (const Import& import : unit.imports) if (!import.builtin) imports[import.first] = &import;
-        std::size_t offset = unit.input.source.compare(0, 3, "\xef\xbb\xbf") == 0 ? 3 : 0;
+        // import 문의 첫 토큰 자리에 그 모듈을 넣는다. 토큰 순서대로 훑으므로 다음 import만 기억한다.
+        std::vector<const Import*> imports;
+        for (const Import& import : unit.imports) if (!import.builtin) imports.push_back(&import);
+        std::size_t nextImport = 0;
+        const std::string& source = unit.input.source;
+        std::size_t offset = source.compare(0, 3, "\xef\xbb\xbf") == 0 ? 3 : 0;
+        std::string renamed;
         for (std::size_t i = 0; i < unit.tokens.size(); ++i)
         {
             const Token& token = unit.tokens[i];
-            writer.Append(unit.input.source.substr(offset, token.begin - offset), unit, offset);
-            const std::map<std::size_t, const Import*>::const_iterator import = imports.find(i);
-            if (import != imports.end())
+            writer.Append(source.data() + offset, token.begin - offset, unit, offset);
+            if (nextImport < imports.size() && imports[nextImport]->first == i)
             {
+                const Import& import = *imports[nextImport++];
                 writer.Newline(unit, token.begin);
-                writer.Append("{}\n", unit, token.begin, true);
-                Emit(import->second->target, writer);
+                writer.Append("{}\n", 3, unit, token.begin, true);
+                Emit(import.target, writer);
                 writer.Newline(unit, token.begin);
-                writer.Append("{}\n", unit, token.begin, true);
+                writer.Append("{}\n", 3, unit, token.begin, true);
             }
-            const std::map<std::size_t, std::string>::const_iterator replacement = unit.replacements.find(i);
-            if (replacement == unit.replacements.end()) writer.Append(token.text, unit, token.begin, token.expanded);
-            else writer.Append(replacement->second, unit, token.begin, true);
+            switch (unit.actions[i])
+            {
+            case KeepToken: writer.Append(token.text, token.size, unit, token.begin, token.expanded); break;
+            case DropToken: break;
+            case PrefixToken:
+                renamed.assign(unit.prefix);
+                renamed.append(token.text, token.size);
+                writer.Append(renamed, unit, token.begin, true);
+                break;
+            default: writer.Append(unit.memberNames[i], unit, token.begin, true); break;
+            }
             offset = token.end;
         }
-        writer.Append(unit.input.source.substr(offset), unit, offset);
-        writer.Newline(unit, unit.input.source.size());
+        writer.Append(source.data() + offset, source.size() - offset, unit, offset);
+        writer.Newline(unit, source.size());
     }
 };
 
