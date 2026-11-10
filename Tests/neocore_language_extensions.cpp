@@ -154,6 +154,26 @@ int main()
         Expect("import math;float gf=0.0;export int Probe(){int n=16;gf=math.sqrt(n);math.sqrt(2.0);float h=math.hypot(3,n-12);"
             "float c=math.Clamp(n,0,10)+math.atan2(0,1);float m=math.Max(math.abs(-3.5),math.Min(2,9));return int(gf*1000+h*100+c*10+m);}",
             4603, "scalar natives run without a call plan", debug);
+        // 반복 점검으로 가는 조건 점프(`continue`, 몸통 끝을 건너뛰는 if)는 점프했을 때 점검을 제자리에서 한다.
+        // 떨어지는 경우와 섞여도 반복 횟수와 값은 그대로다.
+        Expect("export int Probe(){array<int> a=array<int>(8);for(int i in 0,8)a[i]=i%3;int s=0;int k=1;"
+            "for(int i in 0,8){if(a[i]==k)continue;s+=i;}float lim=2.5;float f=0.0;int c=0;for(int i in 0,6){f=i*1.0;if(f<lim)continue;c+=i;}"
+            "for(int i in 0,8){if(a[i]!=k){s+=100;}}return s*100+c;}", 51612, "conditional jumps to the loop test", debug);
+        // 로드 시 묶이는 배열 쌍과 3~4개 명령 묶음: 배열 쓰기+반복 점검, 곱·더하기·쓰기·점검, 더하기 둘+점검,
+        // float 읽기+호출, float 읽기 둘, bool 읽기+조건 점프, 곱·나누기·더하기, 전역 끝값 반복 진입.
+        Expect("array<int> gi=array<int>(16);array<float> gf=array<float>(8);array<bool> gb=array<bool>(8,false);int gn=4;float H(float a){return a*2.0;}"
+            "export int Probe(){for(int i in 0,8){gf[i]=i*0.5;gb[i]=(i%2)==0;}for(int y in 0,gn){for(int x in 0,4){gi[y*4+x]=y*10+x;}}"
+            "int s=0;for(int i in 0,16){s+=gi[i];}int t=0;int u=3;for(int i in 0,16){t+=i+u;}float f=0.0;for(int i in 0,8){f=f+H(gf[i]);}"
+            "float d=0.0;for(int i in 0,7){d=d+gf[i+1]-gf[i];}int c=0;for(int i in 0,8){if(gb[i])c+=1;}float q=1.5;float w=4.0;float e=0.0;"
+            "for(int i in 0,4){e=q*w/2.0+e;}return s+t*1000+int(f)*1000000+int(d*10.0)*100000000+c*10000000000+int(e)*100000000000;}",
+            1243528168264LL, "array pairs and instruction chains keep their results", debug);
+        // 쌍의 첫 명령(배열 접근)이 실패하면 둘째 명령을 실행하지 않고 오류를 알린다.
+        FailsAtRuntime("export int Probe(){array<int> a=array<int>(4);for(int i in 0,6){a[i]=i;}return a[0];}", "out of range", "array store before a loop test reports its index error", debug);
+        FailsAtRuntime("array<int> g=array<int>(8);export int Probe(){for(int y in 0,4){for(int x in 0,4){g[y*4+x]=1;}}return g[0];}", "out of range", "chained array store reports its index error", debug);
+        FailsAtRuntime("export int Probe(){array<int> a=array<int>(4);int k=9;int s=0;for(int i in 0,6){if(a[i]==k)continue;s+=1;}return s;}", "out of range", "array read before a compare jump reports its index error", debug);
+        FailsAtRuntime("float H(float a){return a;}export int Probe(){array<float> a=array<float>(2);float f=0.0;for(int i in 0,4){f=f+H(a[i]);}return int(f);}", "out of range", "array read before a call reports its index error", debug);
+        FailsAtRuntime("export int Probe(){array<float> a=array<float>(3);float f=0.0;for(int i in 0,4){f=f+a[i+1]-a[i];}return int(f);}", "out of range", "paired array reads report an index error", debug);
+        FailsAtRuntime("export int Probe(){array<bool> a;int c=0;for(int i in 0,2){if(a[i])c+=1;}return c;}", "null array", "array read before a bool jump reports a null array", debug);
         // while 조건은 본문 뒤로 옮겨 쓴다. 조건 안의 직접 호출(PREPARE_CALL 없음) 계획도 함께 옮겨야
         // 본문의 문자열 인자 호출 계획이 조건의 float 인자 복사에 쓰이지 않는다.
         Expect("float Gap(float a,float b){return a-b;}int notes=0;void Note(string s){notes+=s.len();}"

@@ -1272,30 +1272,71 @@ bool CNeoVMProgram::PatchLocalOps(std::string* err)
 			op.op = NOP_RT_JMP_TO_FOR;
 			++patched;
 		}
+		// 대상이 JMP_FOR인 조건 점프도 점프했을 때 점검을 제자리에서 한다. 동적 빈도가 높은 두 비교만 다룬다.
+		for (int i = 0; i < opCount; ++i)
+		{
+			SVMOperation& op = code[i];
+			if (op.op != NOP_RT_JMP_I64_EQ && op.op != NOP_RT_JMP_F64_LT) continue;
+			const int target = i + 1 + op.n1;
+			if (target < 0 || target >= opCount || owners[target] != owners[i] || code[target].op != NOP_JMP_FOR) continue;
+			op.op = op.op == NOP_RT_JMP_I64_EQ ? NOP_RT_JMP_I64_EQ_TO_FOR : NOP_RT_JMP_F64_LT_TO_FOR;
+			++patched;
+		}
 		// 인접 쌍은 첫 명령만 쌍 opcode로 바꾸고 둘째는 남긴다(NEOCORE_RUNTIME_PAIRS 참조). 둘째의 원래 opcode로
-		// 판정하므로 둘째가 다음 쌍의 첫 명령이 되어도 된다. 같은 함수 안의 두 명령만 묶는다.
+		// 판정하므로 둘째가 다음 쌍의 첫 명령이 되어도 된다. 같은 함수 안의 명령만 묶는다. 위에서 바꾼 JMP_*_TO_FOR는
+		// 규칙이 그 이름으로 가리킨다.
 		static const struct { eNOperation first, second, pair; } rules[] = {
 #define NEOCORE_RT_PAIR_RULE(NAME, FIRST, SECOND) { FIRST, SECOND, NOP_RT_PAIR_##NAME },
 			NEOCORE_RUNTIME_PAIRS(NEOCORE_RT_PAIR_RULE)
 #undef NEOCORE_RT_PAIR_RULE
 		};
+		static const struct { eNOperation ops[4]; eNOperation chain; } chains[] = {
+#define NEOCORE_RT_CHAIN_RULE(NAME, FIRST, SECOND, THIRD, FOURTH) { { FIRST, SECOND, THIRD, FOURTH }, NOP_RT_CHAIN_##NAME },
+			NEOCORE_RUNTIME_CHAINS(NEOCORE_RT_CHAIN_RULE)
+#undef NEOCORE_RT_CHAIN_RULE
+		};
 		for (size_t r = 0; r < sizeof(rules) / sizeof(rules[0]); ++r)
 		{
-			// 첫 명령이 오류나 제어 이동을 낼 수 있는 규칙은 쓰지 않는다(목록을 고칠 때의 안전판).
-			if (IsPairFirstOpcode(rules[r].first)) continue;
+			// 첫 명령이 제어를 옮기거나, 핸들러가 확인하지 않는 오류를 낼 수 있는 규칙은 쓰지 않는다(목록을 고칠 때의 안전판).
+			if (IsPairFirstOpcode(rules[r].first) || IsPairGuardedFirst(rules[r].first)) continue;
 			SetLoadError(err, "Invalid runtime pair rule");
 			return false;
 		}
+		for (size_t r = 0; r < sizeof(chains) / sizeof(chains[0]); ++r)
+		{
+			// 묶음은 마지막을 뺀 모든 명령 뒤에 다음 명령을 이어서 실행한다.
+			const int length = chains[r].ops[3] == NOP_NONE ? 3 : 4;
+			for (int k = 0; k + 1 < length; ++k)
+			{
+				if (IsPairFirstOpcode(chains[r].ops[k]) || IsPairGuardedFirst(chains[r].ops[k])) continue;
+				SetLoadError(err, "Invalid runtime chain rule");
+				return false;
+			}
+		}
+		// 앞에서 뒤로 훑으므로 뒤의 명령은 아직 바뀌지 않은 원래 opcode다. 같은 자리에서는 묶음을 쌍보다 먼저 고른다.
 		for (int i = 0; i + 1 < opCount; ++i)
 		{
 			if (owners[i] < 0 || owners[i] != owners[i + 1]) continue;
 			const eNOperation first = code[i].op, second = code[i + 1].op;
-			for (size_t r = 0; r < sizeof(rules) / sizeof(rules[0]); ++r)
+			bool grouped = false;
+			for (size_t r = 0; r < sizeof(chains) / sizeof(chains[0]) && !grouped; ++r)
+			{
+				const int length = chains[r].ops[3] == NOP_NONE ? 3 : 4;
+				if (i + length > opCount) continue;
+				bool match = true;
+				for (int k = 0; k < length && match; ++k)
+					match = owners[i + k] == owners[i] && code[i + k].op == chains[r].ops[k];
+				if (!match) continue;
+				code[i].op = chains[r].chain;
+				++patched;
+				grouped = true;
+			}
+			for (size_t r = 0; r < sizeof(rules) / sizeof(rules[0]) && !grouped; ++r)
 			{
 				if (rules[r].first != first || rules[r].second != second) continue;
 				code[i].op = rules[r].pair;
 				++patched;
-				break;
+				grouped = true;
 			}
 		}
 	}

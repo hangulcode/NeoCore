@@ -257,7 +257,8 @@ enum eNOperation : OpType
 
 	// 아래는 런타임 전용 opcode다. PatchLocalOps가 숫자 계열의 (기본 opcode, 세부 연산, 제자리 여부)를
 	// 펼쳐 만들며 이미지에는 없다. 표기와 검증은 NormalizeRuntimeOp으로 이미지 형식으로 되돌린다.
-	NOP_RT_BEGIN,
+	// 경계 표시는 번호를 차지하지 않는다(마지막 이미지 opcode와 같은 값).
+	NOP_RT_BEGIN = NOP_ERROR,
 #define NEOCORE_RT_ENUM_ARITH(T, N, S) NOP_RT_##T##_##N, NOP_RT_##T##_##N##2,
 	NEOCORE_RUNTIME_I64_ARITH(NEOCORE_RT_ENUM_ARITH)
 	NEOCORE_RUNTIME_F64_ARITH(NEOCORE_RT_ENUM_ARITH)
@@ -296,14 +297,22 @@ enum eNOperation : OpType
 	// 대상이 범위 반복 점검(JMP_FOR)인 무조건 점프. 점검을 제자리에서 해 반복 진입마다 디스패치 하나를 줄인다.
 	// n1은 원래 점프 오프셋 그대로다.
 	NOP_RT_JMP_TO_FOR,
+	// 대상이 JMP_FOR인 조건 점프(`if (...) continue;`, 몸통 끝을 건너뛰는 if). 점프했을 때 반복 점검을 제자리에서 한다.
+	// 반전 비트와 피연산자는 원래 비교 점프 그대로다.
+	NOP_RT_JMP_I64_EQ_TO_FOR,
+	NOP_RT_JMP_F64_LT_TO_FOR,
 	// 인접 두 명령을 한 디스패치로 실행하는 쌍 명령(NEOCORE_RUNTIME_PAIRS). 둘째 명령은 바로 뒤에 그대로 있다.
 #define NEOCORE_RT_ENUM_PAIR(NAME, FIRST, SECOND) NOP_RT_PAIR_##NAME,
 	NEOCORE_RUNTIME_PAIRS(NEOCORE_RT_ENUM_PAIR)
 #undef NEOCORE_RT_ENUM_PAIR
+	// 세 개나 네 개의 명령을 한 디스패치로 실행하는 묶음(NEOCORE_RUNTIME_CHAINS). 뒤의 명령들은 바로 뒤에 그대로 있다.
+#define NEOCORE_RT_ENUM_CHAIN(NAME, FIRST, SECOND, THIRD, FOURTH) NOP_RT_CHAIN_##NAME,
+	NEOCORE_RUNTIME_CHAINS(NEOCORE_RT_ENUM_CHAIN)
+#undef NEOCORE_RT_ENUM_CHAIN
 
 	NOP_MAX,
 }; // Operation length
-static_assert(NOP_MAX <= 256, "Runtime opcodes must fit the one-byte instruction field");
+static_assert(NOP_MAX <= 255, "Runtime opcodes must fit the one-byte instruction field");
 
 enum class ArithmeticOp : u8 { Add, Sub, Mul, Div, Mod, BitAnd, BitOr, BitXor, ShiftLeft, ShiftRight, Neg };
 enum class ComparisonOp : u8 { Equal, Less, LessEqual, NotEqual, Greater, GreaterEqual };
@@ -489,6 +498,11 @@ inline bool NormalizeRuntimeOp(SVMOperation& op)
 #define NEOCORE_RT_UNMAP_PAIR(NAME, FIRST, SECOND) case NOP_RT_PAIR_##NAME: op.op = FIRST; break;
     NEOCORE_RUNTIME_PAIRS(NEOCORE_RT_UNMAP_PAIR)
 #undef NEOCORE_RT_UNMAP_PAIR
+#define NEOCORE_RT_UNMAP_CHAIN(NAME, FIRST, SECOND, THIRD, FOURTH) case NOP_RT_CHAIN_##NAME: op.op = FIRST; break;
+    NEOCORE_RUNTIME_CHAINS(NEOCORE_RT_UNMAP_CHAIN)
+#undef NEOCORE_RT_UNMAP_CHAIN
+    case NOP_RT_JMP_I64_EQ_TO_FOR: op.op = NOP_RT_JMP_I64_EQ; break;
+    case NOP_RT_JMP_F64_LT_TO_FOR: op.op = NOP_RT_JMP_F64_LT; break;
     default: break;
     }
     if (!IsRuntimeOpcode(op.op)) return true;
@@ -539,22 +553,36 @@ inline bool NormalizeRuntimeOp(SVMOperation& op)
         op.argFlag = static_cast<u8>((op.argFlag & ~NEOS_OP_ARITH_UPDATE) | (update ? NEOS_OP_ARITH_UPDATE : 0));
     return true;
 }
-// 쌍 명령의 첫 명령이 될 수 있는 런타임 opcode인가. 제어를 옮기지 않고, 오류 트랩을 세우지 않고, VM에 다시
-// 들어오지 않는 것만 허용한다(NEOCORE_RUNTIME_PAIRS 참조). 로더가 쌍 규칙을 쓰기 전에 검사한다.
+// 쌍 명령의 첫 명령(묶음에서는 마지막을 뺀 명령)이 될 수 있는 런타임 opcode인가(NEOCORE_RUNTIME_PAIRS 참조). 제어를
+// 옮기지 않고 오류 트랩을 세우지 않고 VM에 다시 들어오지 않는 명령만 허용한다. 로더가 규칙을 쓰기 전에 검사한다.
 inline bool IsPairFirstOpcode(eNOperation op)
 {
     switch (op)
     {
     case NOP_PREPARE_CALL:
     case NOP_RT_I64_ADD:
+    case NOP_RT_I64_ADD2:
+    case NOP_RT_F64_ADD:
+    case NOP_RT_F64_SUB:
+    case NOP_RT_F64_MUL:
+    case NOP_RT_F64_DIV:
     case NOP_RT_I64_MUL_IMM:
     case NOP_RT_MOV_PAYLOAD_L:
     case NOP_RT_MOVI_L:
     case NOP_RT_MOV_PAYLOAD_GL:
+    case NOP_RT_NATIVE_F1_L:
+    case NOP_RT_NATIVE_F2_L:
+    case NOP_RT_NATIVE_F3_L:
         return true;
     default:
         return false;
     }
+}
+// 실패할 수 있는 명령 가운데 쌍·묶음의 앞쪽에 올 수 있는 것. 제어를 옮기지 않고 VM에 다시 들어오지 않으며, 실패하면
+// 오류 트랩만 세운다. 이 명령 뒤에 다른 명령을 잇는 핸들러는 성공을 확인한 뒤에만 다음 명령을 실행해야 한다.
+inline bool IsPairGuardedFirst(eNOperation op)
+{
+    return op == NOP_ARRAY_I64_GET || op == NOP_ARRAY_F64_GET || op == NOP_ARRAY_BOOL_GET || op == NOP_ARRAY_I64_STORE;
 }
 // 쌍 명령이면 첫 명령의 opcode, 아니면 그대로. 표기가 첫 명령의 형식(즉값 n3 등)을 알아야 할 때 쓴다.
 inline eNOperation PairFirstRuntimeOpcode(eNOperation op)
@@ -564,6 +592,9 @@ inline eNOperation PairFirstRuntimeOpcode(eNOperation op)
 #define NEOCORE_RT_PAIR_FIRST(NAME, FIRST, SECOND) case NOP_RT_PAIR_##NAME: return FIRST;
     NEOCORE_RUNTIME_PAIRS(NEOCORE_RT_PAIR_FIRST)
 #undef NEOCORE_RT_PAIR_FIRST
+#define NEOCORE_RT_CHAIN_FIRST(NAME, FIRST, SECOND, THIRD, FOURTH) case NOP_RT_CHAIN_##NAME: return FIRST;
+    NEOCORE_RUNTIME_CHAINS(NEOCORE_RT_CHAIN_FIRST)
+#undef NEOCORE_RT_CHAIN_FIRST
     default: return op;
     }
 }

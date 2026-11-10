@@ -147,23 +147,36 @@
 // 바뀌고 둘째 명령은 바로 뒤에 그대로 남는다. 둘째로 들어오는 점프는 둘째만 실행하고, 둘째가 다시 다음 쌍의
 // 첫 명령이어도 된다(쌍 핸들러는 둘째를 원래 의미로 실행한다). X(NAME, FIRST, SECOND). 목록은 벤치와 게임
 // 스크립트의 동적 인접 빈도로 골랐다(PatchLocalOps 참조).
-// 첫 명령은 제어를 옮기지 않고, 오류를 내지 않고, VM에 다시 들어오지 않는 종류만 쓴다(payload 복사·즉값 저장·
-// PREPARE_CALL·넘침이 감기는 정수 산술). 첫 명령이 오류 트랩을 세우면 핸들러가 트랩 명령을 둘째로 실행해 버리므로
-// 소유 값을 놓는 일반 MOV, 나눗셈, 컨테이너 접근, 호출은 첫 명령이 될 수 없다. IsPairFirstOpcode가 이를 검사한다.
+// 첫 명령이 오류 트랩을 세우거나 제어를 옮긴 뒤에 둘째를 실행하면 안 된다(트랩 명령을 둘째로 먹는다). 로더가
+// 규칙마다 첫 명령을 검사한다. 허용하는 첫 명령은 두 종류다.
+//   - IsPairFirstOpcode: 실패도 제어 이동도 없는 명령. payload 복사, 즉값 저장, 넘침이 감기는 정수 산술, float 산술,
+//     순수 수학 네이티브.
+//   - IsPairGuardedFirst: 실패할 수 있지만 제어를 옮기지 않고 VM에 다시 들어오지 않는 스칼라 배열 읽기·쓰기.
+//     핸들러가 첫 명령의 성공을 확인한 뒤에만 둘째를 실행한다(ARRAY_* 쌍).
+// 소유 값을 놓는 일반 MOV, 정수 나눗셈, 맵·목록 접근, 호출, 점프는 첫 명령이 될 수 없다.
+// 호출·반환·반복 점검·배열 접근처럼 본문이 큰 둘째 명령은 핸들러가 원래 case의 본문으로 합류해 한 벌만 둔다.
 #define NEOCORE_RUNTIME_PAIRS(X) \
-    X(MOVL_MOVL,         NOP_RT_MOV_PAYLOAD_L, NOP_RT_MOV_PAYLOAD_L) \
-    X(MOVL_CALL_L,       NOP_RT_MOV_PAYLOAD_L, NOP_CALL_L) \
-    X(MOVL_NATIVECALL,   NOP_RT_MOV_PAYLOAD_L, NOP_NATIVECALL) \
-    X(MOVG_MOVL,         NOP_RT_MOV_PAYLOAD_GL, NOP_RT_MOV_PAYLOAD_L) \
-    X(MOVG_MOVG,         NOP_RT_MOV_PAYLOAD_GL, NOP_RT_MOV_PAYLOAD_GL) \
-    X(PREPARE_MOVL,      NOP_PREPARE_CALL,     NOP_RT_MOV_PAYLOAD_L) \
-    X(MOVI_L_JMP,        NOP_RT_MOVI_L,        NOP_JMP) \
-    X(MOVI_L_JMP_TO_FOR, NOP_RT_MOVI_L,        NOP_RT_JMP_TO_FOR) \
-    X(I64_ADD_ADD2,      NOP_RT_I64_ADD,       NOP_RT_I64_ADD2) \
-    X(I64_MUL_IMM_ADD,   NOP_RT_I64_MUL_IMM,   NOP_RT_I64_ADD) \
-    X(MOVI_L_MOVI_L,     NOP_RT_MOVI_L,        NOP_RT_MOVI_L) \
-    X(MOVL_I64_MUL_IMM,  NOP_RT_MOV_PAYLOAD_L, NOP_RT_I64_MUL_IMM) \
-    X(I64_ADD_ARRAY_I64_STORE, NOP_RT_I64_ADD, NOP_ARRAY_I64_STORE)
+    X(MOVL_MOVL,            NOP_RT_MOV_PAYLOAD_L,  NOP_RT_MOV_PAYLOAD_L) \
+    X(MOVL_CALL_L,          NOP_RT_MOV_PAYLOAD_L,  NOP_CALL_L) \
+    X(MOVG_MOVG,            NOP_RT_MOV_PAYLOAD_GL, NOP_RT_MOV_PAYLOAD_GL) \
+    X(MOVI_L_JMP_TO_FOR,    NOP_RT_MOVI_L,         NOP_RT_JMP_TO_FOR) \
+    X(MOVI_L_MOVI_L,        NOP_RT_MOVI_L,         NOP_RT_MOVI_L) \
+    X(I64_MUL_IMM_ADD,      NOP_RT_I64_MUL_IMM,    NOP_RT_I64_ADD) \
+    X(F64_SUB_F64_SUB,      NOP_RT_F64_SUB,        NOP_RT_F64_SUB) \
+    X(NATIVE_F2_L_RETURN_L, NOP_RT_NATIVE_F2_L,    NOP_RETURN_L) \
+    X(ARRAY_I64_STORE_JMP_FOR,         NOP_ARRAY_I64_STORE, NOP_JMP_FOR) \
+    X(ARRAY_I64_GET_JMP_I64_EQ_TO_FOR, NOP_ARRAY_I64_GET,   NOP_RT_JMP_I64_EQ_TO_FOR) \
+    X(ARRAY_F64_GET_CALL_L,            NOP_ARRAY_F64_GET,   NOP_CALL_L) \
+    X(ARRAY_F64_GET_ARRAY_F64_GET,     NOP_ARRAY_F64_GET,   NOP_ARRAY_F64_GET) \
+    X(ARRAY_BOOL_GET_JMP_FALSE,        NOP_ARRAY_BOOL_GET,  NOP_JMP_FALSE)
+// 세 개나 네 개의 명령을 한 디스패치로 실행하는 묶음. 규칙은 쌍과 같고, 마지막을 뺀 모든 명령이 첫 명령의 조건을
+// 지켜야 한다. X(NAME, FIRST, SECOND, THIRD, FOURTH)에서 세 개짜리는 FOURTH가 NOP_NONE이다. 같은 자리에서 쌍보다
+// 먼저 고른다.
+#define NEOCORE_RUNTIME_CHAINS(X) \
+    X(I64_ADD_ADD2_JMP_FOR,                    NOP_RT_I64_ADD,        NOP_RT_I64_ADD2, NOP_JMP_FOR,         NOP_NONE) \
+    X(F64_MUL_DIV_ADD,                         NOP_RT_F64_MUL,        NOP_RT_F64_DIV,  NOP_RT_F64_ADD,      NOP_NONE) \
+    X(MOVG_MOVI_L_JMP_TO_FOR,                  NOP_RT_MOV_PAYLOAD_GL, NOP_RT_MOVI_L,   NOP_RT_JMP_TO_FOR,   NOP_NONE) \
+    X(I64_MUL_IMM_ADD_ARRAY_I64_STORE_JMP_FOR, NOP_RT_I64_MUL_IMM,    NOP_RT_I64_ADD,  NOP_ARRAY_I64_STORE, NOP_JMP_FOR)
 
 namespace NeoScript
 {

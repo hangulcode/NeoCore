@@ -2460,7 +2460,7 @@ bool	CNeoVMWorker::RunInternal(int iBreakingCallStack)
 		}
 
 		const SVMOperation& OP = *GetOP();
-		// 쌍 명령이 둘째 명령을 공용 본문(call_local)으로 넘길 때 쓰는 포인터.
+		// 쌍·묶음 명령이 뒤의 명령을 공용 본문(call_local, loop_test 등)으로 넘길 때 쓰는 포인터.
 		const SVMOperation* pairedOp;
 		// 뜨거운 명령만 이 switch에 둔다. 드문 명령은 ExecuteColdOp으로 보내 루프를 작게 유지한다.
 		// 루프가 크면 컴파일러가 레지스터를 잃고 꼬리를 합쳐 뜨거운 명령마다 점프가 하나씩 늘었다(실측).
@@ -2521,8 +2521,10 @@ bool	CNeoVMWorker::RunInternal(int iBreakingCallStack)
 		case NOP_RETURN:
 			if (handle_RETURN(OP)) return true;
 			break;
-		case NOP_RETURN_L:
-			if (handle_RETURN_L(OP)) return true;
+		// 반환 본문은 한 벌만 둔다. 쌍 명령(NATIVE_F2_L_RETURN_L)이 둘째 명령 포인터로 여기에 합류한다.
+		case NOP_RETURN_L:      pairedOp = &OP;
+		return_local:
+			if (handle_RETURN_L(*pairedOp)) return true;
 			break;
 		// 타입이 확정된 범위 점프는 오류가 없어 점프 자체만 한다.
 		case NOP_RT_JMP_I64_RANGE_INSIDE: if (IsRangeInsideRT<false, true>(OP)) SetCodeIncPtr(OP.n1); break;
@@ -2574,7 +2576,39 @@ bool	CNeoVMWorker::RunInternal(int iBreakingCallStack)
 		NEOCORE_ARRAY_ACCESS_DISPATCH(I32, Int32)
 		NEOCORE_ARRAY_ACCESS_DISPATCH(F32, Float32)
 		case NOP_PREPARE_CALL: SelectCallPlan(OP.n1); break;
-		case NOP_RT_JMP_TO_FOR: handle_JMP_TO_FOR(OP); break;
+		// 대상이 JMP_FOR인 무조건 점프(로드가 확인). 점프한 뒤 JMP_FOR를 실행한 것과 같다: 코드 위치는 JMP_FOR 다음이
+		// 되고 반복 몸체 오프셋은 JMP_FOR 기준이다. *_JMP_TO_FOR 쌍·묶음이 점프 명령 포인터로 합류하며, 그때 코드
+		// 위치는 점프 명령 다음이어야 한다(점프 거리의 기준).
+		// 반복 점검으로 이어지는 명령(JMP_*_TO_FOR, *_JMP_FOR 쌍·묶음)은 JMP_FOR 명령 포인터로 loop_test에 합류한다.
+		// 그때 코드 위치는 JMP_FOR 다음이어야 한다(몸체 오프셋의 기준). 기본 JMP_FOR는 자기 본문을 따로 둔다:
+		// 합류점이 되면 빠른 경로에 레지스터 복원이 붙는다.
+		case NOP_RT_JMP_TO_FOR: pairedOp = &OP;
+		jump_to_for:
+			pairedOp = _pCodeCurrent + pairedOp->n1;
+			_pCodeCurrent = pairedOp + 1;
+		loop_test:
+			if (For(GetVarRaw_L(pairedOp->n2))) SetCodeIncPtr(pairedOp->n1);
+			break;
+		// 대상이 JMP_FOR인 조건 점프(로드가 확인). 점프했으면 그 자리의 반복 점검을 디스패치 없이 이어서 한다.
+		// 떨어졌으면(코드 위치가 그대로면) 아무것도 더 하지 않는다. 거리 0인 점프는 떨어진 것과 같은 자리다.
+		// ARRAY_I64_GET_JMP_I64_EQ_TO_FOR가 비교 명령 포인터로 합류한다.
+		case NOP_RT_JMP_I64_EQ_TO_FOR: pairedOp = &OP;
+		jump_i64_eq_to_for:
+		{
+			const SVMOperation* const fallthrough = _pCodeCurrent;
+			I64JumpCompareRT<ComparisonOp::Equal>(*pairedOp);
+			if (_pCodeCurrent == fallthrough) break;
+			pairedOp = GetOP();
+			goto loop_test;
+		}
+		case NOP_RT_JMP_F64_LT_TO_FOR:
+		{
+			const SVMOperation* const fallthrough = _pCodeCurrent;
+			F64JumpCompareRT<ComparisonOp::Less>(OP);
+			if (_pCodeCurrent == fallthrough) break;
+			pairedOp = GetOP();
+			goto loop_test;
+		}
 		// 로드가 묶은 쌍 명령(NEOCORE_RUNTIME_PAIRS). 첫 명령을 실행한 뒤 바로 뒤의 둘째 명령을 디스패치 없이
 		// 원래 의미로 실행한다. 둘째의 opcode 바이트는 보지 않는다(다음 쌍의 첫 명령일 수 있다).
 		case NOP_RT_PAIR_MOVL_MOVL:
@@ -2588,17 +2622,6 @@ bool	CNeoVMWorker::RunInternal(int iBreakingCallStack)
 			m_pVarStack_Pointer[OP.n1]._int = m_pVarStack_Pointer[OP.n2]._int;
 			pairedOp = GetOP();
 			goto call_local;
-		case NOP_RT_PAIR_MOVL_NATIVECALL:
-			m_pVarStack_Pointer[OP.n1]._int = m_pVarStack_Pointer[OP.n2]._int;
-			handle_NATIVECALL(*GetOP());
-			break;
-		case NOP_RT_PAIR_MOVG_MOVL:
-		{
-			m_pVarStack_Pointer[OP.n1]._int = m_pVarGlobal_Pointer[OP.n2]._int;
-			const SVMOperation& next = *GetOP();
-			m_pVarStack_Pointer[next.n1]._int = m_pVarStack_Pointer[next.n2]._int;
-			break;
-		}
 		case NOP_RT_PAIR_MOVG_MOVG:
 		{
 			m_pVarStack_Pointer[OP.n1]._int = m_pVarGlobal_Pointer[OP.n2]._int;
@@ -2606,32 +2629,10 @@ bool	CNeoVMWorker::RunInternal(int iBreakingCallStack)
 			m_pVarStack_Pointer[next.n1]._int = m_pVarGlobal_Pointer[next.n2]._int;
 			break;
 		}
-		case NOP_RT_PAIR_PREPARE_MOVL:
-		{
-			SelectCallPlan(OP.n1);
-			const SVMOperation& next = *GetOP();
-			m_pVarStack_Pointer[next.n1]._int = m_pVarStack_Pointer[next.n2]._int;
-			break;
-		}
-		case NOP_RT_PAIR_MOVI_L_JMP:
-		{
-			m_pVarStack_Pointer[OP.n1]._int = OP.n23;
-			const SVMOperation& next = *GetOP();
-			SetCodeIncPtr(next.n1);
-			break;
-		}
 		case NOP_RT_PAIR_MOVI_L_JMP_TO_FOR:
 			m_pVarStack_Pointer[OP.n1]._int = OP.n23;
-			handle_JMP_TO_FOR(*GetOP());
-			break;
-		case NOP_RT_PAIR_I64_ADD_ADD2:
-			I64ArithmeticRT<ArithmeticOp::Add, false>(OP);
-			I64ArithmeticRT<ArithmeticOp::Add, true>(*GetOP());
-			break;
-		case NOP_RT_PAIR_I64_MUL_IMM_ADD:
-			I64ArithmeticImmRT<ArithmeticOp::Mul>(OP);
-			I64ArithmeticRT<ArithmeticOp::Add, false>(*GetOP());
-			break;
+			pairedOp = GetOP();
+			goto jump_to_for;
 		case NOP_RT_PAIR_MOVI_L_MOVI_L:
 		{
 			m_pVarStack_Pointer[OP.n1]._int = OP.n23;
@@ -2639,18 +2640,87 @@ bool	CNeoVMWorker::RunInternal(int iBreakingCallStack)
 			m_pVarStack_Pointer[next.n1]._int = next.n23;
 			break;
 		}
-		case NOP_RT_PAIR_MOVL_I64_MUL_IMM:
-			m_pVarStack_Pointer[OP.n1]._int = m_pVarStack_Pointer[OP.n2]._int;
-			I64ArithmeticImmRT<ArithmeticOp::Mul>(*GetOP());
+		case NOP_RT_PAIR_I64_MUL_IMM_ADD:
+			I64ArithmeticImmRT<ArithmeticOp::Mul>(OP);
+			I64ArithmeticRT<ArithmeticOp::Add, false>(*GetOP());
 			break;
-		case NOP_RT_PAIR_I64_ADD_ARRAY_I64_STORE:
+		case NOP_RT_PAIR_F64_SUB_F64_SUB:
+			F64ArithmeticRT<ArithmeticOp::Sub, false>(OP);
+			F64ArithmeticRT<ArithmeticOp::Sub, false>(*GetOP());
+			break;
+		case NOP_RT_PAIR_NATIVE_F2_L_RETURN_L:
 		{
-			I64ArithmeticRT<ArithmeticOp::Add, false>(OP);
-			const SVMOperation& next = *GetOP();
-			VarInfo *a, *b, *c; GetVarRaw123(next, a, b, c);
-			ScalarArrayStore<NeoArrayElementType::Int>(a, b, c);
+			const VarInfo* const window = m_pVarStackData + _iSP_VarsMax;
+			m_pVarStack_Pointer[OP.n3]._float =
+				reinterpret_cast<CNeoVM::ScalarNativeFunction2>(m_pScalarNatives[OP.n1])(window[1]._float, window[2]._float);
+			pairedOp = GetOP();
+			goto return_local;
+		}
+		// 첫 명령이 스칼라 배열 접근인 쌍(IsPairGuardedFirst). 배열이 null이거나 색인이 범위를 벗어나면 첫 명령이
+		// 오류 트랩을 세우므로 둘째를 실행하지 않고 끝낸다.
+		// int 배열 쓰기와 반복 점검. 묶음(I64_MUL_IMM_ADD_ARRAY_I64_STORE_JMP_FOR)이 쓰기 명령 포인터로 합류한다.
+		case NOP_RT_PAIR_ARRAY_I64_STORE_JMP_FOR: pairedOp = &OP;
+		array_i64_store_loop:
+		{
+			VarInfo *a, *b, *c; GetVarRaw123(*pairedOp, a, b, c);
+			if (!ScalarArrayStore<NeoArrayElementType::Int>(a, b, c)) break;
+			pairedOp = GetOP();
+			goto loop_test;
+		}
+		case NOP_RT_PAIR_ARRAY_I64_GET_JMP_I64_EQ_TO_FOR:
+		{
+			VarInfo *a, *b, *c; GetVarRaw123(OP, a, b, c);
+			if (!ScalarArrayLoad<NeoArrayElementType::Int>(a, b, c)) break;
+			pairedOp = GetOP();
+			goto jump_i64_eq_to_for;
+		}
+		case NOP_RT_PAIR_ARRAY_F64_GET_CALL_L:
+		{
+			VarInfo *a, *b, *c; GetVarRaw123(OP, a, b, c);
+			if (!ScalarArrayLoad<NeoArrayElementType::Float>(a, b, c)) break;
+			pairedOp = GetOP();
+			goto call_local;
+		}
+		case NOP_RT_PAIR_ARRAY_F64_GET_ARRAY_F64_GET:
+		{
+			VarInfo *a, *b, *c; GetVarRaw123(OP, a, b, c);
+			if (!ScalarArrayLoad<NeoArrayElementType::Float>(a, b, c)) break;
+			GetVarRaw123(*GetOP(), a, b, c);
+			ScalarArrayLoad<NeoArrayElementType::Float>(a, b, c);
 			break;
 		}
+		case NOP_RT_PAIR_ARRAY_BOOL_GET_JMP_FALSE:
+		{
+			VarInfo *a, *b, *c; GetVarRaw123(OP, a, b, c);
+			if (!ScalarArrayLoad<NeoArrayElementType::Bool>(a, b, c)) break;
+			const SVMOperation& next = *GetOP();
+			if (!GetVarRaw2(next)->_bl) SetCodeIncPtr(next.n1);
+			break;
+		}
+		// 로드가 묶은 묶음 명령(NEOCORE_RUNTIME_CHAINS). 세 개나 네 개의 명령을 차례로 원래 의미로 실행한다.
+		case NOP_RT_CHAIN_I64_ADD_ADD2_JMP_FOR:
+			I64ArithmeticRT<ArithmeticOp::Add, false>(OP);
+			I64ArithmeticRT<ArithmeticOp::Add, true>(*GetOP());
+			pairedOp = GetOP();
+			goto loop_test;
+		case NOP_RT_CHAIN_F64_MUL_DIV_ADD:
+			F64ArithmeticRT<ArithmeticOp::Mul, false>(OP);
+			F64ArithmeticRT<ArithmeticOp::Div, false>(*GetOP());
+			F64ArithmeticRT<ArithmeticOp::Add, false>(*GetOP());
+			break;
+		case NOP_RT_CHAIN_MOVG_MOVI_L_JMP_TO_FOR:
+		{
+			m_pVarStack_Pointer[OP.n1]._int = m_pVarGlobal_Pointer[OP.n2]._int;
+			const SVMOperation& next = *GetOP();
+			m_pVarStack_Pointer[next.n1]._int = next.n23;
+			pairedOp = GetOP();
+			goto jump_to_for;
+		}
+		case NOP_RT_CHAIN_I64_MUL_IMM_ADD_ARRAY_I64_STORE_JMP_FOR:
+			I64ArithmeticImmRT<ArithmeticOp::Mul>(OP);
+			I64ArithmeticRT<ArithmeticOp::Add, false>(*GetOP());
+			pairedOp = GetOP();
+			goto array_i64_store_loop;
 		case NOP_ERROR:
 			handle_ERROR(OP);
 			return false;

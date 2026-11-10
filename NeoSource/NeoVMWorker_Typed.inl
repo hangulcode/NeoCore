@@ -463,25 +463,37 @@ NEOS_FORCEINLINE void ScalarContainerStore(VarInfo* receiver, VarInfo* key, VarI
     else { target->_int = 0; target->_bl = value->_bl; }
 }
 
-template<NeoArrayElementType Element>
-NEOS_FORCEINLINE void ScalarArrayStore(VarInfo* receiver, VarInfo* key, VarInfo* value)
+// 스칼라 배열 접근 실패의 드문 경로. 디스패치 루프 안의 인라인 본문마다 오류 호출을 두지 않으려고 밖에 둔다.
+// null 배열을 먼저 알리고, 아니면 색인 오류다.
+NEOS_NOINLINE void ScalarArrayAccessError(const VarInfo* receiver, bool write)
 {
-    if (!CheckTypedArrayReceiver(receiver)) return;
-    if (!receiver->_array->IsValidIndex(key->_int)) { SetError(RTE_ARRAY_INDEX_WRITE); return; }
-    if (!CheckTypedArrayValue<Element>(value)) return;
-    WriteTypedArrayValue<Element>(receiver->_array, static_cast<int>(key->_int), value);
+    if (receiver->_array == nullptr) SetError("cannot access a null array");
+    else SetError(write ? RTE_ARRAY_INDEX_WRITE : RTE_ARRAY_INDEX_READ);
+}
+
+// 실패하면(오류 트랩을 세우면) false를 돌려준다. 쌍 명령의 첫 명령으로 쓰일 때 둘째를 건너뛰는 근거다.
+template<NeoArrayElementType Element>
+NEOS_FORCEINLINE bool ScalarArrayStore(VarInfo* receiver, VarInfo* key, VarInfo* value)
+{
+    ArrayInfo* array = receiver->_array;
+    const NS_INT index = key->_int;
+    if (array == nullptr || !array->IsValidIndex(index)) { ScalarArrayAccessError(receiver, true); return false; }
+    if (!CheckTypedArrayValue<Element>(value)) return false;
+    WriteTypedArrayValue<Element>(array, static_cast<int>(index), value);
+    return true;
 }
 
 // 스칼라 배열 읽기의 인라인 경로. 모듈 수준 배열을 쓰는 스크립트에서 가장 잦은 명령이라 디스패치 루프 안에서
 // 호출 없이 끝낸다(TypedArrayGet은 루프 밖 함수다). 색인은 결과를 쓰기 전에 읽는다(`i = a[i]`).
+// 실패하면(오류 트랩을 세우면) false를 돌려준다.
 template<NeoArrayElementType Element>
-NEOS_FORCEINLINE void ScalarArrayLoad(VarInfo* result, const VarInfo* receiver, const VarInfo* key)
+NEOS_FORCEINLINE bool ScalarArrayLoad(VarInfo* result, const VarInfo* receiver, const VarInfo* key)
 {
-    if (!CheckTypedArrayReceiver(receiver)) return;
     ArrayInfo* array = receiver->_array;
     const NS_INT index = key->_int;
-    if (!array->IsValidIndex(index)) { SetError(RTE_ARRAY_INDEX_READ); return; }
+    if (array == nullptr || !array->IsValidIndex(index)) { ScalarArrayAccessError(receiver, false); return false; }
     ReadTypedArrayValue<Element>(array, static_cast<int>(index), result);
+    return true;
 }
 
 // VM은 기본 opcode로 분기하고, 계열별 함수가 하위 비트의 세부 연산을 처리한다.
