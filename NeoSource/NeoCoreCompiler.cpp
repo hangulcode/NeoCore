@@ -45,6 +45,7 @@ public:
     char operator[](std::size_t index) const { return (*value_)[index]; }
     const char* c_str() const { return value_->c_str(); }
     std::size_t find_first_of(const char* characters) const { return value_->find_first_of(characters); }
+    std::string substr(std::size_t position, std::size_t count = std::string::npos) const { return value_->substr(position, count); }
 
 private:
     const std::string* value_;
@@ -56,6 +57,8 @@ inline bool operator==(const InternedText& a, const std::string& b) { return a.s
 inline bool operator!=(const InternedText& a, const std::string& b) { return a.str() != b; }
 inline bool operator==(const std::string& a, const InternedText& b) { return a == b.str(); }
 inline bool operator!=(const std::string& a, const InternedText& b) { return a != b.str(); }
+inline bool operator==(const InternedText& a, const InternedText& b) { return a.str() == b.str(); }
+inline bool operator!=(const InternedText& a, const InternedText& b) { return a.str() != b.str(); }
 inline std::string operator+(const char* a, const InternedText& b) { return a + b.str(); }
 inline std::string operator+(const std::string& a, const InternedText& b) { return a + b.str(); }
 inline std::string operator+(const InternedText& a, const char* b) { return a.str() + b; }
@@ -546,36 +549,50 @@ struct ConstantValue
     }
 };
 enum class ExprKind { Literal, Name, Unary, Binary, Assignment, Call, Member, Index, List, Map, Lambda, Conditional };
-struct Expr
+// 드물게 쓰는 식 정보: 람다의 본문·캡처·매개변수와 호스트·타입 지정 쓰기의 헬퍼 이름. 대부분의 식 노드에는 없으므로
+// 필요한 노드만 따로 가진다. 생성자·소멸자는 Statement 정의 뒤에 둔다(본문 소유).
+struct ExprExtra
 {
-    ExprKind kind;
-    Token token;
-    std::size_t begin = 0, end = 0;
-    std::string op;
-    std::vector<std::unique_ptr<Expr>> children;
     std::unique_ptr<Statement> lambda;
     std::vector<Symbol*> captures;
     std::vector<Symbol*> lambdaParameters;
+    std::string hostWriteHelper;
+    std::string typedWriteIntrinsic;
+    bool typedWriteFloat = false;
+    std::string extraArgument;
+    ExprExtra();
+    ~ExprExtra();
+};
+struct Expr
+{
+    ExprKind kind;
+    int treeDepth = 1;
+    Token token;
+    std::size_t begin = 0, end = 0;
+    // 연산자·이름 글자. 토큰 글자 표를 나눠 쓴다.
+    InternedText op;
+    std::vector<std::unique_ptr<Expr>> children;
     TypeId type = InvalidType;
     TypeId constructorType = InvalidType;
     TypeId jsonType = InvalidType;
+    HostBindingId hostBinding = InvalidHostBinding;
+    // 상수 문맥의 루트만 평가값을 소유한다. 이름 참조는 Symbol을 통해 이 값을 재사용한다.
+    std::unique_ptr<ConstantValue> evaluatedConstant;
+    Symbol* symbol = nullptr;
+    std::size_t fieldIndex = 0;
+    std::string callName;
+    std::size_t functionIndex = static_cast<std::size_t>(-1);
+    const HostProperty* hostProperty = nullptr;
+    std::int64_t integerValue = 0;
+    double floatValue = 0;
     bool constant = false;
     bool constantInitializer = false;
     bool vectorConstructor = false;
-    HostBindingId hostBinding = InvalidHostBinding;
     bool scriptHostRegistration = false;
-    // 상수 문맥의 루트만 평가값을 소유한다. 이름 참조는 Symbol을 통해 이 값을 재사용한다.
-    std::unique_ptr<ConstantValue> evaluatedConstant;
     bool branchCondition = false;
-    int treeDepth = 1;
-    Symbol* symbol = nullptr;
-    std::size_t fieldIndex = 0;
     bool cellStorage = false, widen = false, constantWiden = false, clone = false, box = false;
-    std::string callName;
-    std::size_t functionIndex = static_cast<std::size_t>(-1);
     bool receiverArgument = false;
     bool indirectCall = false;
-    const HostProperty* hostProperty = nullptr;
     bool vectorComponent = false;
     bool writeTarget = false;
     // 대입 대상(복합 대입 포함)인 색인 식은 읽기 검사 헬퍼로 감싸지 않는다.
@@ -584,13 +601,15 @@ struct Expr
     bool checkedMapRead = false;
     // 문장 위치의 대입·증감. 결과가 소비되지 않으므로 IR 에 그대로 전달한다.
     bool discardResult = false;
-    std::string hostWriteHelper;
-    std::string typedWriteIntrinsic;
-    bool typedWriteFloat = false;
-    std::string extraArgument;
-    std::int64_t integerValue = 0;
-    double floatValue = 0;
     Expr(ExprKind k, const Token& at) : kind(k), token(at), begin(at.begin), end(at.end), op(at.text) {}
+    // 드문 정보를 읽는다. 없는 노드는 빈 값을 본다(만들지 않는다).
+    const ExprExtra& Rare() const { return rare_ ? *rare_ : EmptyRare(); }
+    // 드문 정보를 쓴다. 처음 쓸 때 만든다.
+    ExprExtra& MutableRare() { if (!rare_) rare_.reset(new ExprExtra()); return *rare_; }
+
+private:
+    std::unique_ptr<ExprExtra> rare_;
+    static const ExprExtra& EmptyRare() { static const ExprExtra empty; return empty; }
 };
 
 struct TypeSyntax
@@ -626,6 +645,8 @@ struct Statement
     std::vector<std::unique_ptr<Statement>> children;
     Statement(StatementKind k, const Token& at) : kind(k), token(at) {}
 };
+inline ExprExtra::ExprExtra() {}
+inline ExprExtra::~ExprExtra() {}
 
 // 파싱과 타입 검사를 분리한다. 함수 서명은 모든 본문보다 먼저 등록할 수 있다.
 class Parser
@@ -1129,8 +1150,8 @@ private:
         else if (Accept("fn"))
         {
             result.reset(new Expr(ExprKind::Lambda, token));
-            result->lambda.reset(new Statement(StatementKind::Function, token));
-            Statement& function = *result->lambda;
+            result->MutableRare().lambda.reset(new Statement(StatementKind::Function, token));
+            Statement& function = *result->Rare().lambda;
             Expect("(");
             if (!At(")")) do { Parameter p; p.type = ParseType(); p.name = Name(); function.parameters.push_back(p); } while (Accept(","));
             Expect(")"); Expect("->"); function.declared = ParseType();
@@ -1204,7 +1225,8 @@ private:
             {
                 const Token op = Take();
                 std::unique_ptr<Expr> unary(new Expr(ExprKind::Unary, op));
-                unary->op = "post" + op.text;
+                static const std::string postIncrement("post++"), postDecrement("post--");
+                unary->op = InternedText::Borrow(op.text == "++" ? postIncrement : postDecrement);
                 unary->begin = result->begin;
                 unary->end = op.end;
                 unary->children.push_back(std::move(result));
@@ -1250,6 +1272,7 @@ public:
           scriptHost_(scriptHost), implementationSource_(implementationSource)
     {
         scopes_.push_back(std::map<std::string, Symbol*>());
+        result_.typedIR.nodes.reserve(source_.size() / 24 + 64);
         result_.backendIntrinsicPrefix = internalPrefix_ + "op_";
         result_.typedIR.prefix = internalPrefix_ + "ir_";
         result_.typedIR.returnPrefix = internalPrefix_ + "return_";
@@ -1601,15 +1624,15 @@ private:
                 name = (arrayElement ? "av" : "v") + std::to_string(VectorSize(property.type))
                     + (arrayElement ? "write_C" : property.kind == ExprKind::Member ? "fieldwrite_C" : "cellwrite_C")
                     + std::to_string(target.vectorComponent ? target.fieldIndex : 4) + "_M" + std::to_string(mode);
-                expression.typedWriteFloat = target.vectorComponent || mode == 3 || mode == 4;
+                expression.MutableRare().typedWriteFloat = target.vectorComponent || mode == 3 || mode == 4;
             }
             else
             {
                 name = std::string(listElement ? "c" : "a") + ArrayStorage(arrayElement ? target.children[0]->type : target.type)
                     + (mode == 0 ? "set" : "write_M" + std::to_string(mode));
-                expression.typedWriteFloat = target.type == types_.Float();
+                expression.MutableRare().typedWriteFloat = target.type == types_.Float();
             }
-            expression.typedWriteIntrinsic = Intrinsic(name, expression.token.line);
+            expression.MutableRare().typedWriteIntrinsic = Intrinsic(name, expression.token.line);
             return;
         }
         RecordHostUse(expression.token, property.hostProperty->setter);
@@ -1620,7 +1643,7 @@ private:
         write.valueType = valueType;
         write.line = expression.token.line;
         if (target.vectorComponent) write.component = static_cast<int>(target.fieldIndex);
-        expression.hostWriteHelper = write.name;
+        expression.MutableRare().hostWriteHelper = write.name;
         hostWrites_.push_back(write);
     }
 
@@ -2066,7 +2089,7 @@ private:
             else
             {
                 if (!Defaultable(type.element)) Fail(member.token, "this element type requires an explicit resize fill value");
-                expression.extraArgument = DefaultValue(type.element);
+                expression.MutableRare().extraArgument = DefaultValue(type.element);
             }
             expression.callName = internalPrefix_ + "resize";
             if (IsStruct(type.element))
@@ -2305,7 +2328,7 @@ private:
             {
                 if (count > 1) Fail(callee.token, "set constructor requires no arguments or one list");
                 if (count) Require(*expression.children[1], types_.ListOf(types_.Get(callee.constructorType).element), "set initializer");
-                else expression.extraArgument = "[]";
+                else expression.MutableRare().extraArgument = "[]";
                 expression.callName = "system.set";
                 expression.type = callee.constructorType;
                 if (!imports_.count("system")) Fail(callee.token, "system must be imported before constructing a set");
@@ -2315,7 +2338,7 @@ private:
             const TypeId element = types_.Get(callee.constructorType).element;
             if (count) Require(*expression.children[1], types_.Int(), "array size");
             if (count == 2) Convert(*expression.children[2], element);
-            else expression.extraArgument = (count ? "" : "0,") + DefaultValue(element);
+            else expression.MutableRare().extraArgument = (count ? "" : "0,") + DefaultValue(element);
             expression.callName = Intrinsic("a" + ArrayStorage(callee.constructorType) + "new", callee.token.line);
             expression.type = callee.constructorType;
             return;
@@ -2335,8 +2358,8 @@ private:
             {
                 for (std::size_t i = 0; i < components; ++i)
                 {
-                    if (i) expression.extraArgument += ",";
-                    expression.extraArgument += structure == types_.Quaternion() && i == 0 ? "1.0" : "0.0";
+                    if (i) expression.MutableRare().extraArgument += ",";
+                    expression.MutableRare().extraArgument += structure == types_.Quaternion() && i == 0 ? "1.0" : "0.0";
                 }
             }
             expression.type = structure;
@@ -2428,9 +2451,9 @@ private:
                 if (count < 1 || count > 2) Fail(callee.token, callee.op + " requires a value and optional bool sortKeys");
                 expression.jsonType = expression.children[1]->type;
                 if (count == 2) Require(*expression.children[2], types_.Bool(), "JSON sortKeys");
-                else expression.extraArgument = "false";
+                else expression.MutableRare().extraArgument = "false";
                 if (name == "system.jsonEncodeOrNull")
-                    expression.extraArgument += expression.extraArgument.empty() ? "true" : ",true";
+                    expression.MutableRare().extraArgument += expression.Rare().extraArgument.empty() ? "true" : ",true";
                 expression.type = types_.String();
                 expression.callName = internalPrefix_ + "json_encode.call";
             }
@@ -2447,7 +2470,7 @@ private:
                 expression.jsonType = callee.jsonType;
                 expression.type = callee.jsonType;
                 expression.callName = internalPrefix_ + "json_decode.call";
-                expression.extraArgument = std::to_string((lenient ? 1 : 0) | (fallback ? 2 : 0));
+                expression.MutableRare().extraArgument = std::to_string((lenient ? 1 : 0) | (fallback ? 2 : 0));
             }
             if (!types_.IsJsonType(expression.jsonType))
                 Fail(callee.token, "JSON does not support type '" + types_.DiagnosticName(expression.jsonType) + "'");
@@ -2538,8 +2561,8 @@ private:
                 {
                     Expr* lambda = activeLambdas_[i];
                     if (symbol->functionDepth < static_cast<int>(lambda->fieldIndex) &&
-                        std::find(lambda->captures.begin(), lambda->captures.end(), symbol) == lambda->captures.end())
-                        lambda->captures.push_back(symbol);
+                        std::find(lambda->Rare().captures.begin(), lambda->Rare().captures.end(), symbol) == lambda->Rare().captures.end())
+                        lambda->MutableRare().captures.push_back(symbol);
                 }
             if (symbol->fileGlobal && !currentFunction_.empty())
                 requiredGlobalEnd_[currentFunction_] = std::max(requiredGlobalEnd_[currentFunction_], symbol->declaration->end);
@@ -2548,7 +2571,7 @@ private:
         case ExprKind::Lambda:
         {
             if (checkingConstant_) Fail(expression.token, "a function value is not a constant initializer");
-            Statement& function = *expression.lambda;
+            Statement& function = *expression.Rare().lambda;
             std::vector<TypeId> parameters;
             for (const Parameter& parameter : function.parameters) parameters.push_back(parameter.type.type);
             expression.type = types_.FunctionOf(function.declared.type, parameters);
@@ -2573,7 +2596,7 @@ private:
             {
                 Symbol& symbol = Define(parameter.name, parameter.type.type, false, true);
                 symbol.functionBody = function.children[0]->token.end;
-                expression.lambdaParameters.push_back(&symbol);
+                expression.MutableRare().lambdaParameters.push_back(&symbol);
             }
             const int flow = CheckStatement(*function.children[0]);
             if (returnType_ != types_.Void() && (flow & FallsThrough)) Fail(expression.token, "not all anonymous function paths return a value");
@@ -3343,7 +3366,7 @@ private:
     bool ScalarMutationIROp(const Expr& expression, IROp& operation) const
     {
         if (expression.kind != ExprKind::Assignment && expression.kind != ExprKind::Unary) return false;
-        if (!expression.hostWriteHelper.empty() || !expression.typedWriteIntrinsic.empty()
+        if (!expression.Rare().hostWriteHelper.empty() || !expression.Rare().typedWriteIntrinsic.empty()
             || !ScalarStorage(*expression.children[0])) return false;
         if (expression.kind == ExprKind::Assignment && expression.op == "=")
         { operation = IROp::Assign; return true; }
@@ -3719,16 +3742,16 @@ private:
         case ExprKind::Unary:
         {
             const Expr& value = *expression.children[0];
-            if (!expression.typedWriteIntrinsic.empty())
+            if (!expression.Rare().typedWriteIntrinsic.empty())
             {
-                text = expression.typedWriteIntrinsic + "(" + (expression.typedWriteFloat ? "1.0," : "1,")
+                text = expression.Rare().typedWriteIntrinsic + "(" + (expression.Rare().typedWriteFloat ? "1.0," : "1,")
                     + Lines(expression.begin, value.begin) + WriteReceiverArguments(value) + Lines(value.end, expression.end) + ")";
                 break;
             }
-            if (!expression.hostWriteHelper.empty())
+            if (!expression.Rare().hostWriteHelper.empty())
             {
                 const Expr& receiver = WriteReceiver(value);
-                text = expression.hostWriteHelper + "(" + Lines(expression.begin, receiver.begin) + WriteReceiverArguments(value) + Lines(receiver.end, expression.end) + ")";
+                text = expression.Rare().hostWriteHelper + "(" + Lines(expression.begin, receiver.begin) + WriteReceiverArguments(value) + Lines(receiver.end, expression.end) + ")";
                 break;
             }
             if (expression.op == "post++" || expression.op == "post--")
@@ -3737,7 +3760,7 @@ private:
                 text = Intrinsic("v" + std::to_string(VectorSize(value.type)) + "mul", expression.token.line)
                     + "(" + Lines(expression.begin, expression.token.begin) + Lines(expression.token.end, value.begin)
                     + RenderExpr(value) + ", -1.0" + Lines(value.end, expression.end) + ")";
-            else text = "(" + Lines(expression.begin, expression.token.begin) + (expression.op == "+" ? "" : expression.op)
+            else text = "(" + Lines(expression.begin, expression.token.begin) + (expression.op == "+" ? "" : expression.op.str())
                 + Lines(expression.token.end, value.begin) + RenderExpr(value) + Lines(value.end, expression.end) + ")";
             break;
         }
@@ -3777,22 +3800,22 @@ private:
         {
             const Expr& target = *expression.children[0];
             const Expr& value = *expression.children[1];
-            if (!expression.typedWriteIntrinsic.empty())
+            if (!expression.Rare().typedWriteIntrinsic.empty())
             {
                 std::string receiver = WriteReceiverArguments(target);
                 receiver.erase(std::remove(receiver.begin(), receiver.end(), '\n'), receiver.end());
                 std::string argument = RenderExpr(value);
-                if (expression.typedWriteFloat && value.type == types_.Int() && !value.widen)
+                if (expression.Rare().typedWriteFloat && value.type == types_.Int() && !value.widen)
                     argument = Intrinsic("itof", BeginLine(value)) + "(" + argument + ")";
-                text = expression.typedWriteIntrinsic + "(" + Lines(expression.begin, value.begin) + argument + ","
+                text = expression.Rare().typedWriteIntrinsic + "(" + Lines(expression.begin, value.begin) + argument + ","
                     + receiver + Lines(value.end, expression.end) + ")";
             }
-            else if (!expression.hostWriteHelper.empty())
+            else if (!expression.Rare().hostWriteHelper.empty())
             {
                 // 우변을 먼저 확정한 뒤 전체 수신 객체 경로를 한 번만 계산한다.
                 std::string receiver = WriteReceiverArguments(target);
                 receiver.erase(std::remove(receiver.begin(), receiver.end(), '\n'), receiver.end());
-                text = expression.hostWriteHelper + "(" + Lines(expression.begin, value.begin) + RenderExpr(value) + "," + receiver + Lines(value.end, expression.end) + ")";
+                text = expression.Rare().hostWriteHelper + "(" + Lines(expression.begin, value.begin) + RenderExpr(value) + "," + receiver + Lines(value.end, expression.end) + ")";
             }
             else if (expression.op == "=" && target.kind == ExprKind::Index &&
                 (types_.Get(target.children[0]->type).kind == TypeKind::List ||
@@ -3842,7 +3865,7 @@ private:
                 text += RenderExpr(*expression.children[i]);
                 previous = expression.children[i]->end;
             }
-            if (!expression.extraArgument.empty()) text += (expression.children.size() > 1 || expression.receiverArgument ? "," : "") + expression.extraArgument;
+            if (!expression.Rare().extraArgument.empty()) text += (expression.children.size() > 1 || expression.receiverArgument ? "," : "") + expression.Rare().extraArgument;
             text += Lines(previous, expression.end) + ")";
             break;
         }
@@ -3909,10 +3932,10 @@ private:
         }
         case ExprKind::Lambda:
             text = expression.callName + "(";
-            for (std::size_t i = 0; i < expression.captures.size(); ++i)
+            for (std::size_t i = 0; i < expression.Rare().captures.size(); ++i)
             {
                 if (i) text += ",";
-                text += CaptureValue(*expression.captures[i], expression.token.line);
+                text += CaptureValue(*expression.Rare().captures[i], expression.token.line);
             }
             text += ")" + Lines(expression.begin, expression.end);
             break;
@@ -4157,17 +4180,17 @@ private:
         for (const Expr* lambda : lambdas_)
         {
             std::vector<std::pair<std::string, TypeId>> parameters;
-            for (const Symbol* capture : lambda->captures)
+            for (const Symbol* capture : lambda->Rare().captures)
                 parameters.push_back(std::make_pair(capture->backendName,
                     capture->boxed ? types_.ListOf(capture->type) : capture->type));
             result += HelperDefinition(lambda->callName, lambda->type, parameters) + "return fun(";
-            for (std::size_t i = 0; i < lambda->lambdaParameters.size(); ++i)
+            for (std::size_t i = 0; i < lambda->Rare().lambdaParameters.size(); ++i)
             {
                 if (i) result += ",";
-                result += "var " + lambda->lambdaParameters[i]->backendName
-                    + (lambda->lambdaParameters[i]->boxed ? "$input" : "");
+                result += "var " + lambda->Rare().lambdaParameters[i]->backendName
+                    + (lambda->Rare().lambdaParameters[i]->boxed ? "$input" : "");
             }
-            const Statement& body = *lambda->lambda->children[0];
+            const Statement& body = *lambda->Rare().lambda->children[0];
             const std::string loweredBody = ApplyEdits(body.token.begin, body.end);
             const int generatedLine = 1 + static_cast<int>(std::count(result_.loweredSource.begin(), result_.loweredSource.end(), '\n'))
                 + static_cast<int>(std::count(result.begin(), result.end(), '\n'));
@@ -4299,7 +4322,7 @@ private:
             FunctionUse(expression.callName, owner);
         // 멤버·원소 쓰기도 소유 값과 첨자를 읽는다. 이름이 같은 지역변수는 별도 Symbol이다.
         for (const auto& child : expression.children) Visit(*child, owner, false);
-        if (expression.lambda) Visit(*expression.lambda, owner);
+        if (expression.Rare().lambda) Visit(*expression.Rare().lambda, owner);
     }
 };
 
