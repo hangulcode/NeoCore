@@ -224,29 +224,48 @@ public:
 
     std::vector<Token> Read()
     {
-        if (source_.size() >= 3 && source_.compare(0, 3, "\xef\xbb\xbf") == 0)
-            offset_ = 3;
         std::vector<Token> tokens;
         // 토큰 수를 소스 크기로 어림해 미리 잡는다. 늘리면서 옮기는 일과 그동안의 두 벌 메모리를 줄인다.
         tokens.reserve(source_.size() / 7 + 16);
         for (;;)
         {
-            SkipTrivia();
             Token token;
+            const bool more = Next(token, true);
+            tokens.push_back(token);
+            if (!more) return tokens;
+        }
+    }
+
+    // 다음 토큰을 읽는다. 소스 끝이면 End 토큰을 채우고 false를 돌려준다. intern이 false면 글자를 표에 넣지 않고
+    // 위치와 종류만 채운다(글자는 소스의 [begin, end) 구간이다).
+    bool Next(Token& token, bool intern)
+    {
+        if (!started_)
+        {
+            started_ = true;
+            if (source_.size() >= 3 && source_.compare(0, 3, "\xef\xbb\xbf") == 0)
+                offset_ = 3;
+        }
+        {
+            SkipTrivia();
+            token = Token();
             token.begin = offset_;
             token.line = line_;
             token.column = column_;
             if (offset_ == source_.size())
             {
                 token.end = offset_;
-                tokens.push_back(token);
-                return tokens;
+                return false;
             }
             const unsigned char c = static_cast<unsigned char>(source_[offset_]);
             if (IdentifierStart(c))
             {
                 token.kind = TokenKind::Identifier;
-                do { Advance(); } while (offset_ < source_.size() && IdentifierPart(source_[offset_]));
+                // 식별자에는 줄바꿈이 없으므로 끝을 찾은 뒤 열을 한 번에 옮긴다.
+                std::size_t end = offset_ + 1;
+                while (end < source_.size() && IdentifierPart(source_[end])) ++end;
+                column_ += static_cast<int>(end - offset_);
+                offset_ = end;
             }
             else if (std::isdigit(c) || (c == '.' && offset_ + 1 < source_.size() && std::isdigit(static_cast<unsigned char>(source_[offset_ + 1]))))
             {
@@ -301,27 +320,29 @@ public:
             else
             {
                 token.kind = TokenKind::Symbol;
-                static const char* const operators[] = {
-                    "<<=", ">>=", "++", "--", "==", "!=", "<=", ">=", "&&", "||", "<<", ">>",
-                    "+=", "-=", "*=", "/=", "%=", "&=", "|=", "^=", "..", "->"
-                };
+                // 가장 긴 연산자부터 맞춘다: <<= >>= / ++ -- == != <= >= && || << >> += -= *= /= %= &= |= ^= .. -> / 한 글자.
+                // 소스 끝을 넘는 자리는 어느 연산자에도 없는 0으로 본다.
+                const char second = offset_ + 1 < source_.size() ? source_[offset_ + 1] : '\0';
+                const char third = offset_ + 2 < source_.size() ? source_[offset_ + 2] : '\0';
                 std::size_t length = 0;
-                for (const char* op : operators)
-                {
-                    const std::string spelling(op);
-                    if (source_.compare(offset_, spelling.size(), spelling) == 0) { length = spelling.size(); break; }
-                }
+                if ((c == '<' || c == '>') && second == static_cast<char>(c) && third == '=') length = 3;
+                else if (second == '=' && (c == '=' || c == '!' || c == '<' || c == '>' || c == '+' || c == '-' || c == '*' ||
+                    c == '/' || c == '%' || c == '&' || c == '|' || c == '^')) length = 2;
+                else if (second == static_cast<char>(c) && (c == '+' || c == '-' || c == '&' || c == '|' || c == '<' || c == '>' || c == '.')) length = 2;
+                else if (c == '-' && second == '>') length = 2;
                 if (!length)
                 {
-                    if (std::string("+-*/%~!&|^=<>?:;,.(){}[]").find(static_cast<char>(c)) == std::string::npos)
+                    if (c == 0 || std::strchr("+-*/%~!&|^=<>?:;,.(){}[]", static_cast<char>(c)) == nullptr)
                         Fail(token, "unexpected character in source");
                     length = 1;
                 }
-                while (length--) Advance();
+                // 연산자 글자에는 줄바꿈이 없다.
+                offset_ += length;
+                column_ += static_cast<int>(length);
             }
             token.end = offset_;
-            token.text = texts_.Intern(source_.data() + token.begin, token.end - token.begin);
-            tokens.push_back(token);
+            if (intern) token.text = texts_.Intern(source_.data() + token.begin, token.end - token.begin);
+            return true;
         }
     }
 
@@ -330,6 +351,7 @@ private:
     TokenTexts& texts_;
     std::size_t offset_ = 0;
     int line_ = 1, column_ = 1;
+    bool started_ = false;
 
     void Advance()
     {
@@ -337,21 +359,33 @@ private:
         else ++column_;
     }
 
+    // ASCII 공백은 바로 가린다. 그 밖의 바이트는 예전처럼 C 라이브러리의 판정을 따른다.
+    static bool IsSpace(unsigned char c)
+    {
+        return c < 0x80 ? (c == ' ' || (c >= '\t' && c <= '\r')) : std::isspace(c) != 0;
+    }
+
     void SkipTrivia()
     {
         for (;;)
         {
-            while (offset_ < source_.size() && std::isspace(static_cast<unsigned char>(source_[offset_]))) Advance();
-            if (source_.compare(offset_, 2, "//") == 0)
+            while (offset_ < source_.size() && IsSpace(static_cast<unsigned char>(source_[offset_]))) Advance();
+            if (offset_ + 1 >= source_.size() || source_[offset_] != '/') return;
+            if (source_[offset_ + 1] == '/')
             {
-                while (offset_ < source_.size() && source_[offset_] != '\n') Advance();
+                // 줄 끝까지 줄바꿈이 없으므로 한 번에 건너뛴다.
+                const char* const begin = source_.data() + offset_;
+                const char* const newline = static_cast<const char*>(std::memchr(begin, '\n', source_.size() - offset_));
+                const std::size_t count = newline ? static_cast<std::size_t>(newline - begin) : source_.size() - offset_;
+                offset_ += count;
+                column_ += static_cast<int>(count);
             }
-            else if (source_.compare(offset_, 2, "/*") == 0)
+            else if (source_[offset_ + 1] == '*')
             {
                 Token start;
                 start.line = line_; start.column = column_;
                 Advance(); Advance();
-                while (offset_ < source_.size() && source_.compare(offset_, 2, "*/") != 0) Advance();
+                while (offset_ < source_.size() && !(source_[offset_] == '*' && offset_ + 1 < source_.size() && source_[offset_ + 1] == '/')) Advance();
                 if (offset_ == source_.size()) Fail(start, "unterminated block comment");
                 Advance(); Advance();
             }
@@ -4285,12 +4319,25 @@ bool ExpandStaticDefines(const std::string& source, const std::vector<CompileDef
                 Fail(Token(), "duplicate compile define: " + define.name);
         }
         if (literals.empty()) return true;
+        // 치환 자리만 찾으므로 토큰 배열과 글자 표를 만들지 않고 흘려 읽는다. define 이름과 길이·첫 글자가 맞을 수
+        // 없는 식별자는 문자열을 만들지 않고 넘긴다. 어휘 오류는 전체를 읽을 때와 같은 자리에서 난다.
+        bool firstCharacters[256] = {};
+        std::size_t shortest = static_cast<std::size_t>(-1), longest = 0;
+        for (const auto& literal : literals)
+        {
+            if (!literal.first.empty()) firstCharacters[static_cast<unsigned char>(literal.first[0])] = true;
+            shortest = (std::min)(shortest, literal.first.size());
+            longest = (std::max)(longest, literal.first.size());
+        }
         TokenTexts texts;
-        const std::vector<Token> tokens = Lexer(source, texts).Read();
-        for (const Token& token : tokens)
+        Lexer lexer(source, texts);
+        Token token;
+        while (lexer.Next(token, false))
         {
             if (token.kind != TokenKind::Identifier) continue;
-            const std::map<std::string, std::string>::const_iterator found = literals.find(token.text);
+            const std::size_t length = token.end - token.begin;
+            if (length < shortest || length > longest || !firstCharacters[static_cast<unsigned char>(source[token.begin])]) continue;
+            const std::map<std::string, std::string>::const_iterator found = literals.find(source.substr(token.begin, length));
             if (found == literals.end()) continue;
             StaticDefineReplacement replacement;
             replacement.begin = token.begin; replacement.end = token.end; replacement.text = found->second;
