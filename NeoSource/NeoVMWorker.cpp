@@ -2288,6 +2288,10 @@ void CNeoVMWorker::JumpAsyncMsg()
         NEOCORE_SCALAR_ACCUMULATE_DISPATCH(OWNER, INDEX, F64, VAR_FLOAT)
 #define NEOCORE_SCALAR_ARRAY_STORE(TYPE, ELEMENT) \
         case NOP_ARRAY_##TYPE##_STORE: { VarInfo *a, *b, *c; GetVarRaw123(OP, a, b, c); ScalarArrayStore<NeoArrayElementType::ELEMENT>(a, b, c); } break;
+// int·float·bool 배열의 읽기는 루프 안에서 끝낸다. 값을 돌려주는 SET과 나머지 원소 형식은 루프 밖 함수를 쓴다.
+#define NEOCORE_SCALAR_ARRAY_ACCESS(NAME, ELEMENT) \
+		case NOP_ARRAY_##NAME##_GET: { VarInfo *a, *b, *c; GetVarRaw123(OP, a, b, c); ScalarArrayLoad<NeoArrayElementType::ELEMENT>(a, b, c); } break; \
+		case NOP_ARRAY_##NAME##_SET: TypedArraySet<NeoArrayElementType::ELEMENT>(OP); break;
 
 // 드문 명령의 처리. 디스패치 루프를 작게 유지하려고 루프 밖에 둔다. 실행을 멈춰야 하면 true를 돌려준다.
 // 뜨거운 명령의 목록은 벤치·스모크의 동적 계측과 게임 스크립트의 정적 빈도로 정했다(RunInternal 참조).
@@ -2533,9 +2537,9 @@ bool	CNeoVMWorker::RunInternal(int iBreakingCallStack)
 		NEOCORE_SCALAR_ARRAY_STORE(BOOL, Bool)
 		NEOCORE_SCALAR_ARRAY_STORE(I32, Int32)
 		NEOCORE_SCALAR_ARRAY_STORE(F32, Float32)
-		NEOCORE_ARRAY_ACCESS_DISPATCH(I64, Int)
-		NEOCORE_ARRAY_ACCESS_DISPATCH(F64, Float)
-		NEOCORE_ARRAY_ACCESS_DISPATCH(BOOL, Bool)
+		NEOCORE_SCALAR_ARRAY_ACCESS(I64, Int)
+		NEOCORE_SCALAR_ARRAY_ACCESS(F64, Float)
+		NEOCORE_SCALAR_ARRAY_ACCESS(BOOL, Bool)
 		NEOCORE_ARRAY_ACCESS_DISPATCH(V2, Vector2)
 		NEOCORE_ARRAY_ACCESS_DISPATCH(V3, Vector3)
 		NEOCORE_ARRAY_ACCESS_DISPATCH(V4, Vector4)
@@ -2631,6 +2635,7 @@ bool	CNeoVMWorker::RunInternal(int iBreakingCallStack)
 }
 
 #undef NEOCORE_ARRAY_ACCESS_DISPATCH
+#undef NEOCORE_SCALAR_ARRAY_ACCESS
 #undef NEOCORE_ARRAY_COLD_DISPATCH
 #undef NEOCORE_SCALAR_ARRAY_STORE
 #undef NEOCORE_SCALAR_CONTAINER_DISPATCH

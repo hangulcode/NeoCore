@@ -472,6 +472,18 @@ NEOS_FORCEINLINE void ScalarArrayStore(VarInfo* receiver, VarInfo* key, VarInfo*
     WriteTypedArrayValue<Element>(receiver->_array, static_cast<int>(key->_int), value);
 }
 
+// 스칼라 배열 읽기의 인라인 경로. 모듈 수준 배열을 쓰는 스크립트에서 가장 잦은 명령이라 디스패치 루프 안에서
+// 호출 없이 끝낸다(TypedArrayGet은 루프 밖 함수다). 색인은 결과를 쓰기 전에 읽는다(`i = a[i]`).
+template<NeoArrayElementType Element>
+NEOS_FORCEINLINE void ScalarArrayLoad(VarInfo* result, const VarInfo* receiver, const VarInfo* key)
+{
+    if (!CheckTypedArrayReceiver(receiver)) return;
+    ArrayInfo* array = receiver->_array;
+    const NS_INT index = key->_int;
+    if (!array->IsValidIndex(index)) { SetError(RTE_ARRAY_INDEX_READ); return; }
+    ReadTypedArrayValue<Element>(array, static_cast<int>(index), result);
+}
+
 // VM은 기본 opcode로 분기하고, 계열별 함수가 하위 비트의 세부 연산을 처리한다.
 inline void handle_COMPARE(const SVMOperation& OP)
 {
