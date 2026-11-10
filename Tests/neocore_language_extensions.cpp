@@ -136,6 +136,13 @@ int main()
             "export int Probe(){int x=1;if(43<A2(43,79))x=5;int y=A2(45,A2(45,81));"
             "return (7+A3(7,255,0))*1000000000+R()*1000000+x*100000+(9+A1(9))*1000+y;}",
             524241536351LL, "immediate arguments keep a literal shared with a pending operand", debug);
+        // 삼항식: 조건의 비교는 점프와 합쳐지고, 결과는 선언·대입·인자 창의 목적지에 바로 쓰인다. 값과 가지가 읽는
+        // 목적지의 옛 값(`x = x > 3 ? x * 2 : x`)은 그대로다.
+        Expect("float g=0.0;int n=7;float A(float amt){float sc=g<=0.0?100.0:g;return 2.25+amt*100.0/sc/480.0;}int B(int a,int b){int m=a>b?a:b;return m;}"
+            "int C(int a,bool f){int v=f?a+1:a-1;return v;}int D(int x){x=x>3?x*2:x;return x;}int E(int a,int b){return (a<b?a:b)+(a==n?1:0);}"
+            "int F2(int a,int b){return a+b;}int G(int a){return F2(a>0?a:-a,a<5?1:2);}"
+            "export int Probe(){int r=int(A(480.0)*100);r=r*100+B(3,9)*10+B(9,3);r=r*100+C(5,true)*10+C(5,false);r=r*1000+D(2)*100+D(5);"
+            "r=r*100+E(7,9)*10+E(9,7);return r*100+G(-4)*10+G(7);}", 32599642108759LL, "conditional results go straight to their destination", debug);
         // 소유 슬롯이 있는 프레임의 반환은 빈 슬롯을 건너뛴다. 조기 반환(임시가 아직 비어 있음)과 늦은 반환이 섞여도
         // 값과 인자 참조의 수명은 그대로다.
         Expect("int calls=0;int Early(int k,string s,list<int> l){if(k<0)return 0;string t=s..\"x\";list<int> c=l;calls+=1;return t.len()+c.len();}"

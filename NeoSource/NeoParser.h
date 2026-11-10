@@ -460,6 +460,30 @@ struct SFunctionInfo
 
 	int _iLastOPOffset = -1;
 	int _callOpEmitCount = 0; // CALL/PTRCALL/PTRCALL2 emit 횟수 (인자 융합 안전성 판정용)
+	// 방금 끝난 삼항식의 결과 임시, 그 임시에 쓰는 두 가지의 마지막 명령 위치, 삼항식이 끝난 코드 위치.
+	// 바로 뒤의 대입이 그 임시를 단순 변수로 옮기려 하면 두 쓰기의 목적지를 변수로 바꾼다(RetargetConditional).
+	int _conditionalTemp = -1;
+	int _conditionalWriters[2] = { -1, -1 };
+	int _conditionalEnd = -1;
+	// 가지의 값은 각자 다 계산한 뒤 마지막 명령에서만 임시에 쓰이고 실행되는 가지는 하나뿐이므로, 그 쓰기를 변수로
+	// 돌려도 가지가 읽는 변수의 옛 값과 평가 순서는 그대로다. 삼항식 뒤로 명령이 하나라도 나왔으면 하지 않는다.
+	bool RetargetConditional(int dest, int source)
+	{
+		if (_conditionalTemp < 0 || source != _conditionalTemp || _conditionalEnd != _code->GetBufferOffset()) return false;
+		const bool variable = (dest > 0 && dest < COMPILE_LOCALTMP_VAR_BEGIN) || dest <= COMPILE_GLOBAL_VAR_BEGIN;
+		if (!variable) return false;
+		for (int i = 0; i < 2; ++i)
+		{
+			SVMOperation* writer = GetOPPointer(_conditionalWriters[i]);
+			if (writer->n1 != source) return false;
+		}
+		const auto sourceStorage = _storage.find(source);
+		if (sourceStorage != _storage.end() && dest >= 0) SetStorage(dest, sourceStorage->second);
+		for (int i = 0; i < 2; ++i)
+			GetOPPointer(_conditionalWriters[i])->n1 = CompileShort("conditional destination", dest);
+		_conditionalTemp = -1;
+		return true;
+	}
 	void ClearLastOP()
 	{
 		_iLastOPOffset = -1;

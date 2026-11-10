@@ -1956,6 +1956,8 @@ static int ScanExpressionEffects(CArchiveRdWC& ar, TK_TYPE e1, TK_TYPE e2, TK_TY
 static bool ScanCallArguments(CArchiveRdWC& ar, std::vector<int>& argEffects);
 // 타입 IR 표식과 노드 방출(정의는 뒤에). 레거시 호출 경로가 IR 뿌리 하나인 인자를 창 슬롯에 바로 만들 때 쓴다.
 static bool ParseCoreIRIndex(const std::string& name, const std::string& prefix, std::size_t count, std::size_t& index, CArchiveRdWC& ar);
+// 직전 비교 명령을 조건 점프로 바꿔 쓴다(정의는 뒤에). 삼항식 조건이 쓴다.
+static bool TryFuseCompareJump(bool bJumpWhenTrue, const SOperand& operand, SFunctions& funs, SJumpValue& outJump);
 static bool EmitCoreIRNode(std::size_t index, SOperand& result, CArchiveRdWC& ar, SFunctions& funs, SVars& vars, int destination);
 // 뒤따르는 코드가 실행되기 전에 이 피연산자의 값을 지금 확정해 둬야 하는가.
 //  - 임시/상수: 아무도 바꾸지 못한다.
@@ -3760,20 +3762,46 @@ static bool EmitCoreIRNodeImpl(std::size_t index, SOperand& result,
         SOperand condition;
         if (!EmitCoreIRNode(node.inputs[0], condition, ar, funs, vars)) return false;
         MaterializeValue(condition, ar, funs);
-        funs._cur->Push_JMPFalse(ar, condition._iVar, 0);
-        const int falseBase = funs._cur->_code->GetBufferOffset();
-        const SJumpValue falseJump(falseBase - static_cast<int>(sizeof(short) * 3), falseBase);
-        // 공통 결과는 새 임시 슬롯에 둔다. 가지의 부작용보다 먼저 대입 대상을 변경하지 않는다.
-        const int selected = funs._cur->AllocLocalTempVar(CoreStorageType(ar.m_coreTypedIR->types, node.typeId));
+        // 조건이 방금 낸 비교의 결과면 if 문처럼 비교와 점프를 한 명령으로 합친다. 비교가 바로 앞 명령이고 그 결과가
+        // 이 조건이며 그 사이로 들어오는 점프가 없을 때만 한다.
+        SJumpValue falseJump;
+        bool fused = false;
+        if (funs._cur->_iLastOPOffset >= 0 && IsTempVar(condition._iVar))
+        {
+            const int end = funs._cur->_code->GetBufferOffset();
+            if (funs._cur->_iLastOPOffset + static_cast<int>(sizeof(SVMOperation)) == end &&
+                funs._cur->_jumpTargetOffsets.count(end) == 0 &&
+                funs._cur->GetOPPointer(funs._cur->_iLastOPOffset)->n1 == condition._iVar)
+                fused = TryFuseCompareJump(false, condition, funs, falseJump);
+        }
+        if (!fused)
+        {
+            funs._cur->Push_JMPFalse(ar, condition._iVar, 0);
+            const int falseBase = funs._cur->_code->GetBufferOffset();
+            falseJump.Set(falseBase - static_cast<int>(sizeof(short) * 3), falseBase);
+        }
+        // 호출자가 준 목적지가 있으면 결과를 거기에 바로 둔다. 가지의 값은 자기 임시에서 다 계산한 뒤 마지막에
+        // 옮기고 실행되는 가지는 하나뿐이므로, 가지가 목적지의 옛 값을 읽어도 순서가 바뀌지 않는다. 없으면 새 임시를 쓴다.
+        const int selected = destination != INVALID_ERROR_PARSEJOB ? destination
+            : funs._cur->AllocLocalTempVar(CoreStorageType(ar.m_coreTypedIR->types, node.typeId));
         SJumpValue endJump;
+        int writers[2] = { -1, -1 };
         for (std::size_t branch = 1; branch < 3; ++branch)
         {
             funs._cur->ClearLastOP();
             SOperand value;
             if (!EmitCoreIRNode(node.inputs[branch], value, ar, funs, vars)) return false;
             MaterializeValue(value, ar, funs);
-            if (!TryPushImmediate(ar, funs, selected, value, node.source.line))
+            // 가지의 값이 목적지 변수 자신이면(`x = c ? y : x`) 옮길 것이 없다.
+            if ((value.IsArray() || value._iVar != selected) && !TryPushImmediate(ar, funs, selected, value, node.source.line))
                 funs._cur->Push_OP2(ar, NOP_MOV, selected, value._iVar, value.IsShort(), node.source.line);
+            // 이 가지에서 결과 임시에 쓰는 마지막 명령. 방금 낸 복사·즉값이거나 목적지가 접힌 생산 명령이다.
+            writers[branch - 1] = -1;
+            if (funs._cur->_iLastOPOffset >= 0 &&
+                funs._cur->_iLastOPOffset + static_cast<int>(sizeof(SVMOperation)) == funs._cur->_code->GetBufferOffset() &&
+                funs._cur->GetOPPointer(funs._cur->_iLastOPOffset)->n1 == selected &&
+                (funs._cur->GetLastOP() == NOP_MOV || SFunctionInfo::IsRetargetableProducerOP(funs._cur->GetLastOP())))
+                writers[branch - 1] = funs._cur->_iLastOPOffset;
             if (branch == 1)
             {
                 funs._cur->Push_JMP(ar, 0);
@@ -3786,6 +3814,15 @@ static bool EmitCoreIRNodeImpl(std::size_t index, SOperand& result,
         result = SOperand(selected);
         // 마지막 이동은 거짓 가지 전용이다. 합류 뒤의 반환·목적지 접기를 금지한다.
         funs._cur->ClearLastOP();
+        // 결과를 새 임시에 두었고 두 가지의 쓰기 위치를 알면, 바로 뒤의 변수 대입이 두 쓰기를 그 변수로 돌릴 수 있다.
+        funs._cur->_conditionalTemp = -1;
+        if (destination == INVALID_ERROR_PARSEJOB && writers[0] >= 0 && writers[1] >= 0)
+        {
+            funs._cur->_conditionalTemp = selected;
+            funs._cur->_conditionalWriters[0] = writers[0];
+            funs._cur->_conditionalWriters[1] = writers[1];
+            funs._cur->_conditionalEnd = funs._cur->_code->GetBufferOffset();
+        }
         return true;
     }
     case IROp::CollectionRead: case IROp::CollectionWrite:
@@ -4563,8 +4600,8 @@ TK_TYPE ParseJob(bool bReqReturn, SOperand& sResultStack, std::vector<SJumpValue
 				MaterializeValue(b, ar, funs); // complete the RHS before resolving the destination
 				if (a.IsArray())
 					WriteElement(a, op, b._iVar, b.IsShort(), ar, funs);
-				else if (op != NOP_MOV || (!TryStoreCallResult(ar, funs, a._iVar, b) &&
-					!TryPushImmediate(ar, funs, a._iVar, b)))
+				else if (op != NOP_MOV || (!funs._cur->RetargetConditional(a._iVar, b._iVar) &&
+					!TryStoreCallResult(ar, funs, a._iVar, b) && !TryPushImmediate(ar, funs, a._iVar, b)))
 					funs._cur->Push_OP2(ar, op, a._iVar, b._iVar, b.IsShort());
 			}
 		}
@@ -6388,7 +6425,8 @@ bool ParseVarDef(CArchiveRdWC& ar, SFunctions& funs, SVars& vars, bool blExport,
         funs._cur->Push_OP2(ar, NOP_FMOV1, slot, value._iVar, false);
     else if (value.IsArray())
         ReadElement(value, slot, ar, funs);
-    else if (!TryStoreCallResult(ar, funs, slot, value) && !TryPushImmediate(ar, funs, slot, value))
+    else if (!funs._cur->RetargetConditional(slot, value._iVar) &&
+        !TryStoreCallResult(ar, funs, slot, value) && !TryPushImmediate(ar, funs, slot, value))
         funs._cur->Push_OP2(ar, NOP_MOV, slot, value._iVar, value.IsShort());
     return true;
 }
