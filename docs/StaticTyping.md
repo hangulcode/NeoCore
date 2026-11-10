@@ -58,10 +58,12 @@ compiler to hold its registers and lay out each handler without shared tails.
 Combinations without a runtime opcode fall back to the family handler, which
 switches on the low-bit sub-operation. Integer arithmetic and comparison jumps
 with a 16-bit constant right operand, local payload copies and local immediate
-stores also get load-time opcodes, and frequent adjacent instruction pairs (copy
-and immediate staging before copies and calls, `x += a + b`, index arithmetic)
-execute with one dispatch while the second instruction stays in place for
-incoming branches; debug images are not paired. A statement `x += c[k];` on a list or map of
+stores also get load-time opcodes, and frequent adjacent groups of two to four
+instructions (copy and immediate staging before copies and calls, index arithmetic,
+scalar array accesses before a call, a jump or the loop test) execute with one
+dispatch while the later instructions stay in place for incoming branches; a group
+whose leading array access fails stops there with that access's error. Debug images
+are not grouped. A statement `x += c[k];` on a list or map of
 `int` or `float` compiles to one accumulating read instruction instead of a read
 and an in-place add, and a statement `s = s .. a .. b` writes every concatenation
 link into `s` so the runtime can append in place. Disassembly maps runtime opcodes
@@ -203,10 +205,10 @@ existed between image versions `0160` and `0162` and was removed in version
 `0163`: paired measurements on 2026-11-08 showed that its execution plan cost
 more per primitive than the dispatch it saved, so plain dispatch through the
 load-time runtime opcodes was faster in every benchmark case. Instruction budgets
-and timeouts are checked at every dispatch. In non-debug images a paired dispatch
-or an in-place loop-entry test executes two image instructions between checks, so a
+and timeouts are checked at every dispatch. In non-debug images a grouped dispatch
+or an in-place loop test executes up to four image instructions between checks, so a
 budget counts dispatches rather than image instructions; debug images are not
-paired, and debug stepping sees exactly the instructions in the image.
+grouped, and debug stepping sees exactly the instructions in the image.
 
 String concatenation writes directly into the final string buffer and retains
 both input values until the result is complete. Null spelling, byte-length limits,

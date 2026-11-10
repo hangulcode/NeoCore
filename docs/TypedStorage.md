@@ -101,6 +101,14 @@ String-key map reads hit interned keys through a pointer-returning lookup; null,
 non-interned and missing keys go through one out-of-line helper so the hot handler
 carries no call.
 
+Image version 0167 omits `PREPARE_CALL` before a call to a pure math native (the
+`kScalarNatives` list, one to three float arguments). The call window needs no
+plan: the arguments are float payloads written straight into the window and the
+handler reads them from there. When such a call stores its result in a local slot
+the loader gives it its own opcode (`NATIVE_F1_L`/`F2_L`/`F3_L`) whose operand is
+an index into the program's table of value functions; other result targets keep
+`NATIVECALL`.
+
 String concatenation reuses the destination's buffer when the destination holds a
 string that nothing else references (reference count one, not interned) and the
 right operand is not that string: `s = s .. x` appends in place, and any other
@@ -240,10 +248,10 @@ zero check and are not converted. Payload copies between local slots and integer
 or float immediates stored into a local slot get dedicated opcodes that read no
 policy or location bits. Loop-constant hoisting leaves such immediate-eligible
 integer constants in place. Since 2026-11-10 the loader also executes frequent
-adjacent instruction pairs with one dispatch: local payload copies and local
-immediates before another copy, a local call or a native call, `PREPARE_CALL`
-before a copy, `x += a + b`, `k * c + i` index arithmetic and an integer add that
-feeds an array store. A range-loop entry jump whose target is the loop test
+adjacent instruction pairs with one dispatch, such as local payload copies and
+local immediates before another copy or a local call and `k * c + i` index
+arithmetic (the rules and the current list are described at the end of this
+section). A range-loop entry jump whose target is the loop test
 performs the test in place. Only the first instruction's opcode changes; the
 second stays in the code, so a branch into it executes it alone, and the
 disassembly shows the original two instructions. Images with debug information
@@ -278,6 +286,42 @@ to a test of the value itself (`x == true` is `x`, `x == false` is `!x`), and a
 conditional jump on `!x` becomes the opposite jump on `x` instead of a separate
 negation instruction (debug compilations keep the negation so instructions and
 source lines stay aligned).
+
+Since 2026-11-11 a conditional expression writes each branch straight into the
+variable it initializes or is assigned to (`int m = a > b ? a : b;`) instead of a
+temporary that is copied afterwards, and its condition compiles to a compare-and-jump
+like an `if` condition. Returning from a frame with owned slots skips the slots
+that are still null. The load-time groups now follow these rules
+(`NEOCORE_RUNTIME_PAIRS` and `NEOCORE_RUNTIME_CHAINS` in `NeoVMTypedOps.h` are the
+current lists; earlier pairs that the profiles no longer showed were removed):
+
+- A group is two instructions (a pair) or three or four (a chain). Only the first
+  instruction's opcode changes, so every later instruction still executes alone
+  when a branch targets it, and may itself start another group.
+- Every instruction but the last must be unable to transfer control or re-enter
+  the VM. It is either unable to fail (`IsPairFirstOpcode`: payload copies,
+  immediates, wrapping integer arithmetic, float arithmetic, pure math natives) or
+  a scalar array read or write (`IsPairGuardedFirst`), in which case the handler
+  continues only after the access succeeded; a null array or an index error ends
+  the group with the same error as the single instruction. The loader checks every
+  rule against these two predicates.
+- A conditional jump whose target is a range-loop test (`if (...) continue;`, an
+  `if` that ends the loop body) performs the test in place when it jumps; integer
+  equality and float less-than have this form.
+- The groups cover array stores and index arithmetic that end a loop body, `x += a + b`
+  before the loop test, array reads feeding a call, another read, an equality jump or
+  a `bool` jump, `a * b / c + d`, and the entry of a loop whose end value is a global.
+- A handler that continues into a large body (call, return, loop test) joins one
+  shared copy of it. The plain `JMP_FOR` and array-read handlers keep their own
+  bodies: as join points their fast paths picked up register reloads for the
+  worst incoming path.
+- Opcodes stay one byte and instructions eight bytes; the runtime opcode space is
+  nearly full, so a new group has to replace one that the profiles no longer show.
+
+Scalar array bodies inlined in the dispatch loop report failures through one
+out-of-line function, and the inlined float-to-int conversion and `int32` range
+check no longer use 64-bit immediates: the compiler kept those constants in
+registers across the whole loop and reloaded them after unrelated handlers.
 List/map/set entry storage and some generic bridge operations remain transitional,
 as described above. Property hosts no longer sweep their scratch window; a host
 getter or setter must not leave owned values in VM stack slots. No performance
