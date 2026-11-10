@@ -16,6 +16,7 @@
 #include <memory>
 #include <set>
 #include <stdexcept>
+#include <unordered_map>
 #include <utility>
 #include <sstream>
 #include <locale>
@@ -27,10 +28,80 @@ namespace
 
 enum class TokenKind { End, Identifier, Integer, Float, String, Symbol };
 
+// 토큰 글자. 문자열 표(TokenTexts)나 그보다 오래 사는 문자열을 가리키고 소유하지 않는다. 같은 글자의 토큰은 한
+// 문자열을 나눠 쓰므로 토큰과 그것을 담는 AST 노드를 복사해도 문자열을 새로 만들지 않는다. const std::string&처럼
+// 읽는다.
+class InternedText
+{
+public:
+    InternedText() : value_(&Empty()) {}
+    // 가리키는 문자열은 이 값을 쓰는 동안 살아 있어야 한다. 임시 문자열은 받지 않는다.
+    static InternedText Borrow(const std::string& value) { InternedText text; text.value_ = &value; return text; }
+    static InternedText Borrow(std::string&&) = delete;
+    operator const std::string&() const { return *value_; }
+    const std::string& str() const { return *value_; }
+    std::size_t size() const { return value_->size(); }
+    bool empty() const { return value_->empty(); }
+    char operator[](std::size_t index) const { return (*value_)[index]; }
+    const char* c_str() const { return value_->c_str(); }
+    std::size_t find_first_of(const char* characters) const { return value_->find_first_of(characters); }
+
+private:
+    const std::string* value_;
+    static const std::string& Empty() { static const std::string empty; return empty; }
+};
+inline bool operator==(const InternedText& a, const char* b) { return a.str() == b; }
+inline bool operator!=(const InternedText& a, const char* b) { return a.str() != b; }
+inline bool operator==(const InternedText& a, const std::string& b) { return a.str() == b; }
+inline bool operator!=(const InternedText& a, const std::string& b) { return a.str() != b; }
+inline bool operator==(const std::string& a, const InternedText& b) { return a == b.str(); }
+inline bool operator!=(const std::string& a, const InternedText& b) { return a != b.str(); }
+inline std::string operator+(const char* a, const InternedText& b) { return a + b.str(); }
+inline std::string operator+(const std::string& a, const InternedText& b) { return a + b.str(); }
+inline std::string operator+(const InternedText& a, const char* b) { return a.str() + b; }
+inline std::string operator+(const InternedText& a, const std::string& b) { return a.str() + b; }
+
+// 토큰 글자 표. 같은 글자는 한 번만 저장한다. 저장한 문자열의 주소는 표가 사는 동안 바뀌지 않는다(deque).
+// 표가 사라지면 그 글자를 가리키던 토큰도 쓸 수 없으므로, 토큰과 AST보다 오래 사는 자리에 둔다.
+class TokenTexts
+{
+public:
+    InternedText Intern(const char* data, std::size_t size)
+    {
+        Key key; key.data = data; key.size = size;
+        const auto found = index_.find(key);
+        if (found != index_.end()) return InternedText::Borrow(*found->second);
+        strings_.push_back(std::string(data, size));
+        const std::string& stored = strings_.back();
+        Key own; own.data = stored.data(); own.size = stored.size();
+        index_.insert(std::make_pair(own, &stored));
+        return InternedText::Borrow(stored);
+    }
+
+private:
+    struct Key { const char* data; std::size_t size; };
+    struct Hash
+    {
+        std::size_t operator()(const Key& key) const
+        {
+            std::size_t hash = static_cast<std::size_t>(1469598103934665603ull);
+            for (std::size_t i = 0; i < key.size; ++i)
+                hash = (hash ^ static_cast<unsigned char>(key.data[i])) * static_cast<std::size_t>(1099511628211ull);
+            return hash;
+        }
+    };
+    struct Equal
+    {
+        bool operator()(const Key& a, const Key& b) const { return a.size == b.size && std::memcmp(a.data, b.data, a.size) == 0; }
+    };
+    std::deque<std::string> strings_;
+    std::unordered_map<Key, const std::string*, Hash, Equal> index_;
+};
+
 struct Token
 {
     TokenKind kind = TokenKind::End;
-    std::string text;
+    InternedText text;
     std::size_t begin = 0, end = 0;
     int line = 1, column = 1;
 };
@@ -149,13 +220,15 @@ static std::string DecodeStringLiteral(const Token& token)
 class Lexer
 {
 public:
-    explicit Lexer(const std::string& source) : source_(source) {}
+    Lexer(const std::string& source, TokenTexts& texts) : source_(source), texts_(texts) {}
 
     std::vector<Token> Read()
     {
         if (source_.size() >= 3 && source_.compare(0, 3, "\xef\xbb\xbf") == 0)
             offset_ = 3;
         std::vector<Token> tokens;
+        // 토큰 수를 소스 크기로 어림해 미리 잡는다. 늘리면서 옮기는 일과 그동안의 두 벌 메모리를 줄인다.
+        tokens.reserve(source_.size() / 7 + 16);
         for (;;)
         {
             SkipTrivia();
@@ -247,13 +320,14 @@ public:
                 while (length--) Advance();
             }
             token.end = offset_;
-            token.text = source_.substr(token.begin, token.end - token.begin);
-            tokens.push_back(std::move(token));
+            token.text = texts_.Intern(source_.data() + token.begin, token.end - token.begin);
+            tokens.push_back(token);
         }
     }
 
 private:
     const std::string& source_;
+    TokenTexts& texts_;
     std::size_t offset_ = 0;
     int line_ = 1, column_ = 1;
 
@@ -289,7 +363,8 @@ private:
 static std::string DefineLiteral(const CompileDefine& define)
 {
     Token at;
-    const std::vector<Token> names = Lexer(define.name).Read();
+    TokenTexts texts;
+    const std::vector<Token> names = Lexer(define.name, texts).Read();
     static const char* const reserved[] = {
         "var", "fun", "int", "float", "bool", "string", "void", "int32", "float32", "any", "null", "true", "false",
         "if", "else", "while", "for", "foreach", "in", "return", "break", "continue", "import", "public", "export", "const",
@@ -301,8 +376,10 @@ static std::string DefineLiteral(const CompileDefine& define)
         Fail(at, "compile define name must be one identifier");
     for (const char* name : reserved)
         if (define.name == name) Fail(at, "compile define cannot replace a reserved name: " + define.name);
-    std::vector<Token> tokens = Lexer(define.text).Read();
+    std::vector<Token> tokens = Lexer(define.text, texts).Read();
     tokens.pop_back();
+    // 정수 글자로 준 float 값에 붙일 소수부. 숫자는 마지막 토큰이므로 결과 끝에 붙인다.
+    std::string suffix;
     const bool signedNumber = tokens.size() == 2 && (tokens[0].text == "+" || tokens[0].text == "-");
     const std::size_t number = signedNumber ? 1 : 0;
     bool valid = false;
@@ -338,7 +415,7 @@ static std::string DefineLiteral(const CompileDefine& define)
         {
             double value = 0;
             valid = NeoScript::ParseDecimalLiteral(value, tokens[number].text.c_str());
-            if (valid && tokens[number].text.find_first_of(".eE") == std::string::npos) tokens[number].text += ".0";
+            if (valid && tokens[number].text.find_first_of(".eE") == std::string::npos) suffix = ".0";
         }
         break;
     case CompileDefineKind::String:
@@ -388,10 +465,11 @@ static std::string DefineLiteral(const CompileDefine& define)
     if (!valid) Fail(at, "invalid literal for compile define: " + define.name);
     std::string result;
     for (const Token& token : tokens) result += token.text;
+    result += suffix;
     return signedNumber ? "(" + result + ")" : result;
 }
 
-static void ApplyDefineTokens(std::vector<Token>& tokens, const std::vector<StaticDefineReplacement>& replacements)
+static void ApplyDefineTokens(std::vector<Token>& tokens, const std::vector<StaticDefineReplacement>& replacements, TokenTexts& texts)
 {
     if (replacements.empty()) return;
     std::vector<Token> expanded;
@@ -400,7 +478,7 @@ static void ApplyDefineTokens(std::vector<Token>& tokens, const std::vector<Stat
     {
         if (replacement == replacements.size() || replacements[replacement].begin != original.begin)
         { expanded.push_back(original); continue; }
-        std::vector<Token> values = Lexer(replacements[replacement++].text).Read();
+        std::vector<Token> values = Lexer(replacements[replacement++].text, texts).Read();
         values.pop_back();
         for (std::size_t i = 0; i < values.size(); ++i)
         {
@@ -519,7 +597,9 @@ struct Statement
 class Parser
 {
 public:
-    Parser(const std::vector<Token>& tokens, TypeRegistry& types, Recovery* recovery = nullptr) : tokens_(tokens), types_(types), recovery_(recovery) {}
+    // 토큰 배열을 넘겨받는다. 파서가 `>>`를 둘로 나누며 배열을 고치므로 자기 것이어야 하고, 호출한 쪽은 파싱 뒤에
+    // 배열을 쓰지 않으므로 복사하지 않고 옮긴다.
+    Parser(std::vector<Token> tokens, TypeRegistry& types, Recovery* recovery = nullptr) : tokens_(std::move(tokens)), types_(types), recovery_(recovery) {}
 
     std::vector<std::unique_ptr<Statement>> Read()
     {
@@ -608,10 +688,11 @@ private:
     {
         if (At(">>"))
         {
+            static const std::string closing(">");
             Token first = Peek();
-            first.text = ">"; --first.end;
+            first.text = InternedText::Borrow(closing); --first.end;
             Token& second = tokens_[position_];
-            second.text = ">"; ++second.begin; ++second.column;
+            second.text = InternedText::Borrow(closing); ++second.begin; ++second.column;
             return first;
         }
         return Expect(">");
@@ -1165,7 +1246,7 @@ public:
             {
                 const HostGlobal& global = hostSchema_->Globals()[i];
                 Token name;
-                name.text = global.name;
+                name.text = InternedText::Borrow(global.name);
                 symbols_.push_back(Symbol(global.type, false, name));
                 Symbol& symbol = symbols_.back();
                 symbol.backendName = global.name;
@@ -4204,7 +4285,8 @@ bool ExpandStaticDefines(const std::string& source, const std::vector<CompileDef
                 Fail(Token(), "duplicate compile define: " + define.name);
         }
         if (literals.empty()) return true;
-        const std::vector<Token> tokens = Lexer(source).Read();
+        TokenTexts texts;
+        const std::vector<Token> tokens = Lexer(source, texts).Read();
         for (const Token& token : tokens)
         {
             if (token.kind != TokenKind::Identifier) continue;
@@ -4232,6 +4314,8 @@ bool CompileStaticSource(const std::string& source, StaticCompileResult& result,
     if (unusedWarnings) unusedWarnings->clear();
     result = StaticCompileResult();
     Recovery recovery(result, diagnosticLimit);
+    // 토큰과 AST가 가리키는 글자의 표. 오류를 던진 토큰을 처리하는 동안에도 살아 있어야 하므로 try 밖에 둔다.
+    TokenTexts texts;
     try
     {
         if (hostSchema)
@@ -4243,9 +4327,9 @@ bool CompileStaticSource(const std::string& source, StaticCompileResult& result,
         std::vector<StaticDefineReplacement> replacements;
         if (defines && !ExpandStaticDefines(source, *defines, replacements, result.errorMessage, result.errorLine, result.errorColumn))
             return false;
-        std::vector<Token> tokens = Lexer(source).Read();
-        ApplyDefineTokens(tokens, replacements);
-        std::vector<std::unique_ptr<Statement>> program = Parser(tokens, result.types, &recovery).Read();
+        std::vector<Token> tokens = Lexer(source, texts).Read();
+        ApplyDefineTokens(tokens, replacements, texts);
+        std::vector<std::unique_ptr<Statement>> program = Parser(std::move(tokens), result.types, &recovery).Read();
         Checker checker(source, result, hostSchema, &recovery, scriptHost, implementationSource);
         checker.Check(program, replacements);
         result.success = result.diagnostics.empty();
@@ -4278,8 +4362,9 @@ bool CompileStaticSource(const std::string& source, StaticCompileResult& result,
 void CollectStaticDeclarations(const std::string& source, std::vector<StaticDeclaration>& declarations)
 {
     declarations.clear();
+    TokenTexts texts;
     std::vector<Token> tokens;
-    try { tokens = Lexer(source).Read(); }
+    try { tokens = Lexer(source, texts).Read(); }
     catch (const Diagnostic&) { return; }
     std::set<std::string> types = {"void", "int", "float", "bool", "string", "Vector2", "Vector3", "Vector4",
         "Quaternion", "TimeSpan", "Stopwatch", "AsyncRequest", "list", "map", "set", "array", "array32", "fn", "coroutine"};
