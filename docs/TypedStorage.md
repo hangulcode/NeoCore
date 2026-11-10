@@ -263,7 +263,21 @@ call-window slot (numeric operations and typed container reads take the slot as
 their destination; other values are moved once) instead of through a temporary;
 arguments before the last nested call still go through temporaries because that
 call reuses the window. The argument effect scan reads a typed IR reference's own
-effect bits instead of treating every reference as a possible call.
+effect bits instead of treating every reference as a possible call. Named `int`,
+`float` and `bool` constants (including another module's public constants) enter
+the typed IR as literals, like string constants; as untyped legacy expressions they
+were assumed to have side effects, which copied every local read before them and
+the receiving global container of an indexed access such as `g[f * K + r] = v`.
+Payload copies from a global variable or the constant pool into a local slot have
+their own load-time opcode, and a pair's first instruction is restricted to
+operations that cannot fail, transfer control or re-enter the VM (`IsPairFirstOpcode`,
+checked by the loader); the generic policy copy is no longer paired. Reads of
+`int`, `float` and `bool` arrays run inside the dispatch loop instead of calling an
+out-of-line handler. A comparison of a `bool` with a `true`/`false` constant compiles
+to a test of the value itself (`x == true` is `x`, `x == false` is `!x`), and a
+conditional jump on `!x` becomes the opposite jump on `x` instead of a separate
+negation instruction (debug compilations keep the negation so instructions and
+source lines stay aligned).
 List/map/set entry storage and some generic bridge operations remain transitional,
 as described above. Property hosts no longer sweep their scratch window; a host
 getter or setter must not leave owned values in VM stack slots. No performance
