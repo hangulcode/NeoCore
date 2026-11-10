@@ -174,6 +174,10 @@ int main()
         FailsAtRuntime("float H(float a){return a;}export int Probe(){array<float> a=array<float>(2);float f=0.0;for(int i in 0,4){f=f+H(a[i]);}return int(f);}", "out of range", "array read before a call reports its index error", debug);
         FailsAtRuntime("export int Probe(){array<float> a=array<float>(3);float f=0.0;for(int i in 0,4){f=f+a[i+1]-a[i];}return int(f);}", "out of range", "paired array reads report an index error", debug);
         FailsAtRuntime("export int Probe(){array<bool> a;int c=0;for(int i in 0,2){if(a[i])c+=1;}return c;}", "null array", "array read before a bool jump reports a null array", debug);
+        // float→int 변환의 끝값: NaN은 0, 범위 초과는 부호에 맞는 끝값, 정확한 최소 정수는 그대로다.
+        Expect("export int Probe(){float z=0.0;float n=z/z;float p=1.0/z;float m=-1.0/z;int a=toint(n);int b=toint(p);int c=toint(m);"
+            "float big=-9223372036854775808.0;int d=toint(big);int r=0;if(a==0)r+=1;if(b==9223372036854775807)r+=10;if(c<0&&c-1>0)r+=100;if(d==c)r+=1000;return r;}",
+            1111, "float to int keeps NaN and range edges", debug);
         // while 조건은 본문 뒤로 옮겨 쓴다. 조건 안의 직접 호출(PREPARE_CALL 없음) 계획도 함께 옮겨야
         // 본문의 문자열 인자 호출 계획이 조건의 float 인자 복사에 쓰이지 않는다.
         Expect("float Gap(float a,float b){return a-b;}int notes=0;void Note(string s){notes+=s.len();}"

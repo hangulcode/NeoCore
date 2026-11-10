@@ -234,7 +234,8 @@ template<NeoArrayElementType Element>
 NEOS_FORCEINLINE bool CheckTypedArrayValue(const VarInfo* value)
 {
     // 정적 타입이 int64여도 32비트 저장 범위는 실제 값으로 검사한다. 변경 전에 호출한다.
-    if (Element == NeoArrayElementType::Int32 && (value->_int < INT32_MIN || value->_int > INT32_MAX))
+    // 32비트로 줄였다 늘린 값과 비교한다. 두 끝값과 비교하면 디스패치 루프에 64비트 상수 둘이 남는다.
+    if (Element == NeoArrayElementType::Int32 && value->_int != static_cast<NS_INT>(static_cast<std::int32_t>(value->_int)))
     {
         SetError("int32 array value out of range");
         return false;

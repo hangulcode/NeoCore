@@ -58,21 +58,32 @@ inline NS_INT NeoFloatToInt(Float value)
 	return value > static_cast<Float>(0) ? NS_INT_MAX : NS_INT_MIN;
 }
 #if defined(_M_X64) || defined(__x86_64__)
+// x64 변환이 최소 정수를 돌려준 드문 경우: NaN은 0, 범위 초과는 부호에 맞는 끝값이다. 호출 지점이 디스패치 루프의
+// 변환 명령이라 본문을 밖으로 뺀다. 인라인 쪽에 64비트 즉값이 남으면 컴파일러가 루프 전체에서 레지스터에 올려 둔다.
+NEOS_NOINLINE inline NS_INT NeoFloatToIntEdge(double value)
+{
+	if (value != value) return 0;
+	return value > 0.0 ? NS_INT_MAX : NS_INT_MIN;
+}
+// 최소 정수인가. 왼쪽으로 한 비트 돌리면 최소 정수만 1이 된다(64비트 즉값 비교를 쓰지 않는다).
+NEOS_FORCEINLINE bool NeoIsIntMin(NS_INT value)
+{
+	const NS_UINT bits = static_cast<NS_UINT>(value);
+	return ((bits << 1) | (bits >> 63)) == 1;
+}
 // x64 변환의 최소 정수 결과만 따로 분류하여 NaN과 범위 초과를 처리한다.
 // 인터프리터의 변환 명령이 부른다. 디스패치 루프가 커서 컴파일러가 스스로 인라인하지 않으므로 강제한다.
 NEOS_FORCEINLINE NS_INT NeoFloatToInt(float value)
 {
 	const NS_INT r = _mm_cvttss_si64(_mm_set_ss(value));
-	if (r != NS_INT_MIN) return r;
-	if (value != value) return 0;
-	return value > 0.0f ? NS_INT_MAX : NS_INT_MIN;
+	if (!NeoIsIntMin(r)) return r;
+	return NeoFloatToIntEdge(static_cast<double>(value));
 }
 NEOS_FORCEINLINE NS_INT NeoFloatToInt(double value)
 {
 	const NS_INT r = _mm_cvttsd_si64(_mm_set_sd(value));
-	if (r != NS_INT_MIN) return r;
-	if (value != value) return 0;
-	return value > 0.0 ? NS_INT_MAX : NS_INT_MIN;
+	if (!NeoIsIntMin(r)) return r;
+	return NeoFloatToIntEdge(value);
 }
 #endif
 }
