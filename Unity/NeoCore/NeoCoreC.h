@@ -43,7 +43,7 @@ typedef void (*NcHttpTransport)(void* userData, const NcHttpRequest* request, Nc
 
 enum NcStatus { NC_COMPLETED = 0, NC_SUSPENDED = 1, NC_FAILED = 2 };
 enum NcDefineKind { NC_DEFINE_IDENTIFIER=0, NC_DEFINE_INT=1, NC_DEFINE_FLOAT=2, NC_DEFINE_STRING=3, NC_DEFINE_BOOL=4, NC_DEFINE_NULL=5 };
-#define NEOCORE_C_ABI_VERSION 1
+#define NEOCORE_C_ABI_VERSION 2
 NC_API uint32_t NcGetAbiVersion(void);
 enum NcKind { NC_VOID = 0, NC_INT = 1, NC_FLOAT = 2, NC_BOOL = 3, NC_STRING = 4, NC_NULL = 5,
     NC_VECTOR2 = 6, NC_VECTOR3 = 7, NC_VECTOR4 = 8, NC_QUATERNION = 9, NC_OBJECT = 10,
@@ -165,6 +165,13 @@ NC_API int32_t NcSchemaStructFields(NcOptions* options, uint32_t type, const NcF
 NC_API uint32_t NcSchemaMethod(NcOptions* options, uint32_t owner, const char* name, uint32_t length,
     uint32_t resultType, const uint32_t* parameters, uint32_t count,
     NcHostCallback callback, void* userData, NcRelease release);
+/* Registers a method whose parameters may be outputs. modes holds one NcParameterMode per parameter;
+   NULL means every parameter is an input. An out parameter is written with NcHostOut* and assigned
+   back to the script variable after a successful call; an unwritten one leaves the variable unchanged. */
+enum NcParameterMode { NC_PARAMETER_IN = 0, NC_PARAMETER_OUT = 1 };
+NC_API uint32_t NcSchemaMethodOut(NcOptions* options, uint32_t owner, const char* name, uint32_t length,
+    uint32_t resultType, const uint32_t* parameters, const uint8_t* modes, uint32_t count,
+    NcHostCallback callback, void* userData, NcRelease release);
 NC_API uint32_t NcSchemaEvent(NcOptions* options, uint32_t owner, const char* eventName, uint32_t eventLength,
     uint32_t callbackType, const char* registrationMethod, uint32_t methodLength,
     NcHostCallback callback, void* userData, NcRelease release);
@@ -195,6 +202,17 @@ NC_API int32_t NcHostReturnJson(NcHostCall* call, const char* json, uint32_t len
 NC_API void NcHostReturnVector(NcHostCall* call, int32_t kind, const float* components);
 NC_API void NcHostReturnObject(NcHostCall* call, uint64_t id);
 NC_API void NcHostReturnNull(NcHostCall* call);
+/* Out parameter writers. index is the parameter index; writing a parameter that is not declared out,
+   or a value of another type, fails the call. */
+NC_API int32_t NcHostIsOut(const NcHostCall* call, uint32_t index);
+NC_API void NcHostOutValue(NcHostCall* call, uint32_t index, const NcValue* value);
+NC_API void NcHostOutInt(NcHostCall* call, uint32_t index, int64_t value);
+NC_API void NcHostOutFloat(NcHostCall* call, uint32_t index, double value);
+NC_API void NcHostOutBool(NcHostCall* call, uint32_t index, int32_t value);
+NC_API void NcHostOutString(NcHostCall* call, uint32_t index, const char* value, uint32_t length);
+NC_API void NcHostOutVector(NcHostCall* call, uint32_t index, int32_t kind, const float* components);
+NC_API void NcHostOutObject(NcHostCall* call, uint32_t index, uint64_t id);
+NC_API void NcHostOutNull(NcHostCall* call, uint32_t index);
 NC_API void NcHostFail(NcHostCall* call, const char* error, uint32_t length);
 NC_API NcResult* NcHostCallScript(NcHostCall* call, const char* name, uint32_t length, const NcArguments* arguments);
 NC_API void NcModuleSource(NcModuleOutput* output, const char* source, uint32_t length, const char* name, uint32_t nameLength);

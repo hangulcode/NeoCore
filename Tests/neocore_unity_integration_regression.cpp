@@ -1,4 +1,4 @@
-#include "NeoCoreC.h"
+﻿#include "NeoCoreC.h"
 
 #include <atomic>
 #include <cmath>
@@ -251,6 +251,60 @@ void BindingsAndImages(bool debug)
     Check(host.releases == 4, "each registration released once");
     second.saved.reset(); loadedInstance.reset(); loaded.reset();
     Check(second.releases == 4, "loaded callbacks released once");
+}
+
+// Out 매개변수: C ABI 로 등록한 메서드가 스크립트 변수에 값을 되돌려 쓴다.
+int32_t TryGetInt(void*, NcHostCall* call)
+{
+    if (NcHostIsOut(call, 0) || !NcHostIsOut(call, 1)) return 0;
+    const bool found = NcHostInt(call, 0) == 1;
+    if (found) NcHostOutInt(call, 1, 41);
+    NcHostReturnBool(call, found ? 1 : 0); return 1;
+}
+int32_t TryGetText(void*, NcHostCall* call) { NcHostOutString(call, 0, "hello", 5); NcHostReturnBool(call, 1); return 1; }
+int32_t KeepList(void* user, NcHostCall* call)
+{ static_cast<Host*>(user)->saved.reset(NcHostArgument(call, 0)); return static_cast<Host*>(user)->saved ? 1 : 0; }
+int32_t TryGetList(void* user, NcHostCall* call)
+{ NcHostOutValue(call, 0, static_cast<Host*>(user)->saved.get()); NcHostReturnBool(call, 1); return 1; }
+int32_t TryGetVector(void*, NcHostCall* call)
+{ const float v[3] = { 1.0f, 2.0f, 3.0f }; NcHostOutVector(call, 0, NC_VECTOR3, v); NcHostReturnBool(call, 1); return 1; }
+int32_t WriteInput(void*, NcHostCall* call) { NcHostOutInt(call, 0, 5); NcHostReturnBool(call, 1); return 1; }
+
+void OutParameters(bool debug)
+{
+    Host host; Options options(NcOptionsCreate(), &NcOptionsDestroy);
+    Check(NcOptionsSetResolver(options.get(), Resolve, &host, ReleaseHost) != 0, "set out resolver");
+    const uint32_t object = NcSchemaObject(options.get(), "HostType", 8);
+    const uint32_t integer = NcTypeBuiltin(NC_INT), boolean = NcTypeBuiltin(NC_BOOL), text = NcTypeBuiltin(NC_STRING);
+    const uint32_t vector = NcTypeBuiltin(NC_VECTOR3), none = NcTypeBuiltin(NC_VOID);
+    const uint32_t list = NcTypeCollection(options.get(), NC_LIST, integer, 0, 0);
+    const uint32_t pair[] = { integer, integer };
+    const uint8_t pairModes[] = { NC_PARAMETER_IN, NC_PARAMETER_OUT }, out[] = { NC_PARAMETER_OUT }, invalidMode[] = { 2 };
+    Check(NcSchemaMethodOut(options.get(), object, "Bad", 3, boolean, &integer, invalidMode, 1, WriteInput, &host, ReleaseHost) == 0, "invalid parameter mode rejected");
+    uint32_t errorLength = 0; NcOptionsError(options.get(), &errorLength); Check(errorLength != 0, "invalid parameter mode reports an error");
+    Check(NcSchemaMethodOut(options.get(), object, "TryGet", 6, boolean, pair, pairModes, 2, TryGetInt, &host, ReleaseHost) != 0, "schema out int method");
+    Check(NcSchemaMethodOut(options.get(), object, "TryText", 7, boolean, &text, out, 1, TryGetText, &host, ReleaseHost) != 0, "schema out string method");
+    Check(NcSchemaMethod(options.get(), object, "Keep", 4, none, &list, 1, KeepList, &host, ReleaseHost) != 0, "schema keep method");
+    Check(NcSchemaMethodOut(options.get(), object, "TryList", 7, boolean, &list, out, 1, TryGetList, &host, ReleaseHost) != 0, "schema out list method");
+    Check(NcSchemaMethodOut(options.get(), object, "TryVector", 9, boolean, &vector, out, 1, TryGetVector, &host, ReleaseHost) != 0, "schema out vector method");
+    // 방향 배열이 없으면 모두 입력이다. 입력 매개변수에 쓰면 호출이 실패한다.
+    Check(NcSchemaMethodOut(options.get(), object, "WriteInput", 10, boolean, &integer, 0, 1, WriteInput, &host, ReleaseHost) != 0, "schema input-only method");
+    Check(NcSchemaGlobal(options.get(), "Host", 4, object, 7) != 0, "schema out global");
+    NcResult* rejectedRaw = 0;
+    const char* invalid = "export int Run(){int v=0;Host.TryGet(1,v);return v;}";
+    Program rejected(NcCompileWithOptions(invalid, Length(invalid), "out_invalid.nc", 14, debug, options.get(), &rejectedRaw), &NcProgramDestroy);
+    Rejected(rejectedRaw, "missing out rejected during compile"); Check(!rejected, "missing out has no executable");
+    Program program = Compile(
+        "export int Run(){int v=1;if(!Host.TryGet(1,out v))return -1;int a=v;if(Host.TryGet(2,out v))return -2;\n"
+        "string s=\"x\";Host.TryText(out s);list<int> xs=[5];Host.Keep(xs);list<int> got=[];Host.TryList(out got);\n"
+        "Vector3 p=Vector3(0,0,0);Host.TryVector(out p);\n"
+        "return a*100+v+s.len()*1000+got[0]*10000+toint(p.x+p.y+p.z)*100000;}\n"
+        "export bool Bad(){return Host.WriteInput(1);}\n", debug, options.get());
+    Instance instance = Create(program.get()); host.instance = instance.get();
+    Int(Call(instance.get(), "Run"), 659141, "C ABI out parameters write back");
+    Rejected(Call(instance.get(), "Bad"), "writing an input parameter fails the call");
+    Int(Call(instance.get(), "Run"), 659141, "out parameters still work after a failed call");
+    host.saved.reset();
 }
 
 struct EventRegistration
@@ -674,7 +728,7 @@ void OwnershipPreflight()
 
 int main()
 {
-    try { for (bool debug : { false, true }) { Collections(debug); BindingsAndImages(debug); Events(debug); ModulesAndHttp(debug); JsonAndValueCopies(debug); ScriptJsonAndHostReturn(debug); HostStructObjects(debug); } HttpCancellation(); BulkArrays(); OwnershipPreflight(); }
+    try { for (bool debug : { false, true }) { Collections(debug); BindingsAndImages(debug); OutParameters(debug); Events(debug); ModulesAndHttp(debug); JsonAndValueCopies(debug); ScriptJsonAndHostReturn(debug); HostStructObjects(debug); } HttpCancellation(); BulkArrays(); OwnershipPreflight(); }
     catch (const std::exception& error) { std::fprintf(stderr, "NeoCore Unity integration: %s\n", error.what()); return 1; }
     std::printf("NeoCore Unity integration: %d checks passed\n", checks); return 0;
 }

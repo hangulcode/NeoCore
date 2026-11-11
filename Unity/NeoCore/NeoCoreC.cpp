@@ -1,4 +1,4 @@
-#include "NeoCoreC.h"
+﻿#include "NeoCoreC.h"
 #include "NeoCore.h"
 #include "NeoCoreHost.h"
 
@@ -844,13 +844,28 @@ uint32_t NcSchemaMethod(NcOptions* options, uint32_t owner, const char* name, ui
     uint32_t resultType, const uint32_t* parameters, uint32_t count,
     NcHostCallback callback, void* userData, NcRelease release)
 {
+    return NcSchemaMethodOut(options, owner, name, length, resultType, parameters, nullptr, count, callback, userData, release);
+}
+uint32_t NcSchemaMethodOut(NcOptions* options, uint32_t owner, const char* name, uint32_t length,
+    uint32_t resultType, const uint32_t* parameters, const uint8_t* modes, uint32_t count,
+    NcHostCallback callback, void* userData, NcRelease release)
+{
     try
     {
         if (!options || !callback || (!parameters && count)) return 0;
         NeoCore::HostSchema schema = options->state.schema;
         std::vector<NeoCore::TypeId> arguments;
         if (count) arguments.assign(parameters, parameters + count);
-        const uint32_t id = schema.AddMethod(owner, ReadText(name, length), resultType, arguments);
+        // 방향은 내장 API 와 같은 서명 모델의 값이다. 0 과 1 밖의 값은 등록을 거부한다.
+        std::vector<NeoCore::ApiParameterMode> parameterModes;
+        for (uint32_t i = 0; modes && i < count; ++i)
+        {
+            if (modes[i] > NC_PARAMETER_OUT) { options->error = "invalid host parameter mode"; return 0; }
+            parameterModes.push_back(modes[i] == NC_PARAMETER_OUT ? NeoCore::ApiParameterMode::Out : NeoCore::ApiParameterMode::In);
+        }
+        const uint32_t id = parameterModes.empty()
+            ? schema.AddMethod(owner, ReadText(name, length), resultType, arguments)
+            : schema.AddMethod(owner, ReadText(name, length), resultType, arguments, std::vector<std::string>(), parameterModes);
         if (!id) { options->error = schema.LastError(); return 0; }
         CallbackBinding binding;
         binding.callback = callback;
@@ -1046,6 +1061,29 @@ void NcHostReturnVector(NcHostCall* call, int32_t kind, const float* v)
 }
 void NcHostReturnObject(NcHostCall* call, uint64_t id) { if (call) call->value->ReturnObject(NeoCore::ObjectHandle(id)); }
 void NcHostReturnNull(NcHostCall* call) { if (call) call->value->ReturnNull(); }
+int32_t NcHostIsOut(const NcHostCall* call, uint32_t index) { return call && call->value->IsOut(index) ? 1 : 0; }
+void NcHostOutValue(NcHostCall* call, uint32_t index, const NcValue* value)
+{ try { if(call) call->value->OutValue(index, RequireValue(value)); } catch(...) { HostFailure(call,"host out value failed"); } }
+void NcHostOutInt(NcHostCall* call, uint32_t index, int64_t value) { if (call) call->value->OutInt(index, value); }
+void NcHostOutFloat(NcHostCall* call, uint32_t index, double value) { if (call) call->value->OutFloat(index, value); }
+void NcHostOutBool(NcHostCall* call, uint32_t index, int32_t value) { if (call) call->value->OutBool(index, value != 0); }
+void NcHostOutString(NcHostCall* call, uint32_t index, const char* value, uint32_t length)
+{ try { if (call) call->value->OutString(index, ReadText(value, length)); } catch (...) { HostFailure(call, "host out string failed"); } }
+void NcHostOutVector(NcHostCall* call, uint32_t index, int32_t kind, const float* v)
+{
+    if (!call) return;
+    if (!v) { HostFailure(call, "vector out value is null"); return; }
+    switch (kind)
+    {
+    case NC_VECTOR2: call->value->OutVector2(index, NeoCore::Vector2Value(v[0],v[1])); break;
+    case NC_VECTOR3: call->value->OutVector3(index, NeoCore::Vector3Value(v[0],v[1],v[2])); break;
+    case NC_VECTOR4: call->value->OutVector4(index, NeoCore::Vector4Value(v[0],v[1],v[2],v[3])); break;
+    case NC_QUATERNION: call->value->OutQuaternion(index, NeoCore::QuaternionValue(v[0],v[1],v[2],v[3])); break;
+    default: HostFailure(call, "invalid vector out kind"); break;
+    }
+}
+void NcHostOutObject(NcHostCall* call, uint32_t index, uint64_t id) { if (call) call->value->OutObject(index, NeoCore::ObjectHandle(id)); }
+void NcHostOutNull(NcHostCall* call, uint32_t index) { if (call) call->value->OutNull(index); }
 void NcHostFail(NcHostCall* call, const char* error, uint32_t length)
 { try { if (call) call->value->Fail(ReadText(error, length)); } catch (...) { HostFailure(call, "host callback failed"); } }
 NcResult* NcHostCallScript(NcHostCall* call, const char* name, uint32_t length, const NcArguments* arguments)

@@ -6,7 +6,7 @@ namespace NeoCore.Unity
     internal static partial class Native
     {
         internal static void CheckVersion()
-        { if(NcGetAbiVersion()!=1) throw new InvalidOperationException("NeoCore native plugin ABI does not match this managed package"); }
+        { if(NcGetAbiVersion()!=2) throw new InvalidOperationException("NeoCore native plugin ABI does not match this managed package"); }
         [StructLayout(LayoutKind.Sequential)] internal struct Field { internal IntPtr Name; internal uint Length; internal uint Type; }
         [DllImport(Library, CallingConvention = Convention)] internal static extern uint NcGetAbiVersion();
         [DllImport(Library, CallingConvention = Convention)] internal static extern IntPtr NcFindFunction(IntPtr program, byte[] name, uint length);
@@ -104,6 +104,7 @@ namespace NeoCore.Unity
         [DllImport(Library, CallingConvention = Convention)] internal static extern uint NcTypeFunction(IntPtr options, uint resultType, uint[] parameters, uint count);
         [DllImport(Library, CallingConvention = Convention)] internal static extern uint NcSchemaObject(IntPtr options, byte[] name, uint length);
         [DllImport(Library, CallingConvention = Convention)] internal static extern uint NcSchemaMethod(IntPtr options, uint owner, byte[] name, uint length, uint resultType, uint[] parameters, uint count, HostCallback callback, IntPtr userData, ReleaseCallback release);
+        [DllImport(Library, CallingConvention = Convention)] internal static extern uint NcSchemaMethodOut(IntPtr options, uint owner, byte[] name, uint length, uint resultType, uint[] parameters, byte[] modes, uint count, HostCallback callback, IntPtr userData, ReleaseCallback release);
         [DllImport(Library, CallingConvention = Convention)] internal static extern uint NcSchemaEvent(IntPtr options, uint owner, byte[] eventName, uint eventLength, uint callbackType, byte[] registrationMethod, uint methodLength, HostCallback callback, IntPtr userData, ReleaseCallback release);
         [DllImport(Library, CallingConvention = Convention)] internal static extern ulong NcInstanceId(IntPtr instance);
         [DllImport(Library, CallingConvention = Convention)] internal static extern ulong NcHostCallerInstanceId(IntPtr call);
@@ -130,6 +131,15 @@ namespace NeoCore.Unity
         [DllImport(Library, CallingConvention = Convention)] internal static extern void NcHostReturnVector(IntPtr call, int kind, float[] components);
         [DllImport(Library, CallingConvention = Convention)] internal static extern void NcHostReturnObject(IntPtr call, ulong id);
         [DllImport(Library, CallingConvention = Convention)] internal static extern void NcHostReturnNull(IntPtr call);
+        [DllImport(Library, CallingConvention = Convention)] internal static extern int NcHostIsOut(IntPtr call, uint index);
+        [DllImport(Library, CallingConvention = Convention)] internal static extern void NcHostOutValue(IntPtr call, uint index, IntPtr value);
+        [DllImport(Library, CallingConvention = Convention)] internal static extern void NcHostOutInt(IntPtr call, uint index, long value);
+        [DllImport(Library, CallingConvention = Convention)] internal static extern void NcHostOutFloat(IntPtr call, uint index, double value);
+        [DllImport(Library, CallingConvention = Convention)] internal static extern void NcHostOutBool(IntPtr call, uint index, int value);
+        [DllImport(Library, CallingConvention = Convention)] internal static extern void NcHostOutString(IntPtr call, uint index, byte[] value, uint length);
+        [DllImport(Library, CallingConvention = Convention)] internal static extern void NcHostOutVector(IntPtr call, uint index, int kind, float[] components);
+        [DllImport(Library, CallingConvention = Convention)] internal static extern void NcHostOutObject(IntPtr call, uint index, ulong id);
+        [DllImport(Library, CallingConvention = Convention)] internal static extern void NcHostOutNull(IntPtr call, uint index);
         [DllImport(Library, CallingConvention = Convention)] internal static extern void NcHostFail(IntPtr call, byte[] error, uint length);
         [DllImport(Library, CallingConvention = Convention)] internal static extern IntPtr NcHostCallScript(IntPtr call, byte[] name, uint length, IntPtr arguments);
         [DllImport(Library, CallingConvention = Convention)] internal static extern void NcModuleSource(IntPtr output, byte[] source, uint length, byte[] name, uint nameLength);

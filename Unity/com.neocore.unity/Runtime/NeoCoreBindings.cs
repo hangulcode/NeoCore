@@ -172,6 +172,23 @@ namespace NeoCore.Unity
             if (send == null) throw new ArgumentNullException(nameof(send));
             Register(send, p => Native.NcOptionsSetHttpTransport(Handle, transport, p, release) != 0);
         }
+        /// <summary>Registers a method whose parameters may be outputs. An out parameter is written with
+        /// <see cref="HostCall.Out(uint, Scalar)"/> or a typed Out method and assigned back to the script variable
+        /// after a successful call; an unwritten one leaves the variable unchanged.</summary>
+        public void Method(ScriptType owner, string name, ScriptType result, ScriptType[] parameters, ParameterMode[] modes, Action<HostCall> callback)
+        {
+            if (callback == null) throw new ArgumentNullException(nameof(callback));
+            if (parameters == null) throw new ArgumentNullException(nameof(parameters));
+            if (modes == null) throw new ArgumentNullException(nameof(modes));
+            if (modes.Length != parameters.Length) throw new ArgumentException("One mode is required per parameter.", nameof(modes));
+            byte[] bytes = Encoding.UTF8.GetBytes(name ?? throw new ArgumentNullException(nameof(name)));
+            uint ownerId = TypeId(owner), resultId = TypeId(result);
+            uint[] ids = new uint[parameters.Length];
+            byte[] flags = new byte[parameters.Length];
+            for (int i = 0; i < ids.Length; ++i) { ids[i] = TypeId(parameters[i]); flags[i] = (byte)modes[i]; }
+            Register(new HostPair { First = callback }, p => Native.NcSchemaMethodOut(Handle, ownerId, bytes,
+                checked((uint)bytes.Length), resultId, ids, flags, checked((uint)ids.Length), first, p, release) != 0);
+        }
         public void Method(ScriptType owner, string name, ScriptType result, ScriptType[] parameters, Action<HostCall> callback)
         {
             if (callback == null) throw new ArgumentNullException(nameof(callback));
@@ -279,6 +296,9 @@ namespace NeoCore.Unity
         }
     }
 
+    /// <summary>Direction of a host method parameter.</summary>
+    public enum ParameterMode : byte { In = 0, Out = 1 }
+
     public sealed class HostCall
     {
         private IntPtr handle;
@@ -308,6 +328,17 @@ namespace NeoCore.Unity
         { byte[] bytes = Encoding.UTF8.GetBytes(json ?? throw new ArgumentNullException(nameof(json))); return Native.NcHostReturnJson(Handle, bytes, checked((uint)bytes.Length), strictIntegers ? 1 : 0) != 0; }
         public void ReturnObject(ulong id) { Native.NcHostReturnObject(Handle, id); }
         public void ReturnNull() { Native.NcHostReturnNull(Handle); }
+        /// <summary>True when the parameter was registered as <see cref="ParameterMode.Out"/>.</summary>
+        public bool IsOut(uint index) { return Native.NcHostIsOut(Handle, index) != 0; }
+        /// <summary>Writes an out parameter. Writing a parameter that is not out, or a value of another type, fails the call.</summary>
+        public void Out(uint index, Scalar value) { using (var v = new ValueLease(value)) Native.NcHostOutValue(Handle, index, v.Pointer); }
+        public void OutInt(uint index, long value) { Native.NcHostOutInt(Handle, index, value); }
+        public void OutFloat(uint index, double value) { Native.NcHostOutFloat(Handle, index, value); }
+        public void OutBool(uint index, bool value) { Native.NcHostOutBool(Handle, index, value ? 1 : 0); }
+        public void OutString(uint index, string value)
+        { byte[] bytes = Encoding.UTF8.GetBytes(value ?? throw new ArgumentNullException(nameof(value))); Native.NcHostOutString(Handle, index, bytes, checked((uint)bytes.Length)); }
+        public void OutObject(uint index, ulong id) { Native.NcHostOutObject(Handle, index, id); }
+        public void OutNull(uint index) { Native.NcHostOutNull(Handle, index); }
         public void Fail(string message)
         { byte[] bytes = Encoding.UTF8.GetBytes(message ?? "Host callback failed"); Native.NcHostFail(Handle, bytes, checked((uint)bytes.Length)); }
         public Result Call(string name, params Scalar[] values)
