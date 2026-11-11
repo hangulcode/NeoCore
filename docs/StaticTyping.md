@@ -784,11 +784,24 @@ values widen for float arrays. Array types are invariant: `array<int>` cannot
 be assigned or passed as `array<float>`, and `array<Quaternion>` differs from
 `array<Vector4>` despite shared backend component storage.
 
-Supported methods are `len()`, `resize(size)`, `append(value)`, and
-`reserve(capacity)`. Resizing preserves retained elements and initializes growth
-with the constructor's saved fill value, including after shrinking and regrowing.
-`reserve` changes capacity without changing length; append checks the element
-type and adds one value. Array indices and sizes must have type `int`.
+Supported methods are:
+
+| Method | Result | Behavior |
+| --- | --- | --- |
+| `len()` | `int` | Returns the number of elements. |
+| `resize(size)` | `void` | Preserves retained elements and initializes growth with the constructor's saved fill value. |
+| `append(value)` | `void` | Adds one value compatible with the element type. |
+| `reserve(capacity)` | `void` | Reserves storage without changing length. |
+| `clear()` | `void` | Removes all elements, leaving an empty array. |
+| `clone()` | Same array type | Creates an independent container with the same elements and saved fill value. |
+| `fill(value)` | `void` | Replaces existing elements without changing length or the saved fill value. |
+| `find(value)` | `int` | Returns the first matching zero-based index, or `-1` if absent, including in an empty array. |
+| `contains(value)` | `bool` | Returns whether a matching element exists. |
+
+Search uses the element equality rules; floating-point searches are exact, not
+approximate. Methods taking a value check compatibility with the element type.
+Resizing reuses the saved fill value even after shrinking, clearing, or calling
+`fill`. Array indices and sizes must have type `int`.
 Bounds remain runtime checks, and sizes above `INT32_MAX` are rejected before
 narrowing. Negative constructor sizes and reserve capacities fail; negative
 resize sizes retain the inherited rule of clamping to zero.
