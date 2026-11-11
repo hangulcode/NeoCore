@@ -3,6 +3,7 @@
 #include "NeoExport.h"
 #include "UTFString.h"
 #include "NeoCoreIR.h"
+#include "NeoCoreApi.h"
 #include <algorithm>
 #include <cstring>
 #include <limits>
@@ -415,7 +416,7 @@ static void ElideConcatConversion(SOperand& left, SOperand& right, CArchiveRdWC&
     if (replaceRight) right = SOperand(conversion.n2);
 }
 
-// 바로 앞의 스크립트 호출이나 벡터 생성 결과를 단순 변수에 직접 쓴다. 인자 평가는 이미 끝났으며,
+// 바로 앞의 스크립트 호출 결과를 단순 변수에 직접 쓴다. 인자 평가는 이미 끝났으며,
 // 임시 결과를 공유하는 MOV와 불필요한 참조 수 변경을 없앤다.
 // 호출 인자 슬롯과 컨테이너/속성 대입은 제외하고, 분기 합류점도 넘지 않는다.
 static bool TryStoreCallResult(CArchiveRdWC& ar, SFunctions& funs, int dest, SOperand& source)
@@ -426,7 +427,7 @@ static bool TryStoreCallResult(CArchiveRdWC& ar, SFunctions& funs, int dest, SOp
     SFunctionInfo& fun = *funs._cur;
     const int end = fun._code->GetBufferOffset();
     const OperationCode kind = fun.GetLastOP();
-    if ((kind != NOP_PTRCALL2 && (kind != NOP_CALL || ar._debug)) ||
+    if (kind != NOP_CALL || ar._debug ||
         fun._iLastOPOffset + (int)sizeof(SVMOperation) != end ||
         fun._jumpTargetOffsets.count(end) != 0)
         return false;
@@ -434,17 +435,7 @@ static bool TryStoreCallResult(CArchiveRdWC& ar, SFunctions& funs, int dest, SOp
     if (call->n3 != source._iVar || (call->argFlag & NEOS_OP_CALL_NORESULT))
         return false;
     // RET가 실제로 실행될 때만 대입한다. 오류·일시 정지 중에는 목적지 값을 바꾸지 않는다.
-    if (kind == NOP_CALL)
-    {
-        call->n3 = CompileShort("call destination", dest);
-        return true;
-    }
-    if (!IsCompileConstant(call->n1)) return false;
-    const BoundaryValue& name = funs._staticVars[StaticPoolIndex(call->n1)];
-    if (name.GetType() != VAR_STRING ||
-        CNeoVM::GetDefaultNativeIntrinsic(CNeoVM::FindDefaultNativeIndex(name._str->_str)) != NOP_VEC_MAKE)
-        return false;
-    call->n3 = CompileShort("vector destination", dest);
+    call->n3 = CompileShort("call destination", dest);
     return true;
 }
 
@@ -676,7 +667,6 @@ int InitDefaultTokenString()
 	TOKEN_STR3(TK_TOSTRING, "tostring", 20, NOP_TOSTRING);
 	TOKEN_STR3(TK_TOINT, "toint", 20, NOP_TOINT);
 	TOKEN_STR3(TK_TOFLOAT, "tofloat", 20, NOP_TOFLOAT);
-	TOKEN_STR3(TK_TOSIZE, "tosize", 20, NOP_TOSIZE);
 	TOKEN_STR3(TK_SLEEP, "sleep", 20, NOP_SLEEP);
 
 	TOKEN_STR2(TK_RETURN, "return");
@@ -1516,25 +1506,42 @@ void ClearTempVars(SFunctions& funs)
 		}
 	}
 }
-void AddBuildinFunction(CArchiveRdWC& ar, SFunctions& funs, const std::string& fname, int argc)
+// 프런트엔드가 서명으로 검사한 내장 API 호출의 표기를 연결 이름으로 바꾼다.
+//   메서드: recv.__api<번호>(인자...)      함수: $neocore_api_<번호>(인자...) 또는 전역 API 이름(print)
+// 번호는 이번 컴파일의 등록부 색인이고, 이미지에는 연결 이름(소유자.이름) 상수만 남는다.
+static bool CoreApiKeyByIndex(const std::string& text, std::size_t prefix, std::string& key)
 {
-	SFunctionInfo* pF = funs.NewFun(fname, nullptr, funs._cur->_pDebugData);
-	pF->_funType = FUNT_BUILT_IN;
-	pF->_name = "#" + fname;
-	pF->_moduleName = ar.m_sModuleName;
-
-	pF->_built_in_arg_c = argc;
-	pF->_funID = -1;
-	//funs._funIDs[pF->_funID] = pF;
+    if (text.size() <= prefix) return false;
+    std::size_t index = 0;
+    for (std::size_t i = prefix; i < text.size(); ++i)
+    {
+        if (text[i] < '0' || text[i] > '9' || index > 100000) return false;
+        index = index * 10 + static_cast<std::size_t>(text[i] - '0');
+    }
+    const std::vector<NeoCore::ApiDeclaration>& declarations = NeoCore::CoreApi();
+    if (index >= declarations.size()) return false;
+    key = declarations[index].key;
+    return true;
 }
-bool AddBuildinModule(CArchiveRdWC& ar, SFunctions& funs, SVars& vars, const std::list< SystemFun>* p)
+static bool CoreApiMethodKey(const std::string& member, std::string& key)
 {
-	for(auto it = (*p).begin(); it != (*p).end(); it++)
-	{
-		const SystemFun& f = (*it);
-		AddBuildinFunction(ar, funs, f.fname, f.argCount);
-	}
-	return true;
+    return member.compare(0, 5, "__api") == 0 && CoreApiKeyByIndex(member, 5, key) && key.find('.') != std::string::npos;
+}
+static bool CoreApiFunctionKey(const std::string& name, std::string& key)
+{
+    // 숫자 리터럴도 이 자리를 지나간다. 이름이 될 수 없는 토큰은 등록부를 찾지 않는다.
+    if (name.empty()) return false;
+    const char first = name[0];
+    if (first == '$')
+    {
+        static const std::string prefix = std::string(NeoCore::InternalSymbolPrefix()) + "api_";
+        return name.compare(0, prefix.size(), prefix) == 0 && CoreApiKeyByIndex(name, prefix.size(), key);
+    }
+    if (!((first >= 'a' && first <= 'z') || (first >= 'A' && first <= 'Z') || first == '_')) return false;
+    const NeoCore::ApiDeclaration* declaration = NeoCore::FindCoreApi(std::string(), name);
+    if (declaration == nullptr) return false;
+    key = declaration->key;
+    return true;
 }
 bool ParseImport(CArchiveRdWC& ar, SFunctions& funs, SVars& vars)
 {
@@ -1611,20 +1618,9 @@ bool ParseImport(CArchiveRdWC& ar, SFunctions& funs, SVars& vars)
 	}
 	if(pFileBuffer == nullptr)
 	{
-		const std::list< SystemFun>* p = CNeoVM::GetSystemModule(fileName);
-		if (p) // Built-in Import
-		{
-			SFunctionLayer* pLayerBackup = funs._curModule;
-			funs._curModule = funs.NewLayer();
-			funs._curModule->_blBuiltInModule = true;
-
-			AddBuildinModule(ar, funs, vars, p);
-
-			vars.m_sImports[fileName] = funs._curModule;
-			pLayerBackup->_defModules[defName] = funs._curModule;
-			funs._curModule = pLayerBackup;
+		// 내장 모듈의 함수는 프런트엔드가 서명으로 검사해 API 호출 표기로 바꿔 넘긴다. 여기서는 이름만 받는다.
+		if (NeoCore::IsCoreApiModule(fileName))
 			return true;
-		}
 		SetParserCompileError(ar, PCE_IMPORT_FAILED, fileName.c_str());
 		return false;
 	}
@@ -1982,13 +1978,9 @@ static bool NeedsSnapshot(const SOperand& operand, int effects)
     return (effects & EXPR_EFFECT_ASSIGN) != 0;
 }
 
-// 호출 앞에 PREPARE_CALL이 필요한가. 순수 수학 네이티브(인자 1~3개의 float → float)는 창의 float payload를
-// 바로 읽고 놓을 소유 슬롯도 없어 호출 계획을 고를 필요가 없다. 정수 인자는 프런트엔드가 float으로 바꿔 창에 넣는다.
+// 호출 앞에 PREPARE_CALL이 필요한가.
 static bool CallNeedsPrepare(const SFunctionInfo* callee, std::size_t argumentCount)
 {
-    if (callee != nullptr && callee->_funType == FUNT_BUILT_IN &&
-        CNeoVM::HasDefaultNativeScalar(CNeoVM::FindDefaultNativeIndex(callee->_name), static_cast<int>(argumentCount)))
-        return false;
     return SFunctionInfo::CallWindowNeedsPrepare(callee, argumentCount);
 }
 
@@ -2616,7 +2608,8 @@ static bool ParsePostfixSelectors(SOperand& operand, CArchiveRdWC& ar, SFunction
 				SetParserCompileError(ar, PCE_EXPECTED_MEMBER_NAME);
 				return false;
 			}
-			key = funs.AddStaticString(member);
+			std::string apiKey;
+			key = funs.AddStaticString(CoreApiMethodKey(member, apiKey) ? apiKey : member);
 		}
 
         // 선택자의 값 타입은 소유 컨테이너 타입과 다르다. 다음 읽기의 임시 슬롯에도 구분해서 전달한다.
@@ -3079,7 +3072,7 @@ class CoreIRValidator
         switch (node.op)
         {
         case IROp::IntLiteral: case IROp::FloatLiteral: case IROp::BoolLiteral:
-        case IROp::Symbol: case IROp::LegacyExpression: arity = 0; break;
+        case IROp::Symbol: case IROp::LegacyExpression: case IROp::ApiCall: arity = 0; break;
         case IROp::Add: case IROp::Subtract: case IROp::Multiply: case IROp::Divide:
         case IROp::Remainder: case IROp::BitAnd: case IROp::BitOr: case IROp::BitXor:
         case IROp::ShiftLeft: case IROp::ShiftRight: case IROp::Equal: case IROp::NotEqual:
@@ -3128,7 +3121,19 @@ class CoreIRValidator
             return Fail(index, "operation does not accept storage metadata");
         if (node.discardResult && node.op != IROp::CollectionWrite && (!storage || node.op == IROp::LoadStorage))
             return Fail(index, "operation does not accept discard metadata");
-        unsigned char effects = node.op == IROp::LegacyExpression ? EXPR_EFFECT_ALL
+        // Out 인자는 API 호출 노드에만 있다. 대상은 필드 경로가 없는 변수나 셀이어야 한다.
+        if (node.op != IROp::ApiCall && !node.outputs.empty()) return Fail(index, "operation does not accept output arguments");
+        for (const NeoCore::IROutput& output : node.outputs)
+        {
+            const NeoCore::IRStorageTarget& target = output.storage;
+            if ((target.kind != NeoCore::IRStorageKind::Variable && target.kind != NeoCore::IRStorageKind::Cell) ||
+                !target.fields.empty() || target.symbolId == 0 || !AbleBackendName(ar_, target.backendName) ||
+                output.parameter >= 32u || !ir_.types.IsStorable(output.typeId) ||
+                (!output.cloneHelper.empty() && !AbleBackendName(ar_, output.cloneHelper)) ||
+                (ir_.types.Get(output.typeId).kind == NeoCore::TypeKind::Struct) == output.cloneHelper.empty())
+                return Fail(index, "invalid output argument");
+        }
+        unsigned char effects = node.op == IROp::LegacyExpression || node.op == IROp::ApiCall ? EXPR_EFFECT_ALL
             : node.op == IROp::ScriptCall || node.op == IROp::CopyStruct ? EXPR_EFFECT_CALL
             : (storage && node.op != IROp::LoadStorage) || node.op == IROp::CollectionWrite ? EXPR_EFFECT_ASSIGN : 0;
         for (std::size_t input : node.inputs)
@@ -3153,6 +3158,8 @@ class CoreIRValidator
             valid = AbleBackendName(ar_, node.backendName) && node.type != IRValueType::Void; break;
         case IROp::LegacyExpression:
             valid = !node.legacySource.empty() && node.type != IRValueType::Void; break;
+        case IROp::ApiCall:
+            valid = !node.legacySource.empty() && !node.outputs.empty(); break;
         case IROp::Add: case IROp::Subtract: case IROp::Multiply: case IROp::Divide:
             valid = numeric && node.typeId == inputType; break;
         case IROp::Remainder: case IROp::BitAnd: case IROp::BitOr: case IROp::BitXor:
@@ -3335,24 +3342,29 @@ static SOperand SnapshotCoreIRValue(SOperand value, CArchiveRdWC& ar, SFunctions
     return value;
 }
 
-static bool ResolveCoreIRStorage(const NeoCore::IRNode& node, SOperand& target,
+static bool ResolveCoreIRStorage(const NeoCore::IRStorageTarget& storage, int line, SOperand& target,
     CArchiveRdWC& ar, SFunctions& funs, SVars& vars)
 {
-    target = SOperand(FindReadableVar(funs, vars, node.storage.backendName));
+    target = SOperand(FindReadableVar(funs, vars, storage.backendName));
     if (target.IsInvalidValue() || target.IsNone() || IsTempVar(target._iVar) || IsCompileConstant(target._iVar))
     {
-        SetCompileError(ar, "unresolved or readonly typed IR storage '%s'", node.storage.backendName.c_str());
+        SetCompileError(ar, "unresolved or readonly typed IR storage '%s'", storage.backendName.c_str());
         return false;
     }
     // 구조체는 평면 값 목록이다. 우변이 끝난 뒤 마지막 필드를 소유한 목록까지 다시 찾는다.
-    for (std::size_t i = 0; i + 1 < node.storage.fields.size(); ++i)
+    for (std::size_t i = 0; i + 1 < storage.fields.size(); ++i)
     {
         const int value = funs._cur->AllocLocalTempVar();
         funs._cur->Push_OP(ar, NOP_CLT_READ, target._iVar,
-            funs.AddStaticInt(static_cast<NS_INT>(node.storage.fields[i])), value, node.source.line);
+            funs.AddStaticInt(static_cast<NS_INT>(storage.fields[i])), value, line);
         target = SOperand(value);
     }
     return true;
+}
+static bool ResolveCoreIRStorage(const NeoCore::IRNode& node, SOperand& target,
+    CArchiveRdWC& ar, SFunctions& funs, SVars& vars)
+{
+    return ResolveCoreIRStorage(node.storage, node.source.line, target, ar, funs, vars);
 }
 
 static SOperand ReadCoreIRStorage(const NeoCore::IRNode& node, const SOperand& target,
@@ -3683,6 +3695,59 @@ static bool EmitCoreIRStorage(const NeoCore::IRNode& node, SOperand& result,
     return true;
 }
 
+// IR 잎의 원문(legacySource)을 그 자리에서 컴파일한다. 이관하지 않은 식과 서명으로 검사한 API 호출이 함께 쓴다.
+static bool EmitCoreLegacySource(const NeoCore::IRNode& node, SOperand& result,
+    CArchiveRdWC& ar, SFunctions& funs, SVars& vars)
+{
+    // 아직 이관하지 않은 호출·선택자는 이 잎의 차례에서만 실행 코드를 만든다. 인자를 먼저 모으면 오류 순서가 바뀐다.
+    CArchiveRdWC fragment;
+    const std::string source = node.legacySource + ";";
+    CheckCompileRange("typed IR fragment bytes", static_cast<int64_t>(source.size()), 0, INT_MAX - 1);
+    if (!ToArchiveRdWC(source.data(), static_cast<int>(source.size()), fragment))
+    { SetCompileError(ar, "invalid typed IR fragment encoding"); return false; }
+    fragment._allowGlobalInitLogic = ar._allowGlobalInitLogic;
+    fragment._debug = ar._debug;
+    fragment._iTableDeep = ar._iTableDeep;
+    fragment._parserDepth = ar._parserDepth;
+    fragment.m_sSourceName = ar.m_sSourceName;
+    fragment.m_sModuleName = ar.m_sModuleName;
+    fragment.m_iFileSeq = ar.m_iFileSeq;
+    fragment.m_pDebugSourceFiles = ar.m_pDebugSourceFiles;
+    fragment.m_pDefines = ar.m_pDefines;
+    // 부모는 이 조각의 파싱이 끝날 때까지 살아 있고 상수 표도 변경되지 않는다.
+    fragment.m_pScriptDefineParent = &ar;
+    fragment.m_pGlobalSymbols = ar.m_pGlobalSymbols;
+    fragment.m_pLoader = ar.m_pLoader;
+    fragment.m_coreIntrinsicPrefix = ar.m_coreIntrinsicPrefix;
+    fragment.m_coreTypedIR = ar.m_coreTypedIR;
+    fragment.m_coreExpectedType = node.typeId;
+    fragment.m_coreIREffects = ar.m_coreIREffects;
+    CArchiveRdWC::Cursor cursor = fragment.SaveCursor();
+    cursor.line = node.source.line; cursor.column = node.source.column;
+    fragment.RestoreCursor(std::move(cursor));
+    struct PresetScope
+    {
+        SFunctions& functions; int effects, offset;
+        explicit PresetScope(SFunctions& value)
+            : functions(value), effects(value._presetExprEffects), offset(value._presetExprOffset)
+        { functions._presetExprEffects = -1; functions._presetExprOffset = -1; }
+        ~PresetScope() { functions._presetExprEffects = effects; functions._presetExprOffset = offset; }
+    } preset(funs);
+    const TK_TYPE end = ParseShortCircuitLogic(true, result, fragment, funs, vars,
+        TK_SEMICOLON, TK_NONE, TK_NONE, TK_NONE);
+    std::string trailing;
+    // 이름 있는 함수 참조는 컴파일 타임 함수 ID 로 나온다. MaterializeValue 가 FMOV1 로 값 슬롯에 옮기므로
+    // 대입 경로와 같은 의미로 호출 인자·반환값에도 쓸 수 있다.
+    const bool valid = end == TK_SEMICOLON && !result.IsInvalidValue() && !result.IsNone() &&
+        GetToken(fragment, trailing) == TK_NONE && fragment.m_sErrorString.empty();
+    // 반환이 없는 API 호출문은 결과 슬롯을 값으로 쓰지 않는다.
+    if (valid && node.type != NeoCore::IRValueType::Void)
+    { result._storage = CoreStorageType(ar.m_coreTypedIR->types, node.typeId); MaterializeValue(result, fragment, funs); }
+    ar.CopyErrorFrom(fragment);
+    if (!valid && ar.m_sErrorString.empty()) SetCompileError(ar, "invalid typed IR expression fragment");
+    return valid;
+}
+
 static bool EmitCoreIRNodeImpl(std::size_t index, SOperand& result,
     CArchiveRdWC& ar, SFunctions& funs, SVars& vars, int destination)
 {
@@ -3704,52 +3769,58 @@ static bool EmitCoreIRNodeImpl(std::size_t index, SOperand& result,
         if (!result.IsInvalidValue() && !result.IsNone()) return true;
         SetCompileError(ar, "unresolved typed IR symbol '%s'", node.backendName.c_str()); return false;
     case IROp::LegacyExpression:
+        return EmitCoreLegacySource(node, result, ar, funs, vars);
+    case IROp::ApiCall:
     {
-        // 아직 이관하지 않은 호출·선택자는 이 잎의 차례에서만 실행 코드를 만든다. 인자를 먼저 모으면 오류 순서가 바뀐다.
-        CArchiveRdWC fragment;
-        const std::string source = node.legacySource + ";";
-        CheckCompileRange("typed IR fragment bytes", static_cast<int64_t>(source.size()), 0, INT_MAX - 1);
-        if (!ToArchiveRdWC(source.data(), static_cast<int>(source.size()), fragment))
-        { SetCompileError(ar, "invalid typed IR fragment encoding"); return false; }
-        fragment._allowGlobalInitLogic = ar._allowGlobalInitLogic;
-        fragment._debug = ar._debug;
-        fragment._iTableDeep = ar._iTableDeep;
-        fragment._parserDepth = ar._parserDepth;
-        fragment.m_sSourceName = ar.m_sSourceName;
-        fragment.m_sModuleName = ar.m_sModuleName;
-        fragment.m_iFileSeq = ar.m_iFileSeq;
-        fragment.m_pDebugSourceFiles = ar.m_pDebugSourceFiles;
-        fragment.m_pDefines = ar.m_pDefines;
-        // 부모는 이 조각의 파싱이 끝날 때까지 살아 있고 상수 표도 변경되지 않는다.
-        fragment.m_pScriptDefineParent = &ar;
-        fragment.m_pGlobalSymbols = ar.m_pGlobalSymbols;
-        fragment.m_pLoader = ar.m_pLoader;
-        fragment.m_coreIntrinsicPrefix = ar.m_coreIntrinsicPrefix;
-        fragment.m_coreTypedIR = ar.m_coreTypedIR;
-        fragment.m_coreExpectedType = node.typeId;
-        fragment.m_coreIREffects = ar.m_coreIREffects;
-        CArchiveRdWC::Cursor cursor = fragment.SaveCursor();
-        cursor.line = node.source.line; cursor.column = node.source.column;
-        fragment.RestoreCursor(std::move(cursor));
-        struct PresetScope
+        // 호출은 프런트엔드가 서명으로 검사한 표기 그대로 컴파일한다. 인자 평가·호출 창·결과 처리는 다른 API 호출과 같다.
+        if (!EmitCoreLegacySource(node, result, ar, funs, vars)) return false;
+        const auto& types = ar.m_coreTypedIR->types;
+        // 방금 낸 호출의 계획에 Out 슬롯을 표시한다. 중첩 호출의 계획은 인자 평가 중에 먼저 만들어지므로
+        // 마지막 계획이 이 호출의 것이다. 내장 API 와 호스트 API 가 같은 표시를 쓴다.
+        if (funs._cur->_calls.empty()) { SetCompileError(ar, "API call with output arguments has no call plan"); return false; }
+        CompileCallStorage& plan = funs._cur->_calls.back();
+        for (const NeoCore::IROutput& output : node.outputs)
         {
-            SFunctions& functions; int effects, offset;
-            explicit PresetScope(SFunctions& value)
-                : functions(value), effects(value._presetExprEffects), offset(value._presetExprOffset)
-            { functions._presetExprEffects = -1; functions._presetExprOffset = -1; }
-            ~PresetScope() { functions._presetExprEffects = effects; functions._presetExprOffset = offset; }
-        } preset(funs);
-        const TK_TYPE end = ParseShortCircuitLogic(true, result, fragment, funs, vars,
-            TK_SEMICOLON, TK_NONE, TK_NONE, TK_NONE);
-        std::string trailing;
-        // 이름 있는 함수 참조는 컴파일 타임 함수 ID 로 나온다. MaterializeValue 가 FMOV1 로 값 슬롯에 옮기므로
-        // 대입 경로와 같은 의미로 호출 인자·반환값에도 쓸 수 있다.
-        const bool valid = end == TK_SEMICOLON && !result.IsInvalidValue() && !result.IsNone() &&
-            GetToken(fragment, trailing) == TK_NONE && fragment.m_sErrorString.empty();
-        if (valid) { result._storage = CoreStorageType(ar.m_coreTypedIR->types, node.typeId); MaterializeValue(result, fragment, funs); }
-        ar.CopyErrorFrom(fragment);
-        if (!valid && ar.m_sErrorString.empty()) SetCompileError(ar, "invalid typed IR expression fragment");
-        return valid;
+            if (output.parameter >= plan.sources.size())
+            { SetCompileError(ar, "output argument is outside the call window"); return false; }
+            plan.outMask |= 1u << output.parameter;
+        }
+        // Out 인자의 값은 호출 창 슬롯에 남아 있다(런타임이 그 슬롯을 놓지 않는다). 대입이나 복제가 창을 다시 쓰기 전에
+        // 먼저 모두 임시로 옮겨 소유권을 가져온다.
+        std::vector<int> values;
+        for (const NeoCore::IROutput& output : node.outputs)
+        {
+            const int value = funs._cur->AllocLocalTempVar(CoreStorageType(types, output.typeId));
+            funs._cur->Push_OP2(ar, NOP_MOV, value, COMPILE_CALLARG_VAR_BEGIN + 1 + static_cast<int>(output.parameter), false, node.source.line);
+            values.push_back(value);
+        }
+        for (std::size_t i = 0; i < node.outputs.size(); ++i)
+        {
+            const NeoCore::IROutput& output = node.outputs[i];
+            SOperand stored(values[i]);
+            if (!output.cloneHelper.empty())
+            {
+                // 구조체는 값이다. 컬렉션이 가진 객체를 변수와 공유하지 않도록 복제해서 대입한다.
+                SFunctionInfo* clone = funs.FindFun(output.cloneHelper);
+                if (!clone || clone->_args.size() != 1)
+                { SetCompileError(ar, "unresolved struct copy for an out argument"); return false; }
+                std::vector<int> sources(1, values[i]);
+                funs._cur->PrepareCall(ar, sources, node.source.line, SFunctionInfo::CallWindowNeedsPrepare(clone, 1));
+                funs._cur->Push_OP2(ar, NOP_MOV, COMPILE_CALLARG_VAR_BEGIN + 1, values[i], false, node.source.line);
+                stored = SOperand(funs._cur->AllocLocalTempVar(CoreStorageType(types, output.typeId)));
+                funs._cur->Push_Call(ar, NOP_CALL, clone->_funID, 1, stored._iVar, node.source.line);
+            }
+            SOperand target;
+            if (!ResolveCoreIRStorage(output.storage, node.source.line, target, ar, funs, vars)) return false;
+            if (output.storage.kind == NeoCore::IRStorageKind::Cell)
+            {
+                SOperand writeArguments[] = { stored, target };
+                EmitCoreAggregate("cellset", writeArguments, 0, ar, funs, node.source.line);
+            }
+            else funs._cur->Push_OP2(ar, NOP_MOV, target._iVar, stored._iVar, false, node.source.line);
+        }
+        funs._cur->ClearLastOP();
+        return true;
     }
     case IROp::ScriptCall:
         return EmitCoreIRCall(node, ar.m_coreTypedIR->functions[node.functionIndex].backendName, result, ar, funs, vars, destination);
@@ -3987,6 +4058,7 @@ bool ParseString(SOperand& operand, TK_TYPE tkTypePre, CArchiveRdWC& ar, SFuncti
 	}
 
 	SOperand value;
+	std::string coreApiKey;
 	if (pOtherModule == nullptr)
 		value._iVar = lexicalSlot;
 	else
@@ -4043,7 +4115,7 @@ bool ParseString(SOperand& operand, TK_TYPE tkTypePre, CArchiveRdWC& ar, SFuncti
 				value = SOperand(pFun->_funID, INVALID_ERROR_PARSEJOB, Data_Fun);
 			}
 		}
-		else if (pOtherModule == nullptr && CNeoVM::IsGlobalLibFun(tk1))
+		else if (pOtherModule == nullptr && CoreApiFunctionKey(tk1, coreApiKey))
 		{
 			tkType2 = GetToken(ar, tk2);
 			if (tkType2 != TK_L_SMALL)
@@ -4051,7 +4123,7 @@ bool ParseString(SOperand& operand, TK_TYPE tkTypePre, CArchiveRdWC& ar, SFuncti
 				SetParserCompileError(ar, PCE_INVALID_FUNCTION_CALL);
 				return false;
 			}
-			value = SOperand(-1, funs.AddStaticString(tk1));
+			value = SOperand(-1, funs.AddStaticString(coreApiKey));
 			ar.PushToken(tkType2, tk2);
 			if (!ParseFunCall(value, TK_NONE, NULL, ar, funs, vars))
 				return false;
@@ -4112,7 +4184,7 @@ static bool ParseUnaryOperand(SOperand& operand, TK_TYPE prefix, CArchiveRdWC& a
         if (ParseShortCircuitLogic(true, operand, ar, funs, vars) != TK_R_SMALL) return false;
         if (!ParsePostfixSelectors(operand, ar, funs, vars)) return false;
     }
-    else if (type == TK_TOSTRING || type == TK_TOINT || type == TK_TOFLOAT || type == TK_TOSIZE)
+    else if (type == TK_TOSTRING || type == TK_TOINT || type == TK_TOFLOAT)
     {
         if (!ParseToType(operand._iVar, type, ar, funs, vars)) return false;
         if (!ParsePostfixSelectors(operand, ar, funs, vars)) return false;
@@ -4916,7 +4988,6 @@ TK_TYPE ParseJob(bool bReqReturn, SOperand& sResultStack, std::vector<SJumpValue
 		case TK_TOSTRING:
 		case TK_TOINT:
 		case TK_TOFLOAT:
-		case TK_TOSIZE:
 			// iTempOffset 에 -1 을 대입하면 SOperand(int) 생성자가 _operandType 을 Data_None 으로
 			// 잡아버린다. ParseToType 은 _iVar 만 채우므로 그 표시가 남아, 값은 멀쩡한데
 			// "값 없음" 으로 보이는 피연산자가 만들어진다(리스트 리터럴이 원소를 버리는 원인).
@@ -7156,7 +7227,6 @@ bool ParseMiddleArea(std::vector<SJumpValue>* pJumps, CArchiveRdWC& ar, SFunctio
         case TK_TOSTRING:
         case TK_TOINT:
         case TK_TOFLOAT:
-        case TK_TOSIZE:
         case TK_TRUE:
         case TK_FALSE:
         case TK_NULL:

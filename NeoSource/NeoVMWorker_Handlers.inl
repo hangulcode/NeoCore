@@ -139,11 +139,6 @@ NEOS_FORCEINLINE bool handle_TOFLOAT(const SVMOperation& OP) {
     return false;
 }
 
-NEOS_NOINLINE bool handle_TOSIZE(const SVMOperation& OP) {
-    GetVarRawF1(OP)->_int = ToSize(GetVarPtr2(OP));
-    return false;
-}
-
 
 NEOS_NOINLINE bool handle_SLEEP(const SVMOperation& OP) {
 	if (m_iNativeScriptCallDepth > 0) {
@@ -249,54 +244,12 @@ NEOS_NOINLINE bool handle_PTRCALL_native(const SVMOperation& OP, ValueRef pVar1,
         return false;
     }
     ValueRef pFunName = nullptr;
+    // 문자열·컬렉션의 메서드는 서명으로 검사한 내장 API 호출(APICALL)로만 들어온다. 이름으로 찾는 경로는 없다.
     switch (pVar1.GetType())
     {
-    case VAR_STRING:
-        pFunName = pFunNamePre ? pFunNamePre : GetVarPtr2(OP);
-        CallNative(GetVM()->_funLib_String, std::addressof(pVar1), pFunName->_str, n3, nullptr, keepResult);
-        break;
     case VAR_FP_NATIVE:
         pFunName = pFunNamePre ? pFunNamePre : GetVarPtr2(OP);
         CallNative(pVar1->_fpNative->_fun, pVar1->_fpNative->_pUserData, pFunName->_str, n3, nullptr, keepResult);
-        break;
-    case VAR_ARRAY:
-        pFunName = pFunNamePre ? pFunNamePre : GetVarPtr2(OP);
-        CallNative(GetVM()->_funLib_Array, std::addressof(pVar1), pFunName->_str, n3, nullptr, keepResult);
-        break;
-    case VAR_MAP:
-    {
-        pFunName = pFunNamePre ? pFunNamePre : GetVarPtr2(OP);
-        ValueRef pVarMeta = pVar1->_tbl->Find(pFunName);
-        if (pVarMeta != nullptr)
-        {
-            if (_iSP_Vars_Max2 < _iSP_VarsMax + (1 + n3))
-                _iSP_Vars_Max2 = _iSP_VarsMax + (1 + n3);
-
-            if (pVarMeta.GetType() == VAR_FUN)
-            {
-                CallFunctionValue(pVarMeta.FunctionIndex(), n3, discard);
-                break;
-            }
-            if (pVarMeta.GetType() == VAR_CLOSURE)
-            {
-                Call(pVarMeta->_closure, n3, discard);
-                break;
-            }
-        }
-        CallNative(GetVM()->_funLib_Map, std::addressof(pVar1), pFunName->_str, n3, nullptr, keepResult);
-        break;
-    }
-    case VAR_LIST:
-        pFunName = pFunNamePre ? pFunNamePre : GetVarPtr2(OP);
-        CallNative(GetVM()->_funLib_List, std::addressof(pVar1), pFunName->_str, n3, nullptr, keepResult);
-        break;
-    case VAR_SET:
-        pFunName = pFunNamePre ? pFunNamePre : GetVarPtr2(OP);
-        CallNative(GetVM()->_funLib_Set, std::addressof(pVar1), pFunName->_str, n3, nullptr, keepResult);
-        break;
-    case VAR_ASYNC:
-        pFunName = pFunNamePre ? pFunNamePre : GetVarPtr2(OP);
-        CallNative(GetVM()->_funLib_Async, std::addressof(pVar1), pFunName->_str, n3, nullptr, keepResult);
         break;
     default:
         // 함수값 호출(n2=-1)은 이름 슬롯이 없다. 멤버 호출만 이름을 읽는다.
@@ -356,10 +309,10 @@ NEOS_FORCEINLINE bool handle_PTRCALL_L(const SVMOperation& OP) {
 
 // 본문 공용. pRet 은 NORESULT 를 이미 반영한 반환 슬롯(없으면 nullptr = 결과를 버린다).
 NEOS_FORCEINLINE bool handle_PTRCALL2_impl(short n2, ValueRef pFunName, VarInfo* pRet) {
-    if (pFunName.GetType() == VAR_STRING)
-    {
-        CallNative(GetVM()->_funLib_Default, nullptr, pFunName->_str, n2, pRet, false);
-    }
+    // 연결 이름이 남은 호출은 로드에서 거부된다. 여기 오는 것은 손상된 코드뿐이다.
+    (void)pRet;
+    if (pFunName.GetType() == VAR_STRING) SetErrorFormat(RTE_CALL_NAMED, pFunName->_str->_str.c_str());
+    else SetError(RTE_CALL_INVALID);
 
     if (_iSP_Vars_Max2 < _iSP_VarsMax + (1 + n2))
         _iSP_Vars_Max2 = _iSP_VarsMax + (1 + n2);
@@ -378,10 +331,21 @@ NEOS_FORCEINLINE bool handle_PTRCALL2_L(const SVMOperation& OP) {
 
 NEOS_FORCEINLINE bool handle_NATIVECALL(const SVMOperation& OP) {
     short n2 = OP.n2;
-    CallDefaultNativeByIndex(OP.n1, n2, (OP.argFlag & NEOS_OP_CALL_NORESULT) ? nullptr : GetVarRaw3(OP));
+    CallApi(OP.n1, false, ValueRef(nullptr), n2, (OP.argFlag & NEOS_OP_CALL_NORESULT) ? nullptr : GetVarRaw3(OP), false);
 
     if (_iSP_Vars_Max2 < _iSP_VarsMax + (1 + n2))
         _iSP_Vars_Max2 = _iSP_VarsMax + (1 + n2);
+    return false;
+}
+
+// 메서드형 내장 API. 수신자는 호출자 프레임이나 전역의 슬롯 그대로이고 인자만 창에 있다. 결과는 창 0번에 남겨
+// 뒤따르는 MOV 가 가져가며, 결과를 쓰지 않는 호출문(NORESULT)은 창과 함께 놓는다.
+NEOS_FORCEINLINE bool handle_APICALL(const SVMOperation& OP) {
+    short n3 = OP.n3;
+    CallApi(OP.n2, true, GetVarPtr1(OP), n3, nullptr, (OP.argFlag & NEOS_OP_CALL_NORESULT) == 0);
+
+    if (_iSP_Vars_Max2 < _iSP_VarsMax + (1 + n3))
+        _iSP_Vars_Max2 = _iSP_VarsMax + (1 + n3);
     return false;
 }
 
@@ -667,36 +631,6 @@ NEOS_NOINLINE bool handle_IDLE(const SVMOperation& OP) {
 		GetVM()->Var_Release(&p->_callback);
 		GetVM()->Var_Release(&callback);
     }
-    return false;
-}
-
-// 벡터 생성 intrinsic (LoadVM 에서 PTRCALL2(#Vector*) 패치). native 호출 프레임 없이
-// 인자 슬롯(_iSP_VarsMax+1..N)을 직접 읽어 값타입 세팅. n3=결과 슬롯.
-// 벡터 저장을 이 핸들러에서 처리하므로 디스패치 루프에 전개되면 그만큼
-// 루프가 커진다. 생성은 성분 쓰기·산술만큼 자주 돌지 않으므로 루프 밖에 둔다.
-NEOS_NOINLINE bool handle_VEC_MAKE(const SVMOperation& OP) {
-    // n2 = 인자 수 = 성분 수. Vector2/3/4/Quaternion 이 모두 이 op 으로 패치되며,
-    // 무엇으로 해석할지는(예: wxyz 쿼터니언) 사용자 규약이지 VM 의 타입이 아니다.
-    const int n = OP.n2;
-    // 저수준 바이트코드 경로도 공유하므로 버퍼 크기를 정하는 명령 형식은 검증한다.
-    if (n < 2 || n > 4) {
-        SetError(RTE_CALL_INVALID);
-        return false;
-    }
-    // 함수 진입에서 인자 영역까지 스택 범위와 해제 상한을 확정한다.
-    // 인자와 목적지가 겹쳐도 값을 보존하도록 새 벡터를 완성한 뒤 대상에 연결한다.
-    // 인자의 숫자 종류(int/float)는 호출 계획이 준다.
-    VarInfo* args = GetStackFromBase(_iSP_VarsMax + 1);
-    float tmp[4] = {};   // n 개만 쓰고 n 개만 복사한다
-    for (int i = 0; i < n; ++i) {
-        ValueRef argument(args + i, PlanType(1 + i));
-        assert(argument.IsNumber());
-        tmp[i] = NeoNarrowFloat32(argument.GetFloatNumber());
-    }
-    _activePlan = nullptr;
-    if (OP.argFlag & NEOS_OP_CALL_NORESULT) return false;
-    // 2성분은 직접 저장하고, 3·4성분은 단독 소유 저장소를 재사용한다.
-    StoreVector(GetVarPtr3(OP), n, tmp[0], tmp[1], tmp[2], tmp[3]);
     return false;
 }
 

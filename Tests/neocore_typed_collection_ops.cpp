@@ -1,6 +1,7 @@
 ﻿#if defined(_WIN32) && defined(_DEBUG)
 #include <crtdbg.h>
 #endif
+#include "NeoCoreApi.h"
 #include "NeoCoreCompiler.h"
 #include "NeoCoreHostBridge.h"
 #include "NeoScript.h"
@@ -194,8 +195,7 @@ bool IsRuntimeCall(OperationCode op)
 bool IsGenericAggregate(OperationCode op)
 {
     return op == NOP_CLT_READ || op == NOP_CLT_READ_L || op == NOP_CLT_READ_STATIC_STRING ||
-        op == NOP_CLT_MOV || op == NOP_CLT_MOV_L || op == NOP_CLT_WRITE_REF ||
-        op == NOP_VEC_MAKE;
+        op == NOP_CLT_MOV || op == NOP_CLT_MOV_L || op == NOP_CLT_WRITE_REF;
 }
 
 void CheckShape(IRuntime& runtime, const char* source, const std::vector<OperationCode>& required,
@@ -250,12 +250,48 @@ void CheckShape(IRuntime& runtime, const char* source, const std::vector<Operati
     }
 }
 
+// 메서드형 API 는 전용 명령이 아니라 등록부의 서명으로 검사한 API 호출로 내려간다. 내린 소스에 등록부 번호의
+// 호출 표기가 있고, 이미지가 연결 이름으로 로드되는지 확인한다.
+void CheckApiShape(IRuntime& runtime, const char* source, const std::vector<const char*>& keys, bool debug, const char* label)
+{
+    std::vector<uint8_t> bytes;
+    NeoCore::StaticCompileResult checked;
+    if (!CompileImage(runtime, source, debug, bytes, checked)) return;
+    // 값을 쓰는 호출은 IR 잎의 원문에, 호출문은 내린 소스에 표기가 남는다.
+    std::string lowered = checked.loweredSource;
+    for (const NeoCore::IRNode& node : checked.typedIR.nodes) lowered += " " + node.legacySource;
+    for (const char* key : keys)
+    {
+        const int index = NeoCore::FindCoreApiIndex(key);
+        Check(index >= 0, std::string(label) + " uses a registered API: " + key);
+        Check(lowered.find("__api" + std::to_string(index) + "(") != std::string::npos,
+            std::string(label) + " lowers " + key + " to an API call");
+    }
+    bool called = false;
+    for (const auto& op : Operations(bytes))
+    {
+        called = called || op.Code() == NOP_PTRCALL;
+        Check(!GetAggregateOpInfo(op.Code()) || GetAggregateOpInfo(op.Code())->shape != AggregateOpShape::Binary ||
+            std::string(GetAggregateOpInfo(op.Code())->suffix).find("contains") == std::string::npos,
+            std::string(label) + " has no dedicated membership instruction");
+    }
+    Check(called, std::string(label) + " emits linked API calls");
+    Error error;
+    ProgramHandle loaded = runtime.LoadProgram(bytes, &error);
+    Check(bool(loaded) && error.ok(), std::string(label) + " image links its API names: " + error.message);
+    if (loaded) runtime.DestroyProgram(loaded);
+}
+
 void Shapes(IRuntime& runtime, bool debug)
 {
-    CheckShape(runtime, "export bool Probe(set<int> s,int key){bool a=s.add(key);bool b=s.contains(key);bool c=s.remove(key);return a&&b&&c;}",
-        {NOP_SET_I64_ADD,NOP_SET_I64_CONTAINS,NOP_SET_I64_REMOVE}, debug, "integer set operations have no native call");
-    CheckShape(runtime, "export bool Probe(set<string> s,string key){bool a=s.add(key);bool b=s.contains(key);bool c=s.remove(key);return a&&b&&c;}",
-        {NOP_SET_STRING_ADD,NOP_SET_STRING_CONTAINS,NOP_SET_STRING_REMOVE}, debug, "string set operations have no native call");
+    CheckApiShape(runtime, "export bool Probe(set<int> s,int key){bool a=s.add(key);bool b=s.contains(key);bool c=s.remove(key);return a&&b&&c;}",
+        {"set.add","set.contains","set.remove"}, debug, "integer set operations are API calls");
+    CheckApiShape(runtime, "export bool Probe(set<string> s,string key){bool a=s.add(key);bool b=s.contains(key);bool c=s.remove(key);return a&&b&&c;}",
+        {"set.add","set.contains","set.remove"}, debug, "string set operations are API calls");
+    CheckApiShape(runtime, "export bool Probe(map<string,int> m,string key){return m.contains(key)&&m.len()>0;}",
+        {"map.contains","map.len"}, debug, "map membership and length are API calls");
+    CheckApiShape(runtime, "export int Probe(int n){array<int> a=array<int>(n,7);a.append(5);a.resize(4);a.reserve(8);return a.len();}",
+        {"array.append","array.resize","array.reserve","array.len"}, debug, "array methods are API calls");
     struct NumericShape { const char* operation; OperationCode op; };
     const NumericShape numeric[] = {
         {"%",OP_I64_MOD},{"&",OP_I64_AND},{"|",OP_I64_OR},
@@ -298,18 +334,18 @@ void Shapes(IRuntime& runtime, bool debug)
                 "struct replacement requires no in-place assignment helper");
         }
     }
-    CheckShape(runtime, "export int Probe(int n){array<int> a=array<int>(n,7);a[0]=9;a.append(5);a.resize(4);a.reserve(8);return a[0]+a.len();}",
-        {NOP_ARRAY_I64_NEW,NOP_ARRAY_I64_GET,NOP_ARRAY_I64_STORE,NOP_ARRAY_I64_APPEND,NOP_ARRAY_LEN,NOP_ARRAY_RESIZE,NOP_ARRAY_RESERVE}, debug, "int array primitive shape");
-    CheckShape(runtime, "export float Probe(int n){array<float> a=array<float>(n,1.5);a[0]=2.5;a.append(3.5);return a[0];}",
-        {NOP_ARRAY_F64_NEW,NOP_ARRAY_F64_GET,NOP_ARRAY_F64_STORE,NOP_ARRAY_F64_APPEND}, debug, "float array primitive shape");
-    CheckShape(runtime, "export bool Probe(int n){array<bool> a=array<bool>(n,true);a[0]=false;a.append(true);return a[0];}",
-        {NOP_ARRAY_BOOL_NEW,NOP_ARRAY_BOOL_GET,NOP_ARRAY_BOOL_STORE,NOP_ARRAY_BOOL_APPEND}, debug, "bool array primitive shape");
-    CheckShape(runtime, "export float Probe(int n){array<Vector2> a=array<Vector2>(n,Vector2(1,2));a[0]=Vector2(3,4);a.append(Vector2(5,6));a[0].x+=2;return a[0].y;}",
-        {NOP_ARRAY_V2_NEW,NOP_ARRAY_V2_GET,NOP_ARRAY_V2_SET,NOP_ARRAY_V2_APPEND,NOP_V2_GET,NOP_V2_SET}, debug, "vector2 array primitive shape");
-    CheckShape(runtime, "export float Probe(int n){array<Vector3> a=array<Vector3>(n,Vector3(1,2,3));a[0]=Vector3(3,4,5);a.append(Vector3(5,6,7));return a[0].z;}",
-        {NOP_ARRAY_V3_NEW,NOP_ARRAY_V3_GET,NOP_ARRAY_V3_SET,NOP_ARRAY_V3_APPEND}, debug, "vector3 array primitive shape");
-    CheckShape(runtime, "export float Probe(int n){array<Vector4> a=array<Vector4>(n,Vector4(1,2,3,4));a[0]=Vector4(3,4,5,6);a.append(Vector4(5,6,7,8));return a[0].w;}",
-        {NOP_ARRAY_V4_NEW,NOP_ARRAY_V4_GET,NOP_ARRAY_V4_SET,NOP_ARRAY_V4_APPEND}, debug, "vector4 array primitive shape");
+    CheckShape(runtime, "export int Probe(int n){array<int> a=array<int>(n,7);a[0]=9;return a[0];}",
+        {NOP_ARRAY_I64_NEW,NOP_ARRAY_I64_GET,NOP_ARRAY_I64_STORE}, debug, "int array primitive shape");
+    CheckShape(runtime, "export float Probe(int n){array<float> a=array<float>(n,1.5);a[0]=2.5;return a[0];}",
+        {NOP_ARRAY_F64_NEW,NOP_ARRAY_F64_GET,NOP_ARRAY_F64_STORE}, debug, "float array primitive shape");
+    CheckShape(runtime, "export bool Probe(int n){array<bool> a=array<bool>(n,true);a[0]=false;return a[0];}",
+        {NOP_ARRAY_BOOL_NEW,NOP_ARRAY_BOOL_GET,NOP_ARRAY_BOOL_STORE}, debug, "bool array primitive shape");
+    CheckShape(runtime, "export float Probe(int n){array<Vector2> a=array<Vector2>(n,Vector2(1,2));a[0]=Vector2(3,4);a[0].x+=2;return a[0].y;}",
+        {NOP_ARRAY_V2_NEW,NOP_ARRAY_V2_GET,NOP_ARRAY_V2_SET,NOP_V2_GET,NOP_V2_SET}, debug, "vector2 array primitive shape");
+    CheckShape(runtime, "export float Probe(int n){array<Vector3> a=array<Vector3>(n,Vector3(1,2,3));a[0]=Vector3(3,4,5);return a[0].z;}",
+        {NOP_ARRAY_V3_NEW,NOP_ARRAY_V3_GET,NOP_ARRAY_V3_SET}, debug, "vector3 array primitive shape");
+    CheckShape(runtime, "export float Probe(int n){array<Vector4> a=array<Vector4>(n,Vector4(1,2,3,4));a[0]=Vector4(3,4,5,6);return a[0].w;}",
+        {NOP_ARRAY_V4_NEW,NOP_ARRAY_V4_GET,NOP_ARRAY_V4_SET}, debug, "vector4 array primitive shape");
 }
 
 void Values(IRuntime& runtime, bool debug)

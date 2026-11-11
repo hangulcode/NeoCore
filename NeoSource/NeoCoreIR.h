@@ -22,7 +22,9 @@ enum class IROp
     LoadStorage, Assign, AddAssign, SubtractAssign, MultiplyAssign, DivideAssign,
     RemainderAssign, BitAndAssign, BitOrAssign, BitXorAssign, ShiftLeftAssign, ShiftRightAssign,
     PreIncrement, PreDecrement, PostIncrement, PostDecrement,
-    ScriptCall, NullableConvert, CopyStruct, MapRead, StringLiteral, Conditional, CollectionRead, CollectionWrite
+    ScriptCall, NullableConvert, CopyStruct, MapRead, StringLiteral, Conditional, CollectionRead, CollectionWrite,
+    // Out 인자가 있는 API 호출. 호출은 legacySource 의 표기로 컴파일하고, 끝난 뒤 outputs 의 대상에 값을 되돌려 쓴다.
+    ApiCall
 };
 
 enum class IRStorageKind { Invalid, Variable, Cell };
@@ -34,6 +36,16 @@ struct IRStorageTarget
     std::size_t symbolId = 0;
     // 구조체의 평탄한 필드 경로는 우변 실행 뒤 루트부터 다시 찾는다.
     std::vector<std::size_t> fields;
+};
+
+// API 호출의 Out 인자 하나. 호출 창의 parameter 번째 인자 슬롯에 남은 값을 호출 뒤 storage 에 대입한다.
+struct IROutput
+{
+    std::uint32_t parameter = 0;
+    IRStorageTarget storage;
+    std::uint32_t typeId = 0;
+    // 구조체 값은 대입 전에 이 헬퍼로 복제한다. 맵이 가진 값과 변수가 같은 객체를 가리키지 않게 한다.
+    std::string cloneHelper;
 };
 
 struct IRSourceSpan
@@ -58,6 +70,7 @@ struct IRNode
     // 아직 이전 컴파일 경로를 쓰는 잎은 평가 순서에 도달했을 때만 해석한다.
     std::string legacySource;
     IRStorageTarget storage;
+    std::vector<IROutput> outputs;
     std::size_t functionIndex = static_cast<std::size_t>(-1);
     // 문장 위치의 대입·증감은 결과를 쓰지 않는다. 백엔드가 임시 슬롯 없이 변수에 바로 저장할 수 있다.
     bool discardResult = false;

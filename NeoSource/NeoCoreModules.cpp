@@ -576,6 +576,11 @@ public:
             {
                 const Token& token = unit.tokens[index];
                 if (!token.identifier) continue;
+                // out 은 예약어가 아니다. 인자·매개변수 자리(`(` 나 `,` 뒤)에서 이름이 이어지면 방향 표식이므로 그대로 둔다.
+                // 같은 이름의 변수는 뒤에 이름이 올 수 없으므로 정상 치환된다.
+                if (token.Is("out") && index > 0 && index + 1 < unit.tokens.size() && unit.tokens[index + 1].identifier &&
+                    (unit.tokens[index - 1].Is("(") || unit.tokens[index - 1].Is(",")))
+                    continue;
                 NameRef key; key.data = token.text; key.size = token.size;
                 const auto known = renamed.find(key);
                 bool rename;

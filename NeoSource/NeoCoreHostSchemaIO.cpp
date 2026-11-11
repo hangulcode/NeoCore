@@ -1,4 +1,4 @@
-#include "NeoCoreHostSchemaIO.h"
+﻿#include "NeoCoreHostSchemaIO.h"
 #include "NeoCoreCompiler.h"
 #include "NeoCoreScriptHost.h"
 #include "NeoCoreTextFile.h"
@@ -208,6 +208,17 @@ bool HostSchemaDocument::ToJson(std::string& json, std::string& error) const
                 Put(doc.get(),member,"returnType",binding.returnType); Put(doc.get(),member,"event",binding.eventName);
                 yyjson_mut_val* args=yyjson_mut_arr(doc.get()); yyjson_mut_obj_add_val(doc.get(),member,"parameters",args);
                 for(TypeId type:binding.parameters) yyjson_mut_arr_add_uint(doc.get(),args,type);
+                if(!binding.parameterNames.empty())
+                {
+                    yyjson_mut_val* names=yyjson_mut_arr(doc.get()); yyjson_mut_obj_add_val(doc.get(),member,"parameterNames",names);
+                    for(const std::string& parameterName:binding.parameterNames) yyjson_mut_arr_add_strncpy(doc.get(),names,parameterName.data(),parameterName.size());
+                }
+                if(!binding.parameterModes.empty())
+                {
+                    // 0 = in, 1 = out
+                    yyjson_mut_val* modes=yyjson_mut_arr(doc.get()); yyjson_mut_obj_add_val(doc.get(),member,"parameterModes",modes);
+                    for(ApiParameterMode mode:binding.parameterModes) yyjson_mut_arr_add_uint(doc.get(),modes,mode==ApiParameterMode::Out?1u:0u);
+                }
             }
             yyjson_mut_arr_append(members,member);
         }
@@ -247,7 +258,23 @@ bool HostSchemaDocument::FromJson(const std::string& json, HostSchemaDocument& o
                 std::vector<TypeId> parameters; yyjson_val* args=Array(Member(member,"parameters"));
                 for(std::size_t p=0;p<yyjson_arr_size(args);++p) parameters.push_back(Integer(yyjson_arr_get(args,p)));
                 const TypeId returns=Integer(Member(member,"returnType")); const std::string event=Text(Member(member,"event"));
-                if(kind=="method") { Require(event.empty(),"ordinary host method has event metadata"); ok=result.schema.AddMethod(owner,name,returns,parameters)!=0; }
+                if(kind=="method")
+                {
+                    Require(event.empty(),"ordinary host method has event metadata");
+                    // 이름·방향은 선택 필드다. 없는 파일은 모두 이름 없는 입력 매개변수다.
+                    std::vector<std::string> parameterNames; std::vector<ApiParameterMode> parameterModes;
+                    if(yyjson_val* names=yyjson_obj_get(member,"parameterNames"))
+                        for(std::size_t p=0;p<yyjson_arr_size(Array(names));++p) parameterNames.push_back(Text(yyjson_arr_get(names,p)));
+                    if(yyjson_val* modes=yyjson_obj_get(member,"parameterModes"))
+                        for(std::size_t p=0;p<yyjson_arr_size(Array(modes));++p)
+                        {
+                            const std::uint32_t mode=Integer(yyjson_arr_get(modes,p)); Require(mode<=1,"invalid host parameter mode");
+                            parameterModes.push_back(mode?ApiParameterMode::Out:ApiParameterMode::In);
+                        }
+                    ok=(parameterNames.empty() && parameterModes.empty()
+                        ? result.schema.AddMethod(owner,name,returns,parameters)
+                        : result.schema.AddMethod(owner,name,returns,parameters,parameterNames,parameterModes))!=0;
+                }
                 else if(kind=="event")
                 { Require(parameters.size()==2 && parameters[0]==result.schema.Types().String() && returns==result.schema.Types().Void(),"invalid host event signature"); ok=result.schema.AddEvent(owner,event,parameters[1],name)!=0; }
             }

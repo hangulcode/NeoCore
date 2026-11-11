@@ -314,6 +314,23 @@ std::vector<std::uint8_t> SchemaDescription(const HostSchema* schema)
         for (const HostBinding& binding : schema->Bindings())
             if (!binding.eventName.empty()) { writer.U32(binding.id); writer.Text(binding.eventName); }
     }
+    // Out 매개변수는 호출 규약을 바꾼다(창 슬롯을 남겨 되가져온다). 있을 때만 덧붙여 기존 스키마의 계약은 그대로 둔다.
+    std::size_t outputs = 0;
+    for (const HostBinding& binding : schema->Bindings())
+        for (ApiParameterMode mode : binding.parameterModes)
+            if (mode == ApiParameterMode::Out) { ++outputs; break; }
+    if (outputs != 0)
+    {
+        writer.Text("host-outputs");
+        writer.Count(outputs);
+        for (const HostBinding& binding : schema->Bindings())
+        {
+            std::uint32_t mask = 0;
+            for (std::size_t i = 0; i < binding.parameterModes.size() && i < 32; ++i)
+                if (binding.parameterModes[i] == ApiParameterMode::Out) mask |= 1u << i;
+            if (mask != 0) { writer.U32(binding.id); writer.U32(mask); }
+        }
+    }
     return writer.bytes;
 }
 

@@ -155,7 +155,7 @@ CNeoVMProgram* CNeoVMProgram::Create(const void* pBuffer, int iSize, std::string
 		std::unique_ptr<CNeoVMProgram, decltype(release)> p(new CNeoVMProgram(), release);
 		p->byteSize = iSize;
 		if (!p->Load(ar, err)) return nullptr;
-		p->PatchNativeCalls();
+		if (!p->PatchNativeCalls(err)) return nullptr;
 		p->PatchStaticStringReads();
 		if (!p->PatchLocalOps(err)) return nullptr;
 		return p.release();
@@ -336,11 +336,11 @@ bool CNeoVMProgram::Load(CNArchive& ar, std::string* err)
 		case NOP_CALL:
 		case NOP_CALL_L: outgoing = op.n2; break;
 		case NOP_PTRCALL:
-		case NOP_PTRCALL_L: outgoing = op.n3; break;
+		case NOP_PTRCALL_L:
+		case NOP_APICALL: outgoing = op.n3; break;
 		case NOP_PTRCALL2:
 		case NOP_PTRCALL2_L:
-		case NOP_NATIVECALL:
-		case NOP_VEC_MAKE: outgoing = op.n2; break;
+		case NOP_NATIVECALL: outgoing = op.n2; break;
 		default: break;
 		}
 		if (outgoing >= 0)
@@ -678,6 +678,10 @@ bool CNeoVMProgram::Load(CNArchive& ar, std::string* err)
                         call.types.push_back(StorageValueType(kind));
                         call.policies.push_back(static_cast<u8>(PolicyOf(kind)));
                     }
+                    // Out 인자의 슬롯은 호출 뒤에도 놓지 않는다. 표시는 실제 인자 범위 안에만 있어야 한다.
+                    u32 keep = 0; ReadRequired(ar, keep);
+                    if (args < 32 && (keep >> args) != 0) throw ImageLoadError{"Invalid call output arguments"};
+                    call.keepMask = keep;
                     // 숫자 payload 슬롯은 비울 필요가 없다. 정책 복사가 이전 값을 놓는 슬롯만 0으로 채운다.
                     call.zeroFirst = call.zeroEnd = 0;
                     for (std::size_t slot = 0; slot < call.policies.size(); ++slot)
@@ -914,8 +918,7 @@ bool CNeoVMProgram::VerifyCode(const std::vector<int>& owners, std::string* err)
         case NOP_STR_ADD: slots = 7; writes = 1; break;
         case NOP_TOSTRING:
         case NOP_TOINT:
-        case NOP_TOFLOAT:
-        case NOP_TOSIZE: slots = 3; writes = 1; break;
+        case NOP_TOFLOAT: slots = 3; writes = 1; break;
         case NOP_SLEEP: slots = 2; break;
         case NOP_FMOV1: slots = writes = 1; break;
         case NOP_FMOV2: slots = 3; writes = 1; break;
@@ -1041,65 +1044,54 @@ bool CNeoVMProgram::VerifyCode(const std::vector<int>& owners, std::string* err)
     return true;
 }
 
-void CNeoVMProgram::PatchNativeCalls()
+// 내장 API 호출을 연결한다. 이미지에는 본체 번호 대신 연결 이름(소유자.이름) 상수가 남아 있으므로 등록부에서 번호를
+// 한 번 찾아 명령에 적는다. 실행 중에는 이름을 다시 보지 않는다.
+//   PTRCALL2 n1=이름 상수            → NATIVECALL n1=번호      (함수형: math.sin, print …)
+//   PTRCALL  n2=이름 상수('.' 포함)  → APICALL    n2=번호      (메서드형: map.contains …)
+// 등록부에 없는 이름은 다른 버전의 등록부로 만든 이미지이므로 로드를 거부한다.
+bool CNeoVMProgram::PatchNativeCalls(std::string* err)
 {
 	const int staticCount = (int)staticValues.size();
 	const int opCount = (int)code.size();
+	auto linkName = [&](short slot) -> const std::string*
+	{
+		if (slot < 0 || slot >= staticCount) return nullptr;
+		const SStaticConst& sc = staticValues[slot];
+		return sc._type == VAR_STRING ? &sc._str : nullptr;
+	};
+	auto reject = [&](const std::string& name)
+	{
+		if (err) *err = "unknown built-in API '" + name + "'; rebuild the program image for this runtime";
+		return false;
+	};
 	for (int i = 0; i < opCount; ++i)
 	{
 		SVMOperation& op = code[i];
-		if (op.Code() != NOP_PTRCALL2)
-			continue;
-
-		if (op.argFlag & NEOS_ARG_N1_LOCAL)
-			continue;
-
-		// n1 은 전역 슬롯 인덱스. native 이름 상수는 반드시 static 구간에 있다.
-		if (op.n1 < 0 || op.n1 >= staticCount)
-			continue;
-
-		const SStaticConst& sc = staticValues[op.n1];
-		if (sc._type != VAR_STRING)
-			continue;
-
-		int nativeIndex = CNeoVM::FindDefaultNativeIndex(sc._str);
-		if (nativeIndex < 0 || nativeIndex > SHRT_MAX)
-			continue;
-
-		// intrinsic 이 지정된 native(벡터 생성 등)는 전용 opcode 로 패치 (n2=인자수, n3=결과 유지).
-		OperationCode intrinsic = (OperationCode)CNeoVM::GetDefaultNativeIntrinsic(nativeIndex);
-		if (intrinsic != NOP_NONE)
+		if (op.Code() == NOP_PTRCALL2)
 		{
-			op.SetCode(intrinsic);
-			continue;
-		}
-
-		// 순수 수학 네이티브의 결과를 지역 슬롯에 받는 호출은 전용 명령으로 바꾼다. 컴파일러는 이런 호출 앞에
-		// PREPARE_CALL을 내지 않으므로 핸들러는 호출 계획 없이 창의 float payload만 읽는다.
-		ProgramNativeFunction scalar = nullptr;
-		eNOperation scalarOp = NOP_NONE;
-		if ((op.argFlag & NEOS_OP_CALL_NORESULT) == 0 && (op.argFlag & NEOS_ARG_N3_LOCAL))
-		{
-			if (op.n2 == 1) { scalar = reinterpret_cast<ProgramNativeFunction>(CNeoVM::GetDefaultNativeScalar(nativeIndex)); scalarOp = NOP_RT_NATIVE_F1_L; }
-			else if (op.n2 == 2) { scalar = reinterpret_cast<ProgramNativeFunction>(CNeoVM::GetDefaultNativeScalar2(nativeIndex)); scalarOp = NOP_RT_NATIVE_F2_L; }
-			else if (op.n2 == 3) { scalar = reinterpret_cast<ProgramNativeFunction>(CNeoVM::GetDefaultNativeScalar3(nativeIndex)); scalarOp = NOP_RT_NATIVE_F3_L; }
-		}
-		if (scalar != nullptr)
-		{
-			std::size_t entry = 0;
-			while (entry < scalarNatives.size() && scalarNatives[entry] != scalar) ++entry;
-			if (entry == scalarNatives.size() && entry < static_cast<std::size_t>(SHRT_MAX)) scalarNatives.push_back(scalar);
-			if (entry < scalarNatives.size())
+			const std::string* name = (op.argFlag & NEOS_ARG_N1_LOCAL) ? nullptr : linkName(op.n1);
+			if (name == nullptr)
 			{
-				op.op = scalarOp;
-				op.n1 = static_cast<short>(entry);
-				continue;
+				if (err) *err = "native call without a built-in API name";
+				return false;
 			}
+			const int index = CNeoVM::FindApiIndex(*name);
+			if (index < 0 || index > SHRT_MAX) return reject(*name);
+			op.SetCode(NOP_NATIVECALL);
+			op.n1 = (short)index;
 		}
-
-		op.SetCode(NOP_NATIVECALL);
-		op.n1 = (short)nativeIndex;
+		else if (op.Code() == NOP_PTRCALL)
+		{
+			// 함수값 호출(n2 = -1)과 호스트 객체의 호출(연결 이름이 아닌 멤버)은 그대로 둔다.
+			const std::string* name = (op.argFlag & NEOS_ARG_N2_LOCAL) ? nullptr : linkName(op.n2);
+			if (name == nullptr || name->find('.') == std::string::npos) continue;
+			const int index = CNeoVM::FindApiIndex(*name);
+			if (index < 0 || index > SHRT_MAX) return reject(*name);
+			op.SetCode(NOP_APICALL);
+			op.n2 = (short)index;
+		}
 	}
+	return true;
 }
 
 void CNeoVMProgram::PatchStaticStringReads()
@@ -1502,10 +1494,6 @@ bool FormatDebugOperation(const DebugInstructionFormatContext& context, std::str
 		byteCount = OpFlagByteChars + 2 * 2;
 		outAssembly = FormatAsm("ToFlo %s = %s", context.operand(1).c_str(), context.operand(2).c_str());
 		break;
-	case NOP_TOSIZE:
-		byteCount = OpFlagByteChars + 2 * 2;
-		outAssembly = FormatAsm("ToSize %s = %s", context.operand(1).c_str(), context.operand(2).c_str());
-		break;
 	case NOP_SLEEP:
 		byteCount = OpFlagByteChars + 2 * 2;
 		outAssembly = FormatAsm("Sleep %s", context.operand(2).c_str());
@@ -1549,17 +1537,20 @@ bool FormatDebugOperation(const DebugInstructionFormatContext& context, std::str
 			outAssembly = FormatAsm("PCA2 %s = %s arg:%d", context.operand(3).c_str(), context.operand(1).c_str(), v.n2);
 		}
 		break;
-	case NOP_NATIVECALL: // 컴파일에 나오지 않고, LoadVM 에서 NOP_PTRCALL2 인경우 System 함수이름을 찾어서 함수 Index 화
+	case NOP_NATIVECALL: // 컴파일에 나오지 않는다. 로드가 PTRCALL2 의 연결 이름을 내장 API 본체 번호로 바꾼 것이다.
 		if (v.argFlag & NEOS_OP_CALL_NORESULT)
 		{
 			byteCount = OpFlagByteChars + 2 * 2;
-			outAssembly = FormatAsm("NCAL native:%d arg:%d", v.n1, v.n2);
+			outAssembly = FormatAsm("NCAL %s arg:%d", CNeoVM::ApiName(v.n1), v.n2);
 		}
 		else
 		{
 			byteCount = OpFlagByteChars + 2 * 3;
-			outAssembly = FormatAsm("NCAL %s = native:%d arg:%d", context.operand(3).c_str(), v.n1, v.n2);
+			outAssembly = FormatAsm("NCAL %s = %s arg:%d", context.operand(3).c_str(), CNeoVM::ApiName(v.n1), v.n2);
 		}
+		break;
+	case NOP_APICALL: // 컴파일에 나오지 않는다. 로드가 PTRCALL 의 연결 이름을 내장 API 본체 번호로 바꾼 것이다.
+		outAssembly = FormatAsm("ACAL %s.%s arg:%d", context.operand(1).c_str(), CNeoVM::ApiName(v.n2), v.n3);
 		break;
 	case NOP_RETURN:
 		// NORESULT = 값 없는 'return;'. n1(반환값 슬롯)을 쓰지 않으므로 op/flag 2바이트만 덤프한다.

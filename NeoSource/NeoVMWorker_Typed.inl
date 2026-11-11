@@ -19,7 +19,7 @@ NEOS_NOINLINE void MapKeyNotFound(VarInfo* key, VAR_TYPE keyType)
     SetErrorFormat("map key not found: %s", ToString(ValueRef(key, keyType)).c_str());
 }
 
-template<bool StringKey, bool Contains>
+template<bool StringKey>
 NEOS_FORCEINLINE void TypedMapRead(const SVMOperation& op)
 {
     VarInfo* receiver = GetVarRaw2(op);
@@ -33,9 +33,7 @@ NEOS_FORCEINLINE void TypedMapRead(const SVMOperation& op)
     ValueRef found = StringKey
         ? (key->_str == nullptr ? ValueRef(nullptr) : receiver->_tbl->FindString(key->_str))
         : receiver->_tbl->FindInt(key->_int);
-    if (Contains)
-        StoreNumberBool(GetVarRawF1(op), found != nullptr);
-    else if (!found)
+    if (!found)
         MapKeyNotFound(key, StringKey ? VAR_STRING : VAR_INT);
     else
     {
@@ -44,39 +42,6 @@ NEOS_FORCEINLINE void TypedMapRead(const SVMOperation& op)
         if (!found.IsAllocType() && !result.IsAllocType()) *result = *found;
         else StoreMapReference(result, found);
     }
-}
-
-template<bool StringKey, int Operation>
-NEOS_FORCEINLINE void TypedSetOperation(const SVMOperation& op)
-{
-    VarInfo* receiver = GetVarRaw2(op);
-    ValueRef key = GetVarPtr3(op);
-    if (receiver->_set == nullptr)
-    {
-        SetError("cannot access a null set");
-        return;
-    }
-    if (StringKey && key.GetType() == VAR_NONE)
-    {
-        if (Operation == 1) SetError("set element cannot be null");
-        else StoreNumberBool(GetVarRawF1(op), false);
-        return;
-    }
-    SetInfo* set = receiver->_set;
-    bool changed;
-    if (Operation == 0) changed = set->Find(key);
-    else
-    {
-        const int before = set->GetCount();
-        if (Operation == 1)
-        {
-            if (!set->Insert(key)) { SetError(RTE_CALL_INVALID); return; }
-        }
-        else set->Remove(key);
-        changed = set->GetCount() != before;
-    }
-    // 삽입·제거와 결과 계산을 끝낸 뒤 목적지에 쓴다.
-    StoreNumberBool(GetVarRawF1(op), changed);
 }
 
 template<int Dimension>
@@ -301,56 +266,6 @@ NEOS_NOINLINE void TypedArraySet(const SVMOperation& op)
     if (!CheckTypedArrayValue<Element>(&arguments[0])) return;
     WriteTypedArrayValue<Element>(array, static_cast<int>(index), &arguments[0]);
     ReadTypedArrayValue<Element>(array, static_cast<int>(index), GetVarRawF1(op));
-}
-
-template<NeoArrayElementType Element>
-NEOS_NOINLINE void TypedArrayAppend(const SVMOperation& op)
-{
-    const VarInfo* owner = GetVarRaw2(op);
-    if (!CheckTypedArrayReceiver(owner)) return;
-    ArrayInfo* array = owner->_array;
-    const int index = array->_count;
-    if (index == INT32_MAX)
-    {
-        SetError(RTE_CALL_INVALID);
-        return;
-    }
-    if (!CheckTypedArrayValue<Element>(GetVarRaw3(op))) return;
-    if (!GetVM()->ArrayResize(array, index + 1))
-    {
-        SetError(RTE_CALL_INVALID);
-        return;
-    }
-    WriteTypedArrayValue<Element>(array, index, GetVarRaw3(op));
-    Var_SetNone(GetVarPtr1(op));
-}
-
-NEOS_NOINLINE void TypedArrayResize(const SVMOperation& op)
-{
-    const VarInfo* owner = GetVarRaw2(op);
-    if (!CheckTypedArrayReceiver(owner)) return;
-    const NS_INT size = GetVarRaw3(op)->_int;
-    if (size > INT32_MAX)
-    {
-        SetError("collection capacity exceeds limit");
-        return;
-    }
-    GetVM()->ArrayResize(owner->_array, size < 0 ? 0 : static_cast<int>(size));
-    Var_SetNone(GetVarPtr1(op));
-}
-
-NEOS_NOINLINE void TypedArrayReserve(const SVMOperation& op)
-{
-    const VarInfo* owner = GetVarRaw2(op);
-    if (!CheckTypedArrayReceiver(owner)) return;
-    const NS_INT size = GetVarRaw3(op)->_int;
-    if (size < 0 || size > INT32_MAX)
-    {
-        SetError(size < 0 ? "reserve capacity must not be negative" : "collection capacity exceeds limit");
-        return;
-    }
-    GetVM()->ArrayReserve(owner->_array, static_cast<int>(size));
-    Var_SetNone(GetVarPtr1(op));
 }
 
 NEOS_NOINLINE void TypedIntegerRemainder(const SVMOperation& op)

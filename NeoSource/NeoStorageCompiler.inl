@@ -10,7 +10,8 @@ class StorageCompiler
     std::map<const SFunctionInfo*, std::map<int, SlotType>> legacyLocals_;
     std::map<int, const NeoCore::IRFunction*> nativeByReceiver_;
     bool nativeIndexed_ = false;
-    std::map<char, SlotType> builtinResults_;
+    // 내장 API 서명의 저장형. (본체 번호, 수신자 타입)마다 한 번만 구한다. 0번이 결과, 뒤가 매개변수다.
+    std::map<std::pair<int, NeoCore::TypeId>, std::vector<SlotType>> apiStorage_;
     // 기본 타입의 저장형. 추론 중에 바뀌지 않으므로 명령마다 다시 구하지 않는다.
     SlotType integer_, number_, boolean_;
     // 슬롯 번호로 저장형 자리(맵 노드)를 바로 찾는 표. 맵은 그대로 두고 조회만 빠르게 한다: 맵 노드의 주소는 바뀌지
@@ -176,63 +177,60 @@ class StorageCompiler
         const auto found = nativeByReceiver_.find(receiver);
         return found != nativeByReceiver_.end() ? found->second : nullptr;
     }
-    // 내장 멤버 서명의 결과 저장형. 결과 타입이 타입 표에 없으면 새로 만들어야 해서 표의 사본에서 구하는데, 값은
-    // 결과 코드에만 달려 있으므로 코드마다 한 번만 계산한다(호출마다 표 전체를 복사하지 않는다).
-    SlotType BuiltinResult(char code)
+    // 내장 API 서명의 저장형. 타입 변수는 수신자 타입으로 채운다. 프런트엔드가 같은 서명을 이미 풀어 검사했으므로
+    // 필요한 타입은 타입 표에 있고, 여기서는 표를 읽기만 한다(ResolveApiType이 비상수 참조를 받을 뿐이다).
+    // 서명만으로 정해지지 않는 자리(Custom 선언의 인자)는 Boxed로 남겨 원본 슬롯에서 추론한다.
+    const std::vector<SlotType>& ApiStorage(int index, NeoCore::TypeId receiver)
     {
-        const auto found = builtinResults_.find(code);
-        if (found != builtinResults_.end()) return found->second;
-        // 새 타입을 만들 수 있는 코드(함수·목록·맵·nullable 목록)만 사본이 필요하다. 나머지는 표를 읽기만 한다.
-        const bool creates = code == 'h' || code == 'l' || code == 'm' || code == 'r';
-        SlotType result;
-        if (creates)
-        {
-            NeoCore::TypeRegistry types = functions_._typedIR->types;
-            result = CoreStorageType(types, NeoCore::BuiltinSignatureType(types, code));
-        }
-        else
-        {
-            // 읽기만 하는 경로다(BuiltinSignatureType이 비상수 참조를 받을 뿐이다).
-            NeoCore::TypeRegistry& types = const_cast<NeoCore::TypeRegistry&>(functions_._typedIR->types);
-            result = CoreStorageType(types, NeoCore::BuiltinSignatureType(types, code));
-        }
-        builtinResults_.insert(std::make_pair(code, result));
-        return result;
+        const std::pair<int, NeoCore::TypeId> key(index, receiver);
+        const auto found = apiStorage_.find(key);
+        if (found != apiStorage_.end()) return found->second;
+        NeoCore::TypeRegistry& types = const_cast<NeoCore::TypeRegistry&>(functions_._typedIR->types);
+        const NeoCore::ApiDeclaration& declaration = NeoCore::CoreApi()[static_cast<std::size_t>(index)];
+        std::vector<SlotType> storage;
+        const NeoCore::TypeId result = NeoCore::ResolveApiType(types, declaration.result, receiver);
+        // 반환이 없는 API의 결과 슬롯은 payload로 둔다. 본체가 쓰지 않고, 놓을 것도 없다.
+        storage.push_back(result == types.Void() ? Primitive(NeoCore::TypeKind::Int) : CoreStorageType(types, result));
+        if (!declaration.Is(NeoCore::ApiCustom))
+            for (const NeoCore::ApiParameter& parameter : declaration.parameters)
+                storage.push_back(CoreStorageType(types, NeoCore::ResolveApiType(types, parameter.type, receiver)));
+        return apiStorage_.insert(std::make_pair(key, storage)).first->second;
     }
     void BindNativeCall(SFunctionInfo& function, CompileCallStorage& call)
     {
-        if (!functions_._typedIR || call.receiver == -1) return;
+        if (!functions_._typedIR) return;
         const auto& ir = *functions_._typedIR;
         SlotType result;
-        if (const NeoCore::IRFunction* signature = NativeSignature(call.receiver))
+        if (call.receiver != -1)
         {
-            result = CoreStorageType(ir.types, signature->returnType);
-            for (std::size_t i = 0; i < call.sources.size() && i < signature->parameterTypes.size(); ++i)
+            if (const NeoCore::IRFunction* signature = NativeSignature(call.receiver))
             {
-                call.types[i] = CoreStorageType(ir.types, signature->parameterTypes[i]);
-                Bind(function, call.sources[i], call.types[i]);
+                result = CoreStorageType(ir.types, signature->returnType);
+                for (std::size_t i = 0; i < call.sources.size() && i < signature->parameterTypes.size(); ++i)
+                {
+                    call.types[i] = CoreStorageType(ir.types, signature->parameterTypes[i]);
+                    Bind(function, call.sources[i], call.types[i]);
+                }
             }
         }
+        // 내장 API 호출은 연결 이름 상수를 들고 있다. 등록부의 서명이 결과와 인자의 저장형을 정한다.
         if (IsCompileConstant(call.member))
         {
             const BoundaryValue& key = functions_._staticVars[StaticPoolIndex(call.member)];
-            if (key.GetType() == VAR_STRING)
+            const int index = key.GetType() == VAR_STRING ? NeoCore::FindCoreApiIndex(key._str->_str) : -1;
+            if (index >= 0)
             {
-                const std::string& name = key._str->_str;
-                const SlotType receiver = Get(function, call.receiver);
-                const auto& type = ir.types.Get(receiver.typeId);
-                if (const NeoCore::BuiltinSignature* signature = NeoCore::FindBuiltinSignature(type.name, name))
-                    result = BuiltinResult(signature->result);
-                if (type.kind == NeoCore::TypeKind::Set)
+                const NeoCore::TypeId receiver = call.receiver != -1 ? Get(function, call.receiver).typeId : NeoCore::InvalidType;
+                if (call.receiver == -1 || receiver != NeoCore::InvalidType)
                 {
-                    if (name == "add" || name == "remove" || name == "contains") result = Primitive(NeoCore::TypeKind::Bool);
-                    else if (name == "clone") result = receiver;
-                }
-                if (type.kind == NeoCore::TypeKind::List || type.kind == NeoCore::TypeKind::Map || type.kind == NeoCore::TypeKind::Array)
-                {
-                    if (name == "clone") result = receiver;
-                    else if (name == "contains" || name == "remove") result = Primitive(NeoCore::TypeKind::Bool);
-                    else if (name == "append" || name == "insert" || name == "indexof") result = Primitive(NeoCore::TypeKind::Int);
+                    const std::vector<SlotType>& storage = ApiStorage(index, receiver);
+                    result = storage[0];
+                    for (std::size_t i = 0; i < call.sources.size() && i + 1 < storage.size(); ++i)
+                    {
+                        if (storage[i + 1].kind == SlotKind::Boxed) continue;
+                        call.types[i] = storage[i + 1];
+                        Bind(function, call.sources[i], call.types[i]);
+                    }
                 }
             }
         }
@@ -281,9 +279,6 @@ class StorageCompiler
             if (op.op == NOP_CELL_NEW) Bind(function, op.n1, Physical(SlotKind::List));
             else if (op.op == NOP_CELL_GET) Bind(function, op.n1, Element(function, op.n2, -1));
             else if (op.op == NOP_CELL_SET) Copy(function, op.n1, op.n2);
-            else if (name.find("contains") != std::string::npos || name.find("remove") != std::string::npos ||
-                (name.size() > 1 && name[0] == 's' && name.find("add") != std::string::npos)) Bind(function, op.n1, boolean);
-            else if (op.op == NOP_ARRAY_LEN) Bind(function, op.n1, integer);
             else if (name.find("read") != std::string::npos || name.find("load") != std::string::npos)
                 Bind(function, op.n1, Element(function, op.n2, op.n3));
             else if (name.size() > 1 && name[0] == 'v')
@@ -315,7 +310,6 @@ class StorageCompiler
                     const SlotType value = Element(function, op.n2 + 1, op.n2 + 2);
                     Bind(function, op.n2 + 2, integer); Bind(function, op.n2, value); Bind(function, op.n1, value);
                 }
-                else if (name.find("append") != std::string::npos) Bind(function, op.n1, integer);
             }
             return;
         }
@@ -381,7 +375,6 @@ class StorageCompiler
                 if (result.kind != SlotKind::Boxed) { function._returnStorage = result; changed_ = true; }
             }
             Bind(function, op.n1, function._returnStorage); break;
-        case NOP_TOSIZE: Bind(function, op.n1, integer); break;
         case NOP_TOINT: Bind(function, op.n1, integer); break;
         case NOP_TOFLOAT: Bind(function, op.n1, number); break;
         case NOP_TOSTRING: Bind(function, op.n1, Primitive(TypeKind::String)); break;

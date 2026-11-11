@@ -404,6 +404,9 @@ public:
     // 예: 스크립트가 넘긴 GameObject 인자 → 그 eventID. 객체가 아니면 nullptr.
     void*       argObjectUserData(std::size_t i) const;
 
+    // Out 인자 쓰기. 0 이상이면 뒤따르는 ret* 가 반환 슬롯 대신 그 인자의 창 슬롯에 쓴다. -1 로 되돌린다.
+    // 호출 뒤에도 남는 슬롯은 컴파일러가 Out 으로 표시한 인자뿐이므로 그 인자에만 쓴다.
+    void        selectOutput(int argument);
     // 반환 쓰기 (VM 반환 슬롯 직접)
     void        retInt(int64_t v);
     void        retFloat(double v);

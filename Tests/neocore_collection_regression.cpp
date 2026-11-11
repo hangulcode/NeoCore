@@ -291,6 +291,109 @@ export int ConsumedLocalSnapshot(){list<int> a=[0];int value=5;int result=(a[0]=
     }
 }
 
+static void CheckTryGet(bool debug)
+{
+    ExpectInt("export int Probe(){map<string,int> m={\"x\":7};int v=99;if(!m.try_get(\"x\",out v))return -1;int a=v;if(m.try_get(\"missing\",out v))return -2;return a*100+v;}",707,
+        "try_get hits and misses preserve output",debug);
+    ExpectInt("int v=8;export int Probe(){map<int,int> m={3:0};if(!m.try_get(3,out v))return -1;return v;}",0,
+        "try_get zero value and global output",debug);
+    ExpectInt("export int Probe(){map<int,bool> m={3:false};bool v=true;if(!m.try_get(3,out v)||v)return -1;return 1;}",1,
+        "try_get false is a present value",debug);
+    ExpectFloat("export float Probe(){map<int,float> m={3:1.25};float v=9.0;m.try_get(3,out v);return v;}",1.25,
+        "try_get floating output and discarded result",debug);
+    ExpectString("import system;export string Probe(){map<string,string> m=system.jsonDecode<map<string,string>>(\"{\\\"x\\\":null}\");string v=\"old\";if(!m.try_get(\"x\",out v)||v!=null)return \"bad\";v=\"keep\";string k=null;if(m.try_get(k,out v))return \"bad key\";return v;}","keep",
+        "try_get present null and null query key",debug);
+    ExpectString("export string Probe(){map<string,string> m={\"x\":\"result\"};string key=\"x\";if(!m.try_get(key,out key))return \"bad\";return key;}","result",
+        "try_get output may also be the key variable",debug);
+    ExpectInt("export int Probe(){map<int,list<int>> m={1:[2]};list<int> v=[];if(!m.try_get(1,out v))return -1;v[0]=9;return m[1][0];}",9,
+        "try_get collections retain shared identity",debug);
+    ExpectFloat("export float Probe(){map<int,Vector3> m={1:Vector3(2,3,4)};Vector3 v=Vector3(0,0,0);if(!m.try_get(1,out v))return -1.0;v.x=9;return m[1].x+v.x;}",11,
+        "try_get vectors copy by value",debug);
+    ExpectInt("struct Inner{int n;};struct Item{Inner i;list<int> shared;};export int Probe(){map<int,Item> m={1:Item(Inner(2),[3])};Item v=Item();if(!m.try_get(1,out v))return -1;v.i.n=9;v.shared[0]=7;return m[1].i.n*100+v.i.n*10+m[1].shared[0];}",297,
+        "try_get structs copy nested values and share collection fields",debug);
+    ExpectInt("map<int,int> m={1:3};int calls=0;int Key(){calls++;m={1:9};return 1;}export int Probe(){int v=0;m.try_get(Key(),out v);return v*10+calls;}",31,
+        "try_get captures receiver before evaluating key once",debug);
+    ExpectInt("int v=0;int Key(){v=6;return 2;}export int Probe(){map<int,int> m={};m.try_get(Key(),out v);return v;}",6,
+        "try_get miss preserves key evaluation effects",debug);
+    ExpectInt("export int Probe(){map<int,int> m={1:3};int v=8;if(false&&m.try_get(1,out v))return -1;bool b=true?m.try_get(1,out v):false;return b?v:99;}",3,
+        "try_get obeys conditional and short circuit execution",debug);
+    ExpectInt("export int Probe(){map<int,int> m={1:4};int out=0;if(!m.try_get(1,out out))return -1;return out;}",4,
+        "out remains a legal variable name",debug);
+    ExpectInt("export int Probe(){map<int,fn(int)->int> m={1:fn(int n)->int{return n+2;}};fn(int)->int v=null;if(!m.try_get(1,out v))return -1;return v(3);}",5,
+        "try_get function values",debug);
+    ExpectInt("import system;export int Probe(){list<int> items=[2];map<int,set<int>> m={1:system.set(items)};set<int> v=null;if(!m.try_get(1,out v))return -1;return v.contains(2)?1:0;}",1,
+        "try_get set values",debug);
+    ExpectInt("int Read(int v){map<int,int> m={1:7};m.try_get(1,out v);return v;}export int Probe(){int v=3;return Read(v)*10+v;}",73,
+        "try_get parameter output remains by value",debug);
+    ExpectInt("export int Probe(){map<int,int> m={1:7};int v=2;fn()->int f=fn()->int{m.try_get(1,out v);return v;};return f()*10+v;}",72,
+        "try_get captured output uses the closure snapshot",debug);
+    const struct {const char* source;const char* diagnostic;} invalid[]={
+        {"void F(out int x){}","out parameters belong to registered API signatures only"},
+        {"void F(int x){}int x=0;F(out x);","out is only allowed for an API parameter declared out"},
+        {"fn(out int)->void f=null;","out parameters belong to registered API signatures only"},
+        {"fn(int)->void f=fn(out int x)->void{};","out parameters belong to registered API signatures only"},
+        {"map<int,int> m={};int x=0;m.try_get(1,x);","'map.try_get' argument 2 'value' is an out parameter"},
+        {"map<int,int> m={};float x=0.0;m.try_get(1,out x);","requires an out variable of type 'int', not 'float'"},
+        {"map<int,int> m={};const int x=0;m.try_get(1,out x);","cannot modify a const value"},
+        {"map<int,int> m={};list<int> x=[0];m.try_get(1,out x[0]);","requires a variable after 'out'"},
+        {"struct S{int x;};map<int,int> m={};S s=S();m.try_get(1,out s.x);","requires a variable after 'out'"},
+        {"map<int,int> m={};int x=0;m.try_get(\"bad\",out x);","'map.try_get' argument 1 'key' requires 'int', not 'string'"},
+        {"map<int,int> m={};int x=0;m.contains(out x);","'map.contains' argument 1 'key' is not an out parameter"},
+        {"list<int> m=[];int x=0;m.try_get(1,out x);","unknown or unsupported typed method 'try_get'"},
+        {"void F(int x){}fn(int)->void f=F;int x=0;f(out x);","out is only allowed for an API parameter declared out"},
+        {"struct out{int n;};","out marks an output argument and cannot name a type"},
+        {"map<int,int> m={};int x=0;m.try_get(out x,1);","'map.try_get' argument 1 'key' is not an out parameter"},
+        {"map<int,int> m={};int x=0;m.try_get(1);","'map.try_get' requires 2 arguments, not 1"},
+        {"import math;float x=0.0;float y=math.sin(out x);","'math.sin' argument 1 'radian' is not an out parameter"},
+        {"struct S{int x;};S s=S(1,out s);","out is only allowed for an API parameter declared out"}
+    };
+    for(const auto& test:invalid)
+    {
+        NeoCore::Error error;
+        auto program=NeoCore::Program::Compile(test.source,error,"try-get-error.nc",debug);
+        Check(!program && error.message.find(test.diagnostic)!=std::string::npos,
+            std::string("try_get rejected: ")+test.source+" => "+error.message);
+    }
+    NeoCore::Error error;
+    auto nullMap=NeoCore::Program::Compile("export int Probe(){int v=7;map<int,int> m=null;\nm.try_get(1,out v);return v;}",error,"try-get-null.nc",debug);
+    Check(bool(nullMap),"null try_get compile: "+error.message);
+    if(nullMap)
+    {
+        const auto result=nullMap->Call("Probe");
+        Check(!result.ok() && result.error.message.find("null map")!=std::string::npos && (!debug||result.error.line==2),"try_get null map error and source line");
+    }
+    NeoCore::CompileOptions options;
+    options.moduleLoader=[](const std::string& name,const std::string&,NeoCore::ModuleSource& module,NeoCore::Error&)->bool{
+        module.sourceName=name+".nc";
+        module.source=name=="helper" ? "public int target=1;int Value(int v){return v;}public int Read(){map<int,int> m={1:7};int value=0;m.try_get(1,out value);return value+Value(2);}"
+            : name=="badcall" ? "void F(int x){}public int Read(){int x=0;F(out x);return x;}"
+            : name=="baddecl" ? "public void G(out int x){}"
+            : "public int Read(){map<int,int> m={1:7};int out=0;m.try_get(1,out out);return out;}";
+        return true;
+    };
+    auto program=NeoCore::Program::Compile("import helper as h;import vars as v;export int Probe(){map<int,int> m={1:9};m.try_get(1,out h.target);return h.Read()+v.Read()+h.target;}",error,"try-get-entry.nc",debug,options);
+    Check(bool(program),"try_get imported module compile: "+error.message);
+    if(program)
+    {
+        std::vector<std::uint8_t> bytes;
+        Check(program->SaveImage(bytes,error),"try_get image save: "+error.message);
+        auto loaded=NeoCore::Program::LoadImage(bytes,error);
+        Check(bool(loaded),"try_get image load: "+error.message);
+        if(loaded){const auto result=loaded->Call("Probe");Check(result.ok()&&result.value.asInt()==25,"try_get imported module image result: "+result.error.message);}
+    }
+    const struct {const char* source;const char* diagnostic;} modules[]={
+        {"import badcall as b;export int Probe(){return b.Read();}","out is only allowed for an API parameter declared out"},
+        {"import baddecl as b;export int Probe(){return 0;}","out parameters belong to registered API signatures only"}
+    };
+    for(const auto& test:modules)
+    {
+        NeoCore::Error moduleError;
+        auto rejected=NeoCore::Program::Compile(test.source,moduleError,"try-get-module-error.nc",debug,options);
+        Check(!rejected && moduleError.message.find(test.diagnostic)!=std::string::npos,
+            std::string("out rejected inside an imported module: ")+test.source+" => "+moduleError.message);
+    }
+}
+
 int main()
 {
     for (int mode = 0; mode < 2; ++mode)
@@ -299,6 +402,7 @@ int main()
         CheckLists(debug);
         CheckAssignmentOrder(debug);
         CheckMaps(debug);
+        CheckTryGet(debug);
         CheckStrings(debug);
         CheckRejections(debug);
     }

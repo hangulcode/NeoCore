@@ -248,6 +248,8 @@ struct CompileCallStorage
     int function = -1;
     int receiver = -1, member = -1;
     SlotType returnType;
+    // Out 인자의 비트(0번 비트가 창의 첫 인자). 런타임이 창을 놓을 때 이 슬롯은 남기고, 뒤따르는 MOV 가 가져간다.
+    u32 outMask = 0;
     // 계획이 활성화되는 함수 내 코드 위치(바이트). PREPARE_CALL을 낸 경우 그 명령의 위치이고,
     // 내지 않은 직접 호출이면 첫 창 쓰기의 위치다. 내보내기와 저장소 추론이 이 위치로 활성 계획을 찾는다.
     int prepareOffset = 0;
@@ -514,7 +516,6 @@ struct SFunctionInfo
 		case NOP_TOSTRING:
 		case NOP_TOINT:
 		case NOP_TOFLOAT:
-		case NOP_TOSIZE:
 		case NOP_TABLE_ALLOC:
 			return true;
 		default:
@@ -665,6 +666,8 @@ struct SFunctionInfo
 		OperandTemps temps(*this);
 		index = ReadOperand(ar, index);
         assert(!_calls.empty()); _calls.back().result = res;
+        // 연결 이름 상수를 남겨 저장소 추론이 등록부의 서명을 찾게 한다.
+        _calls.back().member = index;
 		AddDebugData(ar, iDebugLine);
 		_iLastOPOffset = _code->GetBufferOffset();
 		++_callOpEmitCount;

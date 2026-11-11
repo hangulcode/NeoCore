@@ -4,7 +4,7 @@
 #include "../../NeoSource/NeoCoreDebugger.h"
 #include "../../NeoSource/NeoCoreCompiler.h"
 #include "../../NeoSource/NeoCoreModules.h"
-#include "../../NeoSource/NeoCoreBuiltins.h"
+#include "../../NeoSource/NeoCoreApi.h"
 #include "../../ThirdParty/yyjson/yyjson.h"
 #include <algorithm>
 #include <cctype>
@@ -1121,26 +1121,27 @@ static void AddBuiltin(std::vector<BuiltinInfo>& builtins, const std::string& ow
 
 static void TypedBuiltins(std::vector<BuiltinInfo>& builtins)
 {
-    NeoCore::TypeRegistry types;
-    std::size_t count = 0;
-    const NeoCore::BuiltinSignature* signatures = NeoCore::GetBuiltinSignatures(count);
-    for (std::size_t i = 0; i < count; ++i)
+    // 내장 API 는 등록부의 선언을 그대로 보여 준다. 컴파일러가 검사에 쓰는 것과 같은 표다.
+    for (const NeoCore::ApiDeclaration& declaration : NeoCore::CoreApi())
     {
-        const NeoCore::BuiltinSignature& signature = signatures[i];
-        BuiltinInfo info;
-        info.module = signature.owner; info.name = signature.name;
-        info.ret = types.DisplayName(NeoCore::BuiltinSignatureType(types, signature.result));
-        for (unsigned p = 0; p < signature.maximum; ++p)
+        if (!declaration.name.empty() && declaration.name[0] == '$') continue;
+        // 소유자 "array" 는 array 와 array32 가 함께 쓴다.
+        const char* owners[] = { declaration.owner.c_str(), declaration.owner == "array" ? "array32" : nullptr };
+        for (const char* owner : owners)
         {
-            std::string parameter = types.DisplayName(NeoCore::BuiltinSignatureType(types, signature.parameters[p]));
-            parameter += " arg" + std::to_string(p + 1);
-            if (p >= signature.minimum) parameter += " (optional)";
-            info.params.push_back(parameter);
+            if (!owner) continue;
+            BuiltinInfo info;
+            info.module = owner; info.name = declaration.name;
+            info.ret = NeoCore::FormatApiType(declaration.result);
+            info.typeParameters = declaration.typeParameters;
+            for (const NeoCore::ApiParameter& parameter : declaration.parameters)
+                info.params.push_back(NeoCore::FormatApiParameter(parameter));
+            if (declaration.Is(NeoCore::ApiVariadic)) info.params.push_back("...");
+            info.argCount = declaration.Is(NeoCore::ApiVariadic) ? -1 : static_cast<int>(declaration.parameters.size());
+            builtins.push_back(std::move(info));
         }
-        info.argCount = static_cast<int>(signature.maximum);
-        builtins.push_back(std::move(info));
     }
-    AddBuiltin(builtins, "", "print", "void", {"scalar value", "scalar format (optional)"});
+    // 아래는 API 가 아니라 언어 구문이다(변환·일시 정지·생성자).
     AddBuiltin(builtins, "", "tostring", "string", {"scalar value"});
     AddBuiltin(builtins, "", "toint", "int", {"number/bool/string value"});
     AddBuiltin(builtins, "", "tofloat", "float", {"number/bool/string value"});
@@ -1149,46 +1150,6 @@ static void TypedBuiltins(std::vector<BuiltinInfo>& builtins)
     AddBuiltin(builtins, "", "Vector3", "Vector3", {"float x", "float y", "float z"});
     AddBuiltin(builtins, "", "Vector4", "Vector4", {"float x", "float y", "float z", "float w"});
     AddBuiltin(builtins, "", "Quaternion", "Quaternion", {"float w", "float x", "float y", "float z"});
-    AddBuiltin(builtins, "string", "len", "int", {});
-    AddBuiltin(builtins, "system", "set", "set<T>", {"list<T> values"});
-    AddBuiltin(builtins, "system", "jsonEncode", "string", {"T value", "bool sortKeys (optional)"});
-    AddBuiltin(builtins, "system", "jsonEncodeOrNull", "string", {"T value", "bool sortKeys (optional)"});
-    AddBuiltin(builtins, "system", "jsonDecode", "T", {"string text"}, "<T>");
-    AddBuiltin(builtins, "system", "jsonDecodeOr", "T", {"string text", "T fallback"}, "<T>");
-    AddBuiltin(builtins, "system", "jsonDecodeLenient", "T", {"string text"}, "<T>");
-    AddBuiltin(builtins, "system", "jsonDecodeLenientOr", "T", {"string text", "T fallback"}, "<T>");
-    AddBuiltin(builtins, "system", "jsonError", "string", {});
-    AddBuiltin(builtins, "coroutine", "create", "coroutine<fn(...) -> void>", {"fn(...) -> void entry"});
-    AddBuiltin(builtins, "coroutine", "resume", "void", {"coroutine<F> task", "entry arguments..."});
-    AddBuiltin(builtins, "coroutine", "status", "string", {"coroutine<F> task"});
-    AddBuiltin(builtins, "coroutine", "close", "void", {"coroutine<F> task"});
-    for (const char* owner : {"list", "array", "array32", "map", "set"})
-    {
-        AddBuiltin(builtins, owner, "len", "int", {});
-        AddBuiltin(builtins, owner, "clear", "void", {});
-        AddBuiltin(builtins, owner, "clone", owner, {});
-        AddBuiltin(builtins, owner, "contains", "bool", {"element/key value"});
-    }
-    for (const char* owner : {"list", "array", "array32", "map"}) AddBuiltin(builtins, owner, "reserve", "void", {"int capacity"});
-    for (const char* owner : {"list", "array", "array32"})
-    {
-        AddBuiltin(builtins, owner, "find", "int", {"T value"});
-        AddBuiltin(builtins, owner, "append", "void", {"T value"});
-        AddBuiltin(builtins, owner, "resize", "void", {"int size"});
-    }
-    AddBuiltin(builtins, "array", "fill", "void", {"T value"});
-    AddBuiltin(builtins, "array32", "fill", "void", {"T value"});
-    AddBuiltin(builtins, "list", "insert", "void", {"int index", "T value"});
-    AddBuiltin(builtins, "list", "remove", "T", {"int index"});
-    AddBuiltin(builtins, "list", "remove_swap", "T", {"int index"});
-    AddBuiltin(builtins, "list", "pop", "T", {});
-    for (const char* owner : {"list", "map"}) AddBuiltin(builtins, owner, "sort", "void", {"fn(T, T) -> bool comparator"});
-    AddBuiltin(builtins, "map", "remove", "bool", {"K key"});
-    AddBuiltin(builtins, "map", "keys", "list<K>", {});
-    AddBuiltin(builtins, "map", "values", "list<V>", {});
-    AddBuiltin(builtins, "set", "add", "bool", {"T value"});
-    AddBuiltin(builtins, "set", "remove", "bool", {"T value"});
-    AddBuiltin(builtins, "set", "values", "list<T>", {});
 }
 
 static int HexDigit(char value)

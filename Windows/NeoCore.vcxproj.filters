@@ -40,6 +40,9 @@
     <ClCompile Include="..\NeoSource\NeoCoreTypes.cpp">
       <Filter>NeoCore</Filter>
     </ClCompile>
+    <ClCompile Include="..\NeoSource\NeoCoreApi.cpp">
+      <Filter>NeoCore</Filter>
+    </ClCompile>
     <ClCompile Include="..\NeoSource\NeoCoreHost.cpp">
       <Filter>NeoCore</Filter>
     </ClCompile>
@@ -105,9 +108,12 @@
     <ClInclude Include="..\NeoSource\NeoCoreConsoleAccess.h">
       <Filter>NeoCore</Filter>
     </ClInclude>
-    <ClInclude Include="..\NeoSource\NeoCoreBuiltins.h">
+    <ClInclude Include="..\NeoSource\NeoCoreApi.h">
       <Filter>NeoCore</Filter>
     </ClInclude>
+    <None Include="..\NeoSource\NeoCoreApiTable.inc">
+      <Filter>NeoCore</Filter>
+    </None>
     <ClInclude Include="..\NeoSource\NeoCore.h">
       <Filter>NeoCore</Filter>
     </ClInclude>

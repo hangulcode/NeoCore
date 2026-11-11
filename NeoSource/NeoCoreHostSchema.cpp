@@ -198,6 +198,37 @@ HostBindingId HostSchema::AddMethod(TypeId owner, const std::string& name, TypeI
     return binding.id;
 }
 
+HostBindingId HostSchema::AddMethod(TypeId owner, const std::string& name, TypeId result,
+    const std::vector<TypeId>& parameters, const std::vector<std::string>& parameterNames,
+    const std::vector<ApiParameterMode>& parameterModes)
+{
+    lastError_.clear();
+    if ((!parameterNames.empty() && parameterNames.size() != parameters.size()) ||
+        (!parameterModes.empty() && parameterModes.size() != parameters.size()))
+    {
+        Fail("host method parameter names and modes must match the parameter count");
+        return InvalidHostBinding;
+    }
+    // Out 슬롯은 호출 계획의 32비트 표시로 전달한다. 수신자가 창의 첫 인자를 차지한다.
+    for (std::size_t i = 0; i < parameterModes.size(); ++i)
+        if (parameterModes[i] == ApiParameterMode::Out && i >= 31)
+        {
+            Fail("host method out parameters must be among the first 31 parameters");
+            return InvalidHostBinding;
+        }
+    for (const std::string& parameterName : parameterNames)
+        if (!parameterName.empty() && !IsNameAllowed(parameterName))
+        {
+            Fail("invalid host method parameter name");
+            return InvalidHostBinding;
+        }
+    const HostBindingId id = AddMethod(owner, name, result, parameters);
+    if (id == InvalidHostBinding) return id;
+    bindings_[id - 1].parameterNames = parameterNames;
+    bindings_[id - 1].parameterModes = parameterModes;
+    return id;
+}
+
 HostBindingId HostSchema::AddEvent(TypeId owner, const std::string& eventName, TypeId callbackType,
     const std::string& registrationMethod)
 {
@@ -407,6 +438,19 @@ bool HostSchema::Validate(std::string& error) const
                 error = "unsupported host binding parameter type";
                 return Fail(error);
             }
+        // 이름·방향은 비어 있거나 매개변수와 같은 길이다. Out 은 일반 메서드에만 있을 수 있다.
+        bool output = false;
+        for (std::size_t i = 0; i < binding.parameterModes.size(); ++i)
+            output = output || (binding.parameterModes[i] == ApiParameterMode::Out && i < 31);
+        for (std::size_t i = 31; i < binding.parameterModes.size(); ++i)
+            if (binding.parameterModes[i] == ApiParameterMode::Out) { error = "invalid host binding parameter modes"; return Fail(error); }
+        if ((!binding.parameterNames.empty() && binding.parameterNames.size() != binding.parameters.size()) ||
+            (!binding.parameterModes.empty() && binding.parameterModes.size() != binding.parameters.size()) ||
+            (output && (binding.kind != HostBindingKind::Method || !binding.eventName.empty())))
+        {
+            error = "invalid host binding parameter names or modes";
+            return Fail(error);
+        }
         if (!binding.eventName.empty() && (binding.kind != HostBindingKind::Method ||
             binding.eventName.find('\0') != std::string::npos || binding.returnType != types_.Void() ||
             binding.parameters.size() != 2 || binding.parameters[0] != types_.String() ||

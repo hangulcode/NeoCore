@@ -42,8 +42,7 @@ struct Watch
     }
 };
 
-bool SpanMethod(INeoVMWorker*, void*, const VMString*, short);
-bool WatchMethod(INeoVMWorker*, void*, const VMString*, short);
+bool NoNamedMethod(INeoVMWorker*, void*, const VMString*, short);
 
 bool Error(CNeoVMWorker* worker, const char* text)
 {
@@ -77,7 +76,7 @@ bool ReturnObject(CNeoVMWorker* worker, const std::shared_ptr<T>& owner,
 
 bool ReturnSpan(CNeoVMWorker* worker, NS_INT milliseconds)
 {
-    return ReturnObject(worker, std::make_shared<Span>(milliseconds), &spanType, SpanMethod);
+    return ReturnObject(worker, std::make_shared<Span>(milliseconds), &spanType, NoNamedMethod);
 }
 
 const Span* ReadSpan(ValueRef value)
@@ -135,26 +134,31 @@ bool ReturnParts(CNeoVMWorker* worker, NS_INT value)
     return ReturnFields(worker, keys, values, 6);
 }
 
-bool SpanMethod(INeoVMWorker* base, void* data, const VMString* name, short args)
+// 시간 객체의 메서드는 API 표의 번호로 직접 불린다. 이름으로 찾는 경로는 없다.
+bool NoNamedMethod(INeoVMWorker*, void*, const VMString*, short) { return false; }
+
+enum class SpanOperation { TotalMilliseconds, TotalSeconds, Parts, Format, Add, Subtract, Compare };
+
+bool SpanCall(CNeoVMWorker* worker, ValueRef receiver, short args, SpanOperation operation)
 {
-    CNeoVMWorker* worker = static_cast<CNeoVMWorker*>(base);
+    const Span* span = ReadSpan(receiver);
+    if (!span) return Error(worker, "cannot access a null TimeSpan");
     // 반환 슬롯을 교체하면서 마지막 별칭이 해제될 수 있으므로 값을 먼저 복사한다.
-    const NS_INT value = static_cast<const Span*>(data)->milliseconds;
-    const std::string& method = name->_str;
-    if (method == "total_milliseconds")
+    const NS_INT value = span->milliseconds;
+    switch (operation)
     {
+    case SpanOperation::TotalMilliseconds:
         assert(args == 0);
         worker->ReturnValue(value);
         return true;
-    }
-    if (method == "total_seconds")
-    {
+    case SpanOperation::TotalSeconds:
         assert(args == 0);
         worker->ReturnValue(static_cast<NS_FLOAT>(static_cast<double>(value) / 1000.0));
         return true;
-    }
-    if (method == "parts") { assert(args == 0); return ReturnParts(worker, value); }
-    if (method == "format")
+    case SpanOperation::Parts:
+        assert(args == 0);
+        return ReturnParts(worker, value);
+    case SpanOperation::Format:
     {
         assert(args == 0);
         const Parts parts(value);
@@ -167,70 +171,72 @@ bool SpanMethod(INeoVMWorker* base, void* data, const VMString* name, short args
         worker->ReturnValue(text.str().c_str());
         return true;
     }
-    if (method == "add" || method == "subtract" || method == "compare")
-    {
-        assert(args == 1);
-        const Span* other = ReadSpan(worker->GetStack(1));
-        if (!other) return Error(worker, "time_span operation expects a time_span");
-        const NS_INT operand = other->milliseconds;
-        if (method == "compare")
-        {
-            worker->ReturnValue(value < operand ? -1 : (value > operand ? 1 : 0));
-            return true;
-        }
-        NS_INT result;
-        const bool valid = method == "add" ? Add(value, operand, result) : Subtract(value, operand, result);
-        if (!valid) return Error(worker, "time_span milliseconds overflow int64");
-        return ReturnSpan(worker, result);
+    default: break;
     }
-    return false;
+    assert(args == 1);
+    const Span* other = ReadSpan(worker->GetStack(1));
+    if (!other) return Error(worker, "time_span operation expects a time_span");
+    const NS_INT operand = other->milliseconds;
+    if (operation == SpanOperation::Compare)
+    {
+        worker->ReturnValue(value < operand ? -1 : (value > operand ? 1 : 0));
+        return true;
+    }
+    NS_INT result;
+    const bool valid = operation == SpanOperation::Add ? Add(value, operand, result) : Subtract(value, operand, result);
+    if (!valid) return Error(worker, "time_span milliseconds overflow int64");
+    return ReturnSpan(worker, result);
 }
 
-bool WatchMethod(INeoVMWorker* base, void* data, const VMString* name, short args)
+enum class WatchOperation { Elapsed, ElapsedMilliseconds, ElapsedMicroseconds, ElapsedSeconds, Start, Stop, Reset, Restart, IsRunning };
+
+bool WatchCall(CNeoVMWorker* worker, ValueRef receiver, short args, WatchOperation operation)
 {
     assert(args == 0);
-    CNeoVMWorker* worker = static_cast<CNeoVMWorker*>(base);
-    Watch* watch = static_cast<Watch*>(data);
-    const std::string& method = name->_str;
-    if (method == "restart" || method == "reset")
+    (void)args;
+    if (receiver.GetType() == VAR_NONE) return Error(worker, "cannot access a null Stopwatch");
+    assert(receiver.GetType() == VAR_FP_NATIVE && receiver->_fpNative->_identityType == &watchType);
+    Watch* watch = static_cast<Watch*>(receiver->_fpNative->_pUserData);
+    switch (operation)
     {
+    case WatchOperation::Restart:
+    case WatchOperation::Reset:
         watch->accumulated = MonotonicClock::duration::zero();
-        watch->running = method == "restart";
+        watch->running = operation == WatchOperation::Restart;
         watch->start = MonotonicClock::now();
         worker->ReturnValue();
         return true;
-    }
-    if (method == "start" || method == "stop")
-    {
-        if (method == "start" && !watch->running)
+    case WatchOperation::Start:
+        if (!watch->running)
         {
             watch->start = MonotonicClock::now();
             watch->running = true;
         }
-        else if (method == "stop" && watch->running)
+        worker->ReturnValue();
+        return true;
+    case WatchOperation::Stop:
+        if (watch->running)
         {
             watch->accumulated = watch->Elapsed();
             watch->running = false;
         }
         worker->ReturnValue();
         return true;
-    }
-    if (method == "is_running")
-    {
+    case WatchOperation::IsRunning:
         worker->ReturnValue(watch->running);
         return true;
+    default: break;
     }
-    if (method != "elapsed" && method != "elapsed_ms" && method != "elapsed_us" && method != "elapsed_seconds") return false;
     // 밀리초로 먼저 자르지 않고 원래 시계의 정밀도에서 각 단위로 변환한다.
     const MonotonicClock::duration elapsed = watch->Elapsed();
-    if (method == "elapsed_seconds")
+    if (operation == WatchOperation::ElapsedSeconds)
         worker->ReturnValue(std::chrono::duration<NS_FLOAT>(elapsed).count());
-    else if (method == "elapsed_us")
+    else if (operation == WatchOperation::ElapsedMicroseconds)
         worker->ReturnValue(static_cast<NS_INT>(std::chrono::duration_cast<std::chrono::microseconds>(elapsed).count()));
     else
     {
         const NS_INT milliseconds = static_cast<NS_INT>(std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count());
-        if (method == "elapsed") return ReturnSpan(worker, milliseconds);
+        if (operation == WatchOperation::Elapsed) return ReturnSpan(worker, milliseconds);
         worker->ReturnValue(milliseconds);
     }
     return true;
@@ -404,8 +410,27 @@ bool TimeSpan(CNeoVMWorker* worker, ValueRef, short args)
 bool Stopwatch(CNeoVMWorker* worker, ValueRef, short args)
 {
     assert(args == 0);
-    return ReturnObject(worker, std::make_shared<Watch>(), &watchType, WatchMethod);
+    return ReturnObject(worker, std::make_shared<Watch>(), &watchType, NoNamedMethod);
 }
+
+#define NEOCORE_TIME_METHOD(NAME, CALL, OPERATION)     bool NAME(CNeoVMWorker* worker, ValueRef receiver, short args) { return CALL(worker, receiver, args, OPERATION); }
+NEOCORE_TIME_METHOD(SpanTotalMilliseconds, SpanCall, SpanOperation::TotalMilliseconds)
+NEOCORE_TIME_METHOD(SpanTotalSeconds, SpanCall, SpanOperation::TotalSeconds)
+NEOCORE_TIME_METHOD(SpanParts, SpanCall, SpanOperation::Parts)
+NEOCORE_TIME_METHOD(SpanFormat, SpanCall, SpanOperation::Format)
+NEOCORE_TIME_METHOD(SpanAdd, SpanCall, SpanOperation::Add)
+NEOCORE_TIME_METHOD(SpanSubtract, SpanCall, SpanOperation::Subtract)
+NEOCORE_TIME_METHOD(SpanCompare, SpanCall, SpanOperation::Compare)
+NEOCORE_TIME_METHOD(WatchElapsed, WatchCall, WatchOperation::Elapsed)
+NEOCORE_TIME_METHOD(WatchElapsedMilliseconds, WatchCall, WatchOperation::ElapsedMilliseconds)
+NEOCORE_TIME_METHOD(WatchElapsedMicroseconds, WatchCall, WatchOperation::ElapsedMicroseconds)
+NEOCORE_TIME_METHOD(WatchElapsedSeconds, WatchCall, WatchOperation::ElapsedSeconds)
+NEOCORE_TIME_METHOD(WatchStart, WatchCall, WatchOperation::Start)
+NEOCORE_TIME_METHOD(WatchStop, WatchCall, WatchOperation::Stop)
+NEOCORE_TIME_METHOD(WatchReset, WatchCall, WatchOperation::Reset)
+NEOCORE_TIME_METHOD(WatchRestart, WatchCall, WatchOperation::Restart)
+NEOCORE_TIME_METHOD(WatchIsRunning, WatchCall, WatchOperation::IsRunning)
+#undef NEOCORE_TIME_METHOD
 
 bool UtcCalendar(long long seconds, std::tm& calendar)
 {

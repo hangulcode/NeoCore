@@ -2,7 +2,7 @@
 
 #include "NeoCoreHostSchema.h"
 #include "NeoCoreScriptHost.h"
-#include "NeoCoreBuiltins.h"
+#include "NeoCoreApi.h"
 #include "NeoCoreOptions.h"
 #include "NeoNumberLiteral.h"
 
@@ -548,6 +548,7 @@ struct ConstantValue
         return value;
     }
 };
+static const std::uint32_t NoApi = static_cast<std::uint32_t>(-1);
 enum class ExprKind { Literal, Name, Unary, Binary, Assignment, Call, Member, Index, List, Map, Lambda, Conditional };
 // 드물게 쓰는 식 정보: 람다의 본문·캡처·매개변수와 호스트·타입 지정 쓰기의 헬퍼 이름. 대부분의 식 노드에는 없으므로
 // 필요한 노드만 따로 가진다. 생성자·소멸자는 Statement 정의 뒤에 둔다(본문 소유).
@@ -576,6 +577,8 @@ struct Expr
     TypeId constructorType = InvalidType;
     TypeId jsonType = InvalidType;
     HostBindingId hostBinding = InvalidHostBinding;
+    // 서명으로 검사한 내장 API 호출이면 등록부의 번호다.
+    std::uint32_t api = NoApi;
     // 상수 문맥의 루트만 평가값을 소유한다. 이름 참조는 Symbol을 통해 이 값을 재사용한다.
     std::unique_ptr<ConstantValue> evaluatedConstant;
     Symbol* symbol = nullptr;
@@ -597,6 +600,9 @@ struct Expr
     bool writeTarget = false;
     // 대입 대상(복합 대입 포함)인 색인 식은 읽기 검사 헬퍼로 감싸지 않는다.
     bool assignmentTarget = false;
+    // outArgument: 호출 인자 앞에 out 표식이 있다(구문). outTarget: 서명의 Out 매개변수로 받아들여진 변수다.
+    // outCall: Out 인자가 있는 API 호출이다. 호출 뒤 대입이 필요하므로 IR 노드로 내린다.
+    bool outArgument = false, outTarget = false, outCall = false;
     // 값 타입이 null 을 담을 수 없는 맵 읽기. 없는 키는 런타임 오류다.
     bool checkedMapRead = false;
     // 문장 위치의 대입·증감. 결과가 소비되지 않으므로 IR 에 그대로 전달한다.
@@ -669,6 +675,7 @@ public:
                 try
                 {
                     if (name.kind != TokenKind::Identifier || IsReserved(name.text)) Fail(name, "expected a structure name");
+                    if (name.text == "out") Fail(name, "out marks an output argument and cannot name a type");
                     if (!declarations.insert(name.text).second || types_.DeclareStruct(name.text) == InvalidType) Fail(name, "duplicate or invalid structure name");
                 }
                 catch (const Diagnostic& error) { if (!recovery_) throw; recovery_->Add(error); }
@@ -776,6 +783,9 @@ private:
     {
         Depth guard(depth_, Peek());
         TypeSyntax result;
+        // out 은 타입 이름이 될 수 없다. 타입 자리에서 뒤에 이름이 이어지면 Out 매개변수를 선언하려는 것이다.
+        if (At("out") && Peek(1).kind == TokenKind::Identifier)
+            Fail(Peek(), "out parameters belong to registered API signatures only; user-defined functions, function types and lambdas cannot declare them");
         result.first = Take();
         result.end = result.first.end;
         result.type = FindType(result.first.text);
@@ -1215,7 +1225,14 @@ private:
                 call->children.push_back(std::move(result));
                 if (!At(")"))
                 {
-                    do { call->children.push_back(ParseExpression()); } while (Accept(","));
+                    do
+                    {
+                        // out 은 예약어가 아니다. 인자 자리에서 바로 뒤에 이름이 이어질 때만 방향 표식이다.
+                        const bool output = At("out") && Peek(1).kind == TokenKind::Identifier;
+                        if (output) Take();
+                        call->children.push_back(ParseExpression());
+                        call->children.back()->outArgument = output;
+                    } while (Accept(","));
                 }
                 call->end = Expect(")").end;
                 CheckTreeDepth(*call);
@@ -1521,7 +1538,7 @@ private:
                     if (value.kind == ExprKind::Lambda) return;
                     if (value.kind == ExprKind::Call)
                     {
-                        if (value.indirectCall || value.callName == "sleep" || value.callName == "coroutine.resume")
+                        if (value.indirectCall || value.callName == "sleep" || (value.api != NoApi && CoreApi()[value.api].key == "coroutine.resume"))
                             Fail(value.token, "host implementation functions must be synchronous; suspension and indirect calls are not allowed");
                         if (functions.count(value.callName)) pending.push_back(value.callName);
                         if (value.hostBinding) addBinding(value.hostBinding);
@@ -1983,15 +2000,99 @@ private:
         return InvalidType;
     }
 
-    void CheckBuiltinSignature(Expr& expression, const BuiltinSignature& signature)
+    // 내장 API 와 호스트 API 가 함께 쓰는 서명 보기. 타입 변수는 수신자 타입으로 채운다. 검사가 성공하는 길에서는
+    // 서명을 복사하지 않고, 이름과 표시 문자열은 진단을 낼 때만 만든다.
+    struct CallSignature
+    {
+        const ApiDeclaration* declaration = nullptr;
+        TypeId receiver = InvalidType;
+        const HostBinding* binding = nullptr;
+    };
+    std::size_t SignatureCount(const CallSignature& signature) const
+    { return signature.binding ? signature.binding->parameters.size() : signature.declaration->parameters.size(); }
+    std::size_t SignatureMinimum(const CallSignature& signature) const
+    { return signature.binding ? signature.binding->parameters.size() : signature.declaration->minimum; }
+    TypeId SignatureParameter(const CallSignature& signature, std::size_t index)
+    {
+        return signature.binding ? signature.binding->parameters[index]
+            : ResolveApiType(types_, signature.declaration->parameters[index].type, signature.receiver);
+    }
+    TypeId SignatureResult(const CallSignature& signature)
+    {
+        return signature.binding ? signature.binding->returnType
+            : ResolveApiType(types_, signature.declaration->result, signature.receiver);
+    }
+    std::string SignatureName(const CallSignature& signature) const
+    {
+        if (!signature.binding) return signature.declaration->key;
+        return types_.DiagnosticName(signature.binding->ownerType) + "." + signature.binding->name;
+    }
+    std::string SignatureParameterName(const CallSignature& signature, std::size_t index) const
+    {
+        const std::string name = signature.binding
+            ? (index < signature.binding->parameterNames.size() ? signature.binding->parameterNames[index] : std::string())
+            : signature.declaration->parameters[index].name;
+        return "argument " + std::to_string(index + 1) + (name.empty() ? std::string() : " '" + name + "'");
+    }
+
+    ApiParameterMode SignatureMode(const CallSignature& signature, std::size_t index) const
+    {
+        if (!signature.binding) return signature.declaration->parameters[index].mode;
+        return index < signature.binding->parameterModes.size() ? signature.binding->parameterModes[index] : ApiParameterMode::In;
+    }
+
+    // Out 인자는 이미 선언된 쓸 수 있는 변수여야 하고 타입이 매개변수와 정확히 같아야 한다. 참조를 넘기지 않으므로
+    // 필드·원소·호스트 프로퍼티는 대상이 될 수 없다. 호출 뒤 값이 변수에 대입된다.
+    void CheckOutArgument(Expr& argument, TypeId parameter, const std::string& context)
+    {
+        if (!argument.outArgument) Fail(argument.token, context + " is an out parameter; write 'out' before the variable");
+        argument.outArgument = false;
+        CheckExpr(argument);
+        if (argument.kind != ExprKind::Name || !argument.symbol)
+            Fail(argument.token, context + " requires a variable after 'out', not a field, element or expression");
+        Writable(argument);
+        if (argument.type != parameter)
+            Fail(argument.token, context + " requires an out variable of type '" + types_.DiagnosticName(parameter)
+                + "', not '" + types_.DiagnosticName(argument.type) + "'");
+        argument.outTarget = true;
+    }
+
+    // 호출 인자를 서명으로 검사한다. 인자는 아직 검사 전이며, 매개변수 타입을 문맥으로 준 뒤 검사하고 변환한다.
+    void CheckSignatureArguments(Expr& expression, const CallSignature& signature, const Token& at)
     {
         const std::size_t count = expression.children.size() - 1;
-        if (count < signature.minimum || count > signature.maximum)
-            Fail(expression.token, "builtin argument count does not match its declaration");
+        const std::size_t maximum = SignatureCount(signature), minimum = SignatureMinimum(signature);
+        if (count < minimum || count > maximum)
+            Fail(at, "'" + SignatureName(signature) + "' requires " + (minimum == maximum ? std::to_string(maximum)
+                : std::to_string(minimum) + " to " + std::to_string(maximum)) + (maximum == 1 ? " argument" : " arguments")
+                + ", not " + std::to_string(count));
         for (std::size_t i = 0; i < count; ++i)
-            Convert(*expression.children[i + 1], BuiltinSignatureType(types_, signature.parameters[i]));
-        expression.type = BuiltinSignatureType(types_, signature.result);
+        {
+            Expr& argument = *expression.children[i + 1];
+            const TypeId parameter = SignatureParameter(signature, i);
+            if (SignatureMode(signature, i) == ApiParameterMode::Out)
+            {
+                CheckOutArgument(argument, parameter, "'" + SignatureName(signature) + "' " + SignatureParameterName(signature, i));
+                expression.outCall = true;
+                continue;
+            }
+            if (argument.outArgument)
+                Fail(argument.token, "'" + SignatureName(signature) + "' " + SignatureParameterName(signature, i) + " is not an out parameter");
+            Contextualize(argument, parameter);
+            CheckExpr(argument);
+            if (argument.type == types_.Void()) Fail(argument.token, "a void call cannot be used as an argument");
+            if (!types_.CanAssign(parameter, argument.type))
+                Fail(argument.token, "'" + SignatureName(signature) + "' " + SignatureParameterName(signature, i) + " requires '"
+                    + types_.DiagnosticName(parameter) + "', not '" + types_.DiagnosticName(argument.type) + "'");
+            Convert(argument, parameter);
+        }
     }
+
+    // 백엔드에 넘기는 내장 API 호출 표기. 번호는 이번 컴파일의 등록부 색인이고 백엔드가 연결 이름으로 바꾼다.
+    std::string ApiMethodText(const ApiDeclaration& declaration) const { return ".__api" + std::to_string(declaration.index); }
+    std::string ApiMethodText(const char* owner, const char* name) const { return ApiMethodText(*FindCoreApi(owner, name)); }
+    std::string ApiFunctionText(const ApiDeclaration& declaration) const
+    { return internalPrefix_ + "api_" + std::to_string(declaration.index); }
 
     void CheckMethod(Expr& expression)
     {
@@ -2023,12 +2124,6 @@ private:
                 return;
             }
         }
-        for (std::size_t i = 1; i < expression.children.size(); ++i)
-        {
-            if (type.kind == TypeKind::List && ((member.op == "append" && i == 1) || (member.op == "insert" && i == 2) || (member.op == "resize" && i == 2)))
-                Contextualize(*expression.children[i], type.element);
-            CheckExpr(*expression.children[i]);
-        }
         if (IsNativeValue(receiver.type))
         {
             const TypeId ownerType = NativeReceiverType(receiver);
@@ -2038,20 +2133,27 @@ private:
                 Fail(member.token, "console host implementation API is only available in the implementation module");
             const HostBinding* binding = hostSchema_ ? hostSchema_->FindMethod(ownerType, member.op) : nullptr;
             if (!binding) Fail(member.token, "unknown host method '" + member.op + "'");
-            if (count != binding->parameters.size()) Fail(member.token, "host method argument count does not match its declaration");
             if (!binding->eventName.empty())
             {
+                // 이벤트는 이름마다 콜백 서명이 다르다. 이름 리터럴로 서명을 먼저 고른 뒤 인자를 검사한다.
+                if (count != binding->parameters.size())
+                    Fail(member.token, "'" + types_.DiagnosticName(ownerType) + "." + member.op + "' requires an event name and a callback");
                 const Expr& name = *expression.children[1];
                 if (name.kind != ExprKind::Literal || name.token.kind != TokenKind::String)
                     Fail(name.token, "host event name must be a string literal so its callback signature is known at compile time");
                 const std::string eventName = DecodeStringLiteral(name.token);
                 binding = hostSchema_->FindEvent(ownerType, member.op, eventName);
                 if (!binding) Fail(name.token, "unknown host event '" + eventName + "' for '" + member.op + "'");
+            }
+            CallSignature signature;
+            signature.binding = binding;
+            CheckSignatureArguments(expression, signature, member.token);
+            if (!binding->eventName.empty())
+            {
                 // 함수값은 null 을 담을 수 있지만 이벤트 등록에 null 리터럴을 넘기는 것은 의미가 없다.
                 const Expr& callback = *expression.children[count];
                 if (callback.kind == ExprKind::Literal && callback.op == "null") Fail(callback.token, "a host event callback cannot be null");
             }
-            for (std::size_t i = 0; i < count; ++i) Convert(*expression.children[i + 1], binding->parameters[i]);
             if (scriptHost_ && member.op == "Bind" && hostSchema_->FindGlobal(scriptHost_->apiGlobal) &&
                 ownerType == hostSchema_->FindGlobal(scriptHost_->apiGlobal)->type)
             {
@@ -2074,19 +2176,25 @@ private:
             expression.type = binding->returnType;
             return;
         }
-        if (member.op == "len" && (IsCollection(receiver.type) || receiver.type == types_.String()))
+        // 문자열·컬렉션·내장 객체의 메서드는 등록부의 서명으로만 검사한다.
+        const std::string owner = CoreApiOwner(types_, receiver.type);
+        const ApiDeclaration* declaration = owner.empty() ? nullptr : FindCoreApi(owner, member.op);
+        if (!declaration) Fail(member.token, "unknown or unsupported typed method '" + member.op + "'");
+        CallSignature signature;
+        signature.declaration = declaration;
+        signature.receiver = receiver.type;
+        CheckSignatureArguments(expression, signature, member.token);
+        const bool list = type.kind == TypeKind::List;
+        const bool map = type.kind == TypeKind::Map;
+        const TypeId element = map ? type.value : type.element;
+        if (declaration->Is(ApiNoStructElement) && IsStruct(element))
+            Fail(member.token, member.op == "sort" ? "native sort of struct values requires a value-copy callback adapter"
+                : "struct equality is not supported by collection search");
+        expression.type = SignatureResult(signature);
+        // 구조체 원소는 값으로 복사해야 한다. 아래 세 경우는 원소마다 복제하는 스크립트 헬퍼로 내린다.
+        if (list && member.op == "resize")
         {
-            if (count) Fail(member.token, "len requires no arguments");
-            expression.callName = IsArray(receiver.type) ? Intrinsic("alen", member.token.line) : "tosize";
-            expression.type = types_.Int();
-            return;
-        }
-        if (member.op == "resize" && type.kind == TypeKind::List)
-        {
-            if (count != 1 && count != 2) Fail(member.token, "resize requires a size and an optional fill value");
-            Require(*expression.children[1], types_.Int(), "list size");
-            if (count == 2) Convert(*expression.children[2], type.element);
-            else
+            if (count == 1)
             {
                 if (!Defaultable(type.element)) Fail(member.token, "this element type requires an explicit resize fill value");
                 expression.MutableRare().extraArgument = DefaultValue(type.element);
@@ -2102,136 +2210,23 @@ private:
                 resizeHelpers_.insert(receiver.type);
                 expression.callName += "_typed_" + std::to_string(receiver.type);
             }
-            expression.type = types_.Void();
             return;
         }
-        if (IsArray(receiver.type) && (member.op == "resize" || member.op == "reserve" || member.op == "append"))
+        if ((list || map) && member.op == "clone" && IsStruct(element))
         {
-            if (count != 1) Fail(member.token, "array " + member.op + " requires one argument");
-            if (member.op == "append") Convert(*expression.children[1], type.element);
-            else Require(*expression.children[1], types_.Int(), "array size");
-            expression.callName = Intrinsic(member.op == "append" ? "a" + ArrayStorage(receiver.type) + "append" : "a" + member.op, member.token.line);
-            expression.type = types_.Void();
-            return;
-        }
-        if (member.op == "contains" && type.kind == TypeKind::Map)
-        {
-            if (count != 1) Fail(member.token, "map.contains requires exactly one key");
-            Require(*expression.children[1], type.key, "map key");
-            expression.callName = Intrinsic(type.key == types_.Int() ? "micontains" : "mscontains", member.token.line);
-            expression.type = types_.Bool();
-            return;
-        }
-        if (type.kind == TypeKind::Set && (member.op == "contains" || member.op == "add" || member.op == "remove"))
-        {
-            if (count != 1) Fail(member.token, "set." + member.op + " requires exactly one element");
-            Convert(*expression.children[1], type.element);
-            expression.callName = Intrinsic(std::string(type.element == types_.Int() ? "si" : "ss") + member.op, member.token.line);
-            expression.type = types_.Bool();
-            return;
-        }
-        const BuiltinSignature* builtin = FindBuiltinSignature(type.name, member.op);
-        if (builtin && (receiver.type == types_.String() || type.kind == TypeKind::BuiltinObject))
-        {
-            CheckBuiltinSignature(expression, *builtin);
-            expression.receiverArgument = false;
-            expression.callName = "." + member.op;
-            return;
-        }
-        const bool list = type.kind == TypeKind::List;
-        const bool map = type.kind == TypeKind::Map;
-        const bool set = type.kind == TypeKind::Set;
-        const bool array = IsArray(receiver.type);
-        if ((list || map) && member.op == "clone" && IsStruct(list ? type.element : type.value))
-        {
-            if (count) Fail(member.token, "clone requires no arguments");
-            const TypeId element = list ? type.element : type.value;
             if (list) structListClones_.insert(element); else structMapClones_.insert(receiver.type);
             expression.callName = internalPrefix_ + (list ? "clonelist_" : "clonemap_") + std::to_string(list ? element : receiver.type);
-            expression.type = receiver.type;
             return;
         }
         if (map && member.op == "values" && IsStruct(type.value))
         {
-            if (count) Fail(member.token, "values requires no arguments");
             structMapValues_.insert(receiver.type);
             expression.callName = internalPrefix_ + "mapvalues_" + std::to_string(receiver.type);
-            expression.type = types_.ListOf(type.value);
             return;
         }
-        TypeId result = InvalidType;
-        if ((list || map || set || array) && (member.op == "clear" || member.op == "clone"))
-        {
-            if (count) Fail(member.token, "this collection method requires no arguments");
-            result = member.op == "clone" ? receiver.type : types_.Void();
-        }
-        else if (set && member.op == "len")
-        {
-            if (count) Fail(member.token, "len requires no arguments");
-            result = types_.Int();
-        }
-        else if ((list || map) && member.op == "reserve")
-        {
-            if (count != 1) Fail(member.token, "reserve requires one capacity argument");
-            Require(*expression.children[1], types_.Int(), "collection capacity");
-            result = types_.Void();
-        }
-        else if (list && (member.op == "append" || member.op == "insert"))
-        {
-            if (member.op == "append")
-            {
-                if (count != 1 && count != 2) Fail(member.token, "append requires a value and an optional index");
-                Convert(*expression.children[1], type.element);
-                if (count == 2) Require(*expression.children[2], types_.Int(), "list index");
-            }
-            else
-            {
-                if (count != 2) Fail(member.token, "insert requires an index and a value");
-                Require(*expression.children[1], types_.Int(), "list index");
-                Convert(*expression.children[2], type.element);
-            }
-            result = types_.Void();
-        }
-        else if (list && (member.op == "remove" || member.op == "remove_swap" || member.op == "pop"))
-        {
-            if (count != (member.op == "pop" ? 0u : 1u)) Fail(member.token, "list removal argument count does not match its declaration");
-            if (count) Require(*expression.children[1], types_.Int(), "list index");
-            result = type.element;
-        }
-        else if ((list || array) && (member.op == "find" || member.op == "contains" || (array && member.op == "fill")))
-        {
-            if (IsStruct(type.element)) Fail(member.token, "struct equality is not supported by collection search");
-            if (count != 1) Fail(member.token, "this collection method requires one value");
-            Convert(*expression.children[1], type.element);
-            result = member.op == "find" ? types_.Int() : member.op == "contains" ? types_.Bool() : types_.Void();
-        }
-        else if (map && member.op == "remove")
-        {
-            if (count != 1) Fail(member.token, "this collection method requires one key");
-            Convert(*expression.children[1], type.key);
-            result = types_.Bool();
-        }
-        else if ((map || set) && (member.op == "values" || (map && member.op == "keys")))
-        {
-            if (count) Fail(member.token, "this collection method requires no arguments");
-            result = types_.ListOf(set ? type.element : member.op == "keys" ? type.key : type.value);
-        }
-        else if ((list || map) && member.op == "sort")
-        {
-            if (count != 1) Fail(member.token, "sort requires a comparator");
-            const TypeId element = list ? type.element : type.value;
-            if (IsStruct(element)) Fail(member.token, "native sort of struct values requires a value-copy callback adapter");
-            Require(*expression.children[1], types_.FunctionOf(types_.Bool(), std::vector<TypeId>(2, element)), "sort comparator");
-            result = types_.Void();
-        }
-        if (result != InvalidType)
-        {
-            expression.receiverArgument = false;
-            expression.callName = "." + member.op;
-            expression.type = result;
-            return;
-        }
-        Fail(member.token, "unknown or unsupported typed method '" + member.op + "'");
+        expression.receiverArgument = false;
+        expression.api = declaration->index;
+        expression.callName = ApiMethodText(*declaration);
     }
 
     void CheckCall(Expr& expression)
@@ -2274,6 +2269,24 @@ private:
         }
         expression.callName = name;
         if (Lookup(name)) Fail(callee.token, "this value is not callable");
+        // 내장 모듈의 함수는 등록부의 서명으로 검사한다. 서명만으로 정해지지 않는 선언(Custom)은 아래의 전용 규칙을 쓴다.
+        const ApiDeclaration* moduleApi = nullptr;
+        if (callee.kind == ExprKind::Member && !mathConstructor)
+        {
+            const int index = FindCoreApiIndex(name);
+            if (index >= 0) moduleApi = &CoreApi()[static_cast<std::size_t>(index)];
+            if (moduleApi && !moduleApi->Is(ApiCustom))
+            {
+                if (!imports_.count(moduleApi->owner)) Fail(callee.token, moduleApi->owner + " must be imported before use");
+                CallSignature signature;
+                signature.declaration = moduleApi;
+                CheckSignatureArguments(expression, signature, callee.token);
+                expression.type = SignatureResult(signature);
+                expression.api = moduleApi->index;
+                expression.callName = ApiFunctionText(*moduleApi);
+                return;
+            }
+        }
         const auto function = functions_.find(name);
         const TypeId namedType = types_.LookupNamed(name);
         for (std::size_t i = 1; i < expression.children.size(); ++i)
@@ -2299,6 +2312,8 @@ private:
         if (name == "coroutine.create" || name == "coroutine.resume" || name == "coroutine.status" || name == "coroutine.close")
         {
             if (!imports_.count("coroutine")) Fail(callee.token, "coroutine must be imported before use");
+            expression.api = moduleApi->index;
+            expression.callName = ApiFunctionText(*moduleApi);
             if (name == "coroutine.create")
             {
                 if (count != 1) Fail(callee.token, "coroutine.create requires one function");
@@ -2329,7 +2344,8 @@ private:
                 if (count > 1) Fail(callee.token, "set constructor requires no arguments or one list");
                 if (count) Require(*expression.children[1], types_.ListOf(types_.Get(callee.constructorType).element), "set initializer");
                 else expression.MutableRare().extraArgument = "[]";
-                expression.callName = "system.set";
+                expression.api = FindCoreApi("system", "set")->index;
+                expression.callName = ApiFunctionText(*FindCoreApi("system", "set"));
                 expression.type = callee.constructorType;
                 if (!imports_.count("system")) Fail(callee.token, "system must be imported before constructing a set");
                 return;
@@ -2487,20 +2503,9 @@ private:
             const TypeId element = types_.Get(expression.children[1]->type).element;
             if (element != types_.Int() && element != types_.String()) Fail(callee.token, "set elements must be int or string");
             expression.type = types_.SetOf(element);
+            expression.api = moduleApi->index;
+            expression.callName = ApiFunctionText(*moduleApi);
             return;
-        }
-        const std::size_t dot = name.find('.');
-        if (dot != std::string::npos)
-        {
-            const std::string owner = name.substr(0, dot);
-            const BuiltinSignature* builtin = FindBuiltinSignature(owner, name.substr(dot + 1));
-            if (builtin && (owner == "math" || owner == "system"))
-            {
-                if (!imports_.count(owner)) Fail(callee.token, owner + " must be imported before use");
-                CheckBuiltinSignature(expression, *builtin);
-                if (name == "system.async_create") expression.callName = "system.aysnc_create";
-                return;
-            }
         }
         Fail(callee.token, "unknown or untyped function '" + name + "'");
     }
@@ -2526,6 +2531,10 @@ private:
 
     void CheckExpr(Expr& expression, bool allowMinMagnitude = false)
     {
+        // 표식을 받아들이는 것은 서명에 Out 매개변수가 있는 API 호출뿐이다(CheckOutArgument). 여기까지 남았다면
+        // 사용자 함수·함수값·생성자 호출이거나 Out 이 아닌 자리다.
+        if (expression.outArgument)
+            Fail(expression.token, "out is only allowed for an API parameter declared out; user-defined functions and other calls cannot take out arguments");
         expression.constantInitializer = checkingConstant_;
         switch (expression.kind)
         {
@@ -3485,7 +3494,26 @@ private:
         node.source.end = expression.end;
         node.source.line = expression.token.line;
         node.source.column = expression.token.column;
-        if (expression.kind == ExprKind::Conditional)
+        if (expression.outCall)
+        {
+            // 호출 자체는 검사한 API 표기 그대로 컴파일한다. Out 인자 자리에는 변수의 현재 값이 들어가고(본체가 쓰지 않으면
+            // 그 값이 그대로 돌아온다), 호출이 끝난 뒤 창 슬롯의 값을 변수에 대입한다.
+            node.op = IROp::ApiCall;
+            node.legacySource = RenderExpr(expression, false, false);
+            for (std::size_t i = 1; i < expression.children.size(); ++i)
+            {
+                const Expr& argument = *expression.children[i];
+                if (!argument.outTarget) continue;
+                IROutput output;
+                // 창 안의 인자 번호다. 호스트 호출은 수신자가 첫 인자로 들어가므로 한 칸 뒤다.
+                output.parameter = static_cast<std::uint32_t>(i - 1) + (expression.receiverArgument ? 1u : 0u);
+                output.typeId = argument.type;
+                ValueStorage(argument, &output.storage);
+                if (IsStruct(argument.type)) output.cloneHelper = Helper("clone", argument.type);
+                node.outputs.push_back(output);
+            }
+        }
+        else if (expression.kind == ExprKind::Conditional)
         {
             node.op = IROp::Conditional;
             node.inputs.push_back(BuildValueIR(*expression.children[0]));
@@ -3706,7 +3734,7 @@ private:
                 || (!expression.writeTarget && !expression.assignmentTarget && !expression.branchCondition &&
                     expression.type != InvalidType && types_.Get(expression.type).kind != TypeKind::Void && expression.kind != ExprKind::Name && expression.kind != ExprKind::Literal)
                 || (expression.kind == ExprKind::Name && expression.symbol && expression.symbol->hostGlobal)
-                || expression.kind == ExprKind::Conditional
+                || expression.kind == ExprKind::Conditional || expression.outCall
                 || expression.functionIndex != static_cast<std::size_t>(-1)
                 || (expression.widen && !expression.constantWiden)))
         {
@@ -4120,15 +4148,17 @@ private:
             const std::string name = internalPrefix_ + "resize_typed_" + std::to_string(type);
             result += HelperDefinition(name, types_.Void(), {{"a", type}, {"n", types_.Int()}, {"fill", types_.Get(type).element}});
             HelperStorage(name, "old", types_.Int()); HelperStorage(name, "i", types_.Int());
-            result += "if(n<0)n=0;var old=tosize(a);a.reserve(n);if(n<old){a.resize(n);}else{for(var i in old,n){a.append(fill);}}}";
+            result += "if(n<0)n=0;var old=a" + ApiMethodText("list", "len") + "();a" + ApiMethodText("list", "reserve") + "(n);if(n<old){a"
+                + ApiMethodText("list", "resize") + "(n);}else{for(var i in old,n){a" + ApiMethodText("list", "append") + "(fill);}}}";
         }
         const std::set<TypeId>* collections[] = { &concatHelpers_, &unionHelpers_, &intersectionHelpers_, &differenceHelpers_ };
         const char* names[] = { "concat", "union", "intersection", "difference" };
-        const char* bodies[] = {
-            "var r=a.clone();foreach(var v in b)r.append(v);return r;}",
-            "var r=a.clone();foreach(var v in b)r.add(v);return r;}",
-            "var r=a.clone();foreach(var v in a)if(!b.contains(v))r.remove(v);return r;}",
-            "var r=a.clone();foreach(var v in b)r.remove(v);return r;}" };
+        const std::string listClone = ApiMethodText("list", "clone"), setClone = ApiMethodText("set", "clone");
+        const std::string bodies[] = {
+            "var r=a" + listClone + "();foreach(var v in b)r" + ApiMethodText("list", "append") + "(v);return r;}",
+            "var r=a" + setClone + "();foreach(var v in b)r" + ApiMethodText("set", "add") + "(v);return r;}",
+            "var r=a" + setClone + "();foreach(var v in a)if(!b" + ApiMethodText("set", "contains") + "(v))r" + ApiMethodText("set", "remove") + "(v);return r;}",
+            "var r=a" + setClone + "();foreach(var v in b)r" + ApiMethodText("set", "remove") + "(v);return r;}" };
         for (std::size_t operation = 0; operation < 4; ++operation)
             for (TypeId type : *collections[operation])
             {
@@ -4143,7 +4173,7 @@ private:
             const TypeId list = types_.ListOf(type);
             result += HelperDefinition(name, list, {{"a", list}});
             HelperStorage(name, "r", list); HelperStorage(name, "v", type);
-            result += "var r=[];foreach(var v in a)r.append(" + Helper("clone", type) + "(v));return r;}";
+            result += "var r=[];foreach(var v in a)r" + ApiMethodText("list", "append") + "(" + Helper("clone", type) + "(v));return r;}";
         }
         for (TypeId type : structMapClones_)
         {
@@ -4160,14 +4190,15 @@ private:
             const TypeId list = types_.ListOf(map.value);
             result += HelperDefinition(name, list, {{"a", type}});
             HelperStorage(name, "r", list); HelperStorage(name, "k", map.key); HelperStorage(name, "v", map.value);
-            result += "var r=[];foreach(var k,v in a)r.append(" + Helper("clone", map.value) + "(v));return r;}";
+            result += "var r=[];foreach(var k,v in a)r" + ApiMethodText("list", "append") + "(" + Helper("clone", map.value) + "(v));return r;}";
         }
         for (TypeId type : structListResizes_)
         {
             const std::string name = internalPrefix_ + "resize_" + std::to_string(type);
             result += HelperDefinition(name, types_.Void(), {{"a", types_.ListOf(type)}, {"n", types_.Int()}, {"fill", type}});
             HelperStorage(name, "old", types_.Int()); HelperStorage(name, "i", types_.Int());
-            result += "if(n<0)n=0;var old=tosize(a);a.reserve(n);if(n<old)a.resize(n);else for(var i in old,n)a.append(" + Helper("clone", type) + "(fill));}";
+            result += "if(n<0)n=0;var old=a" + ApiMethodText("list", "len") + "();a" + ApiMethodText("list", "reserve") + "(n);if(n<old)a"
+                + ApiMethodText("list", "resize") + "(n);else for(var i in old,n)a" + ApiMethodText("list", "append") + "(" + Helper("clone", type) + "(fill));}";
         }
         for (TypeId type : structListConcats_)
         {
@@ -4175,7 +4206,7 @@ private:
             const TypeId list = types_.ListOf(type);
             result += HelperDefinition(name, list, {{"a", list}, {"b", list}});
             HelperStorage(name, "r", list); HelperStorage(name, "v", type);
-            result += "var r=" + internalPrefix_ + "clonelist_" + std::to_string(type) + "(a);foreach(var v in b)r.append(" + Helper("clone", type) + "(v));return r;}";
+            result += "var r=" + internalPrefix_ + "clonelist_" + std::to_string(type) + "(a);foreach(var v in b)r" + ApiMethodText("list", "append") + "(" + Helper("clone", type) + "(v));return r;}";
         }
         for (const Expr* lambda : lambdas_)
         {
@@ -4320,8 +4351,8 @@ private:
         }
         if (expression.kind == ExprKind::Call && !expression.indirectCall)
             FunctionUse(expression.callName, owner);
-        // 멤버·원소 쓰기도 소유 값과 첨자를 읽는다. 이름이 같은 지역변수는 별도 Symbol이다.
-        for (const auto& child : expression.children) Visit(*child, owner, false);
+        // 멤버·원소 쓰기도 소유 값과 첨자를 읽는다. 이름이 같은 지역변수는 별도 Symbol이다. Out 인자는 호출이 값을 써 넣는다.
+        for (const auto& child : expression.children) Visit(*child, owner, child->outTarget);
         if (expression.Rare().lambda) Visit(*expression.Rare().lambda, owner);
     }
 };

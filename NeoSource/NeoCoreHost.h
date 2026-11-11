@@ -110,6 +110,21 @@ public:
     void ReturnObject(ObjectHandle value);
     void ReturnNull();
     void ReturnValue(const Scalar& value);
+    // Out 매개변수 쓰기. 스키마에 Out 으로 등록한 매개변수에만 쓸 수 있고, 호출이 성공하면 스크립트의 인자 변수에
+    // 대입된다. 쓰지 않은 Out 매개변수의 변수는 호출 전 값을 유지한다. 현재 값은 일반 인자처럼 읽을 수 있다.
+    // Out 이 아닌 매개변수에 쓰거나 선언 타입과 다른 값을 쓰면 호출이 실패한다.
+    bool IsOut(std::size_t index) const;
+    void OutInt(std::size_t index, std::int64_t value);
+    void OutFloat(std::size_t index, double value);
+    void OutBool(std::size_t index, bool value);
+    void OutString(std::size_t index, const std::string& value);
+    void OutVector2(std::size_t index, Vector2Value value);
+    void OutVector3(std::size_t index, Vector3Value value);
+    void OutVector4(std::size_t index, Vector4Value value);
+    void OutQuaternion(std::size_t index, QuaternionValue value);
+    void OutObject(std::size_t index, ObjectHandle value);
+    void OutNull(std::size_t index);
+    void OutValue(std::size_t index, const Scalar& value);
     // 현재 호출의 반환형으로 JSON을 검사한다. 실패하면 호스트 호출의 오류를 함께 설정한다.
     bool ReturnJson(const std::string& text, bool strictIntegers = true);
     void Fail(const std::string& message);

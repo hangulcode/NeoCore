@@ -165,6 +165,8 @@ struct CallStoragePlan
     // 로드 시 계산하며, 숫자만 오가는 창은 빈 구간이다.
     int zeroFirst = 0;
     int zeroEnd = 0;
+    // Out 인자의 비트(0번 비트가 첫 인자). 호출이 끝나도 이 슬롯은 놓지 않고 뒤따르는 MOV 가 소유권째 가져간다.
+    u32 keepMask = 0;
 };
 
 // 호출·반환이 읽는 멤버를 앞에 모은다. 벡터 뒤에 두면 캐시 라인을 하나 더 건드린다.
@@ -247,7 +249,6 @@ struct ProgramSwitchTable
 // NOP_JMP_RANGE_*의 lower/upper operand. Program은 여러 VM이 공유되므로
 // BoundaryValue/포인터가 아니라 슬롯 번호와 descriptor flag만 보관한다.
 // 순수 수학 네이티브의 계산 함수를 인자 수와 무관하게 담는 포인터 형식. 쓸 때 원래 형식으로 되돌려 부른다.
-typedef void (*ProgramNativeFunction)();
 
 struct ProgramRangeJump
 {
@@ -271,9 +272,9 @@ class CNeoVMProgram
 
 	bool Load(CNArchive& ar, std::string* err);
 	bool VerifyCode(const std::vector<int>& codeOwners, std::string* err);
-	// PTRCALL2(native 이름) → NATIVECALL(native index) / intrinsic opcode 치환.
-	// Create() 안에서 딱 한 번만 실행된다.
-	void PatchNativeCalls();
+	// 내장 API 호출의 연결 이름을 본체 번호로 바꾼다(PTRCALL2 → NATIVECALL, PTRCALL → APICALL).
+	// Create() 안에서 딱 한 번만 실행된다. 등록부에 없는 이름이 있으면 실패한다.
+	bool PatchNativeCalls(std::string* err);
 	// n2가 static 문자열인 READ를 문자열 키 전용 opcode로 치환한다.
 	// Program은 여러 VM이 공유하므로 StringInfo/MapInfo 포인터는 코드에 저장하지 않는다.
 	void PatchStaticStringReads();
@@ -295,8 +296,6 @@ public:
 	std::vector<SStaticConst>	staticValues;
 	std::vector<ProgramSwitchTable>	switchTables;      // NOP_SWITCH.n1 이 이 배열의 인덱스
 	std::vector<ProgramRangeJump>	rangeJumps;          // NOP_JMP_RANGE_*.n3 이 이 배열의 인덱스
-	// NOP_RT_NATIVE_F*_L.n1 이 이 배열의 인덱스다. 로드가 순수 수학 네이티브의 계산 함수를 넣는다(No Save).
-	std::vector<ProgramNativeFunction>	scalarNatives;
 
 	// 디버그 정보 (IsDebugInfo() 일 때만 채워진다)
 	std::vector<debug_info>		debugData;

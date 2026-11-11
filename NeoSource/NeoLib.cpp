@@ -23,6 +23,7 @@
 #include "NeoStringLimits.h"
 #include "NeoNumberFormat.h"
 #include "NeoTime.h"
+#include "NeoCoreApi.h"
 #include "UTFString.h"
 #include <chrono>
 
@@ -464,6 +465,17 @@ struct neo_libs
 	{
 		assert(pVar.GetType() == VAR_MAP && args == 1);
 		pN->ReturnValue(pVar->_tbl->Find(pN->GetStack(1)) != nullptr);
+		return true;
+	}
+	// 키가 있으면 두 번째 인자 슬롯(Out)에 값을 쓰고 true 를 돌려준다. 없으면 슬롯을 건드리지 않으므로 호출자의
+	// 변수는 원래 값을 유지한다. 값이 null 인 키도 있는 것으로 본다.
+	static bool Map_try_get(CNeoVMWorker* pN, ValueRef pVar, short args)
+	{
+		assert(pVar.GetType() == VAR_MAP && args == 2);
+		ValueRef found = pVar->_tbl->Find(pN->GetStack(1));
+		const bool exists = found != nullptr;
+		if (exists) pN->Move(pN->GetStack(2), found);
+		pN->ReturnValue(exists);
 		return true;
 	}
 	static bool Map_remove(CNeoVMWorker* pN, ValueRef pVar, short args)
@@ -1194,32 +1206,6 @@ struct neo_libs
 		pN->ReturnValue(::sqrt(dx * dx + dy * dy + dz * dz));
 		return true;
 	}
-	static bool Math_Vector2(CNeoVMWorker* pN, ValueRef pVar, short args)
-	{
-		assert(args == 2);
-		pN->Var_SetVec2(pN->GetReturnVar(), NeoNarrowFloat32(FloatArgument(pN, 1)), NeoNarrowFloat32(FloatArgument(pN, 2)));
-		return true;
-	}
-	static bool Math_Vector3(CNeoVMWorker* pN, ValueRef pVar, short args)
-	{
-		assert(args == 3);
-		pN->Var_SetVec3(pN->GetReturnVar(), NeoNarrowFloat32(FloatArgument(pN, 1)), NeoNarrowFloat32(FloatArgument(pN, 2)), NeoNarrowFloat32(FloatArgument(pN, 3)));
-		return true;
-	}
-	static bool Math_Vector4(CNeoVMWorker* pN, ValueRef pVar, short args)
-	{
-		assert(args == 4);
-		pN->Var_SetVec4(pN->GetReturnVar(), NeoNarrowFloat32(FloatArgument(pN, 1)), NeoNarrowFloat32(FloatArgument(pN, 2)),
-			NeoNarrowFloat32(FloatArgument(pN, 3)), NeoNarrowFloat32(FloatArgument(pN, 4)));
-		return true;
-	}
-	static bool Math_Quaternion(CNeoVMWorker* pN, ValueRef pVar, short args)
-	{
-		assert(args == 4);
-		pN->Var_SetQuat(pN->GetReturnVar(), NeoNarrowFloat32(FloatArgument(pN, 1)), NeoNarrowFloat32(FloatArgument(pN, 2)),
-			NeoNarrowFloat32(FloatArgument(pN, 3)), NeoNarrowFloat32(FloatArgument(pN, 4)));
-		return true;
-	}
 	static NS_FLOAT MathClamp01Value(NS_FLOAT v)
 	{
 		if (v < (NS_FLOAT)0.0) return (NS_FLOAT)0.0;
@@ -1232,7 +1218,7 @@ struct neo_libs
 		if (v > maxValue) return maxValue;
 		return v;
 	}
-	// 아래 값 함수는 네이티브 래퍼와 워커의 직접 계산 경로(kScalarNatives)가 함께 쓴다. 한 곳에서만 고친다.
+	// 아래 값 함수는 수학 API 본체가 쓴다. 한 곳에서만 고친다.
 	static NS_FLOAT AbsValue(NS_FLOAT v) { return ::abs(v); }
 	static NS_FLOAT DegValue(NS_FLOAT radian) { return ((radian) * (180.0f / MATH_PI)); }
 	static NS_FLOAT RadValue(NS_FLOAT degree) { return ((degree) * (MATH_PI / 180.0f)); }
@@ -1911,15 +1897,6 @@ struct neo_libs
 		return true;
 	}
 
-	static bool core_fail(CNeoVMWorker* pN, ValueRef, short args)
-	{
-		ValueRef pArg1 = args >= 1 ? pN->GetStack(1) : nullptr;
-		if (pArg1 != nullptr && pArg1.GetType() == VAR_STRING)
-			pN->SetError(pArg1->_str->_str.c_str());
-		else
-			pN->SetError("script failure");
-		return false;
-	}
 	static bool io_print(CNeoVMWorker* pN, ValueRef pVar, short args)
 	{
 		if (args == 1)
@@ -2090,85 +2067,6 @@ struct neo_libs
 		pN->ReturnValue(NS_FLOAT((double)clock() / (double)CLOCKS_PER_SEC));
 		return true;
 	}
-	static bool sys_array32(CNeoVMWorker* pN, ValueRef, short args)
-	{
-		assert(args == 2);
-		ValueRef initial = pN->GetStack(1);
-		ValueRef size = pN->GetStack(2);
-		assert(size.GetType() == VAR_INT);
-		if (size->_int < 0 || size->_int > INT32_MAX) return false;
-		assert(initial.IsNumber());
-		if (initial.GetType() == VAR_INT && (initial->_int < INT32_MIN || initial->_int > INT32_MAX))
-		{
-			pN->SetError("int32 array value out of range");
-			return false;
-		}
-		const NeoArrayElementType type = initial.GetType() == VAR_INT ? NeoArrayElementType::Int32 : NeoArrayElementType::Float32;
-		ArrayInfo* array = pN->GetVM()->ArrayAlloc(type, static_cast<int>(size->_int), *initial);
-		if (!array) return false;
-		pN->Var_SetArray(pN->GetStack(0), array);
-		return true;
-	}
-	static bool sys_array(CNeoVMWorker* pN, ValueRef pVar, short args)
-	{
-		assert(args == 2);
-
-		ValueRef initialValue = pN->GetStack(1);
-		ValueRef sizeValue = pN->GetStack(2);
-		assert(sizeValue.GetType() == VAR_INT);
-		if (sizeValue->_int < 0 || sizeValue->_int > INT_MAX)
-			return false;
-
-		NeoArrayElementType elementType;
-		switch (initialValue.GetType())
-		{
-		case VAR_INT:   elementType = NeoArrayElementType::Int; break;
-		case VAR_FLOAT: elementType = NeoArrayElementType::Float; break;
-		case VAR_BOOL:  elementType = NeoArrayElementType::Bool; break;
-		case VAR_VEC:
-		case VAR_VEC3:
-		case VAR_VEC4:
-			switch (initialValue.VectorComponentCount())
-			{
-			case 2: elementType = NeoArrayElementType::Vector2; break;
-			case 3: elementType = NeoArrayElementType::Vector3; break;
-			case 4: elementType = NeoArrayElementType::Vector4; break;
-			default: return false;
-			}
-			break;
-		default:        return false;
-		}
-
-		ArrayInfo* array = pN->GetVM()->ArrayAlloc(elementType, static_cast<int>(sizeValue->_int), *initialValue);
-		if (array == nullptr)
-			return false;
-		pN->Var_SetArray(pN->GetStack(0), array);
-		return true;
-	}
-	// system.load(source, name) — arg1 = 컴파일할 소스 텍스트, arg2 = 청크 이름(현재 미사용).
-    static bool sys_jsonEncode(CNeoVMWorker* worker, ValueRef, short args)
-    {
-        JsonResult result; std::string text;
-        assert(args >= 1 && args <= 2 && (args != 2 || worker->GetStack(2).GetType() == VAR_BOOL));
-        JsonInternal::Encode(*worker->GetStack(1), text, result, args == 2 && worker->GetStack(2)->_bl);
-        if (result.error.empty()) worker->Var_SetStringA(worker->GetStack(0), text);
-        else worker->ReturnValue();
-        return true;
-    }
-    static bool sys_jsonDecode(CNeoVMWorker* worker, ValueRef, short args)
-    {
-        JsonResult result;
-        assert(args == 1);
-        assert(worker->GetStack(1).GetType() == VAR_STRING || worker->GetStack(1).GetType() == VAR_NONE);
-        if (worker->GetStack(1).GetType() == VAR_NONE)
-            result.Fail("$", "jsonDecode expects a string");
-        else {
-            const auto& text = worker->GetStack(1)->_str->_str;
-            JsonInternal::Decode(*worker, text.data(), text.size(), *worker->GetStack(0), result);
-        }
-        if (!result.error.empty()) worker->ReturnValue();
-        return true;
-    }
 	static bool coroutine_create(CNeoVMWorker* pN, ValueRef pVar, short args)
 	{
 		assert(args == 1);
@@ -2319,531 +2217,46 @@ struct neo_libs
 
 
 
-//typedef bool (ClassName::*TYPE_NeoLib)(CNeoVMWorker* pN, short args);
-//typedef bool(*TYPE_NeoLib)(CNeoVMWorker* pN, short args);
 typedef bool(*TYPE_NeoLib)(CNeoVMWorker* pN, ValueRef pVar, short args);
 
-static VMHash<TYPE_NeoLib> g_sNeoFunLib_Default;
-static VMHash<TYPE_NeoLib> g_sNeoFunLib_List;
-static VMHash<TYPE_NeoLib> g_sNeoFunLib_Array;
-static VMHash<TYPE_NeoLib> g_sNeoFunLib_String;
-static VMHash<TYPE_NeoLib> g_sNeoFunLib_Map;
-static VMHash<TYPE_NeoLib> g_sNeoFunLib_Set;
-static VMHash<TYPE_NeoLib> g_sNeoFunLib_Async;
-static std::vector<TYPE_NeoLib> g_sNeoFunLib_DefaultNative;
-static std::vector<CNeoVM::ScalarNativeFunction> g_sNeoFunLib_DefaultScalar;
-static std::vector<CNeoVM::ScalarNativeFunction2> g_sNeoFunLib_DefaultScalar2;
-static std::vector<CNeoVM::ScalarNativeFunction3> g_sNeoFunLib_DefaultScalar3;
-static std::vector<u8> g_sNeoFunLib_DefaultIntrinsic; // native index 별 intrinsic opcode (기본 NOP_NONE)
-static std::unordered_map<std::string, int> g_sNeoFunLib_DefaultNativeIndex;
-
-bool CNeoVM::_funInitLib = false;
-FunctionPtrNative CNeoVM::_funLib_Default;
-FunctionPtrNative CNeoVM::_funLib_List;
-FunctionPtrNative CNeoVM::_funLib_Array;
-FunctionPtrNative CNeoVM::_funLib_String;
-FunctionPtrNative CNeoVM::_funLib_Map;
-FunctionPtrNative CNeoVM::_funLib_Set;
-FunctionPtrNative CNeoVM::_funLib_Async;
-
-
-static bool Fun_Default(INeoVMWorker* pN, void* pUserData, const VMString* pStr, short args)
-{
-	TYPE_NeoLib f;
-	if(false == g_sNeoFunLib_Default.TryGetValue(pStr, &f))
-		return false;
-
-	return (*f)((CNeoVMWorker*)pN, *static_cast<ValueRef*>(pUserData), args);
-}
-static bool Fun_String(INeoVMWorker* pN, void* pUserData, const VMString* pStr, short args)
-{
-	TYPE_NeoLib f;
-	if (false == g_sNeoFunLib_String.TryGetValue(pStr, &f))
-		return false;
-
-	return (*f)((CNeoVMWorker*)pN, *static_cast<ValueRef*>(pUserData), args);
-}
-static bool Fun_List(INeoVMWorker* pN, void* pUserData, const VMString* pStr, short args)
-{
-	TYPE_NeoLib f;
-	if (false == g_sNeoFunLib_List.TryGetValue(pStr, &f))
-		return false;
-
-	return (*f)((CNeoVMWorker*)pN, *static_cast<ValueRef*>(pUserData), args);
-}
-static bool Fun_Array(INeoVMWorker* pN, void* pUserData, const VMString* pStr, short args)
-{
-	TYPE_NeoLib f;
-	if (false == g_sNeoFunLib_Array.TryGetValue(pStr, &f))
-		return false;
-
-	return (*f)((CNeoVMWorker*)pN, *static_cast<ValueRef*>(pUserData), args);
-}
-static bool Fun_Map(INeoVMWorker* pN, void* pUserData, const VMString* pStr, short args)
-{
-	TYPE_NeoLib f;
-	if (false == g_sNeoFunLib_Map.TryGetValue(pStr, &f))
-		return false;
-
-	return (*f)((CNeoVMWorker*)pN, *static_cast<ValueRef*>(pUserData), args);
-}
-static bool Fun_Set(INeoVMWorker* pN, void* pUserData, const VMString* pStr, short args)
-{
-	TYPE_NeoLib f;
-	if (!g_sNeoFunLib_Set.TryGetValue(pStr, &f)) return false;
-	return (*f)((CNeoVMWorker*)pN, *static_cast<ValueRef*>(pUserData), args);
-}
-static bool Fun_Async(INeoVMWorker* pN, void* pUserData, const VMString* pStr, short args)
-{
-	TYPE_NeoLib f;
-	if (false == g_sNeoFunLib_Async.TryGetValue(pStr, &f))
-		return false;
-
-	return (*f)((CNeoVMWorker*)pN, *static_cast<ValueRef*>(pUserData), args);
-}
-
-std::map<std::string, std::list< SystemFun>> g_sSystemFuns;
-std::string g_sCurrentSystem;
-
-// 직접 계산이 허용되는 순수 수학 네이티브. 래퍼(Math_*)와 같은 값 함수를 가리켜 두 경로의 결과가 같다.
-// 인자 수에 맞는 칸 하나만 채운다. rand·time 처럼 상태를 쓰는 함수와 벡터·각도 보간처럼 분기가 긴 함수는 넣지 않는다.
-struct ScalarNativeEntry
-{
-	TYPE_NeoLib fun;
-	CNeoVM::ScalarNativeFunction f1;
-	CNeoVM::ScalarNativeFunction2 f2;
-	CNeoVM::ScalarNativeFunction3 f3;
-};
-typedef NS_FLOAT (*LibmUnary)(NS_FLOAT);
-typedef NS_FLOAT (*LibmBinary)(NS_FLOAT, NS_FLOAT);
-static const ScalarNativeEntry kScalarNatives[] = {
-	{ &neo_libs::Math_abs,   &neo_libs::AbsValue, nullptr, nullptr },
-	{ &neo_libs::Math_acos,  static_cast<LibmUnary>(&::acos), nullptr, nullptr },
-	{ &neo_libs::Math_asin,  static_cast<LibmUnary>(&::asin), nullptr, nullptr },
-	{ &neo_libs::Math_atan,  static_cast<LibmUnary>(&::atan), nullptr, nullptr },
-	{ &neo_libs::Math_ceil,  static_cast<LibmUnary>(&::ceil), nullptr, nullptr },
-	{ &neo_libs::Math_floor, static_cast<LibmUnary>(&::floor), nullptr, nullptr },
-	{ &neo_libs::Math_round, static_cast<LibmUnary>(&::round), nullptr, nullptr },
-	{ &neo_libs::Math_sin,   static_cast<LibmUnary>(&::sin), nullptr, nullptr },
-	{ &neo_libs::Math_cos,   static_cast<LibmUnary>(&::cos), nullptr, nullptr },
-	{ &neo_libs::Math_tan,   static_cast<LibmUnary>(&::tan), nullptr, nullptr },
-	{ &neo_libs::Math_log,   static_cast<LibmUnary>(&::log), nullptr, nullptr },
-	{ &neo_libs::Math_log10, static_cast<LibmUnary>(&::log10), nullptr, nullptr },
-	{ &neo_libs::Math_exp,   static_cast<LibmUnary>(&::exp), nullptr, nullptr },
-	{ &neo_libs::Math_deg,   &neo_libs::DegValue, nullptr, nullptr },
-	{ &neo_libs::Math_rad,   &neo_libs::RadValue, nullptr, nullptr },
-	{ &neo_libs::Math_sqrt,  static_cast<LibmUnary>(&::sqrt), nullptr, nullptr },
-	{ &neo_libs::Math_trunc, static_cast<LibmUnary>(&::trunc), nullptr, nullptr },
-	{ &neo_libs::Math_fract, &neo_libs::FractValue, nullptr, nullptr },
-	{ &neo_libs::Math_sinh,  static_cast<LibmUnary>(&::sinh), nullptr, nullptr },
-	{ &neo_libs::Math_cosh,  static_cast<LibmUnary>(&::cosh), nullptr, nullptr },
-	{ &neo_libs::Math_tanh,  static_cast<LibmUnary>(&::tanh), nullptr, nullptr },
-	{ &neo_libs::Math_Sign,  &neo_libs::SignValue, nullptr, nullptr },
-	{ &neo_libs::Math_WrapAngle, &neo_libs::NsWrapAngle, nullptr, nullptr },
-	{ &neo_libs::Math_Clamp01, &neo_libs::MathClamp01Value, nullptr, nullptr },
-	{ &neo_libs::Math_SmoothStep01, &neo_libs::SmoothStep01Value, nullptr, nullptr },
-	{ &neo_libs::Math_pow,   nullptr, static_cast<LibmBinary>(&::pow), nullptr },
-	{ &neo_libs::Math_atan2, nullptr, static_cast<LibmBinary>(&::atan2), nullptr },
-	{ &neo_libs::Math_hypot, nullptr, &neo_libs::HypotValue, nullptr },
-	{ &neo_libs::Math_fmod,  nullptr, &neo_libs::FmodValue, nullptr },
-	{ &neo_libs::Math_Min,   nullptr, &neo_libs::MinValue, nullptr },
-	{ &neo_libs::Math_Max,   nullptr, &neo_libs::MaxValue, nullptr },
-	{ &neo_libs::Math_Repeat, nullptr, &neo_libs::NsRepeat, nullptr },
-	{ &neo_libs::Math_Clamp, nullptr, nullptr, &neo_libs::MathClampValue },
-	{ &neo_libs::Math_Lerp,  nullptr, nullptr, &neo_libs::LerpValue },
-	{ &neo_libs::Math_MoveToward, nullptr, nullptr, &neo_libs::NsMoveToward },
-	{ &neo_libs::Math_InverseLerp, nullptr, nullptr, &neo_libs::InverseLerpValue },
-	{ &neo_libs::Math_SmoothStep, nullptr, nullptr, &neo_libs::SmoothStepValue },
+// 내장 API 본체 표. 선언 표(NeoCoreApiTable.inc)와 같은 줄에서 만들어지므로 번호가 NeoCore::CoreApi() 와 같다.
+// 이름으로 찾는 표는 없다. 컴파일러가 서명으로 검사한 호출만 이미지의 연결 이름을 거쳐 이 번호로 들어온다.
+static const TYPE_NeoLib g_sApiBodies[] = {
+#define NEOCORE_API(owner, declaration, flags, body) body,
+#include "NeoCoreApiTable.inc"
+#undef NEOCORE_API
 };
 
-static int AddDefaultNativeFun(const std::string& nativeName, TYPE_NeoLib fun)
+int CNeoVM::ApiCount()
 {
-	auto it = g_sNeoFunLib_DefaultNativeIndex.find(nativeName);
-	if (it != g_sNeoFunLib_DefaultNativeIndex.end())
-		return it->second;
-
-	int nativeIndex = (int)g_sNeoFunLib_DefaultNative.size();
-	g_sNeoFunLib_DefaultNative.push_back(fun);
-	// 호스트 콜백이나 VM 상태를 사용하지 않는 내장 수학 함수만 직접 계산을 허용한다(kScalarNatives).
-	CNeoVM::ScalarNativeFunction scalar = nullptr;
-	CNeoVM::ScalarNativeFunction2 scalar2 = nullptr;
-	CNeoVM::ScalarNativeFunction3 scalar3 = nullptr;
-	for (size_t i = 0; i < sizeof(kScalarNatives) / sizeof(kScalarNatives[0]); ++i)
-	{
-		if (kScalarNatives[i].fun != fun) continue;
-		scalar = kScalarNatives[i].f1; scalar2 = kScalarNatives[i].f2; scalar3 = kScalarNatives[i].f3;
-		break;
-	}
-	g_sNeoFunLib_DefaultScalar.push_back(scalar);
-	g_sNeoFunLib_DefaultScalar2.push_back(scalar2);
-	g_sNeoFunLib_DefaultScalar3.push_back(scalar3);
-	g_sNeoFunLib_DefaultIntrinsic.push_back(NOP_NONE);
-	g_sNeoFunLib_DefaultNativeIndex[nativeName] = nativeIndex;
-	g_sNeoFunLib_Default.Add(nativeName, fun);
-	return nativeIndex;
-}
-// 특정 native 함수를 로드 시 전용 opcode 로 대체하도록 표시 (문자열 하드코딩 대신 등록부에 명시).
-static void SetSystemFunIntrinsic(const std::string& fname, OperationCode op)
-{
-	auto it = g_sNeoFunLib_DefaultNativeIndex.find("#" + fname);
-	if (it != g_sNeoFunLib_DefaultNativeIndex.end())
-		g_sNeoFunLib_DefaultIntrinsic[it->second] = (u8)op;
+	return static_cast<int>(sizeof(g_sApiBodies) / sizeof(g_sApiBodies[0]));
 }
 
-// 첫 항목 = 리턴 타입(필수, 없으면 "void"), 이후 파라미터를 "타입 이름" 문자열로 하나씩 나열.
-// 인자 수는 파라미터 나열 개수에서 유도된다(별도 count 없음).
-// 마지막에 "..." 을 넣으면 가변 인자(컴파일 타임 인자 수 검사 안 함 = argCount -1).
-// 예) AddSystemFun("pow", &Math_pow, "float", "float base", "float exp");
-//     AddSystemFun("rand", &Math_rand, "int");                                   // 인자 0개
-//     AddSystemFun("resume", &coroutine_resume, "var", "coroutine co", "...");   // 가변
-static void AddSystemFunImpl(const std::string& fname, TYPE_NeoLib fun, std::initializer_list<const char*> retAndParams)
+int CNeoVM::FindApiIndex(const std::string& key)
 {
-	const std::string nativeName = "#" + fname;
-	int nativeIndex = AddDefaultNativeFun(nativeName, fun);
-	if (g_sCurrentSystem.empty())
-		return;
-
-	SystemFun v;
-	v.fname = fname;
-	v.nativeIndex = nativeIndex;
-	bool variadic = false;
-	bool first = true;
-	for (const char* p : retAndParams)
-	{
-		if (first)
-		{
-			v.ret = (p != nullptr) ? p : "void";   // 첫 항목 = 리턴 타입
-			first = false;
-			continue;
-		}
-		if (p != nullptr && strcmp(p, "...") == 0)
-			variadic = true;                 // 표시용으로도 넣고, 인자 수 검사는 끈다
-		v.params.push_back(p);
-	}
-	if (v.ret.empty())
-		v.ret = "void";
-	v.argCount = variadic ? -1 : (int)v.params.size();
-
-	auto it = g_sSystemFuns.find(g_sCurrentSystem);
-	if (it == g_sSystemFuns.end())
-	{
-		std::list<SystemFun> lst;
-		lst.push_back(v);
-		g_sSystemFuns[g_sCurrentSystem] = lst;
-	}
-	else
-	{
-		(*it).second.push_back(v);
-	}
-}
-template<typename... TParams>
-static void AddSystemFun(const std::string& fname, TYPE_NeoLib fun, const char* ret, TParams... params)
-{
-	AddSystemFunImpl(fname, fun, { ret, params... });
+	const int index = NeoCore::FindCoreApiIndex(key);
+	// 본체가 다른 계층에 있는 선언(JSON 변환)은 이 경로로 부를 수 없다.
+	return index >= 0 && index < ApiCount() && g_sApiBodies[index] != nullptr ? index : -1;
 }
 
-int CNeoVM::FindDefaultNativeIndex(const VMString* pStr)
+bool CNeoVM::CallApi(int index, CNeoVMWorker* pWorker, ValueRef receiver, short args)
 {
-	if (pStr == nullptr)
-		return -1;
-    // 이전 이미지의 내부 이름만 새 이름으로 연결한다. 새 소스에는 예약 프리픽스만 노출한다.
-    if (pStr->_str == "__neocore_fail") return FindDefaultNativeIndex("$neocore_fail");
-
-	TYPE_NeoLib f;
-	if (g_sNeoFunLib_Default.TryGetValue(pStr, &f) == false)
-		return -1;
-
-	auto it = g_sNeoFunLib_DefaultNativeIndex.find(pStr->_str);
-	if (it == g_sNeoFunLib_DefaultNativeIndex.end())
-		return -1;
-	return it->second;
-}
-
-int CNeoVM::FindDefaultNativeIndex(const std::string& name)
-{
-	auto it = g_sNeoFunLib_DefaultNativeIndex.find(name == "__neocore_fail" ? "$neocore_fail" : name);
-	if (it == g_sNeoFunLib_DefaultNativeIndex.end())
-		return -1;
-	return it->second;
-}
-
-CNeoVM::ScalarNativeFunction CNeoVM::GetDefaultNativeScalar(int nativeIndex)
-{
-    return nativeIndex >= 0 && nativeIndex < static_cast<int>(g_sNeoFunLib_DefaultScalar.size())
-        ? g_sNeoFunLib_DefaultScalar[nativeIndex] : nullptr;
-}
-CNeoVM::ScalarNativeFunction2 CNeoVM::GetDefaultNativeScalar2(int nativeIndex)
-{
-    return nativeIndex >= 0 && nativeIndex < static_cast<int>(g_sNeoFunLib_DefaultScalar2.size())
-        ? g_sNeoFunLib_DefaultScalar2[nativeIndex] : nullptr;
-}
-CNeoVM::ScalarNativeFunction3 CNeoVM::GetDefaultNativeScalar3(int nativeIndex)
-{
-    return nativeIndex >= 0 && nativeIndex < static_cast<int>(g_sNeoFunLib_DefaultScalar3.size())
-        ? g_sNeoFunLib_DefaultScalar3[nativeIndex] : nullptr;
-}
-bool CNeoVM::HasDefaultNativeScalar(int nativeIndex, int argumentCount)
-{
-    switch (argumentCount)
-    {
-    case 1: return GetDefaultNativeScalar(nativeIndex) != nullptr;
-    case 2: return GetDefaultNativeScalar2(nativeIndex) != nullptr;
-    case 3: return GetDefaultNativeScalar3(nativeIndex) != nullptr;
-    default: return false;
-    }
-}
-bool CNeoVM::CallDefaultNativeByIndex(int nativeIndex, CNeoVMWorker* pWorker, short args)
-{
-	if (nativeIndex < 0 || nativeIndex >= (int)g_sNeoFunLib_DefaultNative.size())
+	if (index < 0 || index >= ApiCount() || g_sApiBodies[index] == nullptr)
 		return false;
-	return (*g_sNeoFunLib_DefaultNative[nativeIndex])(pWorker, nullptr, args);
-}
-const char* CNeoVM::GetDefaultNativeName(int nativeIndex)
-{
-	// 실패할 때만 역조회한다. 정상 호출에는 이름 검색이나 문자열 할당을 추가하지 않는다.
-	for (const auto& entry : g_sNeoFunLib_DefaultNativeIndex)
-		if (entry.second == nativeIndex)
-			return entry.first.c_str() + (!entry.first.empty() && entry.first[0] == '#' ? 1 : 0);
-	return "<unknown>";
-}
-// 로드 시 PTRCALL2 를 대체할 intrinsic opcode. 없으면 NOP_NONE.
-int CNeoVM::GetDefaultNativeIntrinsic(int nativeIndex)
-{
-	if (nativeIndex < 0 || nativeIndex >= (int)g_sNeoFunLib_DefaultIntrinsic.size())
-		return NOP_NONE;
-	return g_sNeoFunLib_DefaultIntrinsic[nativeIndex];
+	return (*g_sApiBodies[index])(pWorker, receiver, args);
 }
 
-static void AddGlobalLibFun()
+const char* CNeoVM::ApiName(int index)
 {
-	if (g_sNeoFunLib_Default.empty() == false)
-		return;
-
-	AddDefaultNativeFun("print", &neo_libs::io_print);
-	// 정적 프런트엔드의 로우어링 헬퍼가 쓰는 런타임 오류 보고. 인자 문자열이 오류 메시지가 된다.
-	AddDefaultNativeFun("$neocore_fail", &neo_libs::core_fail);
-
-	g_sCurrentSystem = "math";
-	AddSystemFun("abs", &neo_libs::Math_abs, "float", "float x");
-	AddSystemFun("acos", &neo_libs::Math_acos, "float", "float x");
-	AddSystemFun("asin", &neo_libs::Math_asin, "float", "float x");
-	AddSystemFun("atan", &neo_libs::Math_atan, "float", "float x");
-	AddSystemFun("ceil", &neo_libs::Math_ceil, "float", "float x");
-	AddSystemFun("floor", &neo_libs::Math_floor, "float", "float x");
-	AddSystemFun("round", &neo_libs::Math_round, "float", "float x");
-	AddSystemFun("sin", &neo_libs::Math_sin, "float", "float radian");
-	AddSystemFun("cos", &neo_libs::Math_cos, "float", "float radian");
-	AddSystemFun("tan", &neo_libs::Math_tan, "float", "float radian");
-	AddSystemFun("log", &neo_libs::Math_log, "float", "float x");
-	AddSystemFun("log10", &neo_libs::Math_log10, "float", "float x");
-	AddSystemFun("exp", &neo_libs::Math_exp, "float", "float x");
-	AddSystemFun("pow", &neo_libs::Math_pow, "float", "float base", "float exp");
-	AddSystemFun("deg", &neo_libs::Math_deg, "float", "float radian");
-	AddSystemFun("rad", &neo_libs::Math_rad, "float", "float degree");
-	AddSystemFun("sqrt", &neo_libs::Math_sqrt, "float", "float x");
-	AddSystemFun("atan2", &neo_libs::Math_atan2, "float", "float y", "float x");
-	AddSystemFun("hypot", &neo_libs::Math_hypot, "float", "float x", "float y");
-	AddSystemFun("fmod", &neo_libs::Math_fmod, "float", "float x", "float y");
-	AddSystemFun("trunc", &neo_libs::Math_trunc, "float", "float x");
-	AddSystemFun("fract", &neo_libs::Math_fract, "float", "float x");
-	AddSystemFun("sinh", &neo_libs::Math_sinh, "float", "float x");
-	AddSystemFun("cosh", &neo_libs::Math_cosh, "float", "float x");
-	AddSystemFun("tanh", &neo_libs::Math_tanh, "float", "float x");
-	AddSystemFun("Sign", &neo_libs::Math_Sign, "float", "float x");
-	AddSystemFun("Min", &neo_libs::Math_Min, "float", "float a", "float b");
-	AddSystemFun("Max", &neo_libs::Math_Max, "float", "float a", "float b");
-	AddSystemFun("Vector2", &neo_libs::Math_Vector2, "Vector2", "float x", "float y");
-	AddSystemFun("Vector3", &neo_libs::Math_Vector3, "Vector3", "float x", "float y", "float z");
-	AddSystemFun("Vector4", &neo_libs::Math_Vector4, "Vector4", "float x", "float y", "float z", "float w");
-	AddSystemFun("Quaternion", &neo_libs::Math_Quaternion, "Quaternion", "float w", "float x", "float y", "float z");
-	// 벡터 생성자는 LoadVM 에서 전용 opcode 로 대체 (native 호출 오버헤드 제거). native 구현은 폴백으로 유지.
-	// 넷 다 같은 op. 성분 수는 호출 인자 수(n2)에서 나온다.
-	SetSystemFunIntrinsic("Vector2", NOP_VEC_MAKE);
-	SetSystemFunIntrinsic("Vector3", NOP_VEC_MAKE);
-	SetSystemFunIntrinsic("Vector4", NOP_VEC_MAKE);
-	SetSystemFunIntrinsic("Quaternion", NOP_VEC_MAKE);
-	AddSystemFun("Clamp01", &neo_libs::Math_Clamp01, "float", "float x");
-	AddSystemFun("Clamp", &neo_libs::Math_Clamp, "float", "float x", "float min", "float max");
-	AddSystemFun("SmoothStep01", &neo_libs::Math_SmoothStep01, "float", "float t");
-	AddSystemFun("Lerp", &neo_libs::Math_Lerp, "float", "float a", "float b", "float t");
-	AddSystemFun("Lerp3", &neo_libs::Math_Lerp3, "Vector3", "Vector3 a", "Vector3 b", "float t");
-	AddSystemFun("Repeat", &neo_libs::Math_Repeat, "float", "float x", "float length");
-	AddSystemFun("PingPong", &neo_libs::Math_PingPong, "float", "float x", "float length");
-	AddSystemFun("WrapAngle", &neo_libs::Math_WrapAngle, "float", "float radian");
-	AddSystemFun("DeltaAngle", &neo_libs::Math_DeltaAngle, "float", "float from", "float to");
-	AddSystemFun("LerpAngle", &neo_libs::Math_LerpAngle, "float", "float from", "float to", "float t");
-	AddSystemFun("MoveToward", &neo_libs::Math_MoveToward, "float", "float current", "float target", "float maxDelta");
-	AddSystemFun("MoveTowardAngle", &neo_libs::Math_MoveTowardAngle, "float", "float current", "float target", "float maxDelta");
-	AddSystemFun("InverseLerp", &neo_libs::Math_InverseLerp, "float", "float a", "float b", "float value");
-	AddSystemFun("Remap", &neo_libs::Math_Remap, "float", "float value", "float inMin", "float inMax", "float outMin", "float outMax");
-	AddSystemFun("SmoothStep", &neo_libs::Math_SmoothStep, "float", "float edge0", "float edge1", "float x");
-	AddSystemFun("Distance2", &neo_libs::Math_Distance2, "float", "float x0", "float y0", "float x1", "float y1");
-	AddSystemFun("Dot3", &neo_libs::Math_Dot3, "float", "Vector3 a", "Vector3 b");
-	AddSystemFun("Length3", &neo_libs::Math_Length3, "float", "Vector3 v");
-	AddSystemFun("Distance3", &neo_libs::Math_Distance3, "float", "Vector3 a", "Vector3 b");
-	AddSystemFun("DistanceSquared3", &neo_libs::Math_DistanceSquared3, "float", "Vector3 a", "Vector3 b");
-	AddSystemFun("Normalize3", &neo_libs::Math_Normalize3, "Vector3", "Vector3 v", "Vector3 fallback");
-	AddSystemFun("Cross3", &neo_libs::Math_Cross3, "Vector3", "Vector3 a", "Vector3 b");
-	AddSystemFun("RotateVectorByQuat", &neo_libs::Math_RotateVectorByQuat, "Vector3", "Quaternion quat", "Vector3 v");
-	AddSystemFun("quat_from_basis", &neo_libs::Math_quat_from_basis, "Quaternion", "Vector3 right", "Vector3 up", "Vector3 forward");
-	AddSystemFun("quat_slerp", &neo_libs::Math_quat_slerp, "Quaternion", "Quaternion a", "Quaternion b", "float t");
-	AddSystemFun("srand", &neo_libs::Math_srand, "void", "int seed");
-	AddSystemFun("rand", &neo_libs::Math_rand, "int");
-	AddSystemFun("tostr", &neo_libs::Math_ToStr, "string", "float value");
-	AddSystemFun("fixed", &neo_libs::Math_Fixed, "string", "float value", "int decimals");
-	AddSystemFun("Rand01", &neo_libs::Math_Rand01, "float");
-	AddSystemFun("RandRange", &neo_libs::Math_RandRange, "float", "float min", "float max");
-	AddSystemFun("Hash32", &neo_libs::Math_Hash32, "int", "int value");
-	AddSystemFun("ColorRGB", &neo_libs::Math_ColorRGB, "int", "float r", "float g", "float b");
-	AddSystemFun("ColorARGB", &neo_libs::Math_ColorARGB, "int", "float a", "float r", "float g", "float b");
-
-	g_sCurrentSystem = "system";
-	AddSystemFun("time", &neo_libs::sys_time, "int");
-	AddSystemFun("clock", &neo_libs::sys_clock, "float");
-	AddSystemFun("jsonEncode", &neo_libs::sys_jsonEncode, "var", "var value", "...");
-	AddSystemFun("jsonDecode", &neo_libs::sys_jsonDecode, "var", "string text");
-	AddSystemFun("array", &neo_libs::sys_array, "array", "var initial", "int size");
-	AddSystemFun("array32", &neo_libs::sys_array32, "array", "var initial", "int size");
-	AddSystemFun("aysnc_create", &neo_libs::sys_aysnc_create, "async");
-	AddSystemFun("set", &neo_libs::sys_set, "set", "list l");
-
-
-	g_sCurrentSystem = "coroutine";
-	AddSystemFun("create", &neo_libs::coroutine_create, "coroutine", "fun f");
-	AddSystemFun("resume", &neo_libs::coroutine_resume, "var", "coroutine co", "...");
-	AddSystemFun("status", &neo_libs::coroutine_status, "string", "coroutine co");
-	AddSystemFun("close", &neo_libs::coroutine_close, "void", "...");
-
-	g_sCurrentSystem.clear();
-	// 기존 네이티브 함수의 인덱스 순서를 유지하도록 새 함수는 등록부 끝에 추가한다.
-	g_sCurrentSystem = "system";
-	AddSystemFun("time_ms", &TimeLibrary::TimeMilliseconds, "int");
-	AddSystemFun("date", &neo_libs::sys_date, "string", "string format", "int time");
-	AddSystemFun("utc_date", &neo_libs::sys_utc_date, "string", "string format", "int time");
-	AddSystemFun("time_span", &TimeLibrary::TimeSpan, "time_span", "int days", "int hours", "int minutes", "int seconds", "int milliseconds");
-	AddSystemFun("time_span_ms", &TimeLibrary::TimeSpanMilliseconds, "time_span", "int milliseconds");
-	AddSystemFun("stopwatch", &TimeLibrary::Stopwatch, "stopwatch");
-	AddSystemFun("utc_time_ms", &TimeLibrary::UtcTimeMilliseconds, "int", "int year", "int month", "int day", "int hour", "int minute", "int second", "int millisecond");
-	AddSystemFun("utc_parts", &TimeLibrary::UtcParts, "map", "int time_ms");
-	AddSystemFun("utc_format_ms", &TimeLibrary::UtcFormatMilliseconds, "string", "int time_ms");
-	AddSystemFun("utc_parse_ms", &TimeLibrary::UtcParseMilliseconds, "int", "string text");
-	AddSystemFun("time_span_seconds", &TimeLibrary::TimeSpanSeconds, "time_span", "float seconds");
-
-	g_sCurrentSystem.clear();
-}
-bool CNeoVM::IsGlobalLibFun(std::string& FunName)
-{
-	//InitLib();
-	//return g_sNeoFunLib_Default.IsKey(FunName);
-	return FunName == "print" || FunName == "$neocore_fail";
-}
-const std::list< SystemFun>* CNeoVM::GetSystemModule(const std::string& module)
-{
-	auto it = g_sSystemFuns.find(module);
-	if(it == g_sSystemFuns.end())
-		return nullptr;
-	return &(*it).second;
-}
-void CNeoVM::RegLibrary(ValueRef pSystem, const char* pLibName)
-{
-	if (pSystem && pSystem.GetType() == VAR_FP_NATIVE)
-		NeoVMSystem::RegisterTableCallBack(pSystem, nullptr, Fun_Default, nullptr);
-	//AddGlobalLibFun();
-
-	//_funDefaultLib = CNeoVM::RegisterNative(Fun);
-}
-
-void CNeoVM::RegObjLibrary()
-{
-	if (_funInitLib) return;
-	_funInitLib = true;
-
-	AddGlobalLibFun();
-	_funLib_Default = NeoVMSystem::RegisterNative(Fun_Default);
-
-	// String Lib
-	_funLib_String = NeoVMSystem::RegisterNative(Fun_String);
-	g_sNeoFunLib_String.Add("sub", &neo_libs::Str_sub);
-	g_sNeoFunLib_String.Add("len", &neo_libs::Str_len);
-	g_sNeoFunLib_String.Add("codepoint", &neo_libs::Str_codepoint);
-	g_sNeoFunLib_String.Add("find", &neo_libs::Str_find);
-	g_sNeoFunLib_String.Add("upper", &neo_libs::Str_upper);
-	g_sNeoFunLib_String.Add("lower", &neo_libs::Str_lower);
-	g_sNeoFunLib_String.Add("trim", &neo_libs::Str_trim);
-	g_sNeoFunLib_String.Add("ltrim", &neo_libs::Str_ltrim);
-	g_sNeoFunLib_String.Add("rtrim", &neo_libs::Str_rtrim);
-	g_sNeoFunLib_String.Add("replace", &neo_libs::Str_replace);
-	g_sNeoFunLib_String.Add("replaceAll", &neo_libs::Str_replaceAll);
-	g_sNeoFunLib_String.Add("regex_match", &neo_libs::Str_regex_match);
-	g_sNeoFunLib_String.Add("regex_search", &neo_libs::Str_regex_search);
-	g_sNeoFunLib_String.Add("regex_replace", &neo_libs::Str_regex_replace);
-	g_sNeoFunLib_String.Add("split", &neo_libs::Str_split);
-
-	// List Lib
-	_funLib_List = NeoVMSystem::RegisterNative(Fun_List);
-	g_sNeoFunLib_List.Add("resize", &neo_libs::List_resize);
-	g_sNeoFunLib_List.Add("len", &neo_libs::List_len);
-	g_sNeoFunLib_List.Add("clear", &neo_libs::Collection_clear);
-	g_sNeoFunLib_List.Add("clone", &neo_libs::Collection_clone);
-	g_sNeoFunLib_List.Add("remove_swap", &neo_libs::List_remove_swap);
-	g_sNeoFunLib_List.Add("pop", &neo_libs::List_pop);
-	g_sNeoFunLib_List.Add("find", &neo_libs::Sequence_find);
-	g_sNeoFunLib_List.Add("contains", &neo_libs::Sequence_contains);
-	g_sNeoFunLib_List.Add("reserve", &neo_libs::Sequence_reserve);
-	g_sNeoFunLib_List.Add("append", &neo_libs::List_append);
-	g_sNeoFunLib_List.Add("insert", &neo_libs::List_insert);
-	g_sNeoFunLib_List.Add("remove", &neo_libs::List_remove);
-	g_sNeoFunLib_List.Add("sort", &neo_libs::List_sort);
-
-	// Array Lib
-	_funLib_Array = NeoVMSystem::RegisterNative(Fun_Array);
-	g_sNeoFunLib_Array.Add("len", &neo_libs::Array_len);
-	g_sNeoFunLib_Array.Add("clear", &neo_libs::Collection_clear);
-	g_sNeoFunLib_Array.Add("clone", &neo_libs::Collection_clone);
-	g_sNeoFunLib_Array.Add("find", &neo_libs::Sequence_find);
-	g_sNeoFunLib_Array.Add("contains", &neo_libs::Sequence_contains);
-	g_sNeoFunLib_Array.Add("reserve", &neo_libs::Sequence_reserve);
-	g_sNeoFunLib_Array.Add("fill", &neo_libs::Array_fill);
-	g_sNeoFunLib_Array.Add("resize", &neo_libs::Array_resize);
-	g_sNeoFunLib_Array.Add("append", &neo_libs::Array_append);
-
-	// Map Lib
-	_funLib_Map = NeoVMSystem::RegisterNative(Fun_Map);
-	g_sNeoFunLib_Map.Add("len", &neo_libs::map_len);
-	g_sNeoFunLib_Map.Add("clear", &neo_libs::Collection_clear);
-	g_sNeoFunLib_Map.Add("clone", &neo_libs::Collection_clone);
-	g_sNeoFunLib_Map.Add("remove", &neo_libs::Map_remove);
-	g_sNeoFunLib_Map.Add("contains", &neo_libs::Map_contains);
-	g_sNeoFunLib_Map.Add("reserve", &neo_libs::map_reserve);
-	g_sNeoFunLib_Map.Add("sort", &neo_libs::map_sort);
-	g_sNeoFunLib_Map.Add("keys", &neo_libs::map_keys);
-	g_sNeoFunLib_Map.Add("values", &neo_libs::map_values);
-
-	_funLib_Set = NeoVMSystem::RegisterNative(Fun_Set);
-	g_sNeoFunLib_Set.Add("len", &neo_libs::Set_len);
-	g_sNeoFunLib_Set.Add("clear", &neo_libs::Collection_clear);
-	g_sNeoFunLib_Set.Add("clone", &neo_libs::Collection_clone);
-	g_sNeoFunLib_Set.Add("values", &neo_libs::Set_values);
-	g_sNeoFunLib_Set.Add("add", &neo_libs::Set_add);
-	g_sNeoFunLib_Set.Add("remove", &neo_libs::Set_remove);
-	g_sNeoFunLib_Set.Add("contains", &neo_libs::Set_contains);
-
-	// Async Lib
-	_funLib_Async = NeoVMSystem::RegisterNative(Fun_Async);
-	g_sNeoFunLib_Async.Add("get", &neo_libs::async_get);
-	g_sNeoFunLib_Async.Add("post", &neo_libs::async_post);
-	g_sNeoFunLib_Async.Add("add_header", &neo_libs::async_add_header);
-	g_sNeoFunLib_Async.Add("wait", &neo_libs::async_wait);
-	g_sNeoFunLib_Async.Add("close", &neo_libs::async_close);
+	const std::vector<NeoCore::ApiDeclaration>& declarations = NeoCore::CoreApi();
+	return index >= 0 && index < static_cast<int>(declarations.size()) ? declarations[index].key.c_str() : "<unknown>";
 }
 
 void CNeoVM::InitLib()
 {
-/*	ValueRef pSystem = &m_sVarGlobal[0];
-	Var_SetTable(pSystem, TableAlloc());
-
-	RegLibrary(pSystem, "sys");*/
-	RegObjLibrary();
+	// 등록부는 처음 쓸 때 한 번 만들어진다. 여러 스레드가 프로그램을 만들기 전에 미리 만들어 둔다.
+	assert(static_cast<std::size_t>(ApiCount()) == NeoCore::CoreApi().size());
+	(void)NeoCore::CoreApi();
 }
 
 

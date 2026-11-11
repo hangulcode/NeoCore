@@ -1,6 +1,6 @@
 ﻿#pragma once
 
-#include "NeoCoreTypes.h"
+#include "NeoCoreApi.h"
 
 namespace NeoCore
 {
@@ -23,6 +23,9 @@ struct HostBinding
     HostBindingKind kind = HostBindingKind::Method;
     TypeId returnType = InvalidType;
     std::vector<TypeId> parameters;
+    // 매개변수 이름과 방향. 비어 있으면 이름이 없고 모두 In 이다. 내장 API 의 선언과 같은 서명 모델이다.
+    std::vector<std::string> parameterNames;
+    std::vector<ApiParameterMode> parameterModes;
     // 비어 있지 않으면 이 이름의 이벤트 등록에만 사용하는 메서드다.
     std::string eventName;
 };
@@ -53,6 +56,11 @@ public:
     bool DefineStruct(TypeId type, const std::vector<StructField>& fields);
     HostBindingId AddMethod(TypeId owner, const std::string& name, TypeId result,
         const std::vector<TypeId>& parameters);
+    // 매개변수 이름과 방향을 함께 등록한다. 두 목록은 비우거나 parameters 와 길이가 같아야 한다.
+    // Out 매개변수는 호출 뒤 스크립트 변수에 값을 되돌려 쓴다(HostCall::Out*). 쓰지 않으면 변수는 그대로다.
+    HostBindingId AddMethod(TypeId owner, const std::string& name, TypeId result,
+        const std::vector<TypeId>& parameters, const std::vector<std::string>& parameterNames,
+        const std::vector<ApiParameterMode>& parameterModes = std::vector<ApiParameterMode>());
     HostBindingId AddEvent(TypeId owner, const std::string& eventName, TypeId callbackType,
         const std::string& registrationMethod = "AddEvent");
     bool AddProperty(TypeId owner, const std::string& name, TypeId type,

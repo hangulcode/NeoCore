@@ -75,6 +75,7 @@
     <ClCompile Include="..\NeoSource\NeoCoreImage.cpp" />
     <ClCompile Include="..\NeoSource\NeoCoreCompiler.cpp" />
     <ClCompile Include="..\NeoSource\NeoCoreTypes.cpp" />
+    <ClCompile Include="..\NeoSource\NeoCoreApi.cpp" />
     <ClCompile Include="..\NeoSource\NeoCoreHost.cpp" />
     <ClCompile Include="..\NeoSource\NeoCoreHostSchemaIO.cpp" />
     <ClCompile Include="..\NeoSource\NeoCoreHostSchema.cpp" />
@@ -100,7 +101,8 @@
     <ClInclude Include="..\NeoSource\NeoCoreOptions.h" />
     <ClInclude Include="..\NeoSource\NeoCoreModules.h" />
     <ClInclude Include="..\NeoSource\NeoCoreConsoleAccess.h" />
-    <ClInclude Include="..\NeoSource\NeoCoreBuiltins.h" />
+    <ClInclude Include="..\NeoSource\NeoCoreApi.h" />
+    <None Include="..\NeoSource\NeoCoreApiTable.inc" />
     <ClInclude Include="..\NeoSource\NeoCoreCompiler.h" />
     <ClInclude Include="..\NeoSource\NeoCoreImage.h" />
     <ClInclude Include="..\NeoSource\NeoCoreDebugger.h" />

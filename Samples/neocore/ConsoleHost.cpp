@@ -1,4 +1,4 @@
-#include "ConsoleHost.h"
+﻿#include "ConsoleHost.h"
 #include "NeoCoreTextFile.h"
 #include <algorithm>
 #include <cctype>
@@ -82,6 +82,8 @@ ConsoleHost::ConsoleHost(const NeoCore::HostSchemaDocument& document, const std:
         {
             const std::string& path=entry.first;
             const HostBinding& member=members[entry.second-1];
+            // 스크립트 함수는 Out 매개변수를 선언할 수 없다. 그런 멤버는 스크립트로 구현할 수 없으므로 Bind 를 만들지 않는다.
+            if (std::find(member.parameterModes.begin(),member.parameterModes.end(),ApiParameterMode::Out)!=member.parameterModes.end()) continue;
             std::vector<TypeId> parameters(1,member.ownerType);
             parameters.insert(parameters.end(),member.parameters.begin(),member.parameters.end());
             const TypeId callback=schema_.Types().FunctionOf(member.returnType,parameters);

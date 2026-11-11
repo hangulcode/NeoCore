@@ -94,6 +94,9 @@ struct ArgumentPlan
     bool nullable = false;
     bool owned = false;
     TypeId type = InvalidType;
+    // Out 매개변수다. 호스트가 쓴 값을 호출 뒤 이 인자의 창 슬롯에 되돌려 쓴다.
+    bool output = false;
+    TypeKind kind = TypeKind::Invalid;
 };
 
 static std::int64_t HandleBits(ObjectHandle object)
@@ -153,6 +156,10 @@ struct HostRuntimeAccess
     static bool Dispatch(NeoScript::CallContext& ctx, NeoScript::StringView);
     static bool Link(State& state, NeoScript::IRuntime& runtime, const std::string& prefix, std::string& error);
     static bool WriteResult(NeoScript::CallContext& ctx, Instance& instance, const Entry& entry, const HostResult& result, std::string& error);
+    static bool WriteValue(NeoScript::CallContext& ctx, Instance& instance, const std::string& name,
+        TypeId type, TypeKind kind, bool nullable, const HostResult& result, std::string& error);
+    static bool WriteOutputs(NeoScript::CallContext& ctx, Instance& instance, const Entry& entry,
+        const std::vector<HostResult>& outputs, const std::vector<char>& outputSet, std::string& error);
     static void* Resolve(State& state, TypeId type, ObjectHandle object)
     {
         return object ? state.bindings.resolver_(state.bindings.userData_, type, object) : nullptr;
@@ -169,6 +176,9 @@ struct HostCall::Impl
     bool receiverResolved = false;
     std::vector<HostArgument> arguments;
     HostResult result;
+    // Out 매개변수에 쓴 값. 쓴 것이 있을 때만 채운다.
+    std::vector<HostResult> outputs;
+    std::vector<char> outputSet;
     std::string error;
 
     void Fail(const std::string& message) { if (error.empty()) error = message.empty() ? "host call failed" : message; }
@@ -194,6 +204,23 @@ struct HostCall::Impl
         receiverPointer = nullptr;
         receiverResolved = false;
         for (auto& argument : arguments) { argument.pointer = nullptr; argument.resolved = false; }
+    }
+    // 쓸 수 있는 Out 슬롯을 돌려준다. Out 이 아니면 호출을 실패로 표시하고 nullptr 을 돌려준다.
+    HostResult* OutputSlot(std::size_t index)
+    {
+        if (index >= entry->arguments.size() || !entry->arguments[index].output)
+        {
+            Fail("argument " + std::to_string(index + 1) + " of " + entry->binding->name + " is not an out parameter");
+            return nullptr;
+        }
+        if (outputs.empty())
+        {
+            outputs.resize(entry->arguments.size());
+            outputSet.assign(entry->arguments.size(), 0);
+        }
+        outputSet[index] = 1;
+        outputs[index] = HostResult();
+        return &outputs[index];
     }
 };
 
@@ -296,6 +323,46 @@ bool HostCall::ReturnJson(const std::string& text, bool strictIntegers)
     return true;
 }
 void HostCall::Fail(const std::string& message) { impl_->Fail(message); }
+
+// ---- Out 매개변수 ----
+bool HostCall::IsOut(std::size_t index) const
+{
+    return index < impl_->entry->arguments.size() && impl_->entry->arguments[index].output;
+}
+void HostCall::OutInt(std::size_t index, std::int64_t value)
+{ if (HostResult* slot = impl_->OutputSlot(index)) { slot->kind = HostResultKind::Int; slot->value.integer = value; } }
+void HostCall::OutFloat(std::size_t index, double value)
+{ if (HostResult* slot = impl_->OutputSlot(index)) { slot->kind = HostResultKind::Float; slot->value.number = value; } }
+void HostCall::OutBool(std::size_t index, bool value)
+{ if (HostResult* slot = impl_->OutputSlot(index)) { slot->kind = HostResultKind::Bool; slot->value.boolean = value; } }
+void HostCall::OutString(std::size_t index, const std::string& value)
+{ if (HostResult* slot = impl_->OutputSlot(index)) { slot->kind = HostResultKind::String; slot->value.string = value; } }
+void HostCall::OutVector2(std::size_t index, Vector2Value value)
+{
+    if (HostResult* slot = impl_->OutputSlot(index))
+    { slot->kind = HostResultKind::Vector2; float* v = slot->value.vector; v[0] = value.x; v[1] = value.y; }
+}
+void HostCall::OutVector3(std::size_t index, Vector3Value value)
+{
+    if (HostResult* slot = impl_->OutputSlot(index))
+    { slot->kind = HostResultKind::Vector3; float* v = slot->value.vector; v[0] = value.x; v[1] = value.y; v[2] = value.z; }
+}
+void HostCall::OutVector4(std::size_t index, Vector4Value value)
+{
+    if (HostResult* slot = impl_->OutputSlot(index))
+    { slot->kind = HostResultKind::Vector4; float* v = slot->value.vector; v[0] = value.x; v[1] = value.y; v[2] = value.z; v[3] = value.w; }
+}
+void HostCall::OutQuaternion(std::size_t index, QuaternionValue value)
+{
+    if (HostResult* slot = impl_->OutputSlot(index))
+    { slot->kind = HostResultKind::Quaternion; float* v = slot->value.vector; v[0] = value.w; v[1] = value.x; v[2] = value.y; v[3] = value.z; }
+}
+void HostCall::OutObject(std::size_t index, ObjectHandle value)
+{ if (HostResult* slot = impl_->OutputSlot(index)) { slot->kind = value ? HostResultKind::Object : HostResultKind::Null; slot->value.object = value; } }
+void HostCall::OutNull(std::size_t index)
+{ if (HostResult* slot = impl_->OutputSlot(index)) slot->kind = HostResultKind::Null; }
+void HostCall::OutValue(std::size_t index, const Scalar& value)
+{ if (HostResult* slot = impl_->OutputSlot(index)) { slot->kind = HostResultKind::Owned; slot->value.owned = value; } }
 Result HostCall::CallScript(const std::string& name, const std::vector<Scalar>& arguments)
 {
     // 호스트가 빌린 포인터는 중첩 실행을 넘겨 보관하지 않는다. 새 접근은 다시 ID를 조회한다.
@@ -314,12 +381,14 @@ Result HostCall::CallScript(const Scalar& function, const std::vector<Scalar>& a
     return result;
 }
 
-bool HostRuntimeAccess::WriteResult(NeoScript::CallContext& ctx, Instance& instance, const Entry& entry, const HostResult& result, std::string& error)
+// 호스트가 준 값을 현재 선택된 슬롯(반환 슬롯 또는 Out 인자 슬롯)에 쓴다. 값의 종류는 선언 타입과 맞아야 한다.
+bool HostRuntimeAccess::WriteValue(NeoScript::CallContext& ctx, Instance& instance, const std::string& name,
+    TypeId type, TypeKind kind, bool nullable, const HostResult& result, std::string& error)
 {
     if (result.kind == HostResultKind::Owned)
-        return BoundaryAccess::Return(instance,ctx,entry.binding->returnType,result.value.owned,error);
-    if (result.kind == HostResultKind::Null && entry.nullableReturn) { ctx.retNull(); return true; }
-    switch (entry.returnKind)
+        return BoundaryAccess::Return(instance,ctx,type,result.value.owned,error);
+    if (result.kind == HostResultKind::Null && nullable) { ctx.retNull(); return true; }
+    switch (kind)
     {
     case TypeKind::Void:
         if (result.kind == HostResultKind::Void) { ctx.retNull(); return true; }
@@ -349,7 +418,7 @@ bool HostRuntimeAccess::WriteResult(NeoScript::CallContext& ctx, Instance& insta
         if (result.kind == HostResultKind::Quaternion)
         {
             if (ctx.retQuat(result.value.vector)) return true;
-            error = "could not write quaternion host result for " + entry.binding->name;
+            error = "could not write quaternion host result for " + name;
             return false;
         }
         break;
@@ -358,8 +427,33 @@ bool HostRuntimeAccess::WriteResult(NeoScript::CallContext& ctx, Instance& insta
         break;
     default: break;
     }
-    error = "host result disagrees with the declared signature of " + entry.binding->name;
+    error = "host result disagrees with the declared signature of " + name;
     return false;
+}
+
+bool HostRuntimeAccess::WriteResult(NeoScript::CallContext& ctx, Instance& instance, const Entry& entry, const HostResult& result, std::string& error)
+{
+    return WriteValue(ctx, instance, entry.binding->name, entry.binding->returnType, entry.returnKind, entry.nullableReturn, result, error);
+}
+
+// Out 매개변수에 쓴 값을 인자의 창 슬롯에 되돌려 쓴다. 컴파일러가 그 슬롯을 남겨 두고 호출 뒤 변수에 대입한다.
+bool HostRuntimeAccess::WriteOutputs(NeoScript::CallContext& ctx, Instance& instance, const Entry& entry,
+    const std::vector<HostResult>& outputs, const std::vector<char>& outputSet, std::string& error)
+{
+    bool success = true;
+    for (std::size_t i = 0; i < outputSet.size() && success; ++i)
+    {
+        if (!outputSet[i]) continue;
+        const ArgumentPlan& plan = entry.arguments[i];
+        if (outputs[i].kind == HostResultKind::Void)
+        { error = "out argument " + std::to_string(i + 1) + " of " + entry.binding->name + " has no value"; success = false; break; }
+        // 수신자가 창의 첫 인자이므로 한 칸 뒤다.
+        ctx.selectOutput(static_cast<int>(i) + 1);
+        success = WriteValue(ctx, instance, entry.binding->name + " out argument " + std::to_string(i + 1),
+            plan.type, plan.kind, plan.nullable, outputs[i], error);
+    }
+    ctx.selectOutput(-1);
+    return success;
 }
 
 bool HostRuntimeAccess::Dispatch(NeoScript::CallContext& ctx, NeoScript::StringView)
@@ -414,6 +508,8 @@ bool HostRuntimeAccess::Dispatch(NeoScript::CallContext& ctx, NeoScript::StringV
         if (success) success = entry.state->bindings.functions_[entry.binding->id - 1](call);
         if (!success && call.impl_->error.empty()) call.impl_->Fail("host call failed: " + entry.binding->name);
         if (call.impl_->error.empty()) WriteResult(ctx, *instance->owner, entry, call.impl_->result, call.impl_->error);
+        if (call.impl_->error.empty() && !call.impl_->outputSet.empty())
+            WriteOutputs(ctx, *instance->owner, entry, call.impl_->outputs, call.impl_->outputSet, call.impl_->error);
         if (!call.impl_->error.empty()) { ctx.fail(0, call.impl_->error); return false; }
         return true;
     }
@@ -441,10 +537,14 @@ bool HostRuntimeAccess::Link(State& state, NeoScript::IRuntime& runtime, const s
             TypeId result = entry.binding->returnType;
             entry.nullableReturn = types.AllowsNull(result);
             entry.returnKind = types.Get(result).kind;
-            for (TypeId parameter : entry.binding->parameters)
+            for (std::size_t index = 0; index < entry.binding->parameters.size(); ++index)
             {
+                const TypeId parameter = entry.binding->parameters[index];
                 ArgumentPlan plan;
                 plan.type = parameter;
+                plan.kind = types.Get(parameter).kind;
+                plan.output = index < entry.binding->parameterModes.size() &&
+                    entry.binding->parameterModes[index] == ApiParameterMode::Out;
                 // null 을 담을 수 있는 타입의 인자는 null 을 그대로 호스트에 넘긴다. 호스트가 판단한다.
                 plan.nullable = types.AllowsNull(parameter);
                 switch (types.Get(parameter).kind)

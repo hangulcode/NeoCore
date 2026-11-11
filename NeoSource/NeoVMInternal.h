@@ -82,16 +82,6 @@ class CNeoVMWorker;
 // inline for the usual (already canonical) key path.
 StringInfo* FindCanonicalString(CNeoVM* pVM, StringInfo* pString);
 
-struct SystemFun
-{
-	std::string fname;
-	int			argCount;    // 파라미터 개수에서 유도. -1 = 가변("..." 포함 시)
-	int			nativeIndex;
-	std::string ret;                   // 리턴 타입 ("void","float","list" …)
-	std::vector<std::string> params;   // "float x" 형태의 타입+이름. 개수가 곧 인자 수
-};
-
-
 enum eNeoDefaultString
 {
 	NDF_NULL,
@@ -185,7 +175,6 @@ enum eNOperation : OpType
 	NOP_TOINT,
 	NOP_TOINT_L,
 	NOP_TOFLOAT,
-	NOP_TOSIZE,
 	NOP_SLEEP, // arg1 unuse
 
 	NOP_FMOV1, // Function Info Load
@@ -197,7 +186,8 @@ enum eNOperation : OpType
 	NOP_PTRCALL_L,
 	NOP_PTRCALL2,	// Native Call
 	NOP_PTRCALL2_L,
-	NOP_NATIVECALL,	// Native Call (patched at LoadVM)
+	NOP_NATIVECALL,	// 함수형 내장 API. 로드가 PTRCALL2 의 연결 이름을 본체 번호로 바꾼 것(n1=번호, n2=인자 수, n3=결과)
+	NOP_APICALL,	// 메서드형 내장 API. 로드가 PTRCALL 의 연결 이름을 본체 번호로 바꾼 것(n1=수신자, n2=번호, n3=인자 수)
 	NOP_RETURN,
 	NOP_RETURN_L,
 	//	NOP_FUNEND,
@@ -216,10 +206,6 @@ enum eNOperation : OpType
 	NOP_YIELD,
 	NOP_IDLE,
 
-	// math.Vector2/3/4/Quaternion 생성 intrinsic. LoadVM 에서 PTRCALL2(#Vector*) 를 패치.
-	// native 호출 프레임 없이 인자 슬롯에서 직접 벡터를 만든다(n2=인자수=성분수, n3=결과).
-	// 성분 수가 타입이 아니라 데이터라 op 하나로 충분하다(넷을 두면 디스패치 루프만 커진다).
-	NOP_VEC_MAKE,
 	// 기존 opcode 값을 보존하려고 끝에 추가한 READ 특수화.
 	// 로드 시 n2가 static 문자열 상수인 READ만 이 opcode로 치환한다.
 	// 키 StringInfo는 워커별 static 슬롯에서 매번 얻으며 Map/value 포인터는 보관하지 않는다.
@@ -289,11 +275,6 @@ enum eNOperation : OpType
 	NOP_RT_MOVF_L,
 	// 전역 변수·상수 풀에서 지역 슬롯으로 가는 payload 복사. 일반 MOV의 정책 분기 없이 두 기준 포인터만 쓴다.
 	NOP_RT_MOV_PAYLOAD_GL,
-	// 순수 수학 네이티브(인자 1·2·3개, float 반환)의 결과를 지역 슬롯에 받는 호출. 호출 창의 float payload를 바로
-	// 읽고 호출 계획을 쓰지 않는다. n1은 프로그램의 함수 포인터 표(scalarNatives) 색인, n2는 인자 수, n3는 결과 슬롯이다.
-	NOP_RT_NATIVE_F1_L,
-	NOP_RT_NATIVE_F2_L,
-	NOP_RT_NATIVE_F3_L,
 	// 대상이 범위 반복 점검(JMP_FOR)인 무조건 점프. 점검을 제자리에서 해 반복 진입마다 디스패치 하나를 줄인다.
 	// n1은 원래 점프 오프셋 그대로다.
 	NOP_RT_JMP_TO_FOR,
@@ -542,9 +523,6 @@ inline bool NormalizeRuntimeOp(SVMOperation& op)
     case NOP_RT_MOVI_L: meaning = MakeOperation(NOP_MOV, MOV_SUB_IMMEDIATE_INT); break;
     case NOP_RT_MOVF_L: meaning = MakeOperation(NOP_MOV, MOV_SUB_IMMEDIATE_FLOAT); break;
     case NOP_RT_MOV_PAYLOAD_GL: meaning = MakeOperation(NOP_MOV, 0u); break;
-    case NOP_RT_NATIVE_F1_L:
-    case NOP_RT_NATIVE_F2_L:
-    case NOP_RT_NATIVE_F3_L: meaning = MakeOperation(NOP_NATIVECALL, 0u); break;
     case NOP_RT_JMP_TO_FOR: meaning = MakeOperation(NOP_JMP, 0u); break;
     default: return false;
     }
@@ -570,9 +548,6 @@ inline bool IsPairFirstOpcode(eNOperation op)
     case NOP_RT_MOV_PAYLOAD_L:
     case NOP_RT_MOVI_L:
     case NOP_RT_MOV_PAYLOAD_GL:
-    case NOP_RT_NATIVE_F1_L:
-    case NOP_RT_NATIVE_F2_L:
-    case NOP_RT_NATIVE_F3_L:
         return true;
     default:
         return false;
@@ -1417,14 +1392,6 @@ public:
 
 	std::map<void*, FunctionPtr*> m_sCache_FunPtr;
 
-	static bool _funInitLib;
-	static FunctionPtrNative _funLib_Default;
-	static FunctionPtrNative _funLib_List;
-	static FunctionPtrNative _funLib_Array;
-	static FunctionPtrNative _funLib_String;
-	static FunctionPtrNative _funLib_Map;
-	static FunctionPtrNative _funLib_Set;
-	static FunctionPtrNative _funLib_Async;
 public:
 	NEOS_FORCEINLINE CNeoVMWorker* GetMainWorker() { return (CNeoVMWorker*)_pMainWorker; }
 	int GetBytesSize() const;
@@ -1433,26 +1400,12 @@ public:
 	std::string _sErrorMsgDetail;
 	std::string _pErrorMsg;
 
-	static bool IsGlobalLibFun(std::string& FunName);
-	static const std::list< SystemFun>* GetSystemModule(const std::string& module);
-	static int FindDefaultNativeIndex(const VMString* pStr);
-	// 프로그램 로드 시 코드 패치용 — StringInfo 없이 상수 문자열로 조회한다.
-	static int FindDefaultNativeIndex(const std::string& name);
-	static int GetDefaultNativeIntrinsic(int nativeIndex);
-	static const char* GetDefaultNativeName(int nativeIndex);
-	// 호스트 콜백이나 VM 상태를 쓰지 않는 순수 수학 네이티브의 직접 계산 함수. 인자 수(1~3)별로 표가 있고,
-	// 워커의 NATIVECALL 이 프레임 전환·뷰 없이 창 슬롯에서 바로 계산한다. 등록은 NeoLib.cpp 의 kScalarNatives 표가 한다.
-	typedef NS_FLOAT (*ScalarNativeFunction)(NS_FLOAT);
-	typedef NS_FLOAT (*ScalarNativeFunction2)(NS_FLOAT, NS_FLOAT);
-	typedef NS_FLOAT (*ScalarNativeFunction3)(NS_FLOAT, NS_FLOAT, NS_FLOAT);
-	static ScalarNativeFunction GetDefaultNativeScalar(int nativeIndex);
-	static ScalarNativeFunction2 GetDefaultNativeScalar2(int nativeIndex);
-	static ScalarNativeFunction3 GetDefaultNativeScalar3(int nativeIndex);
-	// 인자 수에 맞는 직접 계산 함수가 있는가. 컴파일러가 PREPARE_CALL 생략을 정할 때와 로더가 전용 명령을 고를 때 쓴다.
-	static bool HasDefaultNativeScalar(int nativeIndex, int argumentCount);
-	static bool CallDefaultNativeByIndex(int nativeIndex, CNeoVMWorker* pWorker, short args);
-	void RegLibrary(ValueRef pSystem, const char* pLibName);// , SNeoFunLib* pFuns);
-	static void RegObjLibrary();
+	// 내장 API 본체 표(NeoLib.cpp). 번호는 NeoCore::CoreApi() 의 선언 순서와 같고, 이미지에는 연결 이름이 남는다.
+	static int ApiCount();
+	// 이미지의 연결 이름(소유자.이름)을 본체 번호로 바꾼다. 프로그램을 읽을 때 한 번만 쓴다. 없으면 -1 이다.
+	static int FindApiIndex(const std::string& key);
+	static bool CallApi(int index, CNeoVMWorker* pWorker, ValueRef receiver, short args);
+	static const char* ApiName(int index);
 	static void InitLib();
 	void SetError(const std::string& msg);
 public:

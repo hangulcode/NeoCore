@@ -1,7 +1,7 @@
 ﻿#include <stdio.h>
 #include <math.h>
 #include "NeoParser.h"
-#include "NeoCoreBuiltins.h"
+#include "NeoCoreApi.h"
 #include "NeoTextLoader.h"
 #include "NeoExport.h"
 #include "NeoVMProgram.h"   // DebugInstructionFormatContext / FormatDebugOperation
@@ -380,7 +380,8 @@ void WriteFun(CArchiveRdWC& arText, CNArchive& ar, SFunctions& funs, SFunctionIn
 		const bool slotMove = v.op == NOP_MOV && !immediateMove;
 		const SlotKind destinationKind = KindOf(v.n1);
 		const SlotKind sourceKind = slotMove ? KindOf(v.n2) : SlotKind::Boxed;
-		const bool sourceIsCallResult = slotMove && (v.n2 == STACK_POS_RETURN || v.n2 == COMPILE_CALLARG_VAR_BEGIN);
+		// 호출 창에서 꺼내는 MOV 는 결과(0번)이거나 Out 인자다. 런타임이 그 슬롯을 놓지 않으므로 소유권째 가져온다.
+		const bool sourceIsCallResult = slotMove && (v.n2 == STACK_POS_RETURN || v.n2 >= COMPILE_CALLARG_VAR_BEGIN);
 
 		iOPCount++;
 
@@ -458,7 +459,6 @@ void WriteFun(CArchiveRdWC& arText, CNArchive& ar, SFunctions& funs, SFunctionIn
 		case NOP_TOSTRING:
 		case NOP_TOINT:
 		case NOP_TOFLOAT:
-		case NOP_TOSIZE:
 			argFlag |= ChangeIndex(staticCount, localCount, curFunStatkSize, v, 1, &layout);
 			argFlag |= ChangeIndex(staticCount, localCount, curFunStatkSize, v, 2, &layout);
 
@@ -600,7 +600,7 @@ void WriteFun(CArchiveRdWC& arText, CNArchive& ar, SFunctions& funs, SFunctionIn
         for (unsigned n = 0; n < 3; ++n)
             if (argFlag & locationsFlags[n]) stackSlotCount = (std::max)(stackSlotCount, static_cast<int>(locations[n]) + 1);
         int outgoing = -1;
-        if (v.op == NOP_CALL || v.op == NOP_PTRCALL2 || v.op == NOP_VEC_MAKE) outgoing = v.n2;
+        if (v.op == NOP_CALL || v.op == NOP_PTRCALL2) outgoing = v.n2;
         else if (v.op == NOP_PTRCALL) outgoing = v.n3;
         if (outgoing >= 0) stackSlotCount = (std::max)(stackSlotCount, curFunStatkSize + outgoing + 1);
         PackArithmeticUpdate(v);
@@ -1180,6 +1180,7 @@ bool Write(CArchiveRdWC& arText, CNArchive& ar, SFunctions& funs, SVars& vars)
             ar << call.returnType.kind;
             ar.WriteCount(static_cast<u32>(call.types.size()));
             for (const SlotType& type : call.types) ar << type.kind;
+            ar << call.outMask;
         }
     }
 

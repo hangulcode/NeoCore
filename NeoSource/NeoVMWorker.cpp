@@ -351,42 +351,6 @@ NS_FLOAT CNeoVMWorker::ToFloat(ValueRef v1)
 	}
 	return -1;
 }
-int CNeoVMWorker::ToSize(ValueRef v1)
-{
-	switch (v1.GetType())
-	{
-	case VAR_INT:
-		return 0;
-	case VAR_FLOAT:
-		return 0;
-	case VAR_BOOL:
-		return 0;
-	case VAR_NONE:
-		// null 참조의 길이는 0 이 아니라 오류다. 정적 프런트엔드가 len() 을 이 명령으로 내린다.
-		SetError(RTE_LENGTH_NULL);
-		return 0;
-	case VAR_VEC:
-		return v1.VectorComponentCount();
-	case VAR_STRING: // UTF-8 문자 수(string.len()과 동일)
-		return v1->_str->_StringLen;
-	case VAR_VEC3:
-	case VAR_VEC4:
-		return v1.VectorComponentCount();
-	case VAR_FP_NATIVE:
-		return 0;
-	case VAR_ARRAY:
-		return v1->_array->_count;
-	case VAR_MAP:
-		return (int)v1->_tbl->_itemCount;
-	case VAR_LIST:
-		return (int)v1->_lst->_itemCount;
-	case VAR_SET:
-		return (int)v1->_set->_itemCount;
-	default:
-		break;
-	}
-	return 0;
-}
 void CNeoVMWorker::Call(FunctionPtr* fun, int n2, VarInfo* pReturnValue, bool keepResult)
 {
 	if (!EnsureStackRange(_iSP_VarsMax, n2))
@@ -463,7 +427,6 @@ bool CNeoVMWorker::Init(const NeoLoadVMParam* vparam, CNeoVMProgram* pProgram, i
 	m_pVarGlobal_Pointer = m_sVarGlobal.data() + pProgram->ConstantBase();
 	// 전역 뷰가 원소를 바로 가리키는 읽기 전용 사본이다. 값으로 쓸 때는 SlotType_G가 비트를 벗긴다.
 	m_pGlobalTypes = pProgram->globalTypesFlagged.data() + pProgram->ConstantBase();
-	m_pScalarNatives = pProgram->scalarNatives.data();
 	// 전역은 모두 0(숫자 0, null 참조)에서 시작한다. 선언 초기화는 전역 초기화 함수가 한다.
 
 	for (int i = 0; i < staticCount; i++)
@@ -864,8 +827,10 @@ void CNeoVMWorker::ReleaseContextFrames(CoroutineInfo* ctx)
 
 void CNeoVMWorker::ReleaseCallWindow(const CallStoragePlan& plan, VarInfo* window, bool includeResult)
 {
+	const u32 keepMask = plan.keepMask;
 	for (std::size_t i = includeResult ? 0 : 1; i < plan.policies.size(); ++i)
 	{
+		if (keepMask != 0 && i >= 1 && i <= 32 && (keepMask & (1u << (i - 1)))) continue;
 		const StoragePolicy policy = static_cast<StoragePolicy>(plan.policies[i]);
 		if (PolicyOwns(policy)) ReleaseByPolicy(window + i, policy);
 		else window[i]._int = 0;
@@ -2273,13 +2238,12 @@ void CNeoVMWorker::JumpAsyncMsg()
 	m_pCur->m_sAsyncResumeCodePtrs.push_back(resume);
 	SetCodePtr(sizeof(SVMOperation));
 }
-// 원소 읽기·쓰기는 루프 안에, 생성·추가는 루프 밖 ExecuteColdOp에 둔다.
+// 원소 읽기·쓰기는 루프 안에, 생성은 루프 밖 ExecuteColdOp에 둔다.
 #define NEOCORE_ARRAY_ACCESS_DISPATCH(NAME, ELEMENT) \
 		case NOP_ARRAY_##NAME##_GET: TypedArrayGet<NeoArrayElementType::ELEMENT>(OP); break; \
 		case NOP_ARRAY_##NAME##_SET: TypedArraySet<NeoArrayElementType::ELEMENT>(OP); break;
 #define NEOCORE_ARRAY_COLD_DISPATCH(NAME, ELEMENT) \
-		case NOP_ARRAY_##NAME##_NEW: TypedArrayNew<NeoArrayElementType::ELEMENT>(OP); break; \
-		case NOP_ARRAY_##NAME##_APPEND: TypedArrayAppend<NeoArrayElementType::ELEMENT>(OP); break;
+		case NOP_ARRAY_##NAME##_NEW: TypedArrayNew<NeoArrayElementType::ELEMENT>(OP); break;
 #define NEOCORE_SCALAR_CONTAINER_DISPATCH(OWNER, INDEX, TYPE, TAG) \
         case NOP_##OWNER##_##TYPE##_LOAD: { VarInfo *a, *b, *c; GetVarRaw123(OP, a, b, c); ScalarContainerLoad<INDEX, TAG>(a, b, c); } break; \
         case NOP_##OWNER##_##TYPE##_STORE: { VarInfo *a, *b, *c; GetVarRaw123(OP, a, b, c); ScalarContainerStore<INDEX, TAG>(a, b, c); } break;
@@ -2329,7 +2293,6 @@ NEOS_NOINLINE bool CNeoVMWorker::ExecuteColdOp(const SVMOperation& OP)
 	case NOP_CHANGE_INT_L:  handle_CHANGE_INT_L(OP); break;
 	case NOP_YIELD:         return handle_YIELD(OP);
 	case NOP_IDLE:          handle_IDLE(OP); break;
-	case NOP_VEC_MAKE:      handle_VEC_MAKE(OP); break;
 	case NOP_CLT_READ_STATIC_STRING: handle_CLT_READ_STATIC_STRING(OP); break;
 	case NOP_JMP_RANGE_INSIDE: if (IsRangeInside<true>(OP, false)) SetComparisonJump(OP.n1); break;
 	case NOP_JMP_RANGE_OUTSIDE: if (IsRangeInside(OP, false) == false) SetComparisonJump(OP.n1); break;
@@ -2366,18 +2329,6 @@ NEOS_NOINLINE bool CNeoVMWorker::ExecuteColdOp(const SVMOperation& OP)
 	NEOCORE_ARRAY_COLD_DISPATCH(V4, Vector4)
 	NEOCORE_ARRAY_COLD_DISPATCH(I32, Int32)
 	NEOCORE_ARRAY_COLD_DISPATCH(F32, Float32)
-	case NOP_ARRAY_LEN:
-		if (CheckTypedArrayReceiver(GetVarRaw2(OP)))
-			StoreNumberInt(GetVarRawF1(OP), GetVarRaw2(OP)->_array->_count);
-		break;
-	case NOP_ARRAY_RESIZE: TypedArrayResize(OP); break;
-	case NOP_ARRAY_RESERVE: TypedArrayReserve(OP); break;
-	case NOP_SET_I64_CONTAINS: TypedSetOperation<false, 0>(OP); break;
-	case NOP_SET_I64_ADD: TypedSetOperation<false, 1>(OP); break;
-	case NOP_SET_I64_REMOVE: TypedSetOperation<false, 2>(OP); break;
-	case NOP_SET_STRING_CONTAINS: TypedSetOperation<true, 0>(OP); break;
-	case NOP_SET_STRING_ADD: TypedSetOperation<true, 1>(OP); break;
-	case NOP_SET_STRING_REMOVE: TypedSetOperation<true, 2>(OP); break;
 	case NOP_V2_ARITH: handle_V2_ARITH(OP); break;
 	case NOP_V3_ARITH: handle_V3_ARITH(OP); break;
 	case NOP_V4_ARITH: handle_V4_ARITH(OP); break;
@@ -2487,7 +2438,6 @@ bool	CNeoVMWorker::RunInternal(int iBreakingCallStack)
 		case NOP_STR_ADD:       handle_STR_ADD(OP); break;
 		case NOP_STR_ADD_L:     handle_STR_ADD_L(OP); break;
 		case NOP_TOSTRING:      handle_TOSTRING(OP); break;
-		case NOP_TOSIZE:        handle_TOSIZE(OP); break;
 		case NOP_CALL:          handle_CALL(OP); break;
 		// 호출 본문은 한 벌만 둔다. 쌍 명령(MOVL_CALL_L)이 둘째 명령 포인터로 여기에 합류한다.
 		case NOP_CALL_L:        pairedOp = &OP;
@@ -2495,36 +2445,12 @@ bool	CNeoVMWorker::RunInternal(int iBreakingCallStack)
 		case NOP_PTRCALL2:      handle_PTRCALL2(OP); break;
 		case NOP_PTRCALL2_L:    handle_PTRCALL2_L(OP); break;
 		case NOP_NATIVECALL:    handle_NATIVECALL(OP); break;
-		// 순수 수학 네이티브(로드가 고름). 인자는 호출 창의 float payload이고 결과는 지역 슬롯이다. 호출 계획과
-		// 네이티브 프레임을 쓰지 않는다. 창은 함수 진입 때 확보한 스택 범위 안에 있다.
-		case NOP_RT_NATIVE_F1_L:
-		{
-			const VarInfo* const window = m_pVarStackData + _iSP_VarsMax;
-			m_pVarStack_Pointer[OP.n3]._float =
-				reinterpret_cast<CNeoVM::ScalarNativeFunction>(m_pScalarNatives[OP.n1])(window[1]._float);
-			break;
-		}
-		case NOP_RT_NATIVE_F2_L:
-		{
-			const VarInfo* const window = m_pVarStackData + _iSP_VarsMax;
-			m_pVarStack_Pointer[OP.n3]._float =
-				reinterpret_cast<CNeoVM::ScalarNativeFunction2>(m_pScalarNatives[OP.n1])(window[1]._float, window[2]._float);
-			break;
-		}
-		case NOP_RT_NATIVE_F3_L:
-		{
-			const VarInfo* const window = m_pVarStackData + _iSP_VarsMax;
-			m_pVarStack_Pointer[OP.n3]._float =
-				reinterpret_cast<CNeoVM::ScalarNativeFunction3>(m_pScalarNatives[OP.n1])(window[1]._float, window[2]._float, window[3]._float);
-			break;
-		}
+		case NOP_APICALL:       handle_APICALL(OP); break;
 		case NOP_RETURN:
 			if (handle_RETURN(OP)) return true;
 			break;
-		// 반환 본문은 한 벌만 둔다. 쌍 명령(NATIVE_F2_L_RETURN_L)이 둘째 명령 포인터로 여기에 합류한다.
-		case NOP_RETURN_L:      pairedOp = &OP;
-		return_local:
-			if (handle_RETURN_L(*pairedOp)) return true;
+		case NOP_RETURN_L:
+			if (handle_RETURN_L(OP)) return true;
 			break;
 		// 타입이 확정된 범위 점프는 오류가 없어 점프 자체만 한다.
 		case NOP_RT_JMP_I64_RANGE_INSIDE: if (IsRangeInsideRT<false, true>(OP)) SetCodeIncPtr(OP.n1); break;
@@ -2555,10 +2481,8 @@ bool	CNeoVMWorker::RunInternal(int iBreakingCallStack)
 		NEOCORE_RUNTIME_COMPARE(NEOCORE_RT_CASE_COMPARE, F64)
 #undef NEOCORE_RT_CASE_COMPARE
 		// 타입이 확정된 컨테이너 원소 접근과 맵 조회.
-		case NOP_MAP_I64_READ: TypedMapRead<false, false>(OP); break;
-		case NOP_MAP_STRING_READ: TypedMapRead<true, false>(OP); break;
-		case NOP_MAP_I64_CONTAINS: TypedMapRead<false, true>(OP); break;
-		case NOP_MAP_STRING_CONTAINS: TypedMapRead<true, true>(OP); break;
+		case NOP_MAP_I64_READ: TypedMapRead<false>(OP); break;
+		case NOP_MAP_STRING_READ: TypedMapRead<true>(OP); break;
 		NEOCORE_SCALAR_OWNER_DISPATCH(LIST, 0)
 		NEOCORE_SCALAR_OWNER_DISPATCH(MAP_INT, 1)
 		NEOCORE_SCALAR_OWNER_DISPATCH(MAP_STR, 2)
@@ -2648,14 +2572,6 @@ bool	CNeoVMWorker::RunInternal(int iBreakingCallStack)
 			F64ArithmeticRT<ArithmeticOp::Sub, false>(OP);
 			F64ArithmeticRT<ArithmeticOp::Sub, false>(*GetOP());
 			break;
-		case NOP_RT_PAIR_NATIVE_F2_L_RETURN_L:
-		{
-			const VarInfo* const window = m_pVarStackData + _iSP_VarsMax;
-			m_pVarStack_Pointer[OP.n3]._float =
-				reinterpret_cast<CNeoVM::ScalarNativeFunction2>(m_pScalarNatives[OP.n1])(window[1]._float, window[2]._float);
-			pairedOp = GetOP();
-			goto return_local;
-		}
 		// 첫 명령이 스칼라 배열 접근인 쌍(IsPairGuardedFirst). 배열이 null이거나 색인이 범위를 벗어나면 첫 명령이
 		// 오류 트랩을 세우므로 둘째를 실행하지 않고 끝낸다.
 		// int 배열 쓰기와 반복 점검. 묶음(I64_MUL_IMM_ADD_ARRAY_I64_STORE_JMP_FOR)이 쓰기 명령 포인터로 합류한다.
@@ -3262,42 +3178,17 @@ bool CNeoVMWorker::CallNative(FunctionPtrNative functionPtrNative, void* pUserDa
 	}
 	return true;
 }
-bool CNeoVMWorker::CallDefaultNativeByIndex(int nativeIndex, int n3, VarInfo* pRet)
+bool CNeoVMWorker::CallApi(int index, bool hasReceiver, ValueRef receiver, int n3, VarInfo* pRet, bool keepResult)
 {
 	if (!EnsureStackRange(_iSP_VarsMax, n3))
 		return false;
-    // 스택 범위 검사는 유지한다. 등록된 숫자 함수의 인자 계약은 컴파일러가 보증한다.
-    // 순수 수학 네이티브(인자 1~3개, float 반환)는 프레임 전환과 라이브러리 래퍼 없이 창 슬롯에서 바로 계산한다.
-    // 컴파일러는 이런 호출 앞에 PREPARE_CALL을 내지 않으므로 호출 계획을 읽지 않는다. 인자는 프런트엔드가 float으로
-    // 바꿔 창에 넣는다(래퍼의 FloatArgument와 같은 전제). 결과를 쓰지 않거나 전역에 받는 호출이 이 길로 온다.
-    if (n3 >= 1 && n3 <= 3)
-    {
-        VarInfo* const window = m_pVarStackData + _iSP_VarsMax;
-        auto argument = [&](int index) -> NS_FLOAT { return window[index]._float; };
-        bool computed = false;
-        NS_FLOAT value = 0;
-        if (n3 == 1)
-        {
-            if (CNeoVM::ScalarNativeFunction scalar = CNeoVM::GetDefaultNativeScalar(nativeIndex))
-            { value = scalar(argument(1)); computed = true; }
-        }
-        else if (n3 == 2)
-        {
-            if (CNeoVM::ScalarNativeFunction2 scalar = CNeoVM::GetDefaultNativeScalar2(nativeIndex))
-            { const NS_FLOAT a = argument(1), b = argument(2); value = scalar(a, b); computed = true; }
-        }
-        else
-        {
-            if (CNeoVM::ScalarNativeFunction3 scalar = CNeoVM::GetDefaultNativeScalar3(nativeIndex))
-            { const NS_FLOAT a = argument(1), b = argument(2), c = argument(3); value = scalar(a, b, c); computed = true; }
-        }
-        if (computed)
-        {
-            if (pRet) StoreNumberFloat(pRet, value);
-            _activePlan = nullptr;
-            return true;
-        }
-    }
+	// 수신자 타입은 컴파일러가 서명으로 확정했다. 실행 중에는 null 만 검사한다.
+	if (hasReceiver && receiver.GetType() == VAR_NONE)
+	{
+		const std::string name = CNeoVM::ApiName(index);
+		SetErrorFormat("cannot call '%s' on a null %s", name.c_str(), name.substr(0, name.find('.')).c_str());
+		return false;
+	}
 	NativeFrameScope frame(*this);
 	const CallStoragePlan* plan = _activePlan;
 	CoroutineInfo* context = m_pCur;
@@ -3306,7 +3197,7 @@ bool CNeoVMWorker::CallDefaultNativeByIndex(int nativeIndex, int n3, VarInfo* pR
 	if (_iSP_Vars_Max2 < _iSP_VarsMax + 1 + n3)
 		_iSP_Vars_Max2 = _iSP_VarsMax + 1 + n3;
 
-	bool nativeResult = CNeoVM::CallDefaultNativeByIndex(nativeIndex, this, (short)n3);
+	bool nativeResult = CNeoVM::CallApi(index, this, hasReceiver ? receiver : ValueRef(nullptr), (short)n3);
 	if (!frame.IsCurrent())
 		return false;
 	if (nativeResult == false)
@@ -3315,7 +3206,7 @@ bool CNeoVMWorker::CallDefaultNativeByIndex(int nativeIndex, int n3, VarInfo* pR
 		if (GetVM()->IsLastErrorMsg())
 			SetCodePtr(0);
 		else
-			SetErrorFormat(RTE_CALL_NAMED, CNeoVM::GetDefaultNativeName(nativeIndex));
+			SetErrorFormat(RTE_CALL_NAMED, CNeoVM::ApiName(index));
 		return false;
 	}
 	// 결과는 소유권째 목적지로 옮긴다. 결과를 쓰지 않는 호출은 창 0번도 함께 놓는다.
@@ -3362,10 +3253,10 @@ bool CNeoVMWorker::CallDefaultNativeByIndex(int nativeIndex, int n3, VarInfo* pR
 				break;
 		}
 	}
-	// 컨텍스트가 바뀌었으면 창은 저장된 계획으로 그 컨텍스트가 놓는다.
+	// 컨텍스트가 바뀌었으면 창은 저장된 계획으로 그 컨텍스트가 놓는다. Out 인자의 슬롯은 뒤따르는 MOV 가 가져간다.
 	if (m_pCur == context && plan != nullptr)
 	{
-		ReleaseCallWindow(*plan, window, pRet == nullptr);
+		ReleaseCallWindow(*plan, window, pRet == nullptr && !keepResult);
 		_activePlan = nullptr;
 	}
 	return true;

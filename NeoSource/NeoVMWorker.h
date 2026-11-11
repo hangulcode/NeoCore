@@ -282,8 +282,6 @@ private:
 	const SFunctionTable*	m_pFunction = nullptr;
 	const VAR_TYPE*			m_pSlotTypes = nullptr;
 	const VAR_TYPE*			m_pGlobalTypes = nullptr;
-	// 프로그램의 순수 수학 네이티브 함수 포인터 표(NOP_RT_NATIVE_F*_L). 프로그램을 묶을 때 정한다.
-	const ProgramNativeFunction*	m_pScalarNatives = nullptr;
 	NEOS_FORCEINLINE void SelectFunction(int index, const SFunctionTable& fun)
 	{
 		_functionIndex = index;
@@ -362,6 +360,7 @@ private:
     }
     void ReleaseFrameOwned(const SFunctionTable& fun, int base);
     // 창 슬롯을 계획의 정책으로 놓는다. 네이티브 호출이 끝난 뒤와 코루틴 복귀가 쓴다.
+    // 계획의 keepMask 가 선 슬롯(Out 인자)은 놓지 않는다. 호출 뒤의 MOV 가 가져간다.
     void ReleaseCallWindow(const CallStoragePlan& plan, VarInfo* window, bool includeResult);
     // 정책 기반 소유 전달. 태그를 읽지 않고 명령·배치표가 준 정책만 쓴다.
     void ReleaseByPolicy(VarInfo* slot, StoragePolicy policy);
@@ -594,7 +593,9 @@ private:
 	// pRet: 결과를 받을 슬롯(정책은 호출 계획의 반환 정책). nullptr이고 keepResult면 뒤따르는 MOV가
 	// 창 0번에서 가져가고, 둘 다 아니면 결과도 창과 함께 놓는다.
 	bool CallNative(FunctionPtrNative functionPtrNative, void* pUserData, StringInfo *pStr, int n3, VarInfo* pRet = nullptr, bool keepResult = true);
-	bool CallDefaultNativeByIndex(int nativeIndex, int n3, VarInfo* pRet = nullptr);
+	// 내장 API 를 본체 번호로 부른다. hasReceiver 면 receiver 는 메서드의 수신자 슬롯(호출 창 밖)이다.
+	// pRet 이 있으면 결과를 그 슬롯으로 옮기고, 없으면 keepResult 일 때 창 0번에 남긴다(뒤따르는 MOV 가 가져간다).
+	bool CallApi(int index, bool hasReceiver, ValueRef receiver, int argc, VarInfo* pRet, bool keepResult);
 	bool PropertyNative(FunctionPtrNative functionPtrNative, void* pUserData, StringInfo* pStr, ValueRef pRet, bool get,
         int* deferredTransferFrame = nullptr);
     bool FinishPropertyTransfer(int argSP_Vars);
@@ -602,7 +603,6 @@ private:
 	static std::string ToString(ValueRef v1);
 	NS_INT ToInt(ValueRef v1);
 	NS_FLOAT ToFloat(ValueRef v1);
-	int ToSize(ValueRef v1);
 
 	void CltInsert(ValueRef pClt, ValueRef pArray, ValueRef pValue, const SVMOperation* write = nullptr);
 	void CommitRefVector(ValueRef value);

@@ -459,6 +459,8 @@ struct CallContextImpl
     // 프로퍼티 접근용 오버라이드: get 은 retX 를 propertyVar 로, set 은 argX(0) 를 propertyVar 로.
     ValueRef       propertyVar = nullptr;
     bool           propertyIsArg = false;   // true=set(arg0=propertyVar), false=get(ret=propertyVar)
+    // 0 이상이면 ret* 가 반환 슬롯 대신 이 인자의 창 슬롯에 쓴다(Out 인자).
+    int            outputArgument = -1;
     // 이 호출 동안 실제로 요청된 builder/reader impl만 보관(안정 주소 위해 deque).
     LazyDeque<MapBuilderImpl>  mapB;
     LazyDeque<ListBuilderImpl> listB;
@@ -1384,6 +1386,7 @@ static ValueRef CtxArgVar(CallContextImpl* c, std::size_t i)
 }
 static ValueRef CtxRetVar(CallContextImpl* c)
 {
+    if (c->outputArgument >= 0) return c->worker->GetStackVar(c->outputArgument + 1);
     if (c->propertyVar && !c->propertyIsArg) return c->propertyVar;
     return c->worker->GetReturnVar();
 }
@@ -1516,6 +1519,11 @@ bool CallContext::retJson(StringView text, JsonResult& result, bool strictIntege
     if (JsonInternal::Decode(*static_cast<CNeoVMWorker*>(c->worker), text.data(), text.size(),
         *CtxRetVar(c), result, strictIntegers, requireMap)) return true;
     retNull(); return false;
+}
+void CallContext::selectOutput(int argument)
+{
+    CallContextImpl* c=Ctx(m_impl);
+    c->outputArgument = argument >= 0 && argument < c->argCount ? argument : -1;
 }
 void CallContext::retInt(int64_t v) { CallContextImpl* c=Ctx(m_impl); c->worker->Var_SetInt(CtxRetVar(c), v); }
 void CallContext::retFloat(double v) { CallContextImpl* c=Ctx(m_impl); c->worker->Var_SetFloat(CtxRetVar(c), v); }
