@@ -188,19 +188,19 @@ the procedure and its rules are in [docs/Benchmarking.md](docs/Benchmarking.md).
 
 | Benchmark | What it stresses | NeoCore (ms) | NeoScript (ms) | Lua (ms) | C++ (ms) | Lua vs NeoCore | C++ vs NeoCore |
 | :-------- | :--------------- | -----------: | -------------: | -------: | -------: | -------------: | -------------: |
-| `loop_sum` | integer loop, VM dispatch floor | **133** | 178 | 195 | 12.6 | 0.68x | 10.55x |
-| `float_math` | float mul/add/sub chain | **148** | 180 | 311 | 58.5 | 0.48x | 2.53x |
-| `func_call` | script function call overhead | **110** | 134 | 157 | 4.3 | 0.70x | 25.62x |
-| `fib_recursive` | recursion, fib(32) | **79** | 86 | 89 | 7.0 | 0.89x | 11.29x |
-| `array_rw` | sequential list write + read | **38** | 42 | 48 | 2.5 | 0.79x | 15.33x |
-| `map_str` | string-key hash lookup | **32** | 37 | 40 | 62.5 | 0.80x | 0.51x |
-| `string_ops` | string build + length | **22** | 51 | 145 | 13.7 | 0.15x | 1.61x |
-| `particles` | game-style float + list sim | **39** | 47 | 49 | 3.4 | 0.80x | 11.33x |
-| **total** | | **601** | 755 | 1034 | 164.6 | 0.58x | 3.65x |
+| `loop_sum` | integer loop, VM dispatch floor | **145** | 179 | 194 | 12.7 | 0.75x | 11.43x |
+| `float_math` | float mul/add/sub chain | **149** | 181 | 308 | 58.6 | 0.48x | 2.54x |
+| `func_call` | script function call overhead | **105** | 135 | 157 | 4.4 | 0.67x | 24.11x |
+| `fib_recursive` | recursion, fib(32) | **73** | 87 | 90 | 7.0 | 0.81x | 10.43x |
+| `array_rw` | sequential list write + read | **35** | 42 | 47 | 2.5 | 0.74x | 14.02x |
+| `map_str` | string-key hash lookup | **31** | 37 | 41 | 63.3 | 0.76x | 0.49x |
+| `string_ops` | string build + length | **34** | 51 | 147 | 13.8 | 0.23x | 2.45x |
+| `particles` | game-style float + list sim | **39** | 48 | 50 | 3.5 | 0.78x | 11.13x |
+| **total** | | **611** | 760 | 1034 | 165.8 | 0.59x | 3.68x |
 
 - NeoCore is faster than NeoScript, its dynamically typed predecessor, in all eight
   cases with separated per-round ranges. The sum of case medians is 20% below
-  NeoScript and 42% below Lua.
+  NeoScript and 41% below Lua.
 - `map_str` is the one case where C++ is slower: its reference uses
   `std::unordered_map<std::string, int>` and hashes on every lookup, while the
   scripts hash interned keys once.
