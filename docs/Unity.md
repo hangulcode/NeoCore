@@ -37,6 +37,16 @@ callback types fail compilation. C hosts use `NcSchemaEvent` with an explicit
 registration-method name and length. Schema registration returns a binding ID,
 or zero on failure; callback userdata ownership transfers only on success.
 
+`CompileOptions.Method(owner, name, result, parameters, modes, adapter)` declares
+`out` parameters with one `ParameterMode` per parameter. The adapter writes them
+with `call.OutInt(index, value)`, `OutFloat`, `OutBool`, `OutString`, `OutObject`,
+`OutNull` or `call.Out(index, scalar)`; scripts call the member with
+`out variable`. An unwritten `out` parameter leaves the script variable unchanged.
+C hosts use `NcSchemaMethodOut` (a `uint8_t` mode per parameter, or `NULL` for
+inputs only) and `NcHostOut*`. These entry points raise the C ABI version to 2;
+the managed package checks `NcGetAbiVersion` and must be paired with a plugin
+built from the same revision.
+
 Inside the adapter, `call.Argument(1)` returns the owning function value,
 `call.CallerInstanceId` identifies the script caller and `call.ReceiverId`
 identifies the event receiver. They are separate identities. `Instance.Id`

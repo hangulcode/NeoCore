@@ -59,7 +59,12 @@ or map does not deep-copy it. Element/key/value types are fixed; heterogeneous
 collections do not gain an implicit dynamic fallback. A map read of a missing key
 always fails at runtime, including reference-valued maps. Guard optional reads with
 `contains(key)`. A present null value is allowed for reference types and still has
-`contains(key) == true`. The fallback method `map.get` has been removed. Removal is explicit.
+`contains(key) == true`. For a single optional lookup, use
+`bool found = scores.try_get("alpha", out score);`: a miss leaves `score` unchanged.
+The output must be a writable local/parameter or script global of exactly the value
+type, not a field, element, or host property. **`out` belongs to registered API
+parameters only; using it in user-defined function declarations or calls is a
+compile-time error.** The fallback method `map.get` has been removed. Removal is explicit.
 An ordinary `array<float>` stores binary64 and `array<int>` stores int64.
 Compact storage remains a separate array type; it does not introduce public
 32-bit scalar declarations.

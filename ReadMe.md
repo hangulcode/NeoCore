@@ -90,7 +90,7 @@ aggregate operations still use ordered transitional paths, so the typed VM is no
 finished; see the [status and roadmap](docs/StaticTyping.md) and
 [typed storage](docs/TypedStorage.md).
 
-The current bytecode image version is `0165`. Earlier images and the dynamic
+The current bytecode image version is `0168`. Earlier images and the dynamic
 NeoScript profile are rejected, so regenerate cached images and rebuild C++ hosts
 against matching headers. The NeoCore C ABI is a separate API; NeoScript C#/C hosts
 must migrate to its checked contracts.

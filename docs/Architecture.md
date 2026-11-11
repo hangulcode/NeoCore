@@ -62,7 +62,7 @@ a `ModuleBundle` and keeps a line map so diagnostics point at the original file.
 | `TypeRegistry`, `TypeDesc` | Interned type identities: scalars, strings, vectors and quaternions, lists, maps, sets, typed arrays, structs with `StructField` lists, function types, host object types and builtin objects. A `TypeId` is an index; the kind decides storage later. |
 | `TypedIR`, `IRFunction`, `IRNode` | The checked expression graph. Each function records parameter and return types; each node records its value type and operands, so lowering emits fixed numeric instructions, selectors and typed element access without inference. |
 | `HostSchema`, `HostBinding`, `HostProperty`, `HostGlobal` | Host functions, properties and globals with exact signatures and binding ids. The checker treats them as part of the language; the loader and runtime validate calls against the same ids. Schemas serialize for the Unity package. |
-| `NeoCoreBuiltins.h` | The builtin surface the checker knows: string, list, map, set, array, math, time, JSON, HTTP, coroutine and system entries with their types. |
+| `NeoCoreApi.h/.cpp`, `NeoCoreApiTable.inc` | The built-in API registry: one declaration line per API (owner, signature in language syntax, flags, body). The checker, storage inference, tooling and the runtime body table are all generated from it; `ApiDeclaration` shares its signature model (`ApiParameterMode`, parameter names) with `HostBinding`. |
 | `NeoCoreDiagnostics.h`, `NeoCompileLimits.h` | Diagnostic records with source spans, and the fixed compile limits (argument counts, slot counts, literal sizes) that both the front end and lowering enforce. |
 
 ## 3. Lowering, storage inference and export
@@ -156,7 +156,7 @@ table and no high-water sweep.
 
 ### Builtins, libraries and memory
 
-`NeoLib.cpp` implements the builtin natives behind the `neo_libs` tables.
+`NeoLib.cpp` implements the built-in API bodies; its body table is generated from `NeoCoreApiTable.inc` and indexed by the loader-bound API number.
 `NeoJson.cpp`, `NeoTime.cpp`, `NeoRegex.cpp` (vendored PCRE2) and `NeoHttp.h`
 (through a host-supplied `IHttpTransport`) back the library modules. Heap objects
 are reference counted; containers that can form cycles are tracked, `CollectCycles`
@@ -247,7 +247,7 @@ typed opcode once for lowering, validation, disassembly and execution.*
 | Area | Files | Responsibility |
 | --- | --- | --- |
 | Public API | `NeoCore.h/.cpp`, `NeoCoreHost*.h/.cpp`, `NeoCoreInstanceContext.h`, `NeoCoreValueBoundary.h/.inl`, `NeoCoreValues.inl`, `NeoCoreDebugger.h/.inl`, `NeoCoreDebugAccess.h`, `NeoCoreConsoleAccess.h`, `NeoCoreOptions.h` | Runtime, Program, Instance, host bindings and schema, value conversion at the boundary, debugger, console and debug access points. |
-| Front end | `NeoCoreCompiler.h/.cpp`, `NeoCoreTypes.h/.cpp`, `NeoCoreIR.h`, `NeoCoreBuiltins.h`, `NeoCoreDiagnostics.h`, `NeoCompileLimits.h`, `NeoCoreModules.h/.cpp`, `NeoCoreImage.h/.cpp`, `NeoCoreTextFile.h`, `NeoCoreScriptHost.h` | Static language, type registry, typed IR, builtin surface, limits, module bundling, image container. |
+| Front end | `NeoCoreCompiler.h/.cpp`, `NeoCoreTypes.h/.cpp`, `NeoCoreIR.h`, `NeoCoreApi.h/.cpp`, `NeoCoreApiTable.inc`, `NeoCoreDiagnostics.h`, `NeoCompileLimits.h`, `NeoCoreModules.h/.cpp`, `NeoCoreImage.h/.cpp`, `NeoCoreTextFile.h`, `NeoCoreScriptHost.h` | Static language, type registry, typed IR, builtin surface, limits, module bundling, image container. |
 | Lowering and export | `NeoParser.h/.cpp`, `NeoTextLoader.h/.cpp`, `NeoExport.h/.cpp`, `NeoStorageCompiler.inl`, `NeoNumberLiteral.h`, `NeoArchive.h` | Instruction emission from the typed IR, storage inference, frame layout, image writing. |
 | Program and VM | `NeoVM.h/.cpp`, `NeoVMInternal.h`, `NeoVMProgram.h/.cpp`, `NeoVMWorker.h/.cpp/.inl`, `NeoVMWorker_Handlers.inl`, `NeoVMWorker_Typed.inl`, `NeoVMWorker_Move.inl`, `NeoVMWorker_Var.inl`, `NeoVMTypedOps.h`, `NeoVMError.h`, `NeoConfig.h`, `NeoNumeric.h` | Loader and validation, dispatch loop and handlers, calls and frames, errors, opcode tables, image version. |
 | Heap objects | `NeoVMList.h/.cpp`, `NeoVMMap.h/.cpp`, `NeoVMSet.h/.cpp`, `NeoVMArray.h`, `NeoVMVector.h`, `NeoVMHash.h`, `NeoVMMemoryPool.h`, `NeoQueue.h`, `UTFString.h`, `NeoStringLimits.h` | Collections, typed arrays, vector storage, hashing, pools and string utilities. |

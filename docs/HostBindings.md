@@ -24,6 +24,42 @@ event registration selects a declared callback signature by a literal event name
 Scripts receive ordinary int-to-float widening before the call. The language has
 no reference parameters.
 
+Host bindings and built-in APIs share one signature model: the compiler checks a
+host method call with the same routine it uses for built-in APIs. `HostBinding`
+carries `parameterNames` and `parameterModes` for that model.
+
+### `out` parameters
+
+Register a method with parameter names and modes to declare outputs:
+
+```cpp
+using NeoCore::ApiParameterMode;
+const NeoCore::HostBindingId id = schema.AddMethod(store, "TryGet", types.Bool(),
+    {types.String(), types.Int()}, {"key", "value"},
+    {ApiParameterMode::In, ApiParameterMode::Out});
+bindings.Bind(id, [](NeoCore::HostCall& call) {
+    std::int64_t found;
+    const bool ok = Lookup(call.String(0), found);
+    if (ok) call.OutInt(1, found);   // unwritten: the script variable keeps its value
+    call.ReturnBool(ok);
+    return true;
+});
+```
+
+The script calls it as `Host.TryGet("alpha", out value)`. The names and modes lists
+are either empty or as long as the parameter list; an `out` parameter must be among
+the first 31 parameters. The rules are the built-in API rules: the argument is a
+plain writable variable of exactly the parameter type, the call copies its current
+value in (readable through the ordinary accessors, `call.Int(1)`), and after a
+successful call the value written with `OutInt`/`OutFloat`/`OutBool`/`OutString`/
+`OutVector2..4`/`OutQuaternion`/`OutObject`/`OutNull`/`OutValue` is assigned back.
+Structs arrive in the script variable as copies. Writing a parameter that is not
+`out`, or a value of another type, fails the call; a failed call assigns nothing.
+Properties, events and script-implemented console host members cannot have `out`
+parameters. The mode is part of the host contract: schema files record
+`parameterNames`/`parameterModes` only when present, and an image compiled against
+`out` parameters is rejected by a host schema without them.
+
 Create all schema entries before constructing `HostBindings`. Bind every method,
 getter, setter, and global before creating the runtime, even if a source file
 does not use them. Failed registration/connection operations return failure and set

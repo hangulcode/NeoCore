@@ -101,13 +101,14 @@ String-key map reads hit interned keys through a pointer-returning lookup; null,
 non-interned and missing keys go through one out-of-line helper so the hot handler
 carries no call.
 
-Image version 0167 omits `PREPARE_CALL` before a call to a pure math native (the
-`kScalarNatives` list, one to three float arguments). The call window needs no
-plan: the arguments are float payloads written straight into the window and the
-handler reads them from there. When such a call stores its result in a local slot
-the loader gives it its own opcode (`NATIVE_F1_L`/`F2_L`/`F3_L`) whose operand is
-an index into the program's table of value functions; other result targets keep
-`NATIVECALL`.
+Image version 0168 calls every built-in API through its registered signature.
+The compiler emits the link name and the loader binds it to a body index
+(`NATIVECALL` for functions, `APICALL` for methods). Every API call selects its
+call plan with `PREPARE_CALL`; the earlier direct-compute opcodes for pure math
+natives and the method opcodes for `len`, `contains`, set operations and array
+`append`/`resize`/`reserve` were removed. An `out` argument occupies an ordinary
+argument slot of the plan: the runtime leaves that slot in place when it releases
+the window, and the following `MOV` takes ownership of it.
 
 String concatenation reuses the destination's buffer when the destination holds a
 string that nothing else references (reference count one, not interned) and the
@@ -257,11 +258,8 @@ second stays in the code, so a branch into it executes it alone, and the
 disassembly shows the original two instructions. Images with debug information
 keep one instruction per dispatch so breakpoints stop on every instruction. The
 pair list was chosen from dynamic adjacent-opcode counts of the benchmark suite
-and a game project's headless run. Pure math natives with one to three float
-arguments (`abs`, `sqrt`, `hypot`, `atan2`, `Min`, `Clamp`, `Lerp`, ...) are computed
-by the `NATIVECALL` handler directly from the call window, without the native frame
-switch or the library wrapper; `kScalarNatives` in `NeoLib.cpp` lists them and shares
-its value functions with the wrappers, so both paths return the same results.
+and a game project's headless run. Math functions are ordinary built-in API calls
+(image version 0168); they no longer have a direct-compute path.
 Nested `&&`/`||` groups inside an `if` or `while` condition (`a || b || c`,
 `a && b || c`) compile to direct branch jumps like the top-level group instead of
 producing a boolean that is tested again; only a `||` group under `&&` still needs

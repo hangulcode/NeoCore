@@ -225,12 +225,13 @@ intrinsic emits instructions without a runtime helper call frame. Declarations,
 function layout, control flow, and these remaining paths have not yet moved to a
 whole-program IR emitter.
 
-Arrays and vectors add 59 dedicated instructions, described in the same central
+Arrays and vectors have dedicated instructions, described in the same central
 metadata header as the numeric instructions. Vector2/3/4 construction, arithmetic,
 component reads and functional component replacement use known component layouts.
-Array construction, reads, writes and append select bool, int64, binary64, int32, float32 or a
-specific vector storage layout at compile time. Length, resize and reserve have
-shared array instructions; internal reference-cell allocation/reads/writes preserve owned values.
+Array construction, reads and writes select bool, int64, binary64, int32, float32 or a
+specific vector storage layout at compile time. Array methods (`len`, `resize`,
+`reserve`, `append`, ...) are built-in API calls, not instructions; internal
+reference-cell allocation/reads/writes preserve owned values.
 The handlers retain bounds, capacity, allocation and destination-reference cleanup,
 but do not rediscover the input element type during each operation.
 
@@ -257,7 +258,7 @@ revalidate the saved receiver ID. Bool/string conversions remain checked generic
 conversions. Numeric expressions now emit from structured IR; the remaining
 compile-only intrinsics and compatibility leaves are explicit migration boundaries,
 not a complete typed-AST-to-bytecode backend replacement.
-NeoCore bytecode images use version `0161` and must be regenerated; the NeoCore
+NeoCore bytecode images use version `0168` and must be regenerated; the NeoCore
 image container that carries the static type table is at version 4. Regenerate older
 images: generated-code source mappings now mark shared helpers so their failures
 report the user callsite. The five generic `NOP_TABLE_*` arithmetic-write
@@ -292,6 +293,22 @@ typed arrays, homogeneous lists/maps/sets, nested collections, named functions,
 function values and closures, forward and recursive calls, block scopes, conditions,
 range loops, `foreach`, returns, and checked library calls. String, regex, UTC time,
 TimeSpan, Stopwatch, HTTP requests, and script coroutines have explicit signatures.
+
+Built-in APIs use one signature model. `NeoCoreApiTable.inc` declares each API once
+(`NEOCORE_API(owner, "result name(params)", flags, body)`); type variables `Self`,
+`T`, `K` and `V` are filled from the receiver type. The checker resolves a method by
+receiver type and name, or a module function by `module.name`, and reports
+argument-count, type and `out` errors from the declaration. Host bindings are
+checked by the same routine from their `HostBinding` signature. A checked call is
+lowered to an API call notation; the image stores the link name (`map.contains`)
+and the loader binds it to the body index (`NATIVECALL` for functions, `APICALL` for
+methods, whose receiver stays in the caller's slot). There is no run-time lookup
+by method name and no per-type library hash table; an image that names an API the
+runtime does not have is rejected at load. Methods and functions have no dedicated
+opcodes: `len`, `contains`, set operations, array `append`/`resize`/`reserve` and the
+math functions are all API calls. Element access, component access, arithmetic and
+constructors remain instructions.
+
 Script modules are resolved and combined before static checking; they do not enter
 the inherited dynamic compiler directly.
 Explicit host schemas additionally expose nominal native objects, host globals,
@@ -316,7 +333,7 @@ in the same class as access to a destroyed object.
 
 `array32<int>` and `array32<float>` retain compact int32/float32 element storage
 while reads produce the ordinary int64/binary64 scalar types. Their constructors,
-reads, writes and append operations select dedicated instructions. Integer stores
+reads and writes select dedicated instructions; `append` is a built-in API call. Integer stores
 reject out-of-range values before mutation; float stores use the common float32
 rounding rule. Assignment/prefix results are the stored value and postfix results
 are the old value. `int32` and `float32` remain unavailable as scalar declarations.
@@ -407,6 +424,14 @@ Structs and vectors have value semantics. Collections retain shared-container se
 and native objects remain validated IDs; removing language references does not change
 these identity or lifetime rules.
 
+A registered API parameter may be declared `out`. This is not a reference: the call
+copies the argument variable into the call window, the API body may overwrite that
+slot, and the value is assigned back to the variable after the call (structs are
+cloned on the way back). A body that does not write the slot leaves the variable
+unchanged. Only API signatures can declare `out`; user-defined functions, function
+types and lambdas reject it at compile time, and the argument must be a plain
+writable variable of exactly the parameter type. See [API.md](API.md).
+
 ## Scalar types and conversions
 
 | Type | Meaning | Default without initializer |
@@ -440,7 +465,8 @@ Use an explicit conversion when assigning a floating-point value to an integer.
 
 `math`, `system`, and `coroutine` are built-in imports. Numeric math calls currently
 include `sin`, `cos`, `sqrt`, `abs`, `floor`, `ceil`, and `pow`; integer arguments
-widen to float. The checked library table explicitly lists every supported signature.
+widen to float. The built-in API table (`NeoCoreApiTable.inc`) lists every supported
+signature, and the checker reports argument-count, type and `out` errors from it.
 Other backend library functions and host members absent from the supplied schema
 are rejected rather than delegated to unchecked dynamic resolution.
 
@@ -878,14 +904,14 @@ the conservative snapshot rules. A simple `values[i] = value` needs no snapshot
 Maps accept `{}` or typed key/value literals, and gain entries through `m[key] = value`. Direct
 `m[key]` reads have type `V`. An absent key always raises a runtime error
 ("map key not found"), including reference-valued maps. A present key may hold null
-when V permits null; this is distinct from absence. Use `m.contains(key)` before an
-optional read. The inherited `m[key] = null` behavior still removes that entry;
+when V permits null; this is distinct from absence. Use `m.try_get(key, out value)`
+for an optional read with one lookup, or `m.contains(key)` for membership alone. The inherited `m[key] = null` behavior still removes that entry;
 JSON and host insertion can preserve a present null value. `contains` tests key
 existence without copying the value. `map.get` and its
-fallback argument have been removed. Reads and contains lower to dedicated typed
-VM operations selected by the key type; no generated script helper or native
-collection-method call is needed. Receiver and key are each evaluated once, in
-that order, before lookup. Compound
+fallback argument have been removed. Indexed reads lower to typed VM operations
+selected by the key type. `contains`, `try_get` and the other map methods are
+built-in API calls checked against their registered signatures. Receiver and key
+are each evaluated once, in that order, before lookup. Compound
 assignment and increments on a map element (`m[key] += 1`) are rejected; read, compute
 and assign instead. `m.remove(key)` explicitly removes an entry and returns whether
 it existed.
@@ -894,13 +920,14 @@ Lists support `len`, `resize`, `reserve`, `append(value[, index])`,
 `insert(index, value)`, `remove(index)`, `remove_swap(index)`, `pop`, `find`,
 `contains`, `clear`, `clone`, and `sort`. Removal and pop return the removed value;
 an invalid index or empty pop fails at runtime. Maps support `len`,
-`contains`, `remove`, `reserve`, `keys`, `values`, `clear`, `clone`, and `sort`.
+`contains`, `try_get`, `remove`, `reserve`, `keys`, `values`, `clear`, `clone`, and `sort`.
 Keys and values produce typed lists. A stored key such as `"contains"` or `"len"`
-does not shadow these statically resolved methods.
+does not shadow these methods: a method call is bound to its API body at program
+load and never looks the name up in the receiver.
 
-The current collection operations require backend image version 0161. Rebuild host libraries and
+The current collection operations require backend image version 0168. Rebuild host libraries and
 recompile previously cached program images. Existing `map.get` calls must be
-replaced with checked indexing or an explicit `contains` guard.
+replaced with checked indexing, `try_get`, or an explicit `contains` guard.
 
 `sort` takes `fn(T,T)->bool`, where T is the list element or map value type.
 Map sorting rearranges values among the existing keys, retaining inherited behavior.
@@ -917,8 +944,8 @@ After `import system;`, `set<T>()`, `set<T>(typedList)`, or `system.set(typedLis
 construct a typed set. Sets support `len`, `add`, `remove`, `contains`, `values`,
 `clear`, and `clone`. Union `|`, intersection `&`, and difference `-` return new
 sets of the same type and leave the operands unchanged.
-`contains`, `add` and `remove` emit dedicated int/string VM operations instead of
-native method calls. `contains` returns membership; `add` returns true only for a
+`contains`, `add` and `remove` are built-in API calls like every other collection
+method. `contains` returns membership; `add` returns true only for a
 new element, and `remove` returns true only when an element was removed. Receiver
 and element expressions evaluate once, left to right. Rebinding the receiver in
 the element expression does not redirect the operation to the replacement set.

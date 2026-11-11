@@ -79,6 +79,8 @@ indices and values report failure rather than enabling untyped storage.
 functions belong to their program. Closures belong to their creating instance;
 calling one in a peer instance or after reset fails, including through containers.
 Host callbacks use `HostCall::Argument` and `ReturnValue` for aggregate values.
+A method registered with `out` parameters writes them with `HostCall::Out*`; see
+[HostBindings.md](HostBindings.md).
 
 Event callbacks do not have to be exported. Register their signatures with
 `HostSchema::AddEvent` and let the script pass the function value:

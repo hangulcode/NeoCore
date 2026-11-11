@@ -2,8 +2,13 @@
 
 This document describes the `.nc` frontend. The inherited VM may implement more
 operations internally; those are not automatically NeoCore library APIs.
-[NeoCoreBuiltins.h](../NeoSource/NeoCoreBuiltins.h) contains the checked library
-signature table; collection and language intrinsics are checked by
+[NeoCoreApiTable.inc](../NeoSource/NeoCoreApiTable.inc) is the single declaration
+table for every built-in API: one line per API, written as a signature in the
+language's own syntax (`bool try_get(K key, out V value)`). The compiler checks
+argument counts, types and `out` arguments from that table, the tooling lists it,
+and the runtime body table is generated from the same lines. A method or function
+that is not in the table (or in the host schema) is a compile-time error.
+Language operations and constructors are checked by
 [NeoCoreCompiler.cpp](../NeoSource/NeoCoreCompiler.cpp).
 
 ## Language intrinsics
@@ -107,17 +112,47 @@ examples in [math.nc](../Samples/neocore/scripts/math.nc).
 Their supported operations include size/membership queries, typed mutation,
 removal, copies and iteration. Lists provide append/insert/pop/remove/remove_swap,
 resize/reserve and sorting where supported by their comparator contract.
-Maps provide `contains(key)`, `remove`, `clear` and typed keys/
+Maps provide `contains(key)`, `try_get(key, out value)`, `remove`, `clear` and typed keys/
 values. Reading `map[key]` always fails if the key is absent; a present null value
 remains valid for reference-valued maps. `map.get` and its fallback were removed.
 Sets provide membership changes and union/intersection/difference.
-Set `contains`, `add` and `remove` are typed VM operations returning bool: membership,
+Set `contains`, `add` and `remove` return bool: membership,
 new insertion and successful removal respectively. Duplicate insertion and removal
 of an absent element return false. String null insertion fails; null membership
 and removal queries return false. A null set receiver fails for all three methods.
 Map keys and set elements must be `int` or `string`; `array` and `array32` keep
 their fixed element rules, and `list<T>` accepts any element type.
-The compiler checks operation names, argument counts and element types.
+The compiler checks operation names, argument counts and element types from the
+built-in API table. These methods are ordinary API calls, not dedicated VM
+instructions; only element access (`m[key]`, `a[i]`) and construction have instructions.
+
+`map.try_get(key, out value)` performs one lookup and returns `bool`. On success it
+assigns the stored value to `value`; on a missing key it returns `false` and leaves
+`value` unchanged. A present null value still returns `true`. The receiver and key
+are evaluated once, from left to right. A null map is a runtime error; a null string
+query key is a miss. Structs and vectors are copied by value; collections keep their
+shared identity.
+
+```cpp
+int value = 0;
+if (counts.try_get("alpha", out value)) print(value);
+```
+
+### `out` arguments
+
+`out` marks an argument that an API writes back to. It is a property of a registered
+API parameter (`out V value` in the declaration table, or a host method registered
+with parameter modes), so any built-in or host API can declare one. The argument must be `out` followed by an already-declared writable
+local, parameter or script global whose type is exactly the parameter type; fields,
+collection elements and host properties are not accepted. The call copies the
+variable's current value in and copies the result back afterwards, so an API that
+does not write the argument leaves the variable unchanged. No reference or alias is
+created.
+
+**User-defined functions, function types, lambdas and their calls cannot use `out`;
+these are compile-time errors**, as is `out` on a parameter that is not declared
+`out`, or a missing `out` where one is declared. `out` is a contextual keyword: it
+remains a legal variable name but cannot name a type.
 
 `array32<int>(count, fill)` and `array32<float>(count, fill)` use four-byte elements;
 size/fill arguments are optional. Other element types are rejected. Scalar reads
