@@ -21,6 +21,7 @@
 #include "NeoArchive.h"
 #include "NeoJson.h"
 #include "NeoStringLimits.h"
+#include "NeoNumberFormat.h"
 #include "NeoTime.h"
 #include "UTFString.h"
 #include <chrono>
@@ -1547,6 +1548,23 @@ struct neo_libs
 		pN->ReturnValue(ch);
 		return true;
 	}
+	static bool Math_Fixed(CNeoVMWorker* pN, ValueRef pVar, short args)
+	{
+		assert(args == 2 && pN->GetStack(2).GetType() == VAR_INT);
+		const NS_INT decimals = pN->GetStack(2)->_int;
+		if (decimals < 0 || decimals > 9)
+		{
+			pN->SetError("math.fixed decimals must be in [0, 9]");
+			return false;
+		}
+		char text[FixedNumberBufferSize];
+		const NS_FLOAT value = FloatArgument(pN, 1);
+		// 특수값은 tostring과 같은 %g 표기를 쓰되 std::string 임시는 만들지 않는다.
+		if (!FormatFixedNumber(value, static_cast<unsigned>(decimals), text))
+			snprintf(text, sizeof(text), "%g", static_cast<double>(value));
+		pN->ReturnValue(text);
+		return true;
+	}
 	static bool Math_Rand01(CNeoVMWorker* pN, ValueRef pVar, short args)
 	{
 		assert(args == 0);
@@ -2672,6 +2690,7 @@ static void AddGlobalLibFun()
 	AddSystemFun("srand", &neo_libs::Math_srand, "void", "int seed");
 	AddSystemFun("rand", &neo_libs::Math_rand, "int");
 	AddSystemFun("tostr", &neo_libs::Math_ToStr, "string", "float value");
+	AddSystemFun("fixed", &neo_libs::Math_Fixed, "string", "float value", "int decimals");
 	AddSystemFun("Rand01", &neo_libs::Math_Rand01, "float");
 	AddSystemFun("RandRange", &neo_libs::Math_RandRange, "float", "float min", "float max");
 	AddSystemFun("Hash32", &neo_libs::Math_Hash32, "int", "int value");

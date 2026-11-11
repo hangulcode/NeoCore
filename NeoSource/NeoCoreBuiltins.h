@@ -143,6 +143,7 @@ inline const BuiltinSignature* GetBuiltinSignatures(std::size_t& count)
         {"math", "srand", 'v', 1, 1, "i"},
         {"math", "rand", 'i', 0, 0, ""},
         {"math", "tostr", 's', 1, 1, "f"},
+        {"math", "fixed", 's', 2, 2, "fi"},
         {"math", "Rand01", 'f', 0, 0, ""},
         {"math", "RandRange", 'f', 2, 2, "ff"},
         {"math", "Hash32", 'i', 1, 1, "i"},

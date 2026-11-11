@@ -979,6 +979,15 @@ search includes the complete match at index zero followed by captured groups;
 no match returns null, so compare the result with `null` before indexing it. Regex character classes retain their
 inherited byte-oriented behavior.
 
+`math.fixed(float value, int decimals) -> string` formats binary64 values with
+0 through 9 fractional digits and no exponent notation. It rounds the actual
+binary value to nearest, with ties to even, independently of the locale and thread
+rounding mode. Argument types and count are checked at compilation; precision is
+checked at runtime before narrowing, including constants. Negative results rounded to zero lose
+their minus sign. NaN and infinity use the existing `tostring` spelling. The
+C++11-compatible formatter uses bounded integer arithmetic and stack buffers;
+neither `tostring` nor round-trip `math.tostr` changes.
+
 `system.time`, `time_ms`, `utc_date`, `utc_time_ms`, `utc_parts`, `utc_format_ms`,
 and `utc_parse_ms` have checked signatures. UTC parts are `map<string,int>`.
 `TimeSpan` and `Stopwatch` are nominal opaque library objects requiring

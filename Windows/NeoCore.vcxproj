@@ -132,6 +132,7 @@
     <ClInclude Include="..\NeoSource\NeoJson.h" />
     <ClInclude Include="..\NeoSource\NeoLibDCall.h" />
     <ClInclude Include="..\NeoSource\NeoNumeric.h" />
+    <ClInclude Include="..\NeoSource\NeoNumberFormat.h" />
     <ClInclude Include="..\NeoSource\NeoParser.h" />
     <ClInclude Include="..\NeoSource\NeoQueue.h" />
     <ClInclude Include="..\NeoSource\NeoScript.h" />

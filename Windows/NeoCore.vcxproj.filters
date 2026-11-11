@@ -192,6 +192,9 @@
     <ClInclude Include="..\NeoSource\NeoNumeric.h">
       <Filter>Header Files</Filter>
     </ClInclude>
+    <ClInclude Include="..\NeoSource\NeoNumberFormat.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
     <ClInclude Include="..\NeoSource\NeoParser.h">
       <Filter>Header Files</Filter>
     </ClInclude>

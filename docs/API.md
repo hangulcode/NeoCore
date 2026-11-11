@@ -53,6 +53,7 @@ to an `int` requires an explicit conversion. Names are case-sensitive.
 | `Rand01` | `() -> float` |
 | `Hash32` | `(int value) -> int` |
 | `tostr` | `(float value) -> string` |
+| `fixed` | `(float value, int decimals) -> string` |
 | `ColorRGB` | `(float r, float g, float b) -> int` |
 | `ColorARGB` | `(float a, float r, float g, float b) -> int` |
 
@@ -75,6 +76,20 @@ to that interval, treat NaN as zero, and truncate after multiplying by 255. The
 packed `0xAABBGGRR` result is signed 32-bit widened to `int`; `ColorRGB` uses alpha
 255. `tostr` preserves 17 significant digits for binary64 round trips and is not
 interchangeable with the display-oriented `tostring` conversion.
+
+`math.fixed(value, decimals)` formats the actual binary64 value with exactly
+`decimals` fractional digits, including trailing zeros, and never uses exponent
+notation. `decimals` must be in `[0, 9]`; out-of-range values, including constants,
+raise a runtime error. The compiler checks argument types and count. Integer
+arguments widen to binary64; vector components widen from their stored float32 value.
+Rounding is to nearest, with exact ties going to the even final digit:
+`fixed(0.25, 1)` is `"0.2"`, `fixed(2.5, 0)` is `"2"`, and `fixed(3.5, 0)` is `"4"`.
+Because binary64 `0.15` is slightly below the midpoint, `fixed(0.15, 1)` is `"0.1"`.
+The decimal separator is always `.`, independent of the locale and thread rounding
+mode. Results that round to zero have no minus sign; `decimals == 0` omits the dot.
+NaN and infinity retain the current `tostring` spelling. Conversion uses fixed-size
+stack storage and allocates no temporary heap buffer; the runtime owns the final
+string. This does not change `tostring` or `math.tostr`.
 
 `Vector2`, `Vector3`, `Vector4` and `Quaternion` are explicit value types.
 Vector constructors accept either no arguments or their exact component count.

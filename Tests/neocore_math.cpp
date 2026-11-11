@@ -1,7 +1,12 @@
-#include "NeoCore.h"
+﻿#include "NeoCore.h"
+#include "NeoNumberFormat.h"
 
+#include <cfenv>
+#include <clocale>
 #include <cmath>
 #include <cstdio>
+#include <cstring>
+#include <limits>
 #include <string>
 #include <vector>
 
@@ -129,6 +134,29 @@ export bool Format()
     string text = math.tostr(value);
     return tofloat(text) == value && text != "0.3" && math.tostr(42) == "42";
 }
+const int FIXED_PLACES = 3;
+export bool Fixed()
+{
+    return math.fixed(12.75, 1) == "12.8" && math.fixed(2.0, 1) == "2.0"
+        && math.fixed(0.07, 1) == "0.1" && math.fixed(-0.05, 1) == "-0.1"
+        && math.fixed(-0.04, 1) == "0.0" && math.fixed(-0.0, 2) == "0.00"
+        && math.fixed(0.25, 1) == "0.2" && math.fixed(0.15, 1) == "0.1"
+        && math.fixed(2.5, 0) == "2" && math.fixed(-2.5, 0) == "-2"
+        && math.fixed(3.5, 0) == "4" && math.fixed(0.125, 2) == "0.12"
+        && math.fixed(123456.789, 1) == "123456.8" && math.fixed(1.0/3.0, FIXED_PLACES) == "0.333"
+        && math.fixed(0.0000001, 2) == "0.00" && math.fixed(1.0e20, 1) == "100000000000000000000.0"
+        && math.fixed(42, 2) == "42.00" && math.fixed(math.Vector2(0.1, 0.0).x, 3) == "0.100"
+        && math.fixed(0.0000000005, 9) == "0.000000001"
+        && math.fixed(math.sqrt(-1), 2) == tostring(math.sqrt(-1))
+        && math.fixed(math.pow(10, 400), 2) == tostring(math.pow(10, 400))
+        && math.fixed(-math.pow(10, 400), 2) == tostring(-math.pow(10, 400));
+}
+export string FixedValue(float value, int decimals) { return math.fixed(value, decimals); }
+export string FixedLiteralLow() { return math.fixed(1.0, -1); }
+export string FixedLiteralHigh() { return math.fixed(1.0, 10); }
+export string FixedLiteralWide() { return math.fixed(1.0, 4294967296); }
+const int FIXED_INVALID_PLACES = 10;
+export string FixedConstantHigh() { return math.fixed(1.0, FIXED_INVALID_PLACES); }
 float cursor = 0;
 float Next() { cursor += 1; return cursor; }
 export bool EvaluationOrder()
@@ -139,7 +167,7 @@ export bool EvaluationOrder()
 }
 )nc";
 
-void Verify(NeoCore::Program& program)
+void Verify(NeoCore::Program& program, bool debug)
 {
     for (std::size_t i = 0; i < sizeof(floatCases) / sizeof(floatCases[0]); ++i)
     {
@@ -152,12 +180,31 @@ void Verify(NeoCore::Program& program)
             Check(std::fabs(result.value.asFloat() - test.expected) <= test.tolerance,
                 std::string(test.expression) + " value");
     }
-    const char* boolTests[] = {"Vectors", "Colors", "Random", "Format", "EvaluationOrder"};
+    const char* boolTests[] = {"Vectors", "Colors", "Random", "Format", "Fixed", "EvaluationOrder"};
     for (const char* name : boolTests)
     {
         const NeoCore::Result result = program.Call(name);
         Check(result.ok() && !result.suspended() && result.value.kind() == NeoCore::Scalar::Kind::Bool &&
             result.value.asBool(), std::string(name) + ": " + result.error.message);
+    }
+    const std::int64_t badDecimals[] = { -1, 10, 4294967296LL, (std::numeric_limits<std::int64_t>::max)() };
+    for (std::int64_t decimals : badDecimals)
+    {
+        std::vector<NeoCore::Scalar> arguments;
+        arguments.push_back(NeoCore::Scalar::Float(1.25));
+        arguments.push_back(NeoCore::Scalar::Int(decimals));
+        const NeoCore::Result result = program.Call("FixedValue", arguments);
+        Check(!result.ok() && result.error.message.find("math.fixed decimals must be in [0, 9]") != std::string::npos,
+            "fixed rejects runtime precision before narrowing");
+        if (debug) Check(result.error.line > 0, "fixed runtime error has a source line");
+    }
+    const char* badConstants[] = { "FixedLiteralLow", "FixedLiteralHigh", "FixedLiteralWide", "FixedConstantHigh" };
+    for (const char* name : badConstants)
+    {
+        const NeoCore::Result result = program.Call(name);
+        Check(!result.ok() && result.error.message.find("math.fixed decimals must be in [0, 9]") != std::string::npos,
+            "fixed checks constant and variable precisions at runtime");
+        if (debug) Check(result.error.line > 0, "fixed constant runtime error has a source line");
     }
 }
 
@@ -171,12 +218,12 @@ void Run(bool debug)
     std::unique_ptr<NeoCore::Program> program = NeoCore::Program::Compile(source, error, "math.nc", debug);
     Check(bool(program), "math compile: " + error.message);
     if (!program) return;
-    Verify(*program);
+    Verify(*program, debug);
     std::vector<std::uint8_t> image;
     Check(program->SaveImage(image, error), "save math image: " + error.message);
     std::unique_ptr<NeoCore::Program> restored = NeoCore::Program::LoadImage(image, error);
     Check(bool(restored), "load math image: " + error.message);
-    if (restored) Verify(*restored);
+    if (restored) Verify(*restored, debug);
 }
 
 void Rejected()
@@ -197,13 +244,90 @@ void Rejected()
         "import math; Quaternion x = math.quat_slerp(Vector4(), Quaternion(), 0.5);",
         "import math; Vector3? value = null; float x = math.Length3(value);",
         "import math; Vector3 x = math.Vector3(1, 2);",
-        "Vector3 x = math.Vector3(1, 2, 3);"
+        "Vector3 x = math.Vector3(1, 2, 3);",
+        "import math;string s=math.fixed(1.0,2.0);",
+        "import math;string s=math.fixed(\"1\",2);",
+        "import math;int n=math.fixed(1.0,2);",
+        "string s=math.fixed(1.0,2);"
     };
     for (const char* source : invalid)
     {
         NeoCore::Error error;
         Check(!NeoCore::Program::Compile(source, error, "invalid_math.nc") && !error.ok(), source);
     }
+}
+
+void FixedFormatting()
+{
+    struct FixedCase { double value; unsigned decimals; const char* expected; };
+    const FixedCase cases[] = {
+        { 0.25, 1, "0.2" }, { 0.15, 1, "0.1" }, { -0.05, 1, "-0.1" },
+        { -0.04, 1, "0.0" }, { -0.0, 9, "0.000000000" }, { 3.5, 0, "4" },
+        { -2.5, 0, "-2" }, { 0.125, 2, "0.12" }, { 1.0e20, 1, "100000000000000000000.0" },
+        { (std::numeric_limits<double>::denorm_min)(), 9, "0.000000000" },
+        { 9.999, 2, "10.00" }, { -9.999, 2, "-10.00" }
+    };
+    const int savedRounding = std::fegetround();
+    const char* previousLocale = std::setlocale(LC_NUMERIC, nullptr);
+    const std::string savedLocale = previousLocale ? previousLocale : "C";
+    NeoCore::Error error;
+    std::unique_ptr<NeoCore::Program> program = NeoCore::Program::Compile(
+        "import math;export string F(float value,int decimals){return math.fixed(value,decimals);}", error);
+    Check(bool(program), "fixed environment test compiles: " + error.message);
+    // 각 환경을 바꾼 뒤에도 같은 결과를 내며 호출한 쪽의 설정을 건드리지 않아야 한다.
+    const char* locales[] = { "C", "de-DE", "de_DE.UTF-8", "German_Germany.1252" };
+    const int rounding[] = { FE_TONEAREST, FE_DOWNWARD, FE_UPWARD, FE_TOWARDZERO };
+    for (const char* locale : locales)
+    {
+        if (!std::setlocale(LC_NUMERIC, locale)) continue;
+        const std::string activeLocale = std::setlocale(LC_NUMERIC, nullptr);
+        for (int mode : rounding)
+        {
+            if (std::fesetround(mode) != 0) continue;
+            for (const FixedCase& sample : cases)
+            {
+                char text[NeoScript::FixedNumberBufferSize];
+                Check(NeoScript::FormatFixedNumber(sample.value, sample.decimals, text) && text == std::string(sample.expected),
+                    "fixed ignores locale and rounding mode");
+                if (program)
+                {
+                    std::vector<NeoCore::Scalar> arguments;
+                    arguments.push_back(NeoCore::Scalar::Float(sample.value));
+                    arguments.push_back(NeoCore::Scalar::Int(sample.decimals));
+                    const NeoCore::Result result = program->Call("F", arguments);
+                    Check(result.ok() && result.value.kind() == NeoCore::Scalar::Kind::String &&
+                        result.value.asString() == sample.expected, "fixed runtime ignores locale and rounding mode");
+                }
+            }
+            Check(std::fegetround() == mode && std::string(std::setlocale(LC_NUMERIC, nullptr)) == activeLocale,
+                "fixed leaves caller rounding and locale untouched");
+        }
+    }
+    std::setlocale(LC_NUMERIC, "C");
+    std::fesetround(FE_TONEAREST);
+    // 독립적인 CRT 변환과 정상·비정규·최댓값을 포함한 임의 binary64 비트 패턴을 대조한다.
+    std::uint64_t state = 0x7f4a7c159e3779b9ULL;
+    for (unsigned i = 0; i < 10000; ++i)
+    {
+        state ^= state << 13; state ^= state >> 7; state ^= state << 17;
+        if (((state >> 52) & 0x7ffu) == 0x7ffu) continue;
+        double value;
+        std::memcpy(&value, &state, sizeof(value));
+        char actual[NeoScript::FixedNumberBufferSize], reference[NeoScript::FixedNumberBufferSize];
+        const unsigned decimals = i % 10;
+        std::snprintf(reference, sizeof(reference), "%.*f", static_cast<int>(decimals), value);
+        std::string expected(reference);
+        if (expected[0] == '-' && expected.find_first_of("123456789") == std::string::npos) expected.erase(0, 1);
+        Check(NeoScript::FormatFixedNumber(value, decimals, actual) && actual == expected, "fixed agrees with nearest CRT formatting");
+    }
+    char text[NeoScript::FixedNumberBufferSize];
+    const double maximum = (std::numeric_limits<double>::max)();
+    Check(NeoScript::FormatFixedNumber(-maximum, 9, text) && std::strlen(text) == 320 &&
+        std::string(text).substr(310) == ".000000000", "fixed holds the full negative binary64 maximum");
+    Check(!NeoScript::FormatFixedNumber(std::numeric_limits<double>::infinity(), 0, text) &&
+        !NeoScript::FormatFixedNumber(std::numeric_limits<double>::quiet_NaN(), 0, text), "fixed delegates non-finite spelling");
+    std::setlocale(LC_NUMERIC, savedLocale.c_str());
+    if (savedRounding != -1) std::fesetround(savedRounding);
 }
 }
 
@@ -212,6 +336,7 @@ int main()
     Run(false);
     Run(true);
     Rejected();
+    FixedFormatting();
     std::printf("NeoCore math: %d checks, %d failures\n", checks, failures);
     return failures == 0 ? 0 : 1;
 }

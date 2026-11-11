@@ -68,6 +68,12 @@ Conditions require bools. Strings concatenate with `..`; use `tostring` for
 explicit conversion. Numeric conversions, division and shift counts keep their
 documented runtime boundary behavior even after static checking.
 
+For fixed decimal display, import `math` and use `math.fixed(value, decimals)`:
+`math.fixed(2.0, 1)` returns `"2.0"`, and `math.fixed(0.25, 1)` returns `"0.2"`.
+Precision is 0 through 9; exact rounding ties go to the even final digit. The
+separator is always `.`, regardless of locale or thread rounding mode. This is
+display formatting; `math.tostr` remains the binary64 round-trip conversion.
+
 Use a conditional expression to choose an initial value, argument or return value:
 
 ```nc
