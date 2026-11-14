@@ -12,3 +12,8 @@ print("rtrim   : {" .. padded.rtrim() .. "}");
 print("replace : {" .. padded.replace("23", "AB") .. "}");
 list<string> words = "this,is,string".split(",");
 foreach (string word in words) print(word);
+int tick = 42;
+float elapsed = 0.25;
+bool ready = true;
+print("tick : " .. tick .. ", elapsed : " .. elapsed .. ", ready : " .. ready);
+print(tick .. " ticks");

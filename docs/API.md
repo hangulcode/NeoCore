@@ -21,6 +21,13 @@ function values. Conditions require bools.
 
 ## Strings
 
+The `..` operator accepts a string on either side and automatically formats an
+`int`, `float`, or `bool` on the other side using `tostring` semantics, for example
+`"tick : " .. tick`. At least one operand must be a string; aggregate values and
+null literals are not accepted. String variables that contain null retain the
+existing `"null"` spelling. No implicit string conversion applies to assignments
+or function arguments.
+
 Strings support `len`, `sub(start, length)`, `codepoint(index)`, `find(text)`,
 `upper`, `lower`, `trim`, `ltrim`, `rtrim`, `replace`, `replaceAll` and `split`.
 `split(separator)` requires a nonempty separator and returns `list<string>`.

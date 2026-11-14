@@ -1949,6 +1949,14 @@ private:
     {
         if (left == right && types_.Get(left).kind == TypeKind::List && op == "+") return left;
         if (left == right && types_.Get(left).kind == TypeKind::Set && (op == "|" || op == "&" || op == "-")) return left;
+        if (op == "..")
+        {
+            const TypeId other = left == types_.String() ? right : left;
+            if ((left == types_.String() || right == types_.String()) &&
+                (other == types_.String() || types_.IsNumeric(other) || other == types_.Bool()))
+                return types_.String();
+            Fail(token, "string concatenation requires at least one string operand and only string, int, float or bool operands");
+        }
         if (IsStruct(left) || IsStruct(right)) Fail(token, "structure operators and equality are not supported by this compiler stage");
         if ((op == "==" || op == "!=") && (left == types_.Null() || right == types_.Null()))
         {
@@ -1979,11 +1987,6 @@ private:
         {
             if (left == types_.Bool() && right == types_.Bool()) return types_.Bool();
             Fail(token, "logical operators require bool operands");
-        }
-        if (op == "..")
-        {
-            if (left == types_.String() && right == types_.String()) return types_.String();
-            Fail(token, "string concatenation requires string operands; use tostring explicitly");
         }
         if (op == "<" || op == "<=" || op == ">" || op == ">=")
         {
@@ -3677,6 +3680,13 @@ private:
             !child.writeTarget && !child.assignmentTarget;
     }
 
+    // .. 에서 허용한 스칼라만 기존 변환 경로에 연결한다. 원래 타입과 평가 순서는 유지한다.
+    std::string RenderConcatOperand(const Expr& expression) const
+    {
+        const std::string text = RenderExpr(expression);
+        return expression.type == types_.String() ? text : "tostring(" + text + ")";
+    }
+
     // 긴 왼쪽 사슬은 조각만 평탄화해도 RenderExpr의 큰 Debug 프레임이 항마다 쌓인다.
     // 고리를 반복문으로 수집하고 왼쪽부터 방출해 결합·평가 순서와 줄 간격을 그대로 유지한다.
     std::string RenderConcatChain(const Expr& expression, bool bare) const
@@ -3691,7 +3701,7 @@ private:
             text += Lines(current->begin, left.begin);
             if (!ChainLink(*current, left))
             {
-                text += RenderExpr(left);
+                text += RenderConcatOperand(left);
                 break;
             }
             current = &left;
@@ -3702,7 +3712,7 @@ private:
             const Expr& left = *link.children[0];
             const Expr& right = *link.children[1];
             text += Lines(left.end, link.token.begin) + " " + link.op + " "
-                + Lines(link.token.end, right.begin) + RenderExpr(right) + Lines(right.end, link.end);
+                + Lines(link.token.end, right.begin) + RenderConcatOperand(right) + Lines(right.end, link.end);
         }
         if (!bare) text += ")";
         return text;
@@ -3807,15 +3817,14 @@ private:
             // 두어 중첩 논리식의 결합 순서와 단락 평가를 보존한다.
             const bool directCondition = (expression.branchCondition || bareLogical) && (expression.op == "&&" || expression.op == "||");
             const bool bare = directCondition || chainLink;
-            const bool leftLink = ChainLink(expression, left);
-            if (leftLink)
+            if (expression.op == "..")
             {
                 text = RenderConcatChain(expression, bare);
                 break;
             }
             const bool leftBare = directCondition && BareLogicalChild(expression, left);
             const bool rightBare = directCondition && BareLogicalChild(expression, right);
-            text = (bare ? "" : "(") + Lines(expression.begin, left.begin) + RenderExpr(left, !leftLink && !leftBare, true, leftLink, leftBare)
+            text = (bare ? "" : "(") + Lines(expression.begin, left.begin) + RenderExpr(left, !leftBare, true, false, leftBare)
                 + Lines(left.end, expression.token.begin) + " " + expression.op + " " + Lines(expression.token.end, right.begin)
                 + RenderExpr(right, !rightBare, true, false, rightBare) + Lines(right.end, expression.end) + (bare ? "" : ")");
             break;

@@ -774,6 +774,11 @@ static void StringConversionShapes(IRuntime* runtime, bool debug)
     const Shape cases[] = {
         {"export string Probe(int x){return \"v\"..tostring(x);}", 0},
         {"export string Probe(int x){return tostring(x)..\"v\";}", 0},
+        {"export string Probe(int x){return \"v\"..x;}", 0},
+        {"export string Probe(int x){return x..\"v\";}", 0},
+        {"export string Probe(float x){return \"v\"..x;}", 0},
+        {"export string Probe(bool x){return x..\"v\";}", 0},
+        {"int x=1;string Change(){x=7;return \"v\";}export string Probe(){return x..Change();}", 1},
         {"export string Probe(int x){string s=tostring(x);return s..\"v\";}", 1},
         {"int x=1;string Change(){x=7;return \"v\";}export string Probe(){return tostring(x)..Change();}", 1},
         {"export string Probe(int x,bool test){string s=\"before\";if(test)s=tostring(x);return s..\"v\";}", 1}

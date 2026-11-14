@@ -69,9 +69,14 @@ An ordinary `array<float>` stores binary64 and `array<int>` stores int64.
 Compact storage remains a separate array type; it does not introduce public
 32-bit scalar declarations.
 
-Conditions require bools. Strings concatenate with `..`; use `tostring` for
-explicit conversion. Numeric conversions, division and shift counts keep their
-documented runtime boundary behavior even after static checking.
+Conditions require bools. Strings concatenate with `..`. When one operand is a
+string, an `int`, `float`, or `bool` on the other side is converted using the
+same formatting as `tostring`: `"tick : " .. tick`. Both operands evaluate once,
+left to right. Two non-string operands and struct, vector, collection, function
+or host object operands are rejected. This conversion is specific to `..`;
+assignments and function arguments still require explicit `tostring`.
+Numeric conversions, division and shift counts keep their documented runtime
+boundary behavior even after static checking.
 
 For fixed decimal display, import `math` and use `math.fixed(value, decimals)`:
 `math.fixed(2.0, 1)` returns `"2.0"`, and `math.fixed(0.25, 1)` returns `"0.2"`.

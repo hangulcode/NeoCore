@@ -208,6 +208,28 @@ int main()
         Expect("export int Probe(){string s=\"ab\";s=s..\"-\"..s;if(s!=\"ab-ab\")return 0;return s.len();}", 5, "chain whose right side is the target stays separate", debug);
         Expect(u8"export int Probe(){string s=\"가\";for(int i in 0,3)s=s..\"나\"..tostring(i);string t=\"é\";t=t..\"x\";return s.len()*10+t.len();}", 72, "character counts after appends", debug);
         Expect("export int Probe(){string s=\"hp \"..tostring(12)..\" / 100\";if(s!=\"hp 12 / 100\")return 0;return s.len();}", 11, "literal-led chain builds the full text", debug);
+        Expect("export int Probe(){int tick=12;float dt=0.25;bool ready=true;"
+            "string s=\"tick : \"..tick..\", dt : \"..dt..\", ready : \"..ready;"
+            "return s==\"tick : 12, dt : 0.25, ready : true\"?1:0;}", 1, "implicit scalar display in mixed chains", debug);
+        Expect("const int N=42;string text=\"tick : \"..N;export int Probe(){"
+            "string s=12 .. \"|\" .. 0.25 .. \"|\" .. true;"
+            "return text==\"tick : 42\"&&s==\"12|0.25|true\"?1:0;}", 1, "scalar literals and constants concatenate in ordinary initializers", debug);
+        Expect("export int Probe(){string s=\"\";for(int i in 0,3)s=s..\"a\"..i..\"b\";"
+            "return s==\"a0ba1ba2b\"?1:0;}", 1, "implicit conversion keeps in-place append chains", debug);
+        Expect("int order=0;int Next(){order+=1;return order;}export int Probe(){"
+            "string s=(Next()..\":\")..(Next()..\":\")..Next();"
+            "if(s!=\"1:2:3\")return -1;return order;}", 3, "implicit scalar calls evaluate once from left to right", debug);
+        Expect("export int Probe(){int n=1;string s=n..(\":\"..++n)..\":\"..n;"
+            "return s==\"1:2:2\"?1:0;}", 1, "nested implicit conversion snapshots the earlier scalar", debug);
+        Expect("export int Probe(){int n=3;string s=\"\"..(n=4)..\":\"..n;"
+            "return s==\"4:4\"?1:0;}", 1, "assignment results can be concatenated", debug);
+        Expect("export int Probe(){list<int> a=[7];map<string,int> m={\"k\":8};array<bool> b=array<bool>(1,true);"
+            "Vector3 v=Vector3(1.5,2,3);string s=\"\"..a[0]..m[\"k\"]..b[0]..v.x;"
+            "return s==\"78true1.5\"?1:0;}", 1, "typed element and vector component reads can be concatenated", debug);
+        Expect("export int Probe(){bool b=true;string s=\"\"..(b?2:3)..\":\"..(b?0.5:1.5);"
+            "return s==\"2:0.5\"?1:0;}", 1, "conditional scalar expressions can be concatenated", debug);
+        Expect("export int Probe(){int n=0;bool b=false;string s=(b?\"\"..++n:\"skip\")..(b&&++n>0);"
+            "return s==\"skipfalse\"&&n==0?1:0;}", 1, "implicit conversion preserves short-circuit evaluation", debug);
         // 긴 .. 사슬은 항마다 조각 파싱을 중첩하지 않아야 파서 깊이 한도에 걸리지 않는다.
         {
             std::string chain = "export int Probe(){string s=\"x\"";
@@ -218,6 +240,10 @@ int main()
             for (int i = 0; i < 99; ++i) calls += " .. tostring(v)";
             calls += ";return s.len();}";
             Expect(calls.c_str(), 100, "long concatenation chain of calls", debug);
+            std::string implicit = "export int Probe(){int v=7;string s=\"\"";
+            for (int i = 0; i < 199; ++i) implicit += " .. v";
+            implicit += ";return s.len();}";
+            Expect(implicit.c_str(), 199, "long concatenation chain of implicit conversions", debug);
         }
         Expect("int F(int x){return x+1;}export int Probe(){map<string,fn(int)->int> m={\"x\":F};return m[\"x\"](7);}", 8, "function map and result call", debug);
         Expect("struct Box{fn(int)->int callback;};export int Probe(){Box box=Box(fn(int x)->int{return x*2;});return box.callback(7);}", 14, "function-valued struct field", debug);

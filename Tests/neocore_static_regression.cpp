@@ -123,14 +123,22 @@ static void CheckStringConcatenation(bool debug)
         "export string Order(){saved=\"left\";return saved..Change()..\"|\"..saved;}\n"
         "export string Right(int x){return \"v\"..tostring(x);}\n"
         "export string Left(int x){return tostring(x)..\"v\";}\n"
+        "export string ImplicitRight(int x){return \"v\"..x;}\n"
+        "export string ImplicitLeft(int x){return x..\"v\";}\n"
         "export string Both(int x,int y){return tostring(x)..tostring(y);}\n"
         "export string Retained(int x){string text=tostring(x);string joined=text..\"x\";return text..\"|\"..joined;}\n"
         "export string PlainFloat(float x){return tostring(x);}\n"
         "export string JoinFloat(float x){return \"v\"..tostring(x);}\n"
+        "export string ImplicitFloat(float x){return \"v\"..x;}\n"
+        "export string ImplicitFloatLeft(float x){return x..\"v\";}\n"
         "export string JoinBool(bool x){return tostring(x)..\"v\";}\n"
+        "export string ImplicitBool(bool x){return \"v\"..x..\"|\"..x..\"v\";}\n"
+        "export string ImplicitBoolLeft(bool x){return x..\"v\";}\n"
+        "export string NullableScalar(string x){return x..1..\"|\"..(2..x);}\n"
         "export string JoinNull(string x){return \"v\"..tostring(x);}\n"
         "int number;string Bump(){number=7;return \"R\";}\n"
-        "export string ScalarOrder(){number=1;return tostring(number)..Bump();}\n",
+        "export string ScalarOrder(){number=1;return tostring(number)..Bump();}\n"
+        "export string ImplicitScalarOrder(){number=1;return number..Bump();}\n",
         error, "string-concat.nc", debug);
     Check(bool(program), "string concatenation compile: " + error.message);
     if (!program) return;
@@ -185,6 +193,11 @@ static void CheckStringConcatenation(bool debug)
             const Result right = program->Call("Right", {Scalar::Int(n)});
             const Result both = program->Call("Both", {Scalar::Int(n), Scalar::Int(n)});
             const Result retained = program->Call("Retained", {Scalar::Int(n)});
+            const Result implicitLeft = program->Call("ImplicitLeft", {Scalar::Int(n)});
+            const Result implicitRight = program->Call("ImplicitRight", {Scalar::Int(n)});
+            Check(implicitLeft.ok() && implicitLeft.value.asString() == digits + "v" &&
+                implicitRight.ok() && implicitRight.value.asString() == "v" + digits,
+                "implicit int concatenation preserves the full int64 range");
             Check(left.ok() && left.value.asString() == digits + "v" && right.ok() &&
                 right.value.asString() == "v" + digits && both.ok() && both.value.asString() == digits + digits &&
                 retained.ok() && retained.value.asString() == digits + "|" + digits + "x", "integer conversion and retained result");
@@ -195,6 +208,12 @@ static void CheckStringConcatenation(bool debug)
         {
             const Result plain = program->Call("PlainFloat", {Scalar::Float(n)});
             const Result joined = program->Call("JoinFloat", {Scalar::Float(n)});
+            const Result implicit = program->Call("ImplicitFloat", {Scalar::Float(n)});
+            const Result implicitLeft = program->Call("ImplicitFloatLeft", {Scalar::Float(n)});
+            Check(plain.ok() && implicit.ok() && implicitLeft.ok() &&
+                implicit.value.asString() == "v" + plain.value.asString() &&
+                implicitLeft.value.asString() == plain.value.asString() + "v",
+                "implicit float concatenation matches explicit formatting including nonfinite values");
             Check(plain.ok() && joined.ok() && joined.value.asString() == "v" + plain.value.asString(), "float conversion preserves formatting");
         }
         const Result boolean = program->Call("JoinBool", {Scalar::Bool(true)});
@@ -203,6 +222,18 @@ static void CheckStringConcatenation(bool debug)
         Check(boolean.ok() && boolean.value.asString() == "truev" && convertedNull.ok() &&
             convertedNull.value.asString() == "vnull", "bool and null conversion");
         Check(scalarOrder.ok() && scalarOrder.value.asString() == "1R", "conversion cannot cross a mutating call");
+        const Result implicitOrder = program->Call("ImplicitScalarOrder");
+        Check(implicitOrder.ok() && implicitOrder.value.asString() == "1R", "implicit conversion snapshots before a mutating call");
+        for (bool flag : {false, true})
+        {
+            const std::string text = flag ? "true" : "false";
+            const Result implicit = program->Call("ImplicitBool", {Scalar::Bool(flag)});
+            const Result implicitLeft = program->Call("ImplicitBoolLeft", {Scalar::Bool(flag)});
+            Check(implicit.ok() && implicit.value.asString() == "v" + text + "|" + text + "v" &&
+                implicitLeft.ok() && implicitLeft.value.asString() == text + "v", "implicit bool conversion on either side");
+        }
+        const Result nullable = program->Call("NullableScalar", {Scalar::Null()});
+        Check(nullable.ok() && nullable.value.asString() == "null1|2null", "nullable strings retain their spelling beside scalars");
     }
     program.reset();
     NeoScript::AllocStats after;
@@ -222,6 +253,22 @@ int main()
         {"int x=1.5;", "no implicit narrowing"},
         {"int x=true;", "bool is not int"},
         {"float x=false;", "bool is not float"},
+        {"string s=1;", "no implicit string assignment"},
+        {"void F(string s){} F(1);", "no implicit string argument"},
+        {"string F(){return 1;}", "no implicit string return"},
+        {"string s=\"v\"+1;", "plus is not string concatenation"},
+        {"string s=1 .. 2;", "concatenation needs a string operand"},
+        {"string s=true .. false;", "bool concatenation needs a string operand"},
+        {"string s=1 .. 2 .. \"v\";", "later string does not convert earlier non-string operands"},
+        {"string s=\"v\" .. (1 .. 2);", "outer string does not convert a non-string subexpression"},
+        {"string s=\"v\" .. null;", "no implicit null literal concatenation"},
+        {"list<int> a=[1];string s=\"v\" .. a;", "no implicit list concatenation"},
+        {"map<string,int> a={};string s=a .. \"v\";", "no implicit map concatenation"},
+        {"array<int> a=array<int>(1);string s=\"v\" .. a;", "no implicit array concatenation"},
+        {"struct S{int n;};string s=\"v\" .. S(1);", "no implicit struct concatenation"},
+        {"string s=Vector3(1,2,3) .. \"v\";", "no implicit vector concatenation"},
+        {"int F(){return 1;}string s=\"v\" .. F;", "no implicit function concatenation"},
+        {"void F(){} string s=\"v\" .. F();", "no void concatenation"},
         {"int x=null;", "nonnull int"},
         {"int? x=1;", "no nullable marker"},
         {"string? s=null;", "no nullable marker on references"},

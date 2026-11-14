@@ -216,8 +216,8 @@ and UTF-8 character counts are unchanged. In non-debug compilation, an adjacent
 `tostring` that produces only a temporary for concatenation is performed by the
 existing concatenation instruction, avoiding an intermediate VM string. Stored
 conversion results, intervening instructions, control-flow joins, and debug-info
-programs retain the separate conversion. This does not relax source type checking
-or add an opcode.
+programs retain the separate conversion. Implicit scalar conversions in `..` use
+the same path and add no opcode.
 
 Arrays, vectors, and generated helpers retain private compile-only intrinsics in
 the textual skeleton. Their metadata carries types and source lines, and each
@@ -1007,6 +1007,18 @@ frames can appear in debug stacks. This is not a replacement of the complete
 backend function representation or public host callback API.
 
 ## Strings, time, HTTP, and coroutines
+
+String concatenation with `..` requires at least one `string` operand. The other
+operand may be `string`, `int`, `float`, or `bool`; scalars are converted as if
+`tostring` were written explicitly. For example, `"tick : " .. tick` and
+`tick .. " ticks"` both work for an int. Operands evaluate once, left to right,
+and chains associate left to right: `"v=" .. 1 .. 2` is `"v=12"`, while
+`1 .. 2 .. "v"` is rejected at its first link. Two non-string operands, a null
+literal, or any struct, vector, collection, function or host object operand are
+compile errors. A nullable string variable keeps the existing `"null"` spelling.
+This conversion applies only to `..`, not assignments, function arguments or
+other operators. Float display is identical to `tostring`; use `math.fixed`
+explicitly when a fixed number of fractional digits is required.
 
 Strings expose `len`, `sub(start,count)`, `codepoint(index)`, `find`, `upper`,
 `lower`, `trim`, `ltrim`, `rtrim`, `replace`, `replaceAll`, and `split`.
