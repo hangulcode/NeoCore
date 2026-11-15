@@ -120,6 +120,8 @@
     <ClInclude Include="..\NeoSource\NeoCoreScriptHost.h" />
     <ClInclude Include="..\NeoSource\NeoCoreTextFile.h" />
     <ClInclude Include="..\NeoSource\NeoCoreDiagnostics.h" />
+    <ClInclude Include="..\NeoSource\NeoCoreProfile.h" />
+    <ClInclude Include="..\NeoSource\NeoVMWorker_Profile.inl" />
     <ClInclude Include="..\NeoSource\NeoCoreHostBridge.h" />
     <ClInclude Include="..\NeoSource\NeoCoreHostRuntime.h" />
     <ClInclude Include="..\NeoSource\NeoCoreInstanceContext.h" />

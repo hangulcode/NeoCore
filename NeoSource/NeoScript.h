@@ -1,6 +1,7 @@
 ﻿#pragma once
 #include "NeoJson.h"
 #include "NeoHttp.h"
+#include "NeoCoreDiagnostics.h"
 namespace NeoCore { struct TypedIR; }
 //==============================================================================
 // NeoScript 공개 API v2 — Runtime / Program / Instance 3-개념 파사드
@@ -191,6 +192,9 @@ struct Error
     std::string sourceName;
     uint32_t line = 0;
     uint32_t column = 0;
+
+    std::vector<NeoCore::RuntimeStackFrame> stackTrace;
+    bool stackTruncated = false;
 
     bool ok() const noexcept { return code == 0; }
 };

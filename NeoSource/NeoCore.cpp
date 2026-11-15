@@ -295,6 +295,48 @@ void Runtime::SetTrimPagesPerCall(int pages) { impl_->runtime->SetTrimPagesPerCa
 std::uint64_t Instance::Id() const { return impl_->id; }
 void Instance::SetUserData(void* value) { impl_->userData = value; }
 void* Instance::GetUserData() const { return impl_->userData; }
+bool Instance::SetProfiling(bool enabled, Error& error)
+{
+    error = Error();
+    if (impl_->executing || impl_->suspended ||
+        !NeoCoreBackend::ConfigureProfile(*impl_->runtime, impl_->instance, enabled, false)) {
+        error.message = "profiling can only be configured on an idle instance";
+        return false;
+    }
+    return true;
+}
+bool Instance::ResetProfile(Error& error)
+{
+    error = Error();
+    const bool enabled = NeoCoreBackend::ReadProfile(*impl_->runtime, impl_->instance).enabled;
+    if (impl_->executing || impl_->suspended ||
+        !NeoCoreBackend::ConfigureProfile(*impl_->runtime, impl_->instance, enabled, true)) {
+        error.message = "profiling can only be reset on an idle instance";
+        return false;
+    }
+    return true;
+}
+ProfileSnapshot Instance::ReadProfile() const
+{
+    ProfileSnapshot snapshot = NeoCoreBackend::ReadProfile(*impl_->runtime, impl_->instance);
+    for (auto& entry : snapshot.entries) {
+        if (entry.kind != ProfileKind::Script) continue;
+        const auto name = impl_->module->bundle.symbolNames.find(entry.name);
+        if (name != impl_->module->bundle.symbolNames.end()) entry.name = name->second;
+        Error location;
+        location.sourceName = impl_->sourceName;
+        location.line = entry.line;
+        impl_->module->bundle.Translate(location);
+        entry.sourceName = location.sourceName;
+        entry.line = location.line;
+    }
+    std::stable_sort(snapshot.entries.begin(), snapshot.entries.end(), [](const ProfileEntry& a, const ProfileEntry& b) {
+        if (a.selfNanoseconds != b.selfNanoseconds) return a.selfNanoseconds > b.selfNanoseconds;
+        if (a.calls != b.calls) return a.calls > b.calls;
+        return a.name < b.name;
+    });
+    return snapshot;
+}
 
 bool DebugAccess::Get(Program& owner, NeoScript::IRuntime*& runtime,
     NeoScript::ProgramHandle& program, NeoScript::InstanceHandle& instance,
@@ -321,6 +363,8 @@ static Error TranslateError(const NeoScript::Error& backend, const std::string& 
     error.sourceName = backend.sourceName.empty() ? name : backend.sourceName;
     error.line = static_cast<int>(backend.line);
     error.column = static_cast<int>(backend.column);
+    error.stackTrace = backend.stackTrace;
+    error.stackTruncated = backend.stackTruncated;
     return error;
 }
 
@@ -572,6 +616,9 @@ bool Program::IsSuspended() const { return defaultInstance_->IsSuspended(); }
 bool Program::IsExecuting() const { return defaultInstance_->IsExecuting(); }
 bool Program::Cancel(Error& error) { return defaultInstance_->Cancel(error); }
 bool Program::Reset(Error& error) { return defaultInstance_->Reset(error); }
+bool Program::SetProfiling(bool enabled, Error& error) { return defaultInstance_->SetProfiling(enabled, error); }
+bool Program::ResetProfile(Error& error) { return defaultInstance_->ResetProfile(error); }
+ProfileSnapshot Program::ReadProfile() const { return defaultInstance_->ReadProfile(); }
 std::int64_t Program::TrimMemory(bool force) { return impl_->runtime->TrimMemory(force); }
 std::int64_t Program::CollectCycles(bool force) { return impl_->runtime->CollectCycles(force); }
 void Program::SetEmptyPageHoldSeconds(float seconds) { impl_->runtime->SetEmptyPageHoldSeconds(seconds); }

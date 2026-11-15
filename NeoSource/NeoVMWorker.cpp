@@ -61,6 +61,7 @@ public:
 		{
 			SNativeFrame& record = _context->m_sNativeFrames.push_back();
 			record._iSP_Vars = _sp;
+			record._callOpIndex = worker.GetCodeptr() / sizeof(SVMOperation) - 1;
 			record._functionIndex = _function;
 			record._window = _max;
 			record._plan = _plan;
@@ -89,6 +90,8 @@ public:
 	}
 	~NativeFrameScope() { Restore(); }
 };
+
+#include "NeoVMWorker_Profile.inl"
 
 void SVarWrapper::SetNone() { _vmw->Var_SetNone(_var); }
 void SVarWrapper::SetInt(int v) { _vmw->Var_SetInt(_var, v); }
@@ -690,6 +693,8 @@ void CNeoVMWorker::ResetFaultStateForNewExecution()
 	_isErrorOPIndex = 0;
 	m_iLastErrorOPIndex = -1;
 	m_iLastErrorSourceOPIndex = -1;
+	m_lastErrorFrames.clear();
+	m_lastErrorStackTruncated = false;
 }
 const char* g_sNeoRuntimeErrors[RTE_COUNT] =
 {
@@ -716,6 +721,50 @@ void CNeoVMWorker::RememberErrorLocation()
 		_isErrorOPIndex = int((const u8*)_pCodeCurrent - _pCodeBegin - 1) / sizeof(SVMOperation);
 	m_iLastErrorOPIndex = _isErrorOPIndex;
 	m_iLastErrorSourceOPIndex = UserErrorOpIndex(_isErrorOPIndex);
+	CaptureErrorStack();
+}
+void CNeoVMWorker::CaptureErrorStack()
+{
+    m_lastErrorFrames.clear();
+    const int callers = m_pCallStack ? static_cast<int>(m_pCallStack->size()) : 0;
+    auto append = [&](int opIndex, int functionId) {
+        if (IsGeneratedHelperOp(opIndex)) return;
+        NeoDebugStackFrame frame;
+        frame.frameId = static_cast<int>(m_lastErrorFrames.size());
+        frame.functionId = functionId;
+        frame.opIndex = opIndex;
+        const auto name = _pProgram->debugFunctionNames.find(functionId);
+        frame.functionName = name != _pProgram->debugFunctionNames.end()
+            ? name->second.substr(0, 4096) : "function#" + std::to_string(functionId);
+        if (opIndex >= 0 && opIndex < static_cast<int>(DebugData().size())) {
+            frame.file = DebugData()[opIndex]._fileseq;
+            frame.line = DebugData()[opIndex]._lineseq;
+        }
+        m_lastErrorFrames.push_back(std::move(frame));
+    };
+    if (!_pProgram) return;
+    std::map<int, std::pair<int, int>> frames;
+    for (int i = 0; i < callers; ++i) {
+        const SCallStack& caller = (*m_pCallStack)[i];
+        const int opIndex = static_cast<int>(caller._ReturnIP & IP_MASK) / sizeof(SVMOperation) - 1;
+        frames[caller._iSP_Vars] = std::make_pair(opIndex, caller._functionIndex);
+    }
+    int currentBase = _iSP_Vars;
+    if (m_pCur) for (int i = 0; i < m_pCur->m_sNativeFrames.size(); ++i) {
+        const SNativeFrame& caller = m_pCur->m_sNativeFrames[i];
+        frames[caller._iSP_Vars] = std::make_pair(caller._callOpIndex, caller._functionIndex);
+        if (caller._window == _iSP_Vars) currentBase = caller._iSP_Vars;
+    }
+    frames[currentBase] = std::make_pair(m_iLastErrorOPIndex, _functionIndex);
+    std::size_t remaining = frames.size();
+    for (auto it = frames.rbegin(); it != frames.rend(); ++it) {
+        --remaining;
+        if (m_lastErrorFrames.size() >= 32 && remaining >= 32) {
+            m_lastErrorStackTruncated = true;
+            continue;
+        }
+        append(it->second.first, it->second.second);
+    }
 }
 bool CNeoVMWorker::IsGeneratedHelperOp(int opIndex) const
 {
@@ -2149,6 +2198,7 @@ bool	CNeoVMWorker::Run()
 		return false;
 	bool b = true;
 	const bool nestedRun = m_bInRun;
+	ProfileRunScope profileScope(*this);
 	const bool previousSliceExpired = m_bSliceExpired;
 	if (!nestedRun)
 		m_bSliceExpired = false;

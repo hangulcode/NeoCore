@@ -1,5 +1,8 @@
 # Embedding NeoCore
 
+For runtime error snapshots, boundary regressions and opt-in function/host call
+profiling, see [Runtime diagnostics](RuntimeDiagnostics.md).
+
 Include [NeoCore.h](../NeoSource/NeoCore.h) and link `NeoCore::Runtime` in CMake.
 Native Windows hosts reference `Windows/NeoCore.vcxproj`; the outputs follow
 `NeoCore32/64[-d].lib`. The library and public C++ API require C++11. Modern MSVC's

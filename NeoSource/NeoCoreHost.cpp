@@ -138,6 +138,7 @@ struct HostRuntimeAccess
         std::vector<ArgumentPlan> arguments;
         TypeKind returnKind = TypeKind::Void;
         bool nullableReturn = false;
+        std::string profileName;
     };
     struct State
     {
@@ -474,6 +475,7 @@ bool HostRuntimeAccess::Dispatch(NeoScript::CallContext& ctx, NeoScript::StringV
             if (object) ctx.retInt(HandleBits(object)); else ctx.retNull();
             return true;
         }
+        NeoCoreBackend::ProfileHostScope profile(ctx, entry.profileName);
         // 이 비공개 래퍼의 인자 수는 프런트엔드가 확정한다. 외부 호스트 진입의 검사는 별도다.
         assert(ctx.argCount() == entry.arguments.size() + 1);
         // 호스트 객체 값은 null 일 수 있다. null 수신자의 슬롯은 ID 로 읽을 수 없으므로 먼저 거부한다.
@@ -533,6 +535,9 @@ bool HostRuntimeAccess::Link(State& state, NeoScript::IRuntime& runtime, const s
         if (i < count)
         {
             entry.binding = &schema.Bindings()[i];
+            entry.profileName = types.DisplayName(entry.binding->ownerType) + "." + entry.binding->name;
+            if (entry.binding->kind == HostBindingKind::Getter) entry.profileName += " [get]";
+            if (entry.binding->kind == HostBindingKind::Setter) entry.profileName += " [set]";
             name += "b" + std::to_string(entry.binding->id);
             TypeId result = entry.binding->returnType;
             entry.nullableReturn = types.AllowsNull(result);

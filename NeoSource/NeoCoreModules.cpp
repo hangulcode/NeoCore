@@ -794,6 +794,36 @@ private:
 
 void ModuleBundle::Translate(Error& error) const
 {
+    for (auto& frame : error.stackTrace) {
+        const auto name = symbolNames.find(frame.functionName);
+        if (name != symbolNames.end()) frame.functionName = name->second;
+        if (frame.line > 0 && static_cast<std::size_t>(frame.line) <= lines.size()) {
+            const ModuleSourceLine& origin = lines[frame.line - 1];
+            frame.sourceName = origin.sourceName;
+            frame.line = origin.line;
+        }
+    }
+    if (!error.stackTrace.empty() && error.line > 0 && static_cast<std::size_t>(error.line) <= lines.size()) {
+        const auto header = error.message.find(" : IP(");
+        if (header != std::string::npos) {
+            const auto end = error.message.find('\n', header);
+            const ModuleSourceLine& origin = lines[error.line - 1];
+            const auto marker = error.message.find(", Line(", header);
+            const auto close = marker == std::string::npos ? marker : error.message.find(')', marker);
+            if (close != std::string::npos && (end == std::string::npos || close < end))
+                error.message.replace(marker + 7, close - marker - 7, std::to_string(origin.line));
+        }
+    }
+    if (!error.stackTrace.empty()) {
+        const auto marker = error.message.find("\nScript Call Stack:");
+        if (marker != std::string::npos) error.message.erase(marker);
+        error.message += "\nCall stack (innermost first):";
+        for (const auto& frame : error.stackTrace) {
+            error.message += "\n  " + frame.functionName + " at " +
+                (frame.sourceName.empty() ? "<unknown>" : frame.sourceName) + ":" + std::to_string(frame.line);
+        }
+        if (error.stackTruncated) error.message += "\n  ... middle frames omitted";
+    }
     if (error.line <= 0 || static_cast<std::size_t>(error.line) > lines.size()) return;
     // VM이 붙인 위치 표기도 모듈 원본 행으로 되돌린다. 오류 본문의 임의 숫자는 바꾸지 않는다.
     if (error.message.find("\nScript Call Stack:") != std::string::npos)

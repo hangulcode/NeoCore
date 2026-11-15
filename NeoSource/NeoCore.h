@@ -2,6 +2,7 @@
 
 #include "NeoCoreOptions.h"
 #include "NeoCoreDiagnostics.h"
+#include "NeoCoreProfile.h"
 #include <cstdint>
 #include <memory>
 #include <string>
@@ -23,6 +24,8 @@ struct Error
     int line = 0;
     int column = 0;
     std::vector<CompileDiagnostic> diagnostics;
+    std::vector<RuntimeStackFrame> stackTrace;
+    bool stackTruncated = false;
     bool ok() const { return message.empty(); }
 };
 
@@ -187,6 +190,9 @@ public:
     bool IsExecuting() const;
     bool Cancel(Error& error);
     bool Reset(Error& error);
+    bool SetProfiling(bool enabled, Error& error);
+    bool ResetProfile(Error& error);
+    ProfileSnapshot ReadProfile() const;
     Scalar CreateValue(const std::string& typeName, Error& error);
     Scalar CreateValue(const std::string& typeName, const std::vector<Scalar>& fields, Error& error);
     Scalar FindFunction(const std::string& name, Error& error);
@@ -243,6 +249,9 @@ public:
     std::uint64_t Id() const;
     void SetUserData(void* value);
     void* GetUserData() const;
+    bool SetProfiling(bool enabled, Error& error);
+    bool ResetProfile(Error& error);
+    ProfileSnapshot ReadProfile() const;
 private:
     friend class Program;
     friend class Runtime;

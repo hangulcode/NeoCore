@@ -6,6 +6,7 @@
 #include <string>
 #include <utility>
 #include <vector>
+#include "NeoCoreProfile.h"
 
 namespace NeoScript
 {
@@ -91,4 +92,15 @@ bool ValidateImageFunctions(NeoScript::IRuntime& runtime, NeoScript::ProgramHand
 bool EnableCooperativeSleep(NeoScript::IRuntime& runtime, NeoScript::InstanceHandle instance);
 // 전역 초기화처럼 Invocation이 없는 실행에서도 이미 저장된 오류 위치를 읽는다. 오류를 소비하지 않는다.
 bool ReadLastCallError(NeoScript::IRuntime& runtime, NeoScript::InstanceHandle instance, NeoScript::Error& error);
+bool ConfigureProfile(NeoScript::IRuntime& runtime, NeoScript::InstanceHandle instance, bool enabled, bool reset);
+NeoCore::ProfileSnapshot ReadProfile(NeoScript::IRuntime& runtime, NeoScript::InstanceHandle instance);
+class ProfileHostScope {
+public:
+    ProfileHostScope(const NeoScript::CallContext& context, const std::string& name);
+    ~ProfileHostScope();
+    ProfileHostScope(const ProfileHostScope&) = delete;
+    ProfileHostScope& operator=(const ProfileHostScope&) = delete;
+private:
+    void* worker_;
+};
 }

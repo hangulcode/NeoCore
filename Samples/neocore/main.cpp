@@ -243,6 +243,7 @@ struct ConsoleSettings
     bool debug;
     bool emitAsm;
     bool stats;
+    bool profile = false;
     bool entryPrivateAccess = false;
     bool warnUnused = false;
     std::string hostSchema, hostImplementation, resourceRoot;
@@ -367,6 +368,11 @@ static int Execute(const std::string& mode, const std::string& argument,
     else program = NeoCore::Program::Compile(source, error, path, settings.debug, options);
     if (!program) { PrintError(error); return 1; }
     if (mode == "--check") { std::puts("Type check and backend compilation passed."); return 0; }
+    if (settings.profile && !program->SetProfiling(true, error)) { PrintError(error); return 1; }
+    struct ProfileOnExit {
+        NeoCore::Program* program;
+        ~ProfileOnExit() { if (program) PrintExecutionProfile(program->ReadProfile()); }
+    } profileOnExit{settings.profile ? program.get() : nullptr};
     NeoCore::Result result = program->Run();
     for (unsigned poll = 0; result.ok() && result.suspended() && poll < 30000; ++poll)
     {
@@ -456,7 +462,9 @@ static int Usage(int status = 2)
     std::puts("       neocore --pooltrim                      Memory-pool diagnostics");
     std::puts("       neocore --pooltrim-check                Untimed memory-pool checks");
     std::puts("       neocore --file|--check|--emit-backend <file.nc>");
-    std::puts("Options: --debug, --asm, --stats (before or after the command)");
+    std::puts("Options: --debug, --asm, --stats, --profile (before or after the command)");
+    std::puts("  --profile: function/host calls, self/inclusive time and self %, sorted by self time");
+    std::puts("  Add --debug for private function names and source locations; profiling adds overhead.");
     std::puts("         --sample-dir <directory> (named samples and menu; relative to working directory)");
     std::puts("         --entry-private-access (only --file/--check; private module access for the entry source)");
     std::puts("         --warn-unused (only --check; unused file constants, globals and functions)");
@@ -508,6 +516,7 @@ static int ConsoleMain(const std::vector<std::string>& arguments)
     {
         const std::string& argument = arguments[i];
         if (argument == "--debug") settings.debug = true;
+        else if (argument == "--profile") settings.profile = true;
         else if (argument == "--asm") settings.emitAsm = true;
         else if (argument == "--stats") settings.stats = true;
         else if (argument == "--entry-private-access") settings.entryPrivateAccess = true;
@@ -539,6 +548,8 @@ static int ConsoleMain(const std::vector<std::string>& arguments)
     }
     if (!settings.hostImplementation.empty() && settings.hostSchema.empty())
     { std::fprintf(stderr, "--host-impl requires --host\n"); return 2; }
+    if (settings.profile && (positional.size() != 2 || (positional[0] != "--file" && positional[0] != "--run")))
+    { std::fprintf(stderr, "--profile requires --file <file.nc> or --run <sample>\n"); return 2; }
     if (settings.entryPrivateAccess && (positional.size() != 2 ||
         (positional[0] != "--file" && positional[0] != "--check")))
     { std::fprintf(stderr, "--entry-private-access requires --file <file.nc> or --check <file.nc>\n"); return 2; }

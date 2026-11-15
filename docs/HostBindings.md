@@ -375,19 +375,18 @@ readers plus fixed callback connections. Execution does not search the object's
 member table by name. The transitional backend still uses private binding objects,
 generic VM call frames/value slots, and generated property-write helpers. It is
 not fully tagless. With debug metadata enabled, generated property-helper source
-locations map back to the original property operation, while internal helper
-frames may still appear in the call stack. Null-receiver checks, result validation, and lifetime
+locations map back to the original property operation. The runtime error snapshot
+omits hidden property-helper frames and preserves script callers across synchronous
+host reentry. Null-receiver checks, result validation, and lifetime
 resolution remain intentional runtime checks. This milestone adds no benchmark
 claim.
 
-One source-location limitation remains in the textual intermediate representation:
-when an assignment spans multiple lines, a failure while evaluating its receiver
-path can report the right-hand side's line instead of the receiver's original line.
-For example, if a registered `Target()` method fails in
-`Counter.Target().Count =` followed by `2;` on the next line, the diagnostic can
-point to that next line. This also applies to compound assignments. Generated
-getter/setter-helper failures still map to the property operation's original line;
-the receiver-path limitation does not change evaluation order or error propagation.
+The diagnostics regression now verifies that a failing registered `Target()` in
+`Counter.Target().Count =` followed by `2;` on the next line reports the receiver
+line. The compound assignment form is covered too; both already pass through the
+current typed expression path without changing evaluation order. Runtime columns
+are still unavailable. See [runtime diagnostics](RuntimeDiagnostics.md) for the
+structured snapshot and opt-in host-call profiling.
 
 The [host regression](../Tests/neocore_host_regression.cpp) exercises complete
 connections, property effects, ID resolution, and synchronous reentry;

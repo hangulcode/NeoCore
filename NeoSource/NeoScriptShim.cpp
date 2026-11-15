@@ -1320,6 +1320,19 @@ void RuntimeImpl::CaptureCallError(InstanceRec* inst, RunStatus status)
         if (location.line > 0) inst->callError.line = static_cast<uint32_t>(location.line);
         if (location.file >= 0 && static_cast<std::size_t>(location.file) < inst->sourceNames.size())
             inst->callError.sourceName = inst->sourceNames[location.file];
+        const CNeoVMWorker& worker = *static_cast<CNeoVMWorker*>(inst->worker);
+        inst->callError.stackTrace.clear();
+        inst->callError.stackTruncated = worker.IsLastErrorStackTruncated();
+        for (const auto& raw : worker.GetLastErrorStack()) {
+            NeoCore::RuntimeStackFrame frame;
+            frame.functionName = raw.functionName;
+            frame.functionId = raw.functionId;
+            frame.instruction = raw.opIndex;
+            frame.line = raw.line > 0 ? raw.line : 0;
+            if (raw.file >= 0 && static_cast<std::size_t>(raw.file) < inst->sourceNames.size())
+                frame.sourceName = inst->sourceNames[raw.file];
+            inst->callError.stackTrace.push_back(std::move(frame));
+        }
     }
 }
 
@@ -2399,5 +2412,31 @@ bool ReadLastCallError(NeoScript::IRuntime& runtime, NeoScript::InstanceHandle i
     if (record == nullptr || record->callError.ok()) return false;
     error = record->callError;
     return true;
+}
+bool ConfigureProfile(NeoScript::IRuntime& runtime, NeoScript::InstanceHandle instance, bool enabled, bool reset)
+{
+    NeoScript::RuntimeImpl& impl = static_cast<NeoScript::RuntimeImpl&>(runtime);
+    NeoScript::InstanceRec* record = impl.resolveInstance(instance);
+    return record && record->worker &&
+        static_cast<NeoScript::CNeoVMWorker*>(record->worker)->ConfigureProfile(enabled, reset);
+}
+NeoCore::ProfileSnapshot ReadProfile(NeoScript::IRuntime& runtime, NeoScript::InstanceHandle instance)
+{
+    NeoScript::RuntimeImpl& impl = static_cast<NeoScript::RuntimeImpl&>(runtime);
+    NeoScript::InstanceRec* record = impl.resolveInstance(instance);
+    return record && record->worker ? static_cast<NeoScript::CNeoVMWorker*>(record->worker)->ReadProfile()
+        : NeoCore::ProfileSnapshot();
+}
+ProfileHostScope::ProfileHostScope(const NeoScript::CallContext& context, const std::string& name) : worker_(nullptr)
+{
+    auto* binding = NeoScript::NeoScriptInternal::ctxImpl(context);
+    if (binding && binding->worker) {
+        auto* worker = static_cast<NeoScript::CNeoVMWorker*>(binding->worker);
+        if (worker->ProfileHostBegin(name)) worker_ = worker;
+    }
+}
+ProfileHostScope::~ProfileHostScope()
+{
+    if (worker_) static_cast<NeoScript::CNeoVMWorker*>(worker_)->ProfileHostEnd();
 }
 }

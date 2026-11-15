@@ -712,6 +712,7 @@ struct CallStoragePlan;
 // 창을 찾을 수 있게 한다. 프로퍼티 접근에서는 대기 중인 호출 창(있다면)을 가리킨다.
 struct SNativeFrame
 {
+	int _callOpIndex = -1;
 	int		_iSP_Vars = 0;        // 네이티브를 부른 스크립트 프레임의 base
 	int		_functionIndex = -1;  // 그 프레임의 함수 번호
 	int		_window = 0;          // 호출 창의 base

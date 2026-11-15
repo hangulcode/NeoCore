@@ -19,6 +19,12 @@
     <ClInclude Include="..\NeoSource\NeoCoreHostSchemaIO.h">
       <Filter>NeoCore</Filter>
     </ClInclude>
+    <ClInclude Include="..\NeoSource\NeoCoreProfile.h">
+      <Filter>NeoCore</Filter>
+    </ClInclude>
+    <ClInclude Include="..\NeoSource\NeoVMWorker_Profile.inl">
+      <Filter>Implementation</Filter>
+    </ClInclude>
     <ClInclude Include="..\NeoSource\NeoCoreDiagnostics.h">
       <Filter>NeoCore</Filter>
     </ClInclude>

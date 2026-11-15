@@ -11,6 +11,7 @@
 #include "UTFString.h"   // 연결 핸들러가 붙인 조각의 글자 수를 센다.
 
 #include "NeoVMProgram.h"
+#include "NeoCoreProfile.h"
 
 
 
@@ -84,6 +85,9 @@ private:
 	int					m_iLastErrorOPIndex = -1;
 	// 공통 도우미 안에서 실패하면 스택이 해제되기 전에 사용자 호출 위치도 따로 보관한다.
 	int					m_iLastErrorSourceOPIndex = -1;
+	std::vector<NeoDebugStackFrame> m_lastErrorFrames;
+	bool m_lastErrorStackTruncated = false;
+	void CaptureErrorStack();
 
 	bool					_isInitialized = false;
 	int						_iRemainSleep = 0;
@@ -280,14 +284,22 @@ private:
 	// 종류가 필요한 범용 명령만 타입 표를 읽고, 타입별 명령은 payload만 다룬다.
 	// 반환·호출 계획 선택은 함수 기록 포인터를 바로 읽어 함수 표 색인을 피한다.
 	const SFunctionTable*	m_pFunction = nullptr;
+	struct WorkerProfile;
+	std::unique_ptr<WorkerProfile> m_profile;
+	void ProfileRefresh(int base = -1);
+	void ProfileEntered(int functionIndex);
+	void ProfileRunBegin();
+	void ProfileRunEnd();
+	class ProfileRunScope;
 	const VAR_TYPE*			m_pSlotTypes = nullptr;
 	const VAR_TYPE*			m_pGlobalTypes = nullptr;
-	NEOS_FORCEINLINE void SelectFunction(int index, const SFunctionTable& fun)
+	NEOS_FORCEINLINE void SelectFunction(int index, const SFunctionTable& fun, int frameBase = -1)
 	{
 		_functionIndex = index;
 		m_pFunction = &fun;
 		// 뷰가 원소를 바로 가리키므로 읽기 전용 비트가 든 사본을 든다. SlotType_L이 비트를 벗긴다.
 		m_pSlotTypes = fun._slotTypesFlagged.data();
+		if (m_profile) ProfileRefresh(frameBase);
 	}
 	NEOS_FORCEINLINE void SelectFunction(int index) { SelectFunction(index, _pProgram->functions[index]); }
 	// 저장된 레지스터(_info)를 되살린 뒤 배치표를 함수 번호에 맞춘다.
@@ -347,7 +359,8 @@ private:
     {
         if (fun._ownedCount)
             memset(m_pVarStackData + base + 1 + fun._argsCount, 0, sizeof(VarInfo) * fun._ownedCount);
-        SelectFunction(functionIndex, fun);
+        SelectFunction(functionIndex, fun, base);
+        if (m_profile) ProfileEntered(functionIndex);
     }
     NEOS_FORCEINLINE void EnterFrame(int functionIndex, int base)
     { EnterFrame(functionIndex, _pProgram->functions[functionIndex], base); }
@@ -684,6 +697,12 @@ public:
 	bool IsGeneratedHelperOp(int opIndex) const;
 	int UserErrorOpIndex(int opIndex) const;
 	NeoDebugLocation GetLastErrorLocation() const;
+	const std::vector<NeoDebugStackFrame>& GetLastErrorStack() const { return m_lastErrorFrames; }
+	bool IsLastErrorStackTruncated() const { return m_lastErrorStackTruncated; }
+	bool ConfigureProfile(bool enabled, bool reset);
+	NeoCore::ProfileSnapshot ReadProfile() const;
+	bool ProfileHostBegin(const std::string& name);
+	void ProfileHostEnd();
 	void SetErrorUnsupport(const char* pErrMsg, ValueRef p);
 	void SetErrorFormat(const char* pErrMsg, ...);
 	// 런타임 에러 테이블(NeoVMError.h) 기반. 새 코드는 이쪽을 쓴다.

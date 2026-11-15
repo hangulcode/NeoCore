@@ -5,6 +5,20 @@
 #include <cstdio>
 #include <thread>
 
+inline void PrintExecutionProfile(const NeoCore::ProfileSnapshot& snapshot)
+{
+    std::printf("[PROFILE] active=%.6f ms complete=%s; sorted by self time\n",
+        snapshot.activeNanoseconds / 1000000.0, snapshot.complete ? "true" : "false");
+    std::puts("[PROFILE] kind\tcalls\tself_ms\tinclusive_ms\tself_%\tname\tsource:line");
+    for (const auto& entry : snapshot.entries) {
+        const double percent = snapshot.activeNanoseconds ? 100.0 * entry.selfNanoseconds / snapshot.activeNanoseconds : 0.0;
+        std::printf("[PROFILE] %s\t%llu\t%.6f\t%.6f\t%.2f\t%s\t%s:%d\n",
+            entry.kind == NeoCore::ProfileKind::Host ? "host" : "script",
+            static_cast<unsigned long long>(entry.calls), entry.selfNanoseconds / 1000000.0,
+            entry.inclusiveNanoseconds / 1000000.0, percent, entry.name.c_str(), entry.sourceName.c_str(), entry.line);
+    }
+}
+
 inline void PrintAllocationStats()
 {
     const NeoCore::AllocationStats stats = NeoCore::GetAllocationStats();
