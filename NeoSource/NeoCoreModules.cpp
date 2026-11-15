@@ -820,7 +820,8 @@ void ModuleBundle::Translate(Error& error) const
         error.message += "\nCall stack (innermost first):";
         for (const auto& frame : error.stackTrace) {
             error.message += "\n  " + frame.functionName + " at " +
-                (frame.sourceName.empty() ? "<unknown>" : frame.sourceName) + ":" + std::to_string(frame.line);
+                (frame.sourceName.empty() ? "<unknown>" : frame.sourceName) + ":" + std::to_string(frame.line) +
+                " [IP(" + std::to_string(frame.instruction) + ")]";
         }
         if (error.stackTruncated) error.message += "\n  ... middle frames omitted";
     }

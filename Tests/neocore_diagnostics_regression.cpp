@@ -7,7 +7,7 @@ int checks = 0;
 void Require(bool value, const std::string& label) {
     ++checks; if (!value) throw std::runtime_error(label);
 }
-void Test(bool image) {
+void Test(bool image, bool debug) {
     NeoCore::CompileOptions options;
     options.moduleLoader = [](const std::string&, const std::string&, NeoCore::ModuleSource& source, NeoCore::Error&) {
         source.sourceName = "leaf.nc";
@@ -16,7 +16,7 @@ void Test(bool image) {
     };
     NeoCore::Error error;
     auto program = NeoCore::Program::Compile("import leaf;\nexport int Root(){\n return leaf.Middle();\n}\n"
-        "export int Recovery(){return 1;}\n", error, "root.nc", true, options);
+        "export int Recovery(){return 1;}\n", error, "root.nc", debug, options);
     Require(program != nullptr, "compile: " + error.message);
     if (image) {
         std::vector<std::uint8_t> bytes;
@@ -26,14 +26,22 @@ void Test(bool image) {
     }
     auto failure = program->Call("Root");
     Require(!failure.ok(), "division fails");
-    Require(failure.error.sourceName=="leaf.nc" && failure.error.line==3, "root cause: " + failure.error.message);
+    if (debug) Require(failure.error.sourceName=="leaf.nc" && failure.error.line==3, "root cause: " + failure.error.message);
     const auto& stack = failure.error.stackTrace;
     Require(stack.size()==3, "three user frames: " + failure.error.message);
-    Require(stack[0].functionName.find("Leaf")!=std::string::npos && stack[0].sourceName=="leaf.nc" && stack[0].line==3, "leaf location");
-    Require(stack[1].functionName.find("Middle")!=std::string::npos && stack[1].line==6, "middle call site");
-    Require(stack[2].functionName=="Root" && stack[2].sourceName=="root.nc" && stack[2].line==3, "root call site");
+    for (const auto& frame : stack) {
+        const std::string location = (frame.sourceName.empty() ? "<unknown>" : frame.sourceName) + ":" + std::to_string(frame.line);
+        Require(frame.instruction >= 0 && failure.error.message.find(frame.functionName + " at " + location +
+            " [IP(" + std::to_string(frame.instruction) + ")]") != std::string::npos, "every frame prints its instruction");
+        if (!debug) Require(frame.line==0, "non-debug instruction survives without a source line");
+    }
+    if (debug) {
+        Require(stack[0].functionName.find("Leaf")!=std::string::npos && stack[0].sourceName=="leaf.nc" && stack[0].line==3, "leaf location");
+        Require(stack[1].functionName.find("Middle")!=std::string::npos && stack[1].line==6, "middle call site");
+        Require(stack[2].functionName=="Root" && stack[2].sourceName=="root.nc" && stack[2].line==3, "root call site");
+    }
     Require(program->Call("Recovery").ok(), "recovery");
-    Require(failure.error.stackTrace[0].line==3, "snapshot owns its values");
+    Require(failure.error.stackTrace[0].line==(debug ? 3 : 0), "snapshot owns its values");
 }
 void Host() {
     NeoCore::HostSchema schema;
@@ -84,5 +92,5 @@ void Retention() {
     Require(!result.ok() && result.error.line==3 && !result.error.stackTruncated && result.error.stackTrace.size()==2,"resume failure owns fresh stack");
 }
 }
-int main() { try { Test(false);Test(true);Host();Retention();std::printf("diagnostics regression: %d checks passed\n",checks);return 0; }
+int main() { try { for(bool debug:{false,true})for(bool image:{false,true})Test(image,debug);Host();Retention();std::printf("diagnostics regression: %d checks passed\n",checks);return 0; }
 catch(const std::exception& e){std::fprintf(stderr,"FAIL: %s\n",e.what());return 1;} }

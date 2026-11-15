@@ -18,7 +18,8 @@ contains the function name, source name, line, column, function ID and instructi
 index. Script frames across synchronous host reentry are preserved. Generated
 property helper frames with hidden debug locations are omitted. Module names and
 lines are translated back to their source files, including after image reload.
-The formatted `error.message` also includes these frames.
+The formatted `error.message` also includes these frames and prints `[IP(index)]`
+for every frame, even when debug metadata is absent.
 The C++ `Error` layout has changed; rebuild embedding applications with the updated
 headers and library together. The C ABI's existing error-message accessor is unchanged.
 
@@ -59,8 +60,11 @@ Each entry records:
   failed calls. Resuming a suspended function does not increment it.
 - `selfNanoseconds`: active elapsed time excluding child script/registered host
   calls. Built-in API work remains in the calling script's time.
-- `inclusiveNanoseconds`: active elapsed time including child calls. Recursive
-  entries contribute for each active invocation, so inclusive totals may overlap.
+- `inclusiveNanoseconds`: active elapsed time including child calls. Overlapping
+  recursive invocations of the same entry count once, including mutual recursion
+  and host reentry. Every invocation still increments `calls`. Each entry's
+  inclusive time is at most `activeNanoseconds`; inclusive times of different
+  entries overlap and must not be summed as total elapsed time.
 - Host methods/properties use `Type.Member`, `Type.Property [get]` or `[set]`.
   Their self time includes binding conversion, resolution and callback work;
   same-instance script reentry is counted as a child, not host self time.
@@ -73,10 +77,16 @@ Snapshots sort by self time descending, then calls descending and name. Self sha
 is `100 * selfNanoseconds / activeNanoseconds` (zero for an empty snapshot).
 
 The collector instruments frame/context transitions and host boundaries, not every
-opcode. It uses a monotonic wall clock, so OS scheduling delays during active calls
+opcode. Ordinary calls/returns update only the changed profiling frames and use a
+function-ID-indexed entry table. Full stack reconstruction is reserved for execution
+start/resume and coroutine switches. Self time accrues only to the active top frame;
+inclusive intervals close when an entry's active recursion depth reaches zero.
+Run slices close accounting intervals without counting resumed frames as new calls.
+It uses a monotonic wall clock, so OS scheduling delays during active calls
 are included. Collection overhead is included too: these numbers locate expensive
-calls and are **not** an uninstrumented benchmark. An allocation failure while
-closing a host profiling scope disables collection and marks `complete=false`.
+calls and are **not** an uninstrumented benchmark. Closing a host profiling scope
+does not allocate; an inconsistent profiling stack disables collection and marks
+`complete=false`.
 
 CLI example:
 

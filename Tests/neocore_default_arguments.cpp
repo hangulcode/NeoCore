@@ -131,6 +131,21 @@ int main()
             "void F(int x=1/0){}", "void F(int x){} F();", "void F(int x=1){} F(1,2);",
             "int F(int x=1){return x;} fn(int)->int f=F; int x=f();",
             "fn(int)->int f=fn(int x=1)->int{return x;};", "void F(out int x=1){}"}) Reject(source);
+        for (const char* source : {"void F(string text=\"a\"..\"b\"){}", "void F(bool flag=!false){}"})
+        {
+            Error error;
+            Check(!Program::Compile(source, error), "unsupported default expression");
+            Check(error.message.find("default arguments") != std::string::npos &&
+                error.message.find("const initializers") == std::string::npos, "default-specific diagnostic: " + error.message);
+        }
+        StaticCompileResult diagnostics;
+        Check(!CompileStaticSource("void F(bool flag=!false){}\nconst bool BAD=!false;", diagnostics), "recover after invalid default");
+        bool defaultError=false, constantError=false;
+        for (const auto& item : diagnostics.diagnostics) {
+            if (item.line==1 && item.message.find("default arguments")!=std::string::npos) defaultError=true;
+            if (item.line==2 && item.message.find("const initializers")!=std::string::npos) constantError=true;
+        }
+        Check(defaultError && constantError, "diagnostic recovery restores constant context");
         std::vector<StaticDeclaration> declarations;
         StaticCompileResult implicit, explicitCall;
         Check(CompileStaticSource("int F(int x=3){return x;} F();", implicit), "implicit default IR");

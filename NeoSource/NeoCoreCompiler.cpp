@@ -1310,14 +1310,17 @@ public:
 
     ConstantValue CheckDefault(Expr& value, TypeId type)
     {
-        const bool saved = checkingConstant_;
-        checkingConstant_ = true;
+        // 진단 회복으로 다음 선언을 검사할 때 기본 인자 문맥이 남지 않게 예외 경로에서도 복원한다.
+        struct FlagScope {
+            bool& flag; bool saved;
+            explicit FlagScope(bool& value) : flag(value), saved(value) { flag = true; }
+            ~FlagScope() { flag = saved; }
+        } constant(checkingConstant_), argument(checkingDefaultArgument_);
         Contextualize(value, type);
         CheckExpr(value);
         CheckDefaultInputs(value);
         Convert(value, type);
         ResolveConstant(value);
-        checkingConstant_ = saved;
         return *value.evaluatedConstant;
     }
 
@@ -1528,6 +1531,8 @@ private:
     // break 는 switch 도 탈출하지만 continue 는 바깥 반복문에만 해당한다.
     int switchDepth_ = 0;
     bool checkingConstant_ = false;
+    bool checkingDefaultArgument_ = false;
+    const char* ConstantContext() const { return checkingDefaultArgument_ ? "default arguments" : "const initializers"; }
     const std::string internalPrefix_ = InternalSymbolPrefix();
     std::set<TypeId> resizeHelpers_, concatHelpers_, unionHelpers_, intersectionHelpers_, differenceHelpers_;
     std::set<TypeId> structListClones_, structMapClones_, structMapValues_, structListResizes_, structListConcats_;
@@ -2744,7 +2749,7 @@ private:
         {
             Expr& value = *expression.children[0];
             CheckExpr(value, expression.op == "-" && value.kind == ExprKind::Literal && value.begin == value.token.begin);
-            if (checkingConstant_ && expression.op == "!") Fail(expression.token, "logical operators in const initializers are not supported by this compiler stage");
+            if (checkingConstant_ && expression.op == "!") Fail(expression.token, std::string("logical operators in ") + ConstantContext() + " are not supported by this compiler stage");
             if (expression.op == "!") { Require(value, types_.Bool(), "logical negation"); expression.type = types_.Bool(); }
             else if (expression.op == "~") { Require(value, types_.Int(), "bitwise negation"); expression.type = types_.Int(); }
             else
@@ -2801,7 +2806,7 @@ private:
                 expression.callName = Intrinsic("v" + std::to_string(VectorSize(expression.type)) + operation, expression.token.line);
             }
             if (checkingConstant_ && (expression.type == types_.Bool() || expression.type == types_.String()))
-                Fail(expression.token, "comparison, logical and concatenation operators in const initializers are not supported by this compiler stage");
+                Fail(expression.token, std::string("comparison, logical and concatenation operators in ") + ConstantContext() + " are not supported by this compiler stage");
             expression.constant = expression.children[0]->constant && expression.children[1]->constant;
             return;
         case ExprKind::Assignment:
