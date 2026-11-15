@@ -1,4 +1,4 @@
-#include "NeoCore.h"
+﻿#include "NeoCore.h"
 #include "NeoCoreHost.h"
 #include "NeoCoreHostSchemaIO.h"
 #include "NeoCoreCompiler.h"
@@ -105,6 +105,23 @@ int main()
             Run("float F(float n=0.12345678901234567){return n;} export int Probe(){return F()==0.12345678901234567?1:0;}", 1, debug);
             Run("int n=0; int Next(){n+=1;return n;} int F(int a,int b=7){return a*10+b;} export int Probe(){return F(Next())+F(Next());}", 44, debug);
             Run("import system; export int Probe(){if(\"A\".regex_match(\"a\"))return 0; if(!\"A\".regex_match(\"a\",true))return 0; if(system.jsonEncode(3)!=\"3\")return 0;return 1;}", 1, debug);
+            Run(u8"export int Probe(){string s=\"가나다\";"
+                u8"if(s.sub(1)!=\"나다\"||s.sub(1,1)!=\"나\"||s.sub(1)!=s.sub(1,2147483647))return 0;"
+                "if(s.sub(3)!=\"\"||s.sub(999)!=\"\"||\"\".sub(0)!=\"\"||s.sub(-2)!=s||s.sub(0,0)!=\"\")return 0;"
+                "if(s.codepoint()!=44032||s.codepoint()!=s.codepoint(0)||s.codepoint(1)!=45208||\"A\".codepoint()!=65)return 0;return 1;}", 1, debug);
+            Run("import system; export int Probe(){int day=system.utc_time_ms(2026,11,15);"
+                "if(day!=system.utc_time_ms(2026,11,15,0,0,0,0)||system.utc_format_ms(day)!=\"2026-11-15T00:00:00.000Z\")return 0;"
+                "if(system.utc_time_ms(2026,11,15,12)-day!=43200000)return 0;"
+                "if(system.utc_time_ms(2026,11,15,12,30)-day!=45000000)return 0;"
+                "if(system.utc_time_ms(2026,11,15,12,30,5)-day!=45005000)return 0;"
+                "if(system.utc_time_ms(2026,11,15,12,30,5,123)-day!=45005123)return 0;return 1;}", 1, debug);
+            Run("import system; export int Probe(){"
+                "if(system.time_span(0).total_milliseconds()!=0||system.time_span(1).total_milliseconds()!=86400000)return 0;"
+                "if(system.time_span(1,2).compare(system.time_span(1,2,0,0,0))!=0)return 0;"
+                "if(system.time_span(1,2,3).total_milliseconds()!=93780000)return 0;"
+                "if(system.time_span(1,2,3,4).total_milliseconds()!=93784000)return 0;"
+                "if(system.time_span(1,2,3,4,5).total_milliseconds()!=93784005)return 0;"
+                "if(system.time_span(-1).total_milliseconds()!=-86400000)return 0;return 1;}", 1, debug);
             Host(debug);
             if (debug)
             {
@@ -130,7 +147,11 @@ int main()
             "int G(){return 1;} void F(int x=G()){}", "void F(list<int> x=[]){}",
             "void F(int x=1/0){}", "void F(int x){} F();", "void F(int x=1){} F(1,2);",
             "int F(int x=1){return x;} fn(int)->int f=F; int x=f();",
-            "fn(int)->int f=fn(int x=1)->int{return x;};", "void F(out int x=1){}"}) Reject(source);
+            "fn(int)->int f=fn(int x=1)->int{return x;};", "void F(out int x=1){}",
+            "\"abc\".sub();", "\"abc\".sub(0,1,2);", "\"abc\".sub(0,true);", "\"abc\".codepoint(0,1);", "\"abc\".codepoint(0.5);",
+            "import system;system.utc_time_ms(2026,11);", "import system;system.utc_time_ms(2026,11,15,1.5);",
+            "import system;system.utc_time_ms(2026,11,15,0,0,0,0,0);", "import system;system.time_span();",
+            "import system;system.time_span(1,false);", "import system;system.time_span(1,0,0,0,0,0);"}) Reject(source);
         for (const char* source : {"void F(string text=\"a\"..\"b\"){}", "void F(bool flag=!false){}"})
         {
             Error error;

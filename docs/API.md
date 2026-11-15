@@ -15,7 +15,9 @@ Signatures can declare trailing constant defaults, such as `bool ignoreCase = fa
 The compiler supplies those arguments before emitting the call; native bodies receive
 the full argument list and do not implement default selection. `regex_match`,
 `regex_search`, `regex_replace`, `system.jsonEncode` and `system.jsonEncodeOrNull`
-declare their false defaults this way. Existing `?` parameters with omission-specific
+declare their false defaults this way. `string.sub`, `string.codepoint`,
+`system.utc_time_ms` and `system.time_span` also declare the constant defaults listed
+below. Existing `?` parameters with omission-specific
 behavior remain separate. Host APIs use `HostSchema::SetMethodDefaults`; see
 [HostBindings.md](HostBindings.md#default-arguments).
 
@@ -36,9 +38,22 @@ null literals are not accepted. String variables that contain null retain the
 existing `"null"` spelling. No implicit string conversion applies to assignments
 or function arguments.
 
-Strings support `len`, `sub(start, length)`, `codepoint(index)`, `find(text)`,
+Strings support `len`, `sub(start, count = 2147483647)`, `codepoint(index = 0)`, `find(text)`,
 `upper`, `lower`, `trim`, `ltrim`, `rtrim`, `replace`, `replaceAll` and `split`.
 `split(separator)` requires a nonempty separator and returns `list<string>`.
+
+`sub(start)` returns the substring from `start` to the end. The compiler supplies
+`2147483647`, the current maximum supported string length, as `count`; the existing
+slice stops at the actual end of the string. Positions and counts use Unicode code
+points, not UTF-8 bytes. `start` is required. `codepoint()` is equivalent to
+`codepoint(0)` and returns the first Unicode code point as an `int`.
+
+```cpp
+string suffix = "abcdef".sub(2); // "cdef"
+string part = "abcdef".sub(2, 2); // "cd"
+int first = "ABC".codepoint(); // 65
+int second = "ABC".codepoint(1); // 66
+```
 
 Regular expressions use `regex_match(pattern, ignoreCase?)`,
 `regex_search(pattern, ignoreCase?)` and
@@ -191,13 +206,26 @@ After `import system;`:
 | `time()` / `time_ms()` | Unix seconds / milliseconds as int64 |
 | `utc_date(format, seconds)` | UTC formatted string |
 | `date(format, seconds)` | Device-local formatted string, including DST at that timestamp |
-| `utc_time_ms(year, month, day, hour, minute, second, millisecond)` | UTC Unix milliseconds |
+| `utc_time_ms(year, month, day, hour = 0, minute = 0, second = 0, millisecond = 0)` | UTC Unix milliseconds |
 | `utc_parts(milliseconds)` | `map<string,int>` components |
 | `utc_format_ms(milliseconds)` / `utc_parse_ms(text)` | UTC text round trip |
-| `time_span(days, hours, minutes, seconds, milliseconds)` | `TimeSpan` |
+| `time_span(days, hours = 0, minutes = 0, seconds = 0, milliseconds = 0)` | `TimeSpan` |
 | `time_span_ms(value)` / `time_span_seconds(value)` | `TimeSpan` |
 | `stopwatch()` | `Stopwatch` |
 | `clock()` | Existing clock value as float |
+
+`utc_time_ms` requires `year`, `month` and `day`; omitted time components are zero,
+so a date-only call denotes midnight UTC. `time_span` requires `days`; omitted
+smaller components are zero. Only trailing arguments can be omitted, and the
+compiler supplies the complete argument list before execution.
+
+```cpp
+import system;
+int midnight = system.utc_time_ms(2026, 11, 15); // 2026-11-15T00:00:00.000Z
+int afternoon = system.utc_time_ms(2026, 11, 15, 12, 30); // seconds and milliseconds are zero
+TimeSpan duration = system.time_span(1, 2); // 1 day and 2 hours
+TimeSpan zero = system.time_span(0); // zero duration
+```
 
 `TimeSpan` exposes `total_milliseconds`, `total_seconds`, `parts`, `format`, `add`,
 `subtract` and `compare`. `Stopwatch` exposes `elapsed`, `elapsed_ms`, `elapsed_us`,
