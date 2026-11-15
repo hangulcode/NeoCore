@@ -200,6 +200,29 @@ namespace NeoCore.Unity
             Register(new HostPair { First = callback }, p => Native.NcSchemaMethod(Handle, ownerId, bytes,
                 checked((uint)bytes.Length), resultId, ids, checked((uint)ids.Length), first, p, release) != 0);
         }
+        /// <summary>등록된 메서드의 마지막 N개 입력 인자에 NeoCore 상수 기본값을 설정한다.
+        /// 생략된 인자는 컴파일러가 채우므로 콜백은 항상 전체 인자를 받는다.</summary>
+        public void MethodDefaults(ScriptType owner, string name, params string[] expressions)
+        {
+            if (expressions == null) throw new ArgumentNullException(nameof(expressions));
+            byte[] bytes = Encoding.UTF8.GetBytes(name ?? throw new ArgumentNullException(nameof(name)));
+            uint ownerId = TypeId(owner);
+            var pointers = new IntPtr[expressions.Length];
+            var lengths = new uint[expressions.Length];
+            try
+            {
+                for (int i = 0; i < expressions.Length; ++i)
+                {
+                    byte[] text = Encoding.UTF8.GetBytes(expressions[i] ?? throw new ArgumentNullException(nameof(expressions)));
+                    lengths[i] = checked((uint)text.Length);
+                    pointers[i] = Marshal.AllocHGlobal(Math.Max(1, text.Length));
+                    Marshal.Copy(text, 0, pointers[i], text.Length);
+                }
+                if (Native.NcSchemaMethodDefaults(Handle, ownerId, bytes, checked((uint)bytes.Length), pointers,
+                    lengths, checked((uint)expressions.Length)) == 0) throw Error();
+            }
+            finally { foreach (IntPtr pointer in pointers) if (pointer != IntPtr.Zero) Marshal.FreeHGlobal(pointer); }
+        }
         public void Event(ScriptType owner, string eventName, ScriptType callbackType, Action<HostCall> callback,
             string registrationMethod = "AddEvent")
         {

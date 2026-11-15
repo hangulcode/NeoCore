@@ -69,6 +69,8 @@ struct ApiParameter
     std::string name;
     ApiParameterMode mode = ApiParameterMode::In;
     bool optional = false;
+    // 컴파일러가 평가하여 생략된 호출 인자를 채우는 상수 식이다.
+    std::string defaultExpression;
 };
 
 // 표의 한 줄. 색인이 곧 내장 본체의 번호이고, key 는 이미지에 남는 연결 이름이다.

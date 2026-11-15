@@ -7,6 +7,14 @@ NeoCore frontend; the former NeoScript plugin is a separate product.
 
 ## Surface and setup
 
+After registering a host method, use
+`options.MethodDefaults(owner, "Play", "1.0", "false")` to set constant defaults
+for its trailing input parameters. Values are NeoCore expressions (a string default
+needs source quotes). They are checked at registration and inserted by the compiler;
+the managed callback always receives the full signature. See
+[default arguments](HostBindings.md#default-arguments). Rebuild the native plugin
+when using this new registration API.
+
 The package exposes Program, Instance, Result, Scalar, CompileOptions, typed host
 schemas and owning value handles. C consumers use
 [NeoCoreC.h](../Unity/NeoCore/NeoCoreC.h), whose `Nc*` entry points use opaque

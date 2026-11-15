@@ -21,6 +21,14 @@ export int ReadCount() { return count; }
 ```
 
 `int` is signed 64-bit; `float` is binary64. Vector components use float32.
+Named functions may provide trailing constant defaults, for example
+`int Add(int a, int b = 1) { return a + b; }`. `Add(4)` compiles as `Add(4, 1)`.
+Defaults may use earlier constants, scalar literals, nullable `null`, and constant
+vector/Quaternion constructors. They cannot read variables or other parameters,
+call ordinary functions, or create collections/structs. Defaults belong to the
+declaration: a function value assigned from `Add` still requires both arguments.
+Required parameters cannot follow defaults, and explicitly passing null does not
+select a default. Registered API defaults follow the same compile-time rule.
 `var`, `fun`, pointers, `T&`, and user-declared `int32`/`float32` scalars are not
 part of NeoCore. Functions always declare their result type, including `void`.
 Variables must be declared before use; functions can call later functions and

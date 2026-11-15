@@ -976,7 +976,7 @@ static void GetLspCompletionContext(const std::string& linePrefix, std::string& 
 
 	size_t moduleEnd = end - 1;
 	size_t moduleBegin = moduleEnd;
-	while (moduleBegin > 0 && IsNeoIdentifierChar(linePrefix[moduleBegin - 1]))
+	while (moduleBegin > 0 && (IsNeoIdentifierChar(linePrefix[moduleBegin - 1]) || linePrefix[moduleBegin - 1] == '.'))
 		--moduleBegin;
 	module = linePrefix.substr(moduleBegin, moduleEnd - moduleBegin);
 }
@@ -1055,7 +1055,7 @@ static const BuiltinInfo* FindLspSignature(const std::vector<BuiltinInfo>& built
 	{
 		size_t moduleEnd = nameBegin - 1;
 		size_t moduleBegin = moduleEnd;
-		while (moduleBegin > 0 && IsNeoIdentifierChar(linePrefix[moduleBegin - 1]))
+		while (moduleBegin > 0 && (IsNeoIdentifierChar(linePrefix[moduleBegin - 1]) || linePrefix[moduleBegin - 1] == '.'))
 			--moduleBegin;
 		module = linePrefix.substr(moduleBegin, moduleEnd - moduleBegin);
 	}
@@ -1235,6 +1235,32 @@ public:
             NeoCore::HostSchemaDocument document; std::string error;
             if (!NeoCore::HostSchemaDocument::LoadFile(FullPathOrSelf(schemaPath),document,error)) throw std::runtime_error(error);
             defines=document.defines;
+            // 전역 수신자와 읽기 전용 서비스 경로의 서명도 같은 스키마 기본값을 표시한다.
+            std::function<void(const std::string&, NeoCore::TypeId, std::set<NeoCore::TypeId>)> addHost;
+            addHost = [&](const std::string& path, NeoCore::TypeId owner, std::set<NeoCore::TypeId> seen) {
+                if (!seen.insert(owner).second) return;
+                const auto& types = document.schema.Types();
+                for (const NeoCore::HostBinding& method : document.schema.Bindings())
+                {
+                    if (method.ownerType != owner) continue;
+                    if (method.kind == NeoCore::HostBindingKind::Getter && types.Get(method.returnType).kind == NeoCore::TypeKind::Native)
+                        addHost(path + "." + method.name, method.returnType, seen);
+                    if (method.kind != NeoCore::HostBindingKind::Method) continue;
+                    BuiltinInfo info; info.module = path; info.name = method.name;
+                    info.ret = types.DiagnosticName(method.returnType); info.argCount = static_cast<int>(method.parameters.size());
+                    for (std::size_t i = 0; i < method.parameters.size(); ++i)
+                    {
+                        std::string parameter = i < method.parameterModes.size() && method.parameterModes[i] == NeoCore::ApiParameterMode::Out ? "out " : "";
+                        parameter += types.DiagnosticName(method.parameters[i]) + " "
+                            + (i < method.parameterNames.size() && !method.parameterNames[i].empty() ? method.parameterNames[i] : "arg" + std::to_string(i + 1));
+                        const std::size_t first = method.parameters.size() - method.parameterDefaults.size();
+                        if (i >= first) parameter += " = " + method.parameterDefaults[i - first];
+                        info.params.push_back(parameter);
+                    }
+                    builtins.push_back(info);
+                }
+            };
+            for (const NeoCore::HostGlobal& global : document.schema.Globals()) addHost(global.name, global.type, {});
             host.reset(new ConsoleHost(document,implementation.empty()?"":FullPathOrSelf(implementation),resourceRoot));
         }
     }

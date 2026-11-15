@@ -243,12 +243,12 @@ not create script helper frames or invoke native library constructors. Three/fou
 input operations use a validated contiguous temporary-slot range. Each instruction
 still occupies eight bytes; there are no extension slots or hidden resume states.
 
-`const` initializers, `case` labels and struct field defaults share one frontend
+`const` initializers, `case` labels, struct field defaults and argument defaults share one frontend
 constant evaluator over the checked expression tree. Constants are evaluated once
 at declaration, including integer-to-float widening, and subsequent references use
 that stored value. Lowering emits the evaluated literal rather than asking the
 backend to recalculate the expression. Integer wraparound, division errors, shift
-bounds, decoded strings and signed zero follow the same rules in all three uses.
+bounds, decoded strings and signed zero follow the same rules in these contexts.
 Only a resolved vector/Quaternion constructor can be evaluated as a call; an
 ordinary function returning a vector is not a constant constructor. Host/builtin calls,
 lists/maps, whole-struct helpers and host property
@@ -388,6 +388,37 @@ a later function or itself, including mutual recursion. Variables must still be
 declared before use; this also applies to a function's access to file variables.
 There is no function overloading in the initial language. Function prototypes are
 not a substitute for a body.
+
+Named functions may declare trailing default arguments:
+
+```cpp
+const int DEFAULT_COUNT = 3;
+int Add(int a, int b = DEFAULT_COUNT) { return a + b; }
+void Move(Vector3 offset = Vector3(0, 0, 0), bool local = false) { }
+int answer = Add(4); // compiled as Add(4, 3)
+```
+
+Defaults are checked at the declaration, using the same constant evaluator as
+`const` and field defaults. Earlier constants, scalar literals, nullable `null`,
+and Vector2/3/4 or Quaternion constant constructors are supported. Variables,
+parameter references, ordinary function calls, struct/collection construction,
+and non-finite constants are rejected. Existing nullability and numeric widening
+rules apply. Required parameters cannot follow defaults; named arguments and
+skipping a middle argument are not supported.
+
+The compiler fills omitted arguments at each resolved named call, including calls
+to later declarations, recursive calls and imported functions. Supplied arguments
+keep their evaluation order. The function body receives its full declared arity;
+there is no runtime default selection or new opcode. Defaults are not part of a
+function-value type: indirect calls, coroutine entry invocation and host-to-script
+calls still require every argument. Lambdas/function types cannot declare defaults.
+
+Registered API defaults use the same compile-time insertion rule. Built-in
+signatures spell them as `bool ignoreCase = false`; host methods use
+`HostSchema::SetMethodDefaults`. `out` parameters cannot have defaults. Legacy
+`?` API parameters whose omission has distinct behavior, such as append-at-end,
+retain that behavior instead of receiving an invented constant. Changing a default
+requires recompiling callers. Host image contracts include registered defaults.
 
 Top-level calls also require every file variable accessed by the called function
 to have completed initialization at the call site. The compiler follows transitive
@@ -612,8 +643,8 @@ The separate script-to-host direction uses `HostSchema` and `HostBindings` from
 `NeoCoreHost.h`. `Program::Compile(source, bindings, error, ...)` copies the binding
 configuration, checks the source against its schema, and links each member to a
 fixed callback. It supports `int`, `float`, `bool`, `string`, declared native object
-types, vectors/quaternions, and `void` results. Host structs,
-collections, overloads, and default arguments are deferred.
+types, vectors/quaternions, structs, collections and `void` results. Registered
+trailing defaults are supplied by the compiler; overloads remain unsupported.
 See [the host binding contract](HostBindings.md) for setup, object ownership,
 callback failures, and reentry rules.
 
@@ -1134,8 +1165,8 @@ Structs have nominal identity and value assignment. Classes, inheritance,
 user-defined generics and function overloading remain deferred. Built-in collection
 parameters do not imply arbitrary user generics. Registered host schemas support
 structs, collections and complete function signatures; retained function values use
-the same instance/lifetime rules as script calls. Overload/default-argument metadata
-and schema-independent image linking are not implemented. Current images require
+the same instance/lifetime rules as script calls. Trailing default-argument metadata
+is supported; overloads and schema-independent image linking are not implemented. Current images require
 matching schema registration order. Native object validation, callback reentry,
 suspension and error unwinding remain runtime responsibilities.
 

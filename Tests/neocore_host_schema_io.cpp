@@ -21,7 +21,8 @@ NeoCore::HostSchemaDocument Fixture()
     schema.AddProperty(services,"UserData",data,true,false); schema.AddProperty(services,"Resource",resource,true,false);
     schema.AddMethod(services,"Log",types.Void(),{types.String()});
     schema.AddMethod(data,"SetInt",types.Void(),{types.String(),types.Int()});
-    schema.AddMethod(data,"GetInt",types.Int(),{types.String(),types.Int()});
+    const HostBindingId getInt=schema.AddMethod(data,"GetInt",types.Int(),{types.String(),types.Int()});
+    Check(schema.SetMethodDefaults(getInt,{"7"}),"register host default");
     schema.AddMethod(resource,"LoadText",types.String(),{types.String()});
     schema.AddProperty(node,"Id",types.Int(),true,false); schema.AddProperty(node,"Position",types.Vector3());
     schema.AddProperty(node,"Name",types.String());

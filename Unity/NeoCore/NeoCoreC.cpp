@@ -879,6 +879,26 @@ uint32_t NcSchemaMethodOut(NcOptions* options, uint32_t owner, const char* name,
     catch (const std::exception& error) { if (options) options->error = error.what(); return 0; }
     catch (...) { return 0; }
 }
+int32_t NcSchemaMethodDefaults(NcOptions* options, uint32_t owner, const char* name, uint32_t length,
+    const char* const* expressions, const uint32_t* lengths, uint32_t count)
+{
+    try
+    {
+        if (!options) return 0;
+        if (count && (!expressions || !lengths)) { options->error = "missing default expressions"; return 0; }
+        const NeoCore::HostBinding* method = options->state.schema.FindMethod(owner, ReadText(name, length));
+        if (!method) { options->error = "unknown method for default arguments"; return 0; }
+        std::vector<std::string> defaults;
+        for (uint32_t i = 0; i < count; ++i) defaults.push_back(ReadText(expressions[i], lengths[i]));
+        if (!options->state.schema.SetMethodDefaults(method->id, defaults))
+        { options->error = options->state.schema.LastError(); return 0; }
+        options->error.clear();
+        return 1;
+    }
+    catch (const std::exception& error) { if (options) options->error = error.what(); return 0; }
+    catch (...) { return 0; }
+}
+
 uint32_t NcSchemaEvent(NcOptions* options, uint32_t owner, const char* eventName, uint32_t eventLength,
     uint32_t callbackType, const char* registrationMethod, uint32_t methodLength,
     NcHostCallback callback, void* userData, NcRelease release)

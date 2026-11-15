@@ -105,6 +105,7 @@ namespace NeoCore.Unity
         [DllImport(Library, CallingConvention = Convention)] internal static extern uint NcSchemaObject(IntPtr options, byte[] name, uint length);
         [DllImport(Library, CallingConvention = Convention)] internal static extern uint NcSchemaMethod(IntPtr options, uint owner, byte[] name, uint length, uint resultType, uint[] parameters, uint count, HostCallback callback, IntPtr userData, ReleaseCallback release);
         [DllImport(Library, CallingConvention = Convention)] internal static extern uint NcSchemaMethodOut(IntPtr options, uint owner, byte[] name, uint length, uint resultType, uint[] parameters, byte[] modes, uint count, HostCallback callback, IntPtr userData, ReleaseCallback release);
+        [DllImport(Library, CallingConvention = Convention)] internal static extern int NcSchemaMethodDefaults(IntPtr options, uint owner, byte[] name, uint length, IntPtr[] expressions, uint[] lengths, uint count);
         [DllImport(Library, CallingConvention = Convention)] internal static extern uint NcSchemaEvent(IntPtr options, uint owner, byte[] eventName, uint eventLength, uint callbackType, byte[] registrationMethod, uint methodLength, HostCallback callback, IntPtr userData, ReleaseCallback release);
         [DllImport(Library, CallingConvention = Convention)] internal static extern ulong NcInstanceId(IntPtr instance);
         [DllImport(Library, CallingConvention = Convention)] internal static extern ulong NcHostCallerInstanceId(IntPtr call);

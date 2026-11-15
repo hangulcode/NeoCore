@@ -141,6 +141,32 @@ struct Registry
             return node;
         }
 
+        std::string DefaultExpression()
+        {
+            Space();
+            const std::size_t begin = at;
+            int depth = 0;
+            char quote = 0;
+            while (text[at])
+            {
+                const char c = text[at];
+                if (quote)
+                {
+                    if (c == '\\' && text[at + 1]) { at += 2; continue; }
+                    if (c == quote) quote = 0;
+                }
+                else if (c == '"' || c == '\'') quote = c;
+                else if (c == '(') ++depth;
+                else if (c == ')') { if (!depth) break; --depth; }
+                else if (c == ',' && !depth) break;
+                ++at;
+            }
+            assert(at > begin && !depth && !quote);
+            std::size_t end = at;
+            while (end > begin && text[end - 1] == ' ') --end;
+            return std::string(text + begin, end - begin);
+        }
+
         void Declaration(ApiDeclaration& declaration)
         {
             declaration.result = Add(Type());
@@ -176,7 +202,12 @@ struct Registry
                     parameter.type = Add(Type());
                     parameter.name = Identifier();
                     assert(!parameter.name.empty());
-                    if (Take('?')) { parameter.optional = true; optional = true; }
+                    if (Take('='))
+                    {
+                        parameter.defaultExpression = DefaultExpression();
+                        parameter.optional = true; optional = true;
+                    }
+                    else if (Take('?')) { parameter.optional = true; optional = true; }
                     else
                     {
                         // 생략 가능한 매개변수는 뒤쪽에만 올 수 있다.
@@ -353,7 +384,8 @@ std::string FormatApiParameter(const ApiParameter& parameter)
 {
     std::string text = parameter.mode == ApiParameterMode::Out ? "out " : "";
     text += FormatApiType(parameter.type) + " " + parameter.name;
-    if (parameter.optional) text += " (optional)";
+    if (!parameter.defaultExpression.empty()) text += " = " + parameter.defaultExpression;
+    else if (parameter.optional) text += " (optional)";
     return text;
 }
 

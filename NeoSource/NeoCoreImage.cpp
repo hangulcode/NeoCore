@@ -331,6 +331,19 @@ std::vector<std::uint8_t> SchemaDescription(const HostSchema* schema)
             if (mask != 0) { writer.U32(binding.id); writer.U32(mask); }
         }
     }
+    std::size_t defaults = 0;
+    for (const HostBinding& binding : schema->Bindings())
+        if (!binding.parameterDefaults.empty()) ++defaults;
+    if (defaults)
+    {
+        writer.Text("host-defaults"); writer.Count(defaults);
+        for (const HostBinding& binding : schema->Bindings())
+        {
+            if (binding.parameterDefaults.empty()) continue;
+            writer.U32(binding.id); writer.Count(binding.parameterDefaults.size());
+            for (const std::string& value : binding.parameterDefaults) writer.Text(value);
+        }
+    }
     return writer.bytes;
 }
 

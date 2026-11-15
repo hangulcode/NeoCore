@@ -549,7 +549,7 @@ struct ConstantValue
     }
 };
 static const std::uint32_t NoApi = static_cast<std::uint32_t>(-1);
-enum class ExprKind { Literal, Name, Unary, Binary, Assignment, Call, Member, Index, List, Map, Lambda, Conditional };
+enum class ExprKind { Literal, Name, Unary, Binary, Assignment, Call, Member, Index, List, Map, Lambda, Conditional, DefaultArgument };
 // 드물게 쓰는 식 정보: 람다의 본문·캡처·매개변수와 호스트·타입 지정 쓰기의 헬퍼 이름. 대부분의 식 노드에는 없으므로
 // 필요한 노드만 따로 가진다. 생성자·소멸자는 Statement 정의 뒤에 둔다(본문 소유).
 struct ExprExtra
@@ -630,7 +630,7 @@ struct Parameter
 {
     TypeSyntax type;
     Token name;
-    // 구조체 필드의 선언 기본값 식. 없으면 비어 있다.
+    // 구조체 필드 또는 함수 매개변수의 선언 기본값 식. 없으면 비어 있다.
     std::shared_ptr<Expr> initializer;
 };
 
@@ -661,6 +661,13 @@ public:
     // 토큰 배열을 넘겨받는다. 파서가 `>>`를 둘로 나누며 배열을 고치므로 자기 것이어야 하고, 호출한 쪽은 파싱 뒤에
     // 배열을 쓰지 않으므로 복사하지 않고 옮긴다.
     Parser(std::vector<Token> tokens, TypeRegistry& types, Recovery* recovery = nullptr) : tokens_(std::move(tokens)), types_(types), recovery_(recovery) {}
+
+    std::unique_ptr<Expr> ReadDefault()
+    {
+        std::unique_ptr<Expr> value = ParseExpression();
+        if (Peek().kind != TokenKind::End) Fail(Peek(), "expected one constant default expression");
+        return value;
+    }
 
     std::vector<std::unique_ptr<Statement>> Read()
     {
@@ -1043,6 +1050,9 @@ private:
                         Parameter parameter;
                         parameter.type = ParseType();
                         parameter.name = Name();
+                        if (Accept("=")) parameter.initializer = std::shared_ptr<Expr>(ParseExpression().release());
+                        else if (!s->parameters.empty() && s->parameters.back().initializer)
+                            Fail(parameter.name, "required parameters cannot follow default parameters");
                         s->parameters.push_back(parameter);
                     } while (Accept(","));
                 }
@@ -1280,6 +1290,8 @@ struct Symbol
     Symbol(TypeId t, bool c, const Token& n) : type(t), constant(c), name(n) {}
 };
 
+ConstantValue EvaluateApiDefault(const TypeRegistry& types, TypeId type, const std::string& text);
+
 class Checker
 {
 public:
@@ -1294,6 +1306,19 @@ public:
         result_.typedIR.prefix = internalPrefix_ + "ir_";
         result_.typedIR.returnPrefix = internalPrefix_ + "return_";
         if (hostSchema_) result_.hostPrefix = internalPrefix_ + "host_";
+    }
+
+    ConstantValue CheckDefault(Expr& value, TypeId type)
+    {
+        const bool saved = checkingConstant_;
+        checkingConstant_ = true;
+        Contextualize(value, type);
+        CheckExpr(value);
+        CheckDefaultInputs(value);
+        Convert(value, type);
+        ResolveConstant(value);
+        checkingConstant_ = saved;
+        return *value.evaluatedConstant;
     }
 
     void Check(std::vector<std::unique_ptr<Statement>>& program, const std::vector<StaticDefineReplacement>& replacements)
@@ -1352,6 +1377,7 @@ public:
                     if (!types_.IsStorable(parameter.type.type)) Fail(parameter.type.first, "a parameter cannot have this type");
                     signature.parameterTypes.push_back(parameter.type.type);
                 }
+                functionDeclarations_[signature.name] = node.get();
                 functions_[signature.name] = signature;
                 result_.functions.push_back(signature);
                 {
@@ -1372,6 +1398,17 @@ public:
         }
         bindingDeclaration_ = nullptr;
         if (!result_.diagnostics.empty()) return;
+        // 뒤에 선언된 함수도 기본값 검사가 끝난 뒤 인자를 완성한다. VM에는 완성된 호출만 넘긴다.
+        for (const auto& pending : defaultCalls_)
+        {
+            Expr& call = *pending.first;
+            const Statement& function = *pending.second;
+            while (call.children.size() - 1 < function.parameters.size())
+            {
+                const Parameter& parameter = function.parameters[call.children.size() - 1];
+                AppendDefault(call, parameter.type.type, *parameter.initializer->evaluatedConstant);
+            }
+        }
         CheckScriptImplementations(program);
         for (const auto& use : hostUses_)
         {
@@ -1427,6 +1464,36 @@ public:
     }
 
 private:
+    std::map<std::string, Statement*> functionDeclarations_;
+    std::vector<std::pair<Expr*, Statement*>> defaultCalls_;
+    std::map<std::pair<TypeId, std::string>, ConstantValue> apiDefaults_;
+
+    void CheckDefaultInputs(const Expr& value) const
+    {
+        if (value.kind == ExprKind::Name && (!value.symbol || !value.symbol->constantValue))
+            Fail(value.token, "default arguments cannot reference non-constant variables or parameters");
+        if (value.kind == ExprKind::Call && !value.vectorConstructor)
+            Fail(value.token, "default arguments cannot call functions; only vector constructors are allowed");
+        for (std::size_t i = value.kind == ExprKind::Call ? 1 : 0; i < value.children.size(); ++i)
+            CheckDefaultInputs(*value.children[i]);
+    }
+
+    void AppendDefault(Expr& call, TypeId type, const ConstantValue& value)
+    {
+        std::unique_ptr<Expr> argument(new Expr(ExprKind::DefaultArgument, call.token));
+        // 닫는 괄호 앞의 길이 0 위치에 넣어 다중 행 호출의 원본 행 매핑을 늘리지 않는다.
+        const std::size_t position = call.end - 1;
+        argument->begin = argument->end = position;
+        argument->token.line += static_cast<int>(std::count(source_.begin() + call.token.begin, source_.begin() + position, '\n'));
+        argument->token.begin = argument->token.end = position;
+        const std::size_t newline = position ? source_.rfind('\n', position - 1) : std::string::npos;
+        argument->token.column = static_cast<int>(position - (newline == std::string::npos ? 0 : newline + 1) + 1);
+        argument->type = value.kind == ConstantValue::Null ? types_.Null() : type;
+        argument->constant = true;
+        argument->evaluatedConstant.reset(new ConstantValue(value));
+        call.children.push_back(std::move(argument));
+    }
+
     enum Flow { FallsThrough = 1, Returns = 2, Breaks = 4, Continues = 8 };
     const std::string& source_;
     StaticCompileResult& result_;
@@ -2014,7 +2081,7 @@ private:
     std::size_t SignatureCount(const CallSignature& signature) const
     { return signature.binding ? signature.binding->parameters.size() : signature.declaration->parameters.size(); }
     std::size_t SignatureMinimum(const CallSignature& signature) const
-    { return signature.binding ? signature.binding->parameters.size() : signature.declaration->minimum; }
+    { return signature.binding ? signature.binding->parameters.size() - signature.binding->parameterDefaults.size() : signature.declaration->minimum; }
     TypeId SignatureParameter(const CallSignature& signature, std::size_t index)
     {
         return signature.binding ? signature.binding->parameters[index]
@@ -2042,6 +2109,25 @@ private:
     {
         if (!signature.binding) return signature.declaration->parameters[index].mode;
         return index < signature.binding->parameterModes.size() ? signature.binding->parameterModes[index] : ApiParameterMode::In;
+    }
+
+    void CompleteApiArguments(Expr& call, const CallSignature& signature)
+    {
+        for (std::size_t i = call.children.size() - 1; i < SignatureCount(signature); ++i)
+        {
+            const std::string& text = signature.binding ? signature.binding->parameterDefaults[i - SignatureMinimum(signature)]
+                : signature.declaration->parameters[i].defaultExpression;
+            if (text.empty()) break;
+            const TypeId type = SignatureParameter(signature, i);
+            const auto key = std::make_pair(type, text);
+            auto found = apiDefaults_.find(key);
+            if (found == apiDefaults_.end())
+            {
+                try { found = apiDefaults_.insert(std::make_pair(key, EvaluateApiDefault(types_, type, text))).first; }
+                catch (const Diagnostic& error) { Fail(call.token, "invalid API default: " + error.message); }
+            }
+            AppendDefault(call, type, found->second);
+        }
     }
 
     // Out 인자는 이미 선언된 쓸 수 있는 변수여야 하고 타입이 매개변수와 정확히 같아야 한다. 참조를 넘기지 않으므로
@@ -2089,6 +2175,7 @@ private:
                     + types_.DiagnosticName(parameter) + "', not '" + types_.DiagnosticName(argument.type) + "'");
             Convert(argument, parameter);
         }
+        CompleteApiArguments(expression, signature);
     }
 
     // 백엔드에 넘기는 내장 API 호출 표기. 번호는 이번 컴파일의 등록부 색인이고 백엔드가 연결 이름으로 바꾼다.
@@ -2290,6 +2377,11 @@ private:
                 return;
             }
         }
+        if (moduleApi && moduleApi->Is(ApiCustom) && expression.children.size() - 1 >= moduleApi->minimum)
+        {
+            CallSignature signature; signature.declaration = moduleApi;
+            CompleteApiArguments(expression, signature);
+        }
         const auto function = functions_.find(name);
         const TypeId namedType = types_.LookupNamed(name);
         for (std::size_t i = 1; i < expression.children.size(); ++i)
@@ -2403,7 +2495,12 @@ private:
         }
         if (function != functions_.end())
         {
-            if (count != function->second.parameterTypes.size()) Fail(callee.token, "function argument count does not match its declaration");
+            Statement* declaration = functionDeclarations_.at(name);
+            std::size_t minimum = declaration->parameters.size();
+            while (minimum && declaration->parameters[minimum - 1].initializer) --minimum;
+            if (count < minimum || count > declaration->parameters.size())
+                Fail(callee.token, "function argument count does not match its declaration");
+            if (count < declaration->parameters.size()) defaultCalls_.push_back(std::make_pair(&expression, declaration));
             for (std::size_t i = 0; i < count; ++i)
             {
                 const TypeId parameter = function->second.parameterTypes[i];
@@ -2538,6 +2635,7 @@ private:
         // 사용자 함수·함수값·생성자 호출이거나 Out 이 아닌 자리다.
         if (expression.outArgument)
             Fail(expression.token, "out is only allowed for an API parameter declared out; user-defined functions and other calls cannot take out arguments");
+        if (expression.kind == ExprKind::DefaultArgument) return;
         expression.constantInitializer = checkingConstant_;
         switch (expression.kind)
         {
@@ -2808,10 +2906,12 @@ private:
             }
             return;
         }
+        case ExprKind::DefaultArgument:
+            return;
         }
     }
 
-    // const·case·필드 기본값은 같은 식 트리를 평가하고, const 이름은 선언 때 확정한 값을 재사용한다.
+    // const·case·필드·인자 기본값은 같은 식 트리를 평가하고, const 이름은 선언 때 확정한 값을 재사용한다.
     bool EvaluateConstant(const Expr& expression, ConstantValue& out, int depth = 0) const
     {
         if (depth > 256) Fail(expression.token, "constant expression nesting exceeds compiler limit");
@@ -3142,6 +3242,13 @@ private:
         }
         case StatementKind::Function:
         {
+            for (const Parameter& parameter : statement.parameters)
+            {
+                if (!parameter.initializer) continue;
+                CheckDefault(*parameter.initializer, parameter.type.type);
+                edits_.push_back(Edit(parameter.name.end, parameter.initializer->end,
+                    Lines(parameter.name.end, parameter.initializer->end)));
+            }
             ReplaceType(statement.declared, "fun");
             ReplaceModifiers(statement);
             const TypeId previousReturn = returnType_;
@@ -3497,7 +3604,15 @@ private:
         node.source.end = expression.end;
         node.source.line = expression.token.line;
         node.source.column = expression.token.column;
-        if (expression.outCall)
+        if (expression.kind == ExprKind::DefaultArgument &&
+            (node.type == IRValueType::Int || node.type == IRValueType::Float || node.type == IRValueType::Bool))
+        {
+            const ConstantValue& value = *expression.evaluatedConstant;
+            node.op = node.type == IRValueType::Int ? IROp::IntLiteral
+                : node.type == IRValueType::Float ? IROp::FloatLiteral : IROp::BoolLiteral;
+            node.integer = value.integer; node.number = value.Number(); node.boolean = value.boolean;
+        }
+        else if (expression.outCall)
         {
             // 호출 자체는 검사한 API 표기 그대로 컴파일한다. Out 인자 자리에는 변수의 현재 값이 들어가고(본체가 쓰지 않으면
             // 그 값이 그대로 돌아온다), 호출이 끝난 뒤 창 슬롯의 값을 변수에 대입한다.
@@ -3976,6 +4091,9 @@ private:
             }
             text += ")" + Lines(expression.begin, expression.end);
             break;
+        case ExprKind::DefaultArgument:
+            text = ConstantLiteral(*expression.evaluatedConstant);
+            break;
         }
         if (applyWrappers && expression.widen) text = expression.constantWiden ? "(" + text + "+0.0)"
             : Intrinsic("itof", BeginLine(expression)) + "(" + text + ")";
@@ -4277,6 +4395,25 @@ private:
     std::string Lower() const { return ApplyEdits(0, source_.size()); }
 };
 
+ConstantValue EvaluateApiDefault(const TypeRegistry& types, TypeId type, const std::string& text)
+{
+    StaticCompileResult result;
+    result.types = types;
+    TokenTexts texts;
+    try
+    {
+        Parser parser(Lexer(text, texts).Read(), result.types);
+        std::unique_ptr<Expr> expression = parser.ReadDefault();
+        return Checker(text, result, nullptr).CheckDefault(*expression, type);
+    }
+    catch (const Diagnostic& error)
+    {
+        // 지역 토큰 글자 표가 사라지기 전에 메시지만 복사하여 올린다.
+        Fail(Token(), error.message);
+    }
+    return ConstantValue();
+}
+
 // 타입 검사가 끝난 원본 트리만 읽는다. 상수 접기와 코드 생성에는 관여하지 않는다.
 class UnusedDeclarations
 {
@@ -4366,6 +4503,28 @@ private:
     }
 };
 
+}
+
+// 상수 구문·타입 검증이 필요하므로 타입 모델의 메타데이터와 분리하여 프런트엔드에서 구현한다.
+bool HostSchema::SetMethodDefaults(HostBindingId method, const std::vector<std::string>& defaults)
+{
+    lastError_.clear();
+    const HostBinding* binding = FindBinding(method);
+    if (!binding || binding->kind != HostBindingKind::Method || !binding->eventName.empty())
+        return Fail("default arguments require an ordinary host method");
+    if (defaults.size() > binding->parameters.size()) return Fail("too many default arguments");
+    const std::size_t first = binding->parameters.size() - defaults.size();
+    for (std::size_t i = 0; i < defaults.size(); ++i)
+    {
+        const std::size_t parameter = first + i;
+        if (parameter < binding->parameterModes.size() && binding->parameterModes[parameter] == ApiParameterMode::Out)
+            return Fail("out parameters cannot have default arguments");
+        try { EvaluateApiDefault(types_, binding->parameters[parameter], defaults[i]); }
+        catch (const Diagnostic& error)
+        { return Fail("default argument " + std::to_string(parameter + 1) + ": " + error.message); }
+    }
+    bindings_[method - 1].parameterDefaults = defaults;
+    return true;
 }
 
 bool ExpandStaticDefines(const std::string& source, const std::vector<CompileDefine>& defines,
@@ -4525,6 +4684,23 @@ void CollectStaticDeclarations(const std::string& source, std::vector<StaticDecl
                 if (parameterType.empty() || parameterName >= tokens.size() || tokens[parameterName].kind != TokenKind::Identifier) break;
                 declaration.parameters.push_back(parameterType + " " + tokens[parameterName].text);
                 parameter = parameterName + 1;
+                if (parameter < tokens.size() && tokens[parameter].text == "=")
+                {
+                    const std::size_t start = ++parameter;
+                    int depth = 0;
+                    while (parameter < tokens.size())
+                    {
+                        const auto& token = tokens[parameter];
+                        if (token.text == "(" || token.text == "[" || token.text == "{") ++depth;
+                        else if (token.text == ")" || token.text == "]" || token.text == "}")
+                        { if (!depth) break; --depth; }
+                        else if (token.text == "," && !depth) break;
+                        ++parameter;
+                    }
+                    if (parameter == start) break;
+                    declaration.parameters.back() += " = " + source.substr(tokens[start].begin,
+                        tokens[parameter - 1].end - tokens[start].begin);
+                }
                 if (parameter < tokens.size() && tokens[parameter].text == ",") ++parameter;
                 else if (parameter >= tokens.size() || tokens[parameter].text != ")") break;
             }

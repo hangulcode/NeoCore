@@ -6,6 +6,7 @@
 // 타입 식: int float bool string void Vector2 Vector3 Vector4 Quaternion TimeSpan Stopwatch AsyncRequest,
 //          Self(수신자) T(원소) K(맵 키) V(맵 값), list<X> array<X> array32<X> set<X> map<X,Y>, fn(A,B)->R
 // 매개변수: `타입 이름`, 생략 가능하면 이름 뒤에 `?`, 호출 뒤 값을 되돌려 받으면 앞에 `out`, 가변 인자는 `...`
+// 고정 기본값은 `타입 이름 = 상수 식`으로 적는다. 컴파일러가 생략 인자를 채우며 `?`의 특수 생략 동작과 구분한다.
 // 소유자 "array" 는 array 와 array32 가 함께 쓴다.
 
 // ---- 전역 ----
@@ -24,9 +25,9 @@ NEOCORE_API("string", "string rtrim()", ApiNone, &neo_libs::Str_rtrim)
 NEOCORE_API("string", "string replace(string from, string to)", ApiNone, &neo_libs::Str_replace)
 NEOCORE_API("string", "string replaceAll(string from, string to)", ApiNone, &neo_libs::Str_replaceAll)
 NEOCORE_API("string", "list<string> split(string separator)", ApiNone, &neo_libs::Str_split)
-NEOCORE_API("string", "bool regex_match(string pattern, bool ignoreCase?)", ApiNone, &neo_libs::Str_regex_match)
-NEOCORE_API("string", "list<string> regex_search(string pattern, bool ignoreCase?)", ApiNone, &neo_libs::Str_regex_search)
-NEOCORE_API("string", "string regex_replace(string pattern, string replacement, bool ignoreCase?)", ApiNone, &neo_libs::Str_regex_replace)
+NEOCORE_API("string", "bool regex_match(string pattern, bool ignoreCase = false)", ApiNone, &neo_libs::Str_regex_match)
+NEOCORE_API("string", "list<string> regex_search(string pattern, bool ignoreCase = false)", ApiNone, &neo_libs::Str_regex_search)
+NEOCORE_API("string", "string regex_replace(string pattern, string replacement, bool ignoreCase = false)", ApiNone, &neo_libs::Str_regex_replace)
 
 // ---- list ----
 NEOCORE_API("list", "int len()", ApiNone, &neo_libs::List_len)
@@ -187,8 +188,8 @@ NEOCORE_API("system", "AsyncRequest aysnc_create()", ApiNone, &neo_libs::sys_ays
 // 원소 타입을 인자의 list<T> 에서 정한다.
 NEOCORE_API("system", "set<T> set(list<T> values)", ApiCustom, &neo_libs::sys_set)
 // JSON 변환은 대상 타입을 아는 런타임 계층이 제공한다. 서명만 여기 둔다.
-NEOCORE_API("system", "string jsonEncode(T value, bool sortKeys?)", ApiCustom | ApiExternal, nullptr)
-NEOCORE_API("system", "string jsonEncodeOrNull(T value, bool sortKeys?)", ApiCustom | ApiExternal, nullptr)
+NEOCORE_API("system", "string jsonEncode(T value, bool sortKeys = false)", ApiCustom | ApiExternal, nullptr)
+NEOCORE_API("system", "string jsonEncodeOrNull(T value, bool sortKeys = false)", ApiCustom | ApiExternal, nullptr)
 NEOCORE_API("system", "T jsonDecode<T>(string text)", ApiCustom | ApiExternal, nullptr)
 NEOCORE_API("system", "T jsonDecodeOr<T>(string text, T fallback)", ApiCustom | ApiExternal, nullptr)
 NEOCORE_API("system", "T jsonDecodeLenient<T>(string text)", ApiCustom | ApiExternal, nullptr)

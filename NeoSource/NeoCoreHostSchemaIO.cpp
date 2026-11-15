@@ -188,7 +188,9 @@ bool HostSchemaDocument::ToJson(std::string& json, std::string& error) const
         ValidateDefines(defines);
         MutDoc doc(yyjson_mut_doc_new(nullptr),&yyjson_mut_doc_free); Require(bool(doc),"cannot allocate host schema document");
         yyjson_mut_val* root = yyjson_mut_obj(doc.get()); yyjson_mut_doc_set_root(doc.get(),root);
-        Put(doc.get(),root,"format",std::string("NeoCore.HostSchema")); Put(doc.get(),root,"version",std::uint32_t(1));
+        bool defaults = false;
+        for (const HostBinding& binding : schema.Bindings()) defaults = defaults || !binding.parameterDefaults.empty();
+        Put(doc.get(),root,"format",std::string("NeoCore.HostSchema")); Put(doc.get(),root,"version",std::uint32_t(defaults ? 2 : 1));
         yyjson_mut_val* types = yyjson_mut_arr(doc.get()); yyjson_mut_obj_add_val(doc.get(),root,"types",types); WriteTypes(doc.get(),types,schema.Types());
         yyjson_mut_val* members = yyjson_mut_arr(doc.get()); yyjson_mut_obj_add_val(doc.get(),root,"members",members);
         for (const HostBinding& binding : schema.Bindings())
@@ -212,6 +214,11 @@ bool HostSchemaDocument::ToJson(std::string& json, std::string& error) const
                 {
                     yyjson_mut_val* names=yyjson_mut_arr(doc.get()); yyjson_mut_obj_add_val(doc.get(),member,"parameterNames",names);
                     for(const std::string& parameterName:binding.parameterNames) yyjson_mut_arr_add_strncpy(doc.get(),names,parameterName.data(),parameterName.size());
+                }
+                if(!binding.parameterDefaults.empty())
+                {
+                    yyjson_mut_val* values=yyjson_mut_arr(doc.get()); yyjson_mut_obj_add_val(doc.get(),member,"parameterDefaults",values);
+                    for(const std::string& value:binding.parameterDefaults) yyjson_mut_arr_add_strncpy(doc.get(),values,value.data(),value.size());
                 }
                 if(!binding.parameterModes.empty())
                 {
@@ -244,7 +251,8 @@ bool HostSchemaDocument::FromJson(const std::string& json, HostSchemaDocument& o
         yyjson_read_err failure; Doc doc(yyjson_read_opts(&input[0],input.size(),0,nullptr,&failure),&yyjson_doc_free);
         Require(bool(doc),std::string("invalid host schema JSON: ")+(failure.msg?failure.msg:"parse failed"));
         yyjson_val* root=yyjson_doc_get_root(doc.get());
-        Require(Text(Member(root,"format"))=="NeoCore.HostSchema" && Integer(Member(root,"version"))==1,"unsupported host schema format/version");
+        const std::uint32_t version = Integer(Member(root,"version"));
+        Require(Text(Member(root,"format"))=="NeoCore.HostSchema" && (version==1 || version==2),"unsupported host schema format/version");
         HostSchemaDocument result; ReadTypes(Array(Member(root,"types")),result.schema);
         yyjson_val* members=Array(Member(root,"members"));
         for(std::size_t i=0;i<yyjson_arr_size(members);++i)
@@ -271,9 +279,18 @@ bool HostSchemaDocument::FromJson(const std::string& json, HostSchemaDocument& o
                             const std::uint32_t mode=Integer(yyjson_arr_get(modes,p)); Require(mode<=1,"invalid host parameter mode");
                             parameterModes.push_back(mode?ApiParameterMode::Out:ApiParameterMode::In);
                         }
-                    ok=(parameterNames.empty() && parameterModes.empty()
+                    const HostBindingId method=(parameterNames.empty() && parameterModes.empty()
                         ? result.schema.AddMethod(owner,name,returns,parameters)
-                        : result.schema.AddMethod(owner,name,returns,parameters,parameterNames,parameterModes))!=0;
+                        : result.schema.AddMethod(owner,name,returns,parameters,parameterNames,parameterModes));
+                    ok=method!=0;
+                    if (ok)
+                        if (yyjson_val* values=yyjson_obj_get(member,"parameterDefaults"))
+                        {
+                            Require(version>=2,"default arguments require host schema version 2");
+                            std::vector<std::string> defaults;
+                            for(std::size_t p=0;p<yyjson_arr_size(Array(values));++p) defaults.push_back(Text(yyjson_arr_get(values,p)));
+                            ok=result.schema.SetMethodDefaults(method,defaults);
+                        }
                 }
                 else if(kind=="event")
                 { Require(parameters.size()==2 && parameters[0]==result.schema.Types().String() && returns==result.schema.Types().Void(),"invalid host event signature"); ok=result.schema.AddEvent(owner,event,parameters[1],name)!=0; }

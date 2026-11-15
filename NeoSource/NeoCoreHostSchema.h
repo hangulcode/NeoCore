@@ -26,6 +26,8 @@ struct HostBinding
     // 매개변수 이름과 방향. 비어 있으면 이름이 없고 모두 In 이다. 내장 API 의 선언과 같은 서명 모델이다.
     std::vector<std::string> parameterNames;
     std::vector<ApiParameterMode> parameterModes;
+    // 마지막 N개 입력 매개변수의 상수 기본값 식. 실행 콜백에는 전체 인자가 전달된다.
+    std::vector<std::string> parameterDefaults;
     // 비어 있지 않으면 이 이름의 이벤트 등록에만 사용하는 메서드다.
     std::string eventName;
 };
@@ -61,6 +63,8 @@ public:
     HostBindingId AddMethod(TypeId owner, const std::string& name, TypeId result,
         const std::vector<TypeId>& parameters, const std::vector<std::string>& parameterNames,
         const std::vector<ApiParameterMode>& parameterModes = std::vector<ApiParameterMode>());
+    // 마지막 N개 In 인자의 기본값을 검증·등록한다. 실패하면 기존 기본값을 유지한다. 빈 목록은 해제한다.
+    bool SetMethodDefaults(HostBindingId method, const std::vector<std::string>& defaults);
     HostBindingId AddEvent(TypeId owner, const std::string& eventName, TypeId callbackType,
         const std::string& registrationMethod = "AddEvent");
     bool AddProperty(TypeId owner, const std::string& name, TypeId type,

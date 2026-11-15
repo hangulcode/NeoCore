@@ -11,6 +11,14 @@ that is not in the table (or in the host schema) is a compile-time error.
 Language operations and constructors are checked by
 [NeoCoreCompiler.cpp](../NeoSource/NeoCoreCompiler.cpp).
 
+Signatures can declare trailing constant defaults, such as `bool ignoreCase = false`.
+The compiler supplies those arguments before emitting the call; native bodies receive
+the full argument list and do not implement default selection. `regex_match`,
+`regex_search`, `regex_replace`, `system.jsonEncode` and `system.jsonEncodeOrNull`
+declare their false defaults this way. Existing `?` parameters with omission-specific
+behavior remain separate. Host APIs use `HostSchema::SetMethodDefaults`; see
+[HostBindings.md](HostBindings.md#default-arguments).
+
 ## Language intrinsics
 
 `print`, `tostring`, `toint`, `tofloat`, `sleep` and `yield` are checked language

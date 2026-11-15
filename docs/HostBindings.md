@@ -415,7 +415,7 @@ from that saved ID rather than by reevaluating `GameObject.Parent`.
 
 Typed structs, collections and retained function values use owning boundary
 values. [Unity.md](Unity.md) describes the corresponding C ABI and managed
-adapters. Overloads, default arguments and general asynchronous script reentry
+adapters. Overloads and general asynchronous script reentry
 remain unsupported. Basic sleep and host-driven resume use the instance API.
 
 For an embedded editor, include `NeoCoreDebugger.h` and obtain the runtime-owned
@@ -446,10 +446,46 @@ object-lifetime rules, and the bounded `Error::diagnostics` list.
   as UI membership in the host resolver/adapters. Static signatures do not prove
   that an object still exists or has the required current state.
 - Replace dynamically shaped arguments/results with exact typed contracts, such
-  as separate methods or declared result structs. Optional arguments, overloads
-  and arbitrary cross-program aggregate transfers need explicit adaptation.
+  as separate methods or declared result structs. Register constant optional
+  arguments with `SetMethodDefaults`; overloads and arbitrary cross-program
+  aggregate transfers need explicit adaptation.
+
 - Drive frame calls and resume pending execution from the host. Queue delayed
   callbacks by caller instance ID and owning function value; resolve the ID at
   delivery and cancel old queued events on reset or script replacement.
 - Connect editor breakpoints, stack inspection and stepping through the public
   debugger. The editor still drives execution through the instance API.
+
+## Default arguments
+
+Register the full method signature, then set the defaults for its last N input
+parameters before constructing `HostBindings` or a shared runtime:
+
+```cpp
+const auto play = schema.AddMethod(audio, "Play", types.Void(),
+    {types.String(), types.Float(), types.Bool()});
+if (!schema.SetMethodDefaults(play, {"1.0", "false"}))
+    ReportError(schema.LastError());
+```
+
+These strings are NeoCore constant expressions, not runtime scripts. Registration
+parses, type-checks and evaluates them using the compiler. String values include
+source quotes (`"\"player\""`); vectors use expressions such as `"Vector3(0,0,0)"`.
+Null is valid only for nullable parameter types. Variables, ordinary calls,
+collection/struct construction, and defaults on `out` parameters are rejected.
+An empty defaults vector clears all defaults; a failed update leaves them unchanged.
+The setter is implemented by the frontend library; normal `NeoCore::Runtime`
+embedding already links it.
+
+`Audio.Play("hit")` is compiled as `Audio.Play("hit", 1.0, false)`. The callback
+always receives three arguments; neither the callback nor the VM fills omissions.
+Defaults are evaluated at registration and again during compilation, with cached
+values shared by calls in that compilation. Host-to-script calls and function-value
+callbacks retain exact arity. Changing defaults requires recompiling callers;
+image loading rejects mismatched host default metadata. Schema JSON includes
+defaults, so `--host`, `--check`, `--lsp` and `--host-impl` share the declarations.
+Mock implementations still declare the complete method signature.
+
+The C ABI exposes `NcSchemaMethodDefaults` with UTF-8 expression pointers and byte
+lengths. In Unity, call `options.MethodDefaults(owner, "Play", "1.0", "false")`
+after `options.Method(...)`; the callback still reads every parameter normally.

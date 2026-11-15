@@ -1,4 +1,4 @@
-#ifndef NEOCORE_C_H
+﻿#ifndef NEOCORE_C_H
 #define NEOCORE_C_H
 
 #include <stdint.h>
@@ -172,6 +172,9 @@ enum NcParameterMode { NC_PARAMETER_IN = 0, NC_PARAMETER_OUT = 1 };
 NC_API uint32_t NcSchemaMethodOut(NcOptions* options, uint32_t owner, const char* name, uint32_t length,
     uint32_t resultType, const uint32_t* parameters, const uint8_t* modes, uint32_t count,
     NcHostCallback callback, void* userData, NcRelease release);
+/* 마지막 N개 인자의 상수 식을 복사·검증한다. 생략된 인자는 컴파일러가 채운다. */
+NC_API int32_t NcSchemaMethodDefaults(NcOptions* options, uint32_t owner, const char* name, uint32_t length,
+    const char* const* expressions, const uint32_t* lengths, uint32_t count);
 NC_API uint32_t NcSchemaEvent(NcOptions* options, uint32_t owner, const char* eventName, uint32_t eventLength,
     uint32_t callbackType, const char* registrationMethod, uint32_t methodLength,
     NcHostCallback callback, void* userData, NcRelease release);

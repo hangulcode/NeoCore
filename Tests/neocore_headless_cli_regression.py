@@ -21,13 +21,16 @@ def run(*arguments):
     return subprocess.run([str(console), *map(str, arguments)], text=True, encoding="utf-8", errors="replace", capture_output=True, timeout=20)
 
 
-def lsp(schema, path, text, implementation=None):
+def lsp(schema, path, text, implementation=None, signature=None):
     messages = [
         {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}},
         {"jsonrpc": "2.0", "method": "textDocument/didOpen", "params": {"textDocument": {"uri": path.as_uri(), "languageId": "neocore", "version": 1, "text": text}}},
         {"jsonrpc": "2.0", "id": 2, "method": "shutdown", "params": {}},
         {"jsonrpc": "2.0", "method": "exit", "params": {}},
     ]
+    if signature is not None:
+        messages.insert(2, {"jsonrpc": "2.0", "id": 3, "method": "textDocument/signatureHelp", "params": {
+            "textDocument": {"uri": path.as_uri()}, "position": {"line": 0, "character": signature}}})
     payload = b""
     for message in messages:
         body = json.dumps(message).encode("utf-8")
@@ -39,6 +42,7 @@ def lsp(schema, path, text, implementation=None):
     require(result.returncode == 0, "host-aware LSP starts: " + result.stderr.decode("utf-8", errors="replace"))
     output = result.stdout
     diagnostics = []
+    signatures = None
     while output:
         header, output = output.split(b"\r\n\r\n", 1)
         length = int(header.split(b":", 1)[1])
@@ -46,7 +50,9 @@ def lsp(schema, path, text, implementation=None):
         output = output[length:]
         if message.get("method") == "textDocument/publishDiagnostics":
             diagnostics.extend(message["params"]["diagnostics"])
-    return diagnostics
+        if message.get("id") == 3:
+            signatures = message.get("result")
+    return diagnostics if signature is None else (diagnostics, signatures)
 
 
 implementation = '''import system;
@@ -100,6 +106,7 @@ Services.Log("mock log works");
 Services.UserData.SetInt("score",KEY_TEST);
 Check(Services.UserData.GetInt("score",0)==17);
 Check(Services.UserData.GetInt("absent",9)==9);
+Check(Services.UserData.GetInt("absent")==7);
 struct Data{string name;int value;};
 Data loaded=system.jsonDecode<Data>(Services.Resource.LoadText("data.json"));
 Check(loaded.name=="테스트"&&loaded.value==7);
@@ -189,6 +196,10 @@ with tempfile.TemporaryDirectory(prefix="neocore-host-") as temporary:
     require(result.returncode == 1 and result.stderr.count("check.nc:") == 2, "CLI diagnostic limit: " + result.stderr)
     diagnostics = lsp(schema, plain, 'Services.Log("ok");Services.UserData.SetInt("x",KEY_TEST);')
     require(not diagnostics, "LSP accepts actual host schema and defines: " + repr(diagnostics))
+    default_text = 'Services.UserData.GetInt("absent");'
+    default_diagnostics, signature = lsp(schema, plain, default_text, signature=default_text.index('"absent"'))
+    require(not default_diagnostics, "LSP accepts omitted host default")
+    require(signature and "= 7" in signature["signatures"][0]["label"], "LSP shows nested host default: " + repr(signature))
     diagnostics = lsp(schema, plain, 'Services.Log(3);\nServices.UserData.SetInt("x",false);')
     diagnostics_with_impl = lsp(schema, plain, 'Services.Log("ok");', impl)
     require(not diagnostics_with_impl, "LSP imports and validates the host implementation: " + repr(diagnostics_with_impl))

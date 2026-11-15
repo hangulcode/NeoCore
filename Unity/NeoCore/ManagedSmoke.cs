@@ -34,6 +34,10 @@ internal static class ManagedSmoke
             options.SetResolver((type,id)=>alive && id==17);
             options.Global("Host",service,17);
             options.Method(service,"Twice",ScriptTypes.Int,new[]{ScriptTypes.Int},call=>call.ReturnInt(call.Int(0)*2));
+            options.MethodDefaults(service,"Twice","21");
+            bool badDefault=false;
+            try { options.MethodDefaults(service,"Twice","null"); } catch(InvalidOperationException) { badDefault=true; }
+            Require(badDefault,"nonnullable host default is rejected without replacing the previous default");
             options.Method(service,"Echo",point,new[]{point},call=>{ using(var value=call.Argument(0)) call.Return(value); });
             options.Method(service,"Save",ScriptTypes.Void,new[]{callbackType},call=>{ retained.Dispose(); retained=call.Argument(0); });
             options.Method(service,"Reenter",ScriptTypes.Int,new[]{callbackType},call=>{ using(var value=call.Argument(0)) call.ReturnInt(call.Call(value,Scalar.Int(6)).RequireCompleted().AsInt()); });
@@ -41,6 +45,7 @@ internal static class ManagedSmoke
             string source="import maths as m;\n"
                 +"export Vector3 position=Vector3(1,2,3); position.x=4.0;\n"
                 +"export int Twice(int n){return Host.Twice(m.Add(n,1));}\n"
+                +"if(Host.Twice()!=42){int zero=0;print(1/zero);}\n"
                 +"export int BuildValue(){return BUILD_VALUE;}\n"
                 +"export float BuildFloat(){return BUILD_FLOAT;}\n"
                 +"export string BuildName(){return BUILD_NAME;}\n"

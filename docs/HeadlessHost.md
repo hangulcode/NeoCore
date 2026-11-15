@@ -28,6 +28,14 @@ event signatures, globals and typed compile defines. Integer defaults retain
 all 64 bits; floating defaults retain their bit patterns, including signed zero.
 Registration order and schema-local IDs are preserved. Resolver callbacks,
 implementations, live objects, object IDs and file paths are not serialized.
+
+Methods may include `parameterDefaults`, a list of constant expression strings for
+their last N input parameters. Such documents use schema version 2; documents
+without defaults still use version 1, and this reader accepts both. Older readers
+reject version 2 rather than silently discarding defaults. Loading validates each
+default against its parameter type. The console compiler fills omissions, while
+mock implementations receive the full signature. See
+[default registration](HostBindings.md#default-arguments).
 Export again whenever the registered interface or compile defines change.
 
 ## Check files or use language diagnostics
