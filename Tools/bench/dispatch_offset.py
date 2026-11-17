@@ -8,9 +8,10 @@ some benchmark cases change by up to 25% depending on whether that sequence star
 offset 0/16 or 32/48 of a 64-byte line, so compare two NeoCore builds only at equal
 offsets or when their per-round ranges separate. See docs/Benchmarking.md.
 
-The reported sites are the RunInternal instantiations (timeout x debug x profiling;
-older builds have only timeout x debug). The benchmark console runs the last one
-(no timeout, no debug, no profiling).
+The reported sites are the RunInternal bodies (Fast, Controlled, Debug; older builds
+specialize timeout/debug/profiling combinations). For the current MSVC layout the
+benchmark console runs the last one (Fast). Check the linker map after changing
+loop generation or compiler settings; address order is not a language guarantee.
 """
 import re
 import struct

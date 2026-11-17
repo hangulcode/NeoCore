@@ -84,7 +84,7 @@ real change.
 - Report the offset with `python Tools/bench/dispatch_offset.py <neocore.exe>`; the last
   site (no timeout, no debugger, no profiling) is the one `neocore --file` runs. The runner stores it in the record.
 - **Compare two NeoCore builds at equal offsets.** To move a build without changing its
-  logic, insert `if (!TIMEOUT && !DEBUG && !PROFILE) { __nop(); ... }` (k nops, `#include <intrin.h>`)
+  logic, insert `if (MODE == RunMode::Fast) { __nop(); ... }` (k nops, `#include <intrin.h>`)
   right after the `_isInitialized` check at the top of `RunInternal` and rebuild the
   console; recheck the actual offset because padding can also change instruction
   alignment. Build the variants that land on the same

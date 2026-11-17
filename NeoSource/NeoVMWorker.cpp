@@ -2228,22 +2228,23 @@ bool	CNeoVMWorker::Run()
 		bool topExec = m_bTopExec;
 		m_bTopExec = false;
 		int breakingCallStack = (topExec || debugActive) ? 0 : (int)m_pCallStack->size();
-		// 설정 변경은 유휴 상태에서만 허용된다. 재개·재진입도 여기서 실제 enabled 상태로 고른다.
-		// 한 번 켰다 꺼도 m_profile 객체는 남으므로 포인터 유무로 고르면 안 된다.
-		if (IsProfilingEnabled())
-		{
-			if (m_iTimeout >= 0 || (m_instructionBudget != 0 && !nestedRun))
-				b = debugActive ? RunInternal<true, true, true>(breakingCallStack) : RunInternal<true, false, true>(breakingCallStack);
-			else
-				b = debugActive ? RunInternal<false, true, true>(breakingCallStack) : RunInternal<false, false, true>(breakingCallStack);
-		}
+		const bool timeLimited = m_iTimeout >= 0 || (m_instructionBudget != 0 && !nestedRun);
+		const bool profileEnabled = IsProfilingEnabled();
+		// 실행 본문은 아래 세 벌만 만든다. 세 기능의 ON/OFF 조합을 템플릿 인자로 늘리지 않는다.
+		// 1. Fast: 모두 OFF. 명령별 디버그·시간 제한 검사와 직접 호출·반환의 프로파일 검사를 제거한다.
+		// 2. Controlled: 디버그 OFF이며 프로파일 또는 시간 제한이 ON. 두 기능은 같은 본문을 쓰지만
+		//    독립 설정이다. 시간 제한만 켰다고 프로파일을 수집하거나 그 반대 기능을 강제로 켜지 않는다.
+		// 3. Debug: 디버그 ON. 중단점·스텝을 검사하며 프로파일·시간 제한은 전달받은 설정에만 따른다.
+		// 공용 루프에서는 필요한 조건 분기를 감수하여 큰 opcode switch의 중복을 줄인다. 설정은
+		// 진입마다 한 번 읽으며 중첩 호출·재개도 이 선택을 거친다. 중첩 호출의 예산 규칙도 유지한다.
+		// SetProfiling은 실행·중단 중 변경을 거부한다. 꺼도 수집기 객체는 남으므로 포인터가 아닌
+		// enabled를 읽는다. 수집기가 오류로 스스로 꺼질 수 있어 ProfileRefresh/Entered의 내부 검사는 유지한다.
+		if (debugActive)
+			b = RunInternal<RunMode::Debug>(breakingCallStack, timeLimited, profileEnabled);
+		else if (timeLimited || profileEnabled)
+			b = RunInternal<RunMode::Controlled>(breakingCallStack, timeLimited, profileEnabled);
 		else
-		{
-			if (m_iTimeout >= 0 || (m_instructionBudget != 0 && !nestedRun))
-				b = debugActive ? RunInternal<true, true, false>(breakingCallStack) : RunInternal<true, false, false>(breakingCallStack);
-			else
-				b = debugActive ? RunInternal<false, true, false>(breakingCallStack) : RunInternal<false, false, false>(breakingCallStack);
-		}
+			b = RunInternal<RunMode::Fast>(breakingCallStack);
 		// handle_ERROR reports the source location to the debugger, but the VM result
 		// must remain an error so RunSettle releases this failed execution context.
 	}
@@ -2402,8 +2403,8 @@ NEOS_NOINLINE bool CNeoVMWorker::ExecuteColdOp(const SVMOperation& OP)
 	return false;
 }
 
-template<bool TIMEOUT, bool DEBUG, bool PROFILE>
-bool	CNeoVMWorker::RunInternal(int iBreakingCallStack)
+template<CNeoVMWorker::RunMode MODE>
+bool	CNeoVMWorker::RunInternal(int iBreakingCallStack, bool timeLimited, bool profileEnabled)
 {
 	if (false == _isInitialized)
 		return false;
@@ -2432,14 +2433,17 @@ bool	CNeoVMWorker::RunInternal(int iBreakingCallStack)
 //	char chMsg[256];
 
 	m_op_process = m_iCheckOpCount;
-	const bool countInstructions = TIMEOUT && m_instructionBudget != 0 && m_iNativeScriptCallDepth == 0;
+	// Fast는 인자를 공용 반환 함수로 넘길 때도 false로 확정해 불필요한 레지스터 유지를 막는다.
+	const bool collectProfile = MODE != RunMode::Fast && profileEnabled;
+	const bool checkLimits = MODE != RunMode::Fast && timeLimited;
+	const bool countInstructions = checkLimits && m_instructionBudget != 0 && m_iNativeScriptCallDepth == 0;
 	uint64_t remainingInstructions = m_instructionBudget;
-	if (TIMEOUT && m_iTimeout >= 0)
+	if (checkLimits && m_iTimeout >= 0)
 		_preClock = std::chrono::steady_clock::now();
 
 	while (true)
 	{
-		if (TIMEOUT)
+		if (checkLimits)
 		{
 			// 마지막 허용 명령이 실패해도 오류 처리를 다음 슬라이스로 미루지 않는다.
 			if (countInstructions && remainingInstructions == 0 && !IsErrorTrap())
@@ -2465,7 +2469,7 @@ bool	CNeoVMWorker::RunInternal(int iBreakingCallStack)
 			}
 		}
 
-		if (DEBUG)
+		if (MODE == RunMode::Debug)
 		{
 			int iOPIndex = int((u8*)_pCodeCurrent - _pCodeBegin) / sizeof(SVMOperation);
 			if (CheckDebugStop(iOPIndex))
@@ -2500,19 +2504,19 @@ bool	CNeoVMWorker::RunInternal(int iBreakingCallStack)
 		case NOP_STR_ADD:       handle_STR_ADD(OP); break;
 		case NOP_STR_ADD_L:     handle_STR_ADD_L(OP); break;
 		case NOP_TOSTRING:      handle_TOSTRING(OP); break;
-		case NOP_CALL:          handle_CALL<PROFILE>(OP); break;
+		case NOP_CALL:          handle_CALL<MODE != RunMode::Fast>(OP, collectProfile); break;
 		// 호출 본문은 한 벌만 둔다. 쌍 명령(MOVL_CALL_L)이 둘째 명령 포인터로 여기에 합류한다.
 		case NOP_CALL_L:        pairedOp = &OP;
-		call_local:             handle_CALL_L<PROFILE>(*pairedOp); break;
+		call_local:             handle_CALL_L<MODE != RunMode::Fast>(*pairedOp, collectProfile); break;
 		case NOP_PTRCALL2:      handle_PTRCALL2(OP); break;
 		case NOP_PTRCALL2_L:    handle_PTRCALL2_L(OP); break;
 		case NOP_NATIVECALL:    handle_NATIVECALL(OP); break;
 		case NOP_APICALL:       handle_APICALL(OP); break;
 		case NOP_RETURN:
-			if (handle_RETURN<PROFILE>(OP)) return true;
+			if (handle_RETURN<MODE != RunMode::Fast>(OP, collectProfile)) return true;
 			break;
 		case NOP_RETURN_L:
-			if (handle_RETURN_L<PROFILE>(OP)) return true;
+			if (handle_RETURN_L<MODE != RunMode::Fast>(OP, collectProfile)) return true;
 			break;
 		// 타입이 확정된 범위 점프는 오류가 없어 점프 자체만 한다.
 		case NOP_RT_JMP_I64_RANGE_INSIDE: if (IsRangeInsideRT<false, true>(OP)) SetCodeIncPtr(OP.n1); break;

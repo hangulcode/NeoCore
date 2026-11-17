@@ -218,16 +218,16 @@ NEOS_FORCEINLINE int GetCallReturnValueIndex(const SVMOperation& OP) {
     return OP.n3;
 }
 
-template<bool PROFILE>
-NEOS_FORCEINLINE bool handle_CALL(const SVMOperation& OP) {
-    Call<PROFILE>(OP.n1, OP.n2, GetCallReturnValueIndex(OP));
+template<bool CHECK_PROFILE>
+NEOS_FORCEINLINE bool handle_CALL(const SVMOperation& OP, bool profileEnabled) {
+    Call<CHECK_PROFILE>(OP.n1, OP.n2, GetCallReturnValueIndex(OP), profileEnabled);
     return false;
 }
 
-template<bool PROFILE>
-NEOS_FORCEINLINE bool handle_CALL_L(const SVMOperation& OP) {
+template<bool CHECK_PROFILE>
+NEOS_FORCEINLINE bool handle_CALL_L(const SVMOperation& OP, bool profileEnabled) {
     // NORESULT 면 반환 슬롯 자체를 안 뽑으므로 PatchLocalOps 가 _L 로 바꾸지 않는다.
-    Call<PROFILE>(OP.n1, OP.n2, _iSP_Vars + OP.n3);
+    Call<CHECK_PROFILE>(OP.n1, OP.n2, _iSP_Vars + OP.n3, profileEnabled);
     return false;
 }
 
@@ -360,8 +360,8 @@ NEOS_FORCEINLINE void StoreReturnValue(VarInfo* destination, VarInfo* source, bo
 }
 
 // 본문 공용. pSrc = 반환값 슬롯(NORESULT 면 nullptr). 결과를 먼저 옮긴 뒤 프레임의 소유 슬롯을 해제한다.
-template <bool PayloadFrame, bool PROFILE>
-NEOS_FORCEINLINE bool handle_RETURN_impl(VarInfo* pSrc, bool sourceLocal, int functionIndex, u16 control) {
+template <bool PayloadFrame, bool CHECK_PROFILE>
+NEOS_FORCEINLINE bool handle_RETURN_impl(VarInfo* pSrc, bool sourceLocal, int functionIndex, u16 control, bool profileEnabled) {
     // 반환 명령의 함수 번호는 현재 프레임과 같다. 함수 표를 다시 찾지 않고 프레임 기록을 쓴다.
     assert(functionIndex == _functionIndex);
     (void)functionIndex;
@@ -427,7 +427,7 @@ NEOS_FORCEINLINE bool handle_RETURN_impl(VarInfo* pSrc, bool sourceLocal, int fu
 	_iSP_VarsMax = _iSP_Vars;
 	_iSP_Vars = callStack._iSP_Vars;
 	SetStackPointer(_iSP_Vars);
-	SelectFunction<PROFILE>(callStack._functionIndex);
+	SelectFunction<CHECK_PROFILE>(callStack._functionIndex, profileEnabled);
 	if (returnIP & FLAG_CLOSURE)
 	{
 		SClosureCallState& state = m_pClosureCallStack->pop_back();
@@ -439,26 +439,26 @@ NEOS_FORCEINLINE bool handle_RETURN_impl(VarInfo* pSrc, bool sourceLocal, int fu
 }
 
 // 소유권·캡처 정리가 있는 본문은 디스패치 루프 밖에 두고 프로파일 정책별로 한 번만 생성한다.
-template<bool PROFILE>
-NEOS_NOINLINE bool handle_RETURN_owned(VarInfo* source, bool sourceLocal, int functionIndex, u16 control) {
-    return handle_RETURN_impl<false, PROFILE>(source, sourceLocal, functionIndex, control);
+template<bool CHECK_PROFILE>
+NEOS_NOINLINE bool handle_RETURN_owned(VarInfo* source, bool sourceLocal, int functionIndex, u16 control, bool profileEnabled) {
+    return handle_RETURN_impl<false, CHECK_PROFILE>(source, sourceLocal, functionIndex, control, profileEnabled);
 }
 
-template<bool PROFILE>
-NEOS_FORCEINLINE bool handle_RETURN(const SVMOperation& OP) {
+template<bool CHECK_PROFILE>
+NEOS_FORCEINLINE bool handle_RETURN(const SVMOperation& OP, bool profileEnabled) {
     VarInfo* source = (OP.argFlag & NEOS_OP_CALL_NORESULT) ? nullptr : GetVarRawF1(OP);
     const bool sourceLocal = (OP.argFlag & NEOS_ARG_N1_LOCAL) != 0;
     if (OP.n3 & RETURN_PAYLOAD_FRAME)
-        return handle_RETURN_impl<true, PROFILE>(source, sourceLocal, OP.n2, static_cast<u16>(OP.n3));
-    return handle_RETURN_owned<PROFILE>(source, sourceLocal, OP.n2, static_cast<u16>(OP.n3));
+        return handle_RETURN_impl<true, CHECK_PROFILE>(source, sourceLocal, OP.n2, static_cast<u16>(OP.n3), profileEnabled);
+    return handle_RETURN_owned<CHECK_PROFILE>(source, sourceLocal, OP.n2, static_cast<u16>(OP.n3), profileEnabled);
 }
 
-template<bool PROFILE>
-NEOS_FORCEINLINE bool handle_RETURN_L(const SVMOperation& OP) {
+template<bool CHECK_PROFILE>
+NEOS_FORCEINLINE bool handle_RETURN_L(const SVMOperation& OP, bool profileEnabled) {
     // NORESULT 면 슬롯을 안 뽑으므로 PatchLocalOps 가 _L 로 바꾸지 않는다.
     if (OP.n3 & RETURN_PAYLOAD_FRAME)
-        return handle_RETURN_impl<true, PROFILE>(GetVarRaw_L(OP.n1), true, OP.n2, static_cast<u16>(OP.n3));
-    return handle_RETURN_owned<PROFILE>(GetVarRaw_L(OP.n1), true, OP.n2, static_cast<u16>(OP.n3));
+        return handle_RETURN_impl<true, CHECK_PROFILE>(GetVarRaw_L(OP.n1), true, OP.n2, static_cast<u16>(OP.n3), profileEnabled);
+    return handle_RETURN_owned<CHECK_PROFILE>(GetVarRaw_L(OP.n1), true, OP.n2, static_cast<u16>(OP.n3), profileEnabled);
 }
 
 NEOS_NOINLINE bool handle_TABLE_ALLOC(const SVMOperation& OP) {
@@ -743,7 +743,7 @@ NEOS_FORCEINLINE void handle_MOV(const SVMOperation& OP) {
     }
 }
 
-// 실행 빈도가 낮은 opcode 의 핸들러. 디스패치 루프(RunInternal)는 타임아웃×디버그×프로파일로 여덟 벌 생성되고 한 벌이
+// 실행 빈도가 낮은 opcode 의 핸들러. 디스패치 루프(RunInternal)는 일반·제어 공용·디버그 공용 세 벌이며 한 벌이
 // 50 KB 를 넘어 uop 캐시를 벗어나므로, 드문 핸들러는 본문을 밖으로 빼 핫 루프를 작게 유지한다.
 // 선정 근거: 벤치·smoke 의 동적 opcode 계측과 게임 프로젝트 스크립트 101개의 정적 opcode 빈도(둘 다 0.1% 미만인 것만).
 // 비트·시프트 연산과 2-피연산자 산술은 계측에서는 드물었지만 xorshift 류 난수·해시 코드가 op 마다 호출을

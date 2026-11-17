@@ -126,7 +126,46 @@ void Test(bool debug,bool image) {
     Require(instance->SetProfiling(true,error) && instance->Call("Root").ok(),"reenable");
     Require(instance->Reset(error) && !instance->ReadProfile().enabled && instance->ReadProfile().entries.empty(),"instance reset discards profiling state");
 }
-// PROFILE와 DEBUG/TIMEOUT의 조합도 실제 중단·재개로 실행한다. 소스 디버그 정보만 켜는 검사는 이 경로를 타지 않는다.
+// 같은 제어 루프에서 시간 제한만 사용하거나 프로파일만 사용해도 다른 기능이 켜지면 안 된다.
+// state 2는 한 번 수집한 뒤 꺼서 객체가 남은 상태다. 프로파일 포인터 유무로 잘못 판단하는 회귀를 잡는다.
+void ControlledProfile() {
+    NeoCore::Error error;
+    auto program=NeoCore::Program::Compile(
+        "export int Leaf(int n){return n+1;} export int Count(){int s=0;for(int i in 0,600){s+=Leaf(i);}return s;}",
+        error,"profile_controls.nc",true);
+    Require(program!=nullptr,"compile independent profile controls");
+    for(int state:{0,1,2})for(int limit:{0,1,2}) {
+        auto instance=program->CreateInstance(error);
+        Require(instance!=nullptr,"create controlled profile instance");
+        if(state!=0)Require(instance->SetProfiling(true,error),"enable controlled profile");
+        if(state==2) {
+            Require(instance->Call("Leaf",{NeoCore::Scalar::Int(0)}).ok(),"collect before disabling");
+            Require(instance->SetProfiling(false,error),"disable retained collector");
+        }
+        const auto before=instance->ReadProfile();
+        NeoCore::ExecutionLimits limits;
+        if(limit==1)limits.instructionBudget=3;
+        if(limit==2)limits.timeoutMs=0;
+        auto result=instance->Call("Count",{},limits);
+        Require(result.ok() && result.suspended()==(limit!=0),"only requested limit suspends");
+        unsigned resumes=0;
+        while(result.ok() && result.suspended() && resumes++<10000) result=instance->Resume(0,limits.instructionBudget);
+        Require(result.ok() && !result.suspended() && result.value.asInt()==180300,"controlled execution result");
+        Require(instance->Call("Count").value.asInt()==180300,"later unlimited execution result");
+        const auto after=instance->ReadProfile();
+        if(state==1) {
+            Require(Entry(after,"Count").calls==2 && Entry(after,"Leaf").calls==1200,"slices do not inflate call counts");
+            Accounting(after);
+        } else {
+            Require(!after.enabled && after.activeNanoseconds==before.activeNanoseconds && after.entries.size()==before.entries.size(),"limits do not enable profiling");
+            for(const auto& entry:before.entries) {
+                const auto& frozen=Entry(after,entry.name);
+                Require(frozen.calls==entry.calls && frozen.selfNanoseconds==entry.selfNanoseconds && frozen.inclusiveNanoseconds==entry.inclusiveNanoseconds,"disabled controlled counters frozen");
+            }
+        }
+    }
+}
+// 디버그 공용 루프의 프로파일·시간 제한 조합도 실제 중단·재개로 실행한다. 소스 디버그 정보만 켜는 검사는 이 경로를 타지 않는다.
 void DebugProfile() {
     NeoCore::Error error;
     auto runtime=NeoCore::Runtime::Create(error);
@@ -134,7 +173,7 @@ void DebugProfile() {
     auto program=runtime->Compile("export int Leaf(int x){\nreturn x+1;\n}\nexport int Root(){int v=Leaf(2);return Leaf(v);}",error,"profile_debug.nc",true);
     Require(program!=nullptr,"compile debugger profile");
     NeoCore::Debugger* debugger=runtime->GetDebugger();
-    for(bool enabled:{false,true})for(unsigned budget:{0u,3u}) {
+    for(bool enabled:{false,true})for(unsigned budget:{0u,3u})for(bool step:{false,true}) {
         auto instance=program->CreateInstance(error);
         Require(instance && instance->SetProfiling(enabled,error) && debugger->Attach(*instance,error),"attach profiled debugger");
         NeoCore::DebugLocation point;point.sourceName="profile_debug.nc";point.line=2;
@@ -144,10 +183,13 @@ void DebugProfile() {
         unsigned resumes=0,stops=0;
         while(result.ok() && result.suspended() && resumes++<100) {
             Require(!instance->SetProfiling(!enabled,error),"cannot switch profiling while paused");
-            if(debugger->IsPaused(*instance)){++stops;Require(debugger->Continue(*instance),"continue profile breakpoint");}
+            if(debugger->IsPaused(*instance)){
+                ++stops;
+                Require(step ? debugger->StepInto(*instance) : debugger->Continue(*instance),"continue or step profile breakpoint");
+            }
             result=instance->Resume(0,budget);
         }
-        Require(result.ok() && !result.suspended() && result.value.asInt()==4 && stops==2,"profiled debugger execution completes");
+        Require(result.ok() && !result.suspended() && result.value.asInt()==4 && (step ? stops>=2 : stops==2),"profiled debugger execution completes");
         const auto p=instance->ReadProfile();
         if(enabled){Require(Entry(p,"Root").calls==1 && Entry(p,"Leaf").calls==2,"debugger resumes preserve call counts");Accounting(p);}
         else Require(!p.enabled && p.entries.empty(),"nonprofiled debugger does not collect");
@@ -155,5 +197,5 @@ void DebugProfile() {
     }
 }
 }
-int main(){try{for(bool debug:{false,true})for(bool image:{false,true})Test(debug,image);DebugProfile();
+int main(){try{for(bool debug:{false,true})for(bool image:{false,true})Test(debug,image);ControlledProfile();DebugProfile();
 std::printf("profile regression: %d checks passed\n",checks);return 0;}catch(const std::exception& e){std::fprintf(stderr,"FAIL: %s\n",e.what());return 1;}}

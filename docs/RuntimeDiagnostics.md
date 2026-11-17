@@ -54,12 +54,24 @@ intervals, does not advance clocks, and is not a live cross-thread API. The runt
 existing one-thread rule applies. `Instance::Reset` replaces the VM worker and thus
 discards profiling data and disables it. Cancel preserves accumulated counters.
 
-Each interpreter entry selects a profiled or unprofiled loop independently of
-debugging and execution limits. Direct script calls and returns in the unprofiled
-loop contain no profiling checks. Disabling profiling selects that loop even when
-the collector is retained for reading frozen counters. Shared host, function-value
-and coroutine boundaries continue to respect the runtime setting. Bytecode and
-frame layout are unchanged.
+Each interpreter entry selects one of three loop bodies:
+
+| Loop | Selected when | Runtime controls |
+| --- | --- | --- |
+| Fast | No active debugger, profiling or execution limit | No per-op debugger/limit checks or direct-call/return profiling checks |
+| Controlled | Debugger inactive; profiling or an execution limit enabled | Profiling and limits are independent runtime flags |
+| Debug | Breakpoints, stepping or a pause request activate the debugger | Debug checks; profiling and limits remain independently optional |
+
+Profiling and execution-limit combinations share the Controlled or Debug body;
+they do not generate additional template instantiations or enable one another.
+A time-sliced run with profiling disabled pays the shared branch but does not
+collect timings. A profiling-only run does not check breakpoints or enforce a
+limit. Retained disabled collectors remain frozen. Flags are selected again on
+resume and host reentry, preserving the existing nested-execution budget rules.
+Collector functions keep their internal enabled checks because inconsistent host
+profiling state can disable collection during execution. Shared host,
+function-value and coroutine boundaries respect the runtime setting. Bytecode
+and frame layout are unchanged.
 
 Each entry records:
 
