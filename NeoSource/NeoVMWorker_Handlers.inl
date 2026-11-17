@@ -421,9 +421,10 @@ NEOS_FORCEINLINE bool handle_RETURN_impl(VarInfo* pSrc, bool sourceLocal, int fu
     }
 
 	SetCodePtr((int)(returnIP & IP_MASK));
+	// 끝나는 프레임의 기준이 호출자의 프레임 끝이다(호출 기록에 따로 두지 않는다).
+	_iSP_VarsMax = _iSP_Vars;
 	_iSP_Vars = callStack._iSP_Vars;
 	SetStackPointer(_iSP_Vars);
-	_iSP_VarsMax = callStack._iSP_VarsMax;
 	SelectFunction(callStack._functionIndex);
 	if (returnIP & FLAG_CLOSURE)
 	{

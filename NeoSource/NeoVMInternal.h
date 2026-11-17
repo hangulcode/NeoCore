@@ -639,10 +639,11 @@ struct FunctionPtr;
 
 
 
+// 호출자의 프레임 끝(_iSP_VarsMax)은 기록하지 않는다. 호출은 그 자리에서 피호출자 프레임을 시작하므로, 반환할 때의
+// 프레임 기준이 곧 호출자의 프레임 끝이다.
 struct SCallStack
 {
 	int		_iSP_Vars;
-	int		_iSP_VarsMax;
 	u32		_ReturnIP;
 	// >= 0: 절대 실행 스택 인덱스, -1: 명시적 목적지 없음(기본 반환 임시 슬롯 사용),
 	// <= -2: opcode와 같은 전역 음수 오프셋. 상수 0 포인터에 그대로 더해 복원한다.

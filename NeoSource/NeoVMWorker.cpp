@@ -3040,7 +3040,6 @@ void CNeoVMWorker::Call(ClosureInfo* closure, int n2, int returnValueIndex)
 	SCallStack callStack;
 	callStack._ReturnIP = (u32)GetCodeptr();
 	callStack._iSP_Vars = _iSP_Vars;
-	callStack._iSP_VarsMax = _iSP_VarsMax;
 	callStack._iReturnValueIndex = returnValueIndex;
 	callStack._functionIndex = _functionIndex;
 	if (m_pActiveClosure != nullptr)
@@ -3050,7 +3049,6 @@ void CNeoVMWorker::Call(ClosureInfo* closure, int n2, int returnValueIndex)
 	SCallStack& callStack = m_pCallStack->push_back();
 	callStack._ReturnIP = (u32)GetCodeptr();
 	callStack._iSP_Vars = _iSP_Vars;
-	callStack._iSP_VarsMax = _iSP_VarsMax;
 	callStack._iReturnValueIndex = returnValueIndex;
 	callStack._functionIndex = _functionIndex;
 	if (m_pActiveClosure != nullptr)
