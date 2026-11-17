@@ -286,6 +286,7 @@ private:
 	const SFunctionTable*	m_pFunction = nullptr;
 	struct WorkerProfile;
 	std::unique_ptr<WorkerProfile> m_profile;
+	bool IsProfilingEnabled() const;
 	void ProfileRefresh(int base = -1);
 	void ProfileEntered(int functionIndex);
 	void ProfileRunBegin();
@@ -293,12 +294,22 @@ private:
 	class ProfileRunScope;
 	const VAR_TYPE*			m_pSlotTypes = nullptr;
 	const VAR_TYPE*			m_pGlobalTypes = nullptr;
+	// 실행 루프가 고른 정책을 전달한다. 비계측 루프에는 프로파일 포인터 읽기와 분기가 남지 않는다.
+	template<bool PROFILE>
 	NEOS_FORCEINLINE void SelectFunction(int index, const SFunctionTable& fun, int frameBase = -1)
 	{
 		_functionIndex = index;
 		m_pFunction = &fun;
 		// 뷰가 원소를 바로 가리키므로 읽기 전용 비트가 든 사본을 든다. SlotType_L이 비트를 벗긴다.
 		m_pSlotTypes = fun._slotTypesFlagged.data();
+		if (PROFILE) ProfileRefresh(frameBase);
+	}
+	template<bool PROFILE>
+	NEOS_FORCEINLINE void SelectFunction(int index) { SelectFunction<PROFILE>(index, _pProgram->functions[index]); }
+	// 호스트 재진입·코루틴 전환처럼 루프 밖에서 공유하는 경계는 실행 시 설정을 확인한다.
+	NEOS_FORCEINLINE void SelectFunction(int index, const SFunctionTable& fun, int frameBase = -1)
+	{
+		SelectFunction<false>(index, fun, frameBase);
 		if (m_profile) ProfileRefresh(frameBase);
 	}
 	NEOS_FORCEINLINE void SelectFunction(int index) { SelectFunction(index, _pProgram->functions[index]); }
@@ -355,12 +366,18 @@ private:
         for (int i = selected.zeroFirst; i < selected.zeroEnd; ++i) window[i]._int = 0;
     }
     // 프레임 진입: 소유 슬롯 구간을 0으로 채우고 함수 배치를 고른다. 숫자 슬롯은 선언이 초기화한다.
+    template<bool PROFILE>
     NEOS_FORCEINLINE void EnterFrame(int functionIndex, const SFunctionTable& fun, int base)
     {
         if (fun._ownedCount)
             memset(m_pVarStackData + base + 1 + fun._argsCount, 0, sizeof(VarInfo) * fun._ownedCount);
-        SelectFunction(functionIndex, fun, base);
-        if (m_profile) ProfileEntered(functionIndex);
+        SelectFunction<PROFILE>(functionIndex, fun, base);
+        if (PROFILE) ProfileEntered(functionIndex);
+    }
+    NEOS_FORCEINLINE void EnterFrame(int functionIndex, const SFunctionTable& fun, int base)
+    {
+        EnterFrame<false>(functionIndex, fun, base);
+        if (m_profile) { ProfileRefresh(base); ProfileEntered(functionIndex); }
     }
     NEOS_FORCEINLINE void EnterFrame(int functionIndex, int base)
     { EnterFrame(functionIndex, _pProgram->functions[functionIndex], base); }
@@ -439,7 +456,7 @@ private:
 	virtual bool CancelExecution() override;
 	virtual bool IsInterpreterRunning() const override { return m_bInRun; }
 
-	template<bool TIMEOUT, bool DEBUG>
+	template<bool TIMEOUT, bool DEBUG, bool PROFILE>
 	bool	RunInternal(int iBreakingCallStack);
 	// 드문 명령의 처리. RunInternal의 switch에 없는 명령이 온다. 실행을 멈춰야 하면 true를 돌려준다.
 	bool	ExecuteColdOp(const SVMOperation& OP);
@@ -591,6 +608,8 @@ private:
 	int Sleep(int iTimeout, ValueRef v1);
 	// pReturnValue: 결과를 받을 슬롯. nullptr이고 keepResult면 뒤따르는 MOV가 창 0번에서 가져간다.
 	void Call(FunctionPtr* fun, int n2, VarInfo* pReturnValue = nullptr, bool keepResult = true);
+	template<bool PROFILE>
+	void Call(int n1, int n2, int returnValueIndex = -1);
 	void Call(int n1, int n2, int returnValueIndex = -1);
 	void CallFunctionValue(int functionIndex, int argumentCount, int returnValueIndex = -1);
 	void Call(ClosureInfo* closure, int n2, int returnValueIndex = -1);

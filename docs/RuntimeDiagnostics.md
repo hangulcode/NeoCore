@@ -54,6 +54,13 @@ intervals, does not advance clocks, and is not a live cross-thread API. The runt
 existing one-thread rule applies. `Instance::Reset` replaces the VM worker and thus
 discards profiling data and disables it. Cancel preserves accumulated counters.
 
+Each interpreter entry selects a profiled or unprofiled loop independently of
+debugging and execution limits. Direct script calls and returns in the unprofiled
+loop contain no profiling checks. Disabling profiling selects that loop even when
+the collector is retained for reading frozen counters. Shared host, function-value
+and coroutine boundaries continue to respect the runtime setting. Bytecode and
+frame layout are unchanged.
+
 Each entry records:
 
 - `calls`: script frame entries or registered host boundary attempts, including

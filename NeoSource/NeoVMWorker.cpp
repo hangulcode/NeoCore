@@ -2228,10 +2228,22 @@ bool	CNeoVMWorker::Run()
 		bool topExec = m_bTopExec;
 		m_bTopExec = false;
 		int breakingCallStack = (topExec || debugActive) ? 0 : (int)m_pCallStack->size();
-		if (m_iTimeout >= 0 || (m_instructionBudget != 0 && !nestedRun))
-			b = debugActive ? RunInternal<true, true>(breakingCallStack) : RunInternal<true, false>(breakingCallStack);
+		// 설정 변경은 유휴 상태에서만 허용된다. 재개·재진입도 여기서 실제 enabled 상태로 고른다.
+		// 한 번 켰다 꺼도 m_profile 객체는 남으므로 포인터 유무로 고르면 안 된다.
+		if (IsProfilingEnabled())
+		{
+			if (m_iTimeout >= 0 || (m_instructionBudget != 0 && !nestedRun))
+				b = debugActive ? RunInternal<true, true, true>(breakingCallStack) : RunInternal<true, false, true>(breakingCallStack);
+			else
+				b = debugActive ? RunInternal<false, true, true>(breakingCallStack) : RunInternal<false, false, true>(breakingCallStack);
+		}
 		else
-			b = debugActive ? RunInternal<false, true>(breakingCallStack) : RunInternal<false, false>(breakingCallStack);
+		{
+			if (m_iTimeout >= 0 || (m_instructionBudget != 0 && !nestedRun))
+				b = debugActive ? RunInternal<true, true, false>(breakingCallStack) : RunInternal<true, false, false>(breakingCallStack);
+			else
+				b = debugActive ? RunInternal<false, true, false>(breakingCallStack) : RunInternal<false, false, false>(breakingCallStack);
+		}
 		// handle_ERROR reports the source location to the debugger, but the VM result
 		// must remain an error so RunSettle releases this failed execution context.
 	}
@@ -2390,7 +2402,7 @@ NEOS_NOINLINE bool CNeoVMWorker::ExecuteColdOp(const SVMOperation& OP)
 	return false;
 }
 
-template<bool TIMEOUT, bool DEBUG>
+template<bool TIMEOUT, bool DEBUG, bool PROFILE>
 bool	CNeoVMWorker::RunInternal(int iBreakingCallStack)
 {
 	if (false == _isInitialized)
@@ -2488,19 +2500,19 @@ bool	CNeoVMWorker::RunInternal(int iBreakingCallStack)
 		case NOP_STR_ADD:       handle_STR_ADD(OP); break;
 		case NOP_STR_ADD_L:     handle_STR_ADD_L(OP); break;
 		case NOP_TOSTRING:      handle_TOSTRING(OP); break;
-		case NOP_CALL:          handle_CALL(OP); break;
+		case NOP_CALL:          handle_CALL<PROFILE>(OP); break;
 		// 호출 본문은 한 벌만 둔다. 쌍 명령(MOVL_CALL_L)이 둘째 명령 포인터로 여기에 합류한다.
 		case NOP_CALL_L:        pairedOp = &OP;
-		call_local:             handle_CALL_L(*pairedOp); break;
+		call_local:             handle_CALL_L<PROFILE>(*pairedOp); break;
 		case NOP_PTRCALL2:      handle_PTRCALL2(OP); break;
 		case NOP_PTRCALL2_L:    handle_PTRCALL2_L(OP); break;
 		case NOP_NATIVECALL:    handle_NATIVECALL(OP); break;
 		case NOP_APICALL:       handle_APICALL(OP); break;
 		case NOP_RETURN:
-			if (handle_RETURN(OP)) return true;
+			if (handle_RETURN<PROFILE>(OP)) return true;
 			break;
 		case NOP_RETURN_L:
-			if (handle_RETURN_L(OP)) return true;
+			if (handle_RETURN_L<PROFILE>(OP)) return true;
 			break;
 		// 타입이 확정된 범위 점프는 오류가 없어 점프 자체만 한다.
 		case NOP_RT_JMP_I64_RANGE_INSIDE: if (IsRangeInsideRT<false, true>(OP)) SetCodeIncPtr(OP.n1); break;

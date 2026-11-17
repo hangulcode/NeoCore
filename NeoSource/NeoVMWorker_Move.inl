@@ -33,6 +33,7 @@ NEOS_FORCEINLINE void CNeoVMWorker::MoveTake(ValueRef v1, ValueRef v2)
 // [핫패스] 스크립트 함수 호출. 측정상 호출 비용의 78%가 이 프레임 push/pop 에 있어
 // (bench_call.ns: 프레임 6.80ns / 반환 0.40ns / 인자 1.50ns) 인라인 대상으로 옮겼다.
 // Move 와 같은 이유로 .cpp 가 아니라 헤더에서 보이는 .inl 에 둔다.
+template<bool PROFILE>
 NEOS_FORCEINLINE void CNeoVMWorker::Call(int n1, int n2, int returnValueIndex)
 {
 	const SFunctionTable& fun = Functions()[n1];
@@ -72,9 +73,16 @@ NEOS_FORCEINLINE void CNeoVMWorker::Call(int n1, int n2, int returnValueIndex)
 	_iSP_Vars = _iSP_VarsMax;
 	SetStackPointer(_iSP_Vars);
 	// 인자는 호출자가 창에 넣었고 이제 피호출자 프레임의 것이다. 창 계획은 소비됐다.
-	EnterFrame(n1, fun, _iSP_Vars);
+	EnterFrame<PROFILE>(n1, fun, _iSP_Vars);
 	_activePlan = nullptr;
 	_iSP_VarsMax = _iSP_Vars + fun._localAddCount;
 	if (_iSP_Vars_Max2 < _iSP_Vars + fun._stackSlotCount)
 		_iSP_Vars_Max2 = _iSP_Vars + fun._stackSlotCount;
+}
+
+// 함수값 등 공용 호출 경계. 직접 CALL은 실행 루프의 상수 정책을 전달한다.
+NEOS_FORCEINLINE void CNeoVMWorker::Call(int n1, int n2, int returnValueIndex)
+{
+	if (IsProfilingEnabled()) Call<true>(n1, n2, returnValueIndex);
+	else Call<false>(n1, n2, returnValueIndex);
 }

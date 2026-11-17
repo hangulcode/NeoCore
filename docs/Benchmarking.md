@@ -82,11 +82,12 @@ have not. Two builds of near-identical source can therefore differ by far more t
 real change.
 
 - Report the offset with `python Tools/bench/dispatch_offset.py <neocore.exe>`; the last
-  of the four sites is the one `neocore --file` runs. The runner stores it in the record.
+  site (no timeout, no debugger, no profiling) is the one `neocore --file` runs. The runner stores it in the record.
 - **Compare two NeoCore builds at equal offsets.** To move a build without changing its
-  logic, insert `if (!TIMEOUT && !DEBUG) { __nop(); ... }` (k nops, `#include <intrin.h>`)
+  logic, insert `if (!TIMEOUT && !DEBUG && !PROFILE) { __nop(); ... }` (k nops, `#include <intrin.h>`)
   right after the `_isInitialized` check at the top of `RunInternal` and rebuild the
-  console; 16 nops move the offset by 16 bytes. Build the variants that land on the same
+  console; recheck the actual offset because padding can also change instruction
+  alignment. Build the variants that land on the same
   offsets as the other build, time them alternately in one session, and remove the
   padding afterwards. Measure all four offsets (0, 16, 32, 48).
 - A change that is faster at every offset is a real change. A change that is faster at

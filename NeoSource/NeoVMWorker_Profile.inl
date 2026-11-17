@@ -70,6 +70,11 @@
     }
 };
 
+// 실행 루프 선택은 한 번의 설정 읽기로 끝낸다. 상태 객체가 있어도 비활성일 수 있다.
+bool CNeoVMWorker::IsProfilingEnabled() const {
+    return m_profile && m_profile->snapshot.enabled;
+}
+
 bool CNeoVMWorker::ConfigureProfile(bool enabled, bool reset) {
     if (m_bInRun || m_pMainCtx != nullptr) return false;
     if (!m_profile && (enabled || reset)) m_profile.reset(new WorkerProfile());

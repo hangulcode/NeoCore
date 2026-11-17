@@ -1,4 +1,5 @@
-#include "NeoCoreHost.h"
+﻿#include "NeoCoreHost.h"
+#include "NeoCoreDebugger.h"
 #include <cstdio>
 #include <stdexcept>
 
@@ -40,6 +41,9 @@ void Test(bool debug,bool image) {
         "export int Leaf(){return host.Hit();}\n"
         "export int Callback(){return Leaf();}\n"
         "export int Root(){int v=0;for(int i in 0,3)v+=Leaf();return v+host.Nested();}\n"
+        "fn()->int Make(int seed){return fn()->int{return seed+Leaf();};}\n"
+        "export int Closure(){fn()->int f=Make(4);return f()+f();}\n"
+        "export int Indirect(){fn()->int f=Leaf;return f();}\n"
         "export int Wait(){sleep(0);return Leaf();}\n"
         "export int Fail(){int z=0;return 1/z;}\n"
         "export int HostFail(){return host.Throws();}\n"
@@ -102,15 +106,54 @@ void Test(bool debug,bool image) {
     Require(Entry(instance->ReadProfile(),"Bounce").calls==7 && Entry(instance->ReadProfile(),"Host.Reenter").calls==6,"recursive host reentry counts");
     Require(instance->Call("CoroutineTree").ok(),"nested coroutine yield and resume");
     Require(Entry(instance->ReadProfile(),"Chain").calls==4,"coroutine resume does not recount frames");
+    Require(instance->Call("Closure").value.asInt()==10 && instance->Call("Indirect").value.asInt()==1, "profiled closure and function value");
+    Require(Entry(instance->ReadProfile(),"Closure").calls==1 && Entry(instance->ReadProfile(),"Indirect").calls==1, "indirect boundaries retain profiling");
     Accounting(instance->ReadProfile());
     Require(instance->SetProfiling(false,error),"disable");
     const auto frozen=instance->ReadProfile();
+    // 상태 객체를 남긴 채 끈 뒤에도 재진입·클로저·중단 경로가 기록을 다시 켜면 안 된다.
     Require(instance->Call("Root").ok(),"disabled result");
-    Require(instance->ReadProfile().activeNanoseconds==frozen.activeNanoseconds,"disabled counters frozen");
+    Require(instance->Call("Closure").value.asInt()==10 && instance->Call("Indirect").value.asInt()==1, "disabled indirect results");
+    Require(instance->Call("Wait").suspended() && instance->Resume(0).ok(), "disabled suspension and resume");
+    Require(instance->Call("Coroutines").ok() && !instance->Call("Fail").ok(), "disabled coroutine and failure");
+    const auto disabled=instance->ReadProfile();
+    Require(!disabled.enabled && disabled.activeNanoseconds==frozen.activeNanoseconds && disabled.entries.size()==frozen.entries.size(),"disabled counters frozen");
+    for(const auto& entry:frozen.entries) {
+        const auto& after=Entry(disabled,entry.name);
+        Require(after.calls==entry.calls && after.selfNanoseconds==entry.selfNanoseconds && after.inclusiveNanoseconds==entry.inclusiveNanoseconds, "disabled entry frozen: "+entry.name);
+    }
     Require(instance->ResetProfile(error) && instance->ReadProfile().entries.empty(),"reset counters");
     Require(instance->SetProfiling(true,error) && instance->Call("Root").ok(),"reenable");
     Require(instance->Reset(error) && !instance->ReadProfile().enabled && instance->ReadProfile().entries.empty(),"instance reset discards profiling state");
 }
+// PROFILE와 DEBUG/TIMEOUT의 조합도 실제 중단·재개로 실행한다. 소스 디버그 정보만 켜는 검사는 이 경로를 타지 않는다.
+void DebugProfile() {
+    NeoCore::Error error;
+    auto runtime=NeoCore::Runtime::Create(error);
+    Require(runtime!=nullptr,"create debugger profile runtime");
+    auto program=runtime->Compile("export int Leaf(int x){\nreturn x+1;\n}\nexport int Root(){int v=Leaf(2);return Leaf(v);}",error,"profile_debug.nc",true);
+    Require(program!=nullptr,"compile debugger profile");
+    NeoCore::Debugger* debugger=runtime->GetDebugger();
+    for(bool enabled:{false,true})for(unsigned budget:{0u,3u}) {
+        auto instance=program->CreateInstance(error);
+        Require(instance && instance->SetProfiling(enabled,error) && debugger->Attach(*instance,error),"attach profiled debugger");
+        NeoCore::DebugLocation point;point.sourceName="profile_debug.nc";point.line=2;
+        Require(debugger->SetBreakpoints(*instance,{point},error),"profile breakpoint");
+        NeoCore::ExecutionLimits limits;limits.instructionBudget=budget;
+        auto result=instance->Call("Root",{},limits);
+        unsigned resumes=0,stops=0;
+        while(result.ok() && result.suspended() && resumes++<100) {
+            Require(!instance->SetProfiling(!enabled,error),"cannot switch profiling while paused");
+            if(debugger->IsPaused(*instance)){++stops;Require(debugger->Continue(*instance),"continue profile breakpoint");}
+            result=instance->Resume(0,budget);
+        }
+        Require(result.ok() && !result.suspended() && result.value.asInt()==4 && stops==2,"profiled debugger execution completes");
+        const auto p=instance->ReadProfile();
+        if(enabled){Require(Entry(p,"Root").calls==1 && Entry(p,"Leaf").calls==2,"debugger resumes preserve call counts");Accounting(p);}
+        else Require(!p.enabled && p.entries.empty(),"nonprofiled debugger does not collect");
+        debugger->Detach(*instance);
+    }
 }
-int main(){try{for(bool debug:{false,true})for(bool image:{false,true})Test(debug,image);
+}
+int main(){try{for(bool debug:{false,true})for(bool image:{false,true})Test(debug,image);DebugProfile();
 std::printf("profile regression: %d checks passed\n",checks);return 0;}catch(const std::exception& e){std::fprintf(stderr,"FAIL: %s\n",e.what());return 1;}}
