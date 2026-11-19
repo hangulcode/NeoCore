@@ -379,7 +379,12 @@ bool ValueResize(const ValuePtr& owner, std::size_t count)
     if (owner->value.GetType() == NeoScript::VAR_LIST)
     { owner->value._lst->Resize(static_cast<int>(count)); return true; }
     if (owner->value.GetType() == NeoScript::VAR_ARRAY)
-        return owner->vm->ArrayResize(owner->value._array, static_cast<int>(count));
+    {
+        // ArrayResize 는 "크기가 바뀌었는가"를 돌려준다. 이미 그 크기인 것은 실패가 아니다
+        // (리스트와 같게: 같은 크기로 맞추기와 빈 배열 비우기는 성공이다).
+        owner->vm->ArrayResize(owner->value._array, static_cast<int>(count));
+        return true;
+    }
     return false;
 }
 

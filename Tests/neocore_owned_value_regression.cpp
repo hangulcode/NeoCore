@@ -119,7 +119,10 @@ void Verify(bool debug)
     for (ArrayStorage storage : storages)
     {
         ValuePtr packed = MakeCollection(*runtime, ValueKind::Array, storage, program);
+        // 이미 그 크기인 배열을 다시 맞추는 것은 성공이다(빈 배열의 0 맞추기 · 비우기 포함).
+        Check(ValueResize(packed, 0) && ValueClear(packed) && ValueSize(packed) == 0, "empty array resize to zero");
         Check(ValueResize(packed, 3), "bulk array resize");
+        Check(ValueResize(packed, 3) && ValueSize(packed) == 3, "array resize to the current size");
         const std::uint64_t input[3] = {1, 2, 3};
         std::uint64_t output[3] = {};
         const std::size_t bytes = (storage == ArrayStorage::Int32 || storage == ArrayStorage::Float32) ? 12 : 24;
