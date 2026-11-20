@@ -851,9 +851,15 @@ Supported methods are:
 | `reserve(capacity)` | `void` | Reserves storage without changing length. |
 | `clear()` | `void` | Removes all elements, leaving an empty array. |
 | `clone()` | Same array type | Creates an independent container with the same elements and saved fill value. |
+| `copy_from(src, srcStart, dstStart, count)` | `void` | Copies a range from an array of the same declared type into existing elements. Overlapping ranges use the original source values. |
 | `fill(value)` | `void` | Replaces existing elements without changing length or the saved fill value. |
 | `find(value)` | `int` | Returns the first matching zero-based index, or `-1` if absent, including in an empty array. |
 | `contains(value)` | `bool` | Returns whether a matching element exists. |
+
+`copy_from` counts elements from zero and preserves the destination length and saved
+fill value. A null array, a negative argument or a range extending past either end
+raises a runtime error before any element changes. For a zero count either start
+may equal its array's length.
 
 Search uses the element equality rules; floating-point searches are exact, not
 approximate. Methods taking a value check compatibility with the element type.

@@ -142,6 +142,10 @@ examples in [math.nc](../Samples/neocore/scripts/math.nc).
 Their supported operations include size/membership queries, typed mutation,
 removal, copies and iteration. Lists provide append/insert/pop/remove/remove_swap,
 resize/reserve and sorting where supported by their comparator contract.
+Arrays provide `dst.copy_from(src, srcStart, dstStart, count)` to overwrite existing
+elements from the same array type. Both ranges are checked before writing and may
+overlap. For example, `packet.copy_from(samples, 0, 12, samples.len())` keeps
+the first twelve elements of an already sized packet.
 Maps provide `contains(key)`, `try_get(key, out value)`, `remove`, `clear` and typed keys/
 values. Reading `map[key]` always fails if the key is absent; a present null value
 remains valid for reference-valued maps. `map.get` and its fallback were removed.

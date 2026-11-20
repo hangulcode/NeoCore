@@ -405,6 +405,72 @@ struct neo_libs
 		pN->ReturnValue(SequenceFind(pN, pVar, pN->GetStack(1)) >= 0);
 		return true;
 	}
+	static bool Array_copy_from(CNeoVMWorker* pN, ValueRef pVar, short args)
+	{
+		assert(pVar.GetType() == VAR_ARRAY && args == 4);
+		ValueRef source = pN->GetStack(1);
+		if (source.GetType() == VAR_NONE)
+		{
+			pN->SetError("cannot copy from a null array");
+			return false;
+		}
+		ArrayInfo* src = source->_array;
+		ArrayInfo* dst = pVar->_array;
+		assert(src->_elementType == dst->_elementType);
+		const NS_INT from = pN->GetStack(2)->_int;
+		const NS_INT to = pN->GetStack(3)->_int;
+		const NS_INT count = pN->GetStack(4)->_int;
+		// 원소를 쓰기 전에 두 범위를 모두 검사한다. 시작과 개수를 더하면 정수 범위를 넘을 수 있다.
+		if (from < 0 || to < 0 || count < 0 || count > src->_count - from || count > dst->_count - to)
+		{
+			pN->SetError("array.copy_from range out of bounds");
+			return false;
+		}
+		if (count > 0 && (src != dst || from != to))
+		{
+			const int s = static_cast<int>(from), d = static_cast<int>(to), n = static_cast<int>(count);
+			const bool backward = src == dst && d > s && d - s < n;
+			switch (dst->_elementType)
+			{
+			case NeoArrayElementType::Bool:
+				if (((s | d | n) & 7) == 0)
+					std::memmove(dst->BoolBits() + d / 8, src->BoolBits() + s / 8, n / 8);
+				else
+					for (int i = 0; i < n; ++i)
+					{
+						const int offset = backward ? n - 1 - i : i;
+						dst->SetBool(d + offset, src->GetBool(s + offset));
+					}
+				break;
+			case NeoArrayElementType::Int:
+				std::memmove(dst->IntData() + d, src->IntData() + s, n * sizeof(NS_INT));
+				break;
+			case NeoArrayElementType::Float:
+				std::memmove(dst->FloatData() + d, src->FloatData() + s, n * sizeof(NS_FLOAT));
+				break;
+			case NeoArrayElementType::Vector2:
+				std::memmove(dst->VectorValues() + d, src->VectorValues() + s, n * sizeof(VarInfo));
+				break;
+			case NeoArrayElementType::Vector3:
+			case NeoArrayElementType::Vector4:
+				// 3·4성분은 저장소를 공유하므로 참조를 보유하고 덮어쓴 원소를 해제한다.
+				for (int i = 0; i < n; ++i)
+				{
+					const int offset = backward ? n - 1 - i : i;
+					pN->GetVM()->Move(dst->VectorAt(d + offset), src->VectorAt(s + offset));
+				}
+				break;
+			case NeoArrayElementType::Int32:
+				std::memmove(dst->Int32Data() + d, src->Int32Data() + s, n * sizeof(int32_t));
+				break;
+			case NeoArrayElementType::Float32:
+				std::memmove(dst->Float32Data() + d, src->Float32Data() + s, n * sizeof(float));
+				break;
+			}
+		}
+		pN->ReturnValue();
+		return true;
+	}
 	static bool Array_fill(CNeoVMWorker* pN, ValueRef pVar, short args)
 	{
 		assert(pVar.GetType() == VAR_ARRAY && args == 1);

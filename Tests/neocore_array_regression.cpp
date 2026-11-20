@@ -109,6 +109,34 @@ void MethodsAndAliases(bool debug)
         21, "empty quaternion array grows with identity fill", debug);
 }
 
+void RangeCopies(bool debug)
+{
+    const struct { const char* type; const char* element; const char* component; } cases[] = {
+        {"array<int>", "i+1", ""}, {"array<float>", "i+0.5", ""},
+        {"array32<int>", "i+1", ""}, {"array32<float>", "i+0.5", ""},
+        {"array<bool>", "i%3==0", ""},
+        {"array<Vector2>", "Vector2(i+1,2)", ".x"}, {"array<Vector3>", "Vector3(i+1,2,3)", ".x"},
+        {"array<Vector4>", "Vector4(i+1,2,3,4)", ".x"}, {"array<Quaternion>", "Quaternion(1,i+1,2,3)", ".x"}
+    };
+    for (const auto& item : cases)
+    {
+        const std::string type = item.type, component = item.component;
+        const std::string source = "export bool Probe(){" + type + " a=" + type + "(24);"
+            "for(int i in 0,24) a[i]=" + item.element + ";" + type + " original=a.clone();" + type + " alias=a;"
+            "alias.copy_from(a,1,4,17);"
+            "for(int i in 0,24){int j=(i>=4&&i<21)?i-3:i;if(a[i]" + component + "!=original[j]" + component + ")return false;}"
+            "a.copy_from(alias,4,1,17);"
+            "for(int i in 1,18){if(a[i]" + component + "!=original[i]" + component + ")return false;}"
+            "a.copy_from(original,0,0,24);a.copy_from(a,0,0,24);a.copy_from(original,24,24,0);"
+            "for(int i in 0,24){if(a[i]" + component + "!=original[i]" + component + ")return false;}return a.len()==24;}";
+        ExpectBool(source.c_str(), item.type, debug);
+    }
+    ExpectBool("export bool Probe(){array<Vector3> a=array<Vector3>(2,Vector3(1,2,3));"
+        "array<Vector3> b=array<Vector3>(2,Vector3(7,8,9));b.copy_from(a,0,1,1);a[0].x=5;"
+        "b[1].z=8;b.resize(3);return a[0].z==3&&b[1].x==1&&b[2].x==7;}",
+        "copied vectors detach on mutation and destination retains fill", debug);
+}
+
 void VectorWrites(bool debug)
 {
     ExpectFloat("export float Probe(){array<Vector3> a=array<Vector3>(1,Vector3(1,2,3));a[0]+=Vector3(3,4,5);a[0]-=Vector3(1,2,3);a[0]*=4;a[0]/=2.0;return a[0].x*100+a[0].y*10+a[0].z;}",
@@ -169,6 +197,15 @@ void RuntimeFailures(bool debug)
         "array<int> a=array<int>();a.reserve(4294967296);",
         "array<int> a=array<int>();a.reserve(2147483648);",
         "array<bool> a=array<bool>();a.resize(4294967296);",
+        "array<int> a=array<int>(2);a.copy_from(null,0,0,0);",
+        "array<int> a=array<int>(2);a.copy_from(a,-1,0,0);",
+        "array<int> a=array<int>(2);a.copy_from(a,0,-1,0);",
+        "array<int> a=array<int>(2);a.copy_from(a,0,0,-1);",
+        "array<int> a=array<int>(2);a.copy_from(a,1,0,2);",
+        "array<int> a=array<int>(2);a.copy_from(a,0,1,2);",
+        "array<int> a=array<int>(2);a.copy_from(a,3,2,0);",
+        "array<int> a=array<int>(2);a.copy_from(a,0,9223372036854775807,1);",
+        "array<int> a=array<int>(2);a.copy_from(a,1,1,9223372036854775807);",
         "array<int> a=array<int>(1);int n=a[-1];",
         "array<float> a=array<float>(1);a[1]=3;",
         "array<Vector3> a=array<Vector3>(1);float n=a[4294967296].x;",
@@ -193,6 +230,16 @@ void RuntimeFailures(bool debug)
         "export int Probe(){data[Index()].x+=1;return 0;}", error, "resize_during_index.nc", debug);
     Check(program != nullptr, "resize during index source compiles: " + error.message);
     if (program) Check(!program->Call("Probe").ok(), "index shrink rejects missing element before component write");
+    program = NeoCore::Program::Compile(
+        "array<int> dst=array<int>(2,7);export void Fail(){dst.copy_from(array<int>(3,9),0,1,2);}"
+        "export int Both(){return dst[0]*10+dst[1];}", error, "copy-range.nc", debug);
+    Check(bool(program), "range failure probe compiles");
+    if (program)
+    {
+        Check(!program->Call("Fail").ok(), "reject copy beyond destination end");
+        const NeoCore::Result both = program->Call("Both");
+        Check(both.ok() && both.value.asInt() == 77, "failed copy preserves the entire destination");
+    }
 }
 
 void Rejections(bool debug)
@@ -211,6 +258,9 @@ void Rejections(bool debug)
         "array<Vector3> a=array<Vector3>(1);Vector3& v=a[0];",
         "array<Vector3> a=array<Vector3>(1);float& x=a[0].x;",
         "array<int> a=array<int>();array<float> b=a;",
+        "array<int> a=array<int>();a.copy_from(array32<int>(),0,0,0);",
+        "array<float> a=array<float>();a.copy_from(array<int>(),0,0,0);",
+        "array<Vector4> a=array<Vector4>();a.copy_from(array<Quaternion>(),0,0,0);",
         "array<Vector4> a=array<Vector4>();array<Quaternion> b=a;",
         "array<Quaternion> a=array<Quaternion>(1,Vector4());",
         "array<Vector4> a=array<Vector4>(1,Quaternion());",
@@ -323,6 +373,7 @@ int main()
         const bool debug = mode != 0;
         ConstructionAndStorage(debug);
         MethodsAndAliases(debug);
+        RangeCopies(debug);
         VectorWrites(debug);
         EvaluationOrder(debug);
         RuntimeFailures(debug);
