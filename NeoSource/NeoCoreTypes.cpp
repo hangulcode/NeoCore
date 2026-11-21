@@ -302,6 +302,16 @@ bool TypeRegistry::ContainsStructValue(TypeId value, TypeId structure) const
     return false;
 }
 
+// jobs를 가져온 프로그램에만 내장 타입을 추가해 기존 이미지의 타입 번호를 보존한다.
+bool TypeRegistry::DeclareJobTypes()
+{
+    if (LookupNamed("JobPool") != InvalidType || LookupNamed("JobResult") != InvalidType) return false;
+    DeclareBuiltinObject("JobPool");
+    const TypeId result = DeclareStruct("JobResult");
+    return DefineStructFields(result, {{"ok", Bool()}, {"error", String()},
+        {"floats", ArrayOf(Float())}, {"ints", ArrayOf(Int())}});
+}
+
 bool TypeRegistry::DefineStructFields(TypeId structure, const std::vector<StructField>& fields, std::string* error)
 {
     if (error) error->clear();

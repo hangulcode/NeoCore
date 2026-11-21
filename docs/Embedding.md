@@ -146,6 +146,8 @@ definitions and explicitly rebuild their programs.
 
 ## Modules, HTTP and serialized programs
 
+Hosts can supply a module loader for script worker pools and share their thread scheduler through `CompileOptions::jobExecutor`. See [parallel jobs](Jobs.md#embedding-and-migration).
+
 `CompileOptions.moduleLoader` supplies `.nc` module source and canonical names.
 `CompileOptions.httpTransport` supplies the cancellable HTTP/HTTPS implementation
 when creating the runtime. The isolated `Program::Compile`/`LoadImage` helpers

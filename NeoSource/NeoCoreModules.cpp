@@ -1,6 +1,7 @@
 ﻿#include "NeoCoreModules.h"
 
 #include "NeoCoreCompiler.h"
+#include "NeoCoreApi.h"
 #include <algorithm>
 #include <cctype>
 #include <cstdlib>
@@ -325,7 +326,7 @@ static void Analyze(Unit& unit, const std::vector<CompileDefine>* defines)
                 }
                 if (!At(tokens, end, ";")) Fail(unit.input.sourceName, tokens[i], "expected ';' after import");
                 import.last = end;
-                import.builtin = import.name == "math" || import.name == "system" || import.name == "coroutine";
+                import.builtin = IsCoreApiModule(import.name);
                 if (ReservedImportName(import.name) || ReservedImportName(import.alias))
                     Fail(unit.input.sourceName, tokens[i], "module names and aliases cannot be reserved words");
                 if (import.builtin && end != i + 2)
@@ -521,7 +522,7 @@ public:
             "break", "continue", "import", "public", "export", "const", "struct", "class",
             "switch", "case", "default", "print", "tostring", "toint", "tofloat", "tosize",
             "sleep", "yield", "list", "map", "array", "array32", "set", "fn", "Vector2", "Vector3",
-            "Vector4", "Quaternion", "TimeSpan", "Stopwatch", "AsyncRequest", "Coroutine", "math", "system", "coroutine"
+            "Vector4", "Quaternion", "TimeSpan", "Stopwatch", "AsyncRequest", "JobPool", "JobResult", "Coroutine", "math", "system", "coroutine", "jobs"
         };
         // 저장소를 다 채운 뒤에 표를 만든다. 표의 열쇠가 저장소의 문자열을 가리킨다.
         preservedNames_.assign(words, words + sizeof(words) / sizeof(words[0]));
@@ -733,7 +734,7 @@ private:
                 i += 2;
                 continue;
             }
-            if ((token.Is("math") || token.Is("system") || token.Is("coroutine")) && At(unit.tokens, i + 1, "."))
+            if ((token.Is("math") || token.Is("system") || token.Is("coroutine") || token.Is("jobs")) && At(unit.tokens, i + 1, "."))
                 Fail(unit.input.sourceName, token, token.Text() + " must be imported before use");
             // 나머지 식별자는 Build가 적어 둔 대로다: 보존 이름이 아니면 모듈 접두사를 받는다.
             if (index && unit.strippedExports.count(i)) unit.actions[i] = DropToken;

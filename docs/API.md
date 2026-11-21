@@ -1,5 +1,7 @@
 # NeoCore API reference
 
+See [parallel jobs](Jobs.md) for the `jobs.open` and `JobPool` signatures, worker exports, and result-buffer protocol.
+
 This document describes the `.nc` frontend. The inherited VM may implement more
 operations internally; those are not automatically NeoCore library APIs.
 [NeoCoreApiTable.inc](../NeoSource/NeoCoreApiTable.inc) is the single declaration

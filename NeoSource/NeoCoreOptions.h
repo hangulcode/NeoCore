@@ -32,9 +32,19 @@ struct CompileDefine
         : name(defineName), kind(defineKind), text(literal) {}
 };
 
+// Post는 다른 스레드에 작업을 제출한다. 제출한 스레드에서 실행하거나 완료를 기다리지 않는다.
+class IJobExecutor
+{
+public:
+    virtual ~IJobExecutor() {}
+    virtual unsigned Concurrency() const = 0;
+    virtual void Post(std::function<void()> task) = 0;
+};
+
 struct CompileOptions
 {
     ModuleLoader moduleLoader;
+    std::shared_ptr<IJobExecutor> jobExecutor;
     std::shared_ptr<IHttpTransport> httpTransport;
     bool emitAsm = false;
     std::vector<CompileDefine> defines;

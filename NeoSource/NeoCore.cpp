@@ -1,5 +1,6 @@
 ﻿#include "NeoCore.h"
 #include "NeoCoreModules.h"
+#include "NeoCoreJobs.h"
 #include "NeoCoreConsoleAccess.h"
 #include "NeoCoreCompiler.h"
 #include "NeoCoreScriptHost.h"
@@ -118,6 +119,7 @@ struct Runtime::Impl
     std::unordered_map<std::uint64_t, Instance*> instances;
     unsigned executing = 0;
     unsigned debugNotifications = 0;
+    std::shared_ptr<IJobExecutor> jobExecutor;
     ~Impl()
     {
         debugger.reset();
@@ -128,6 +130,7 @@ struct Runtime::Impl
 struct Program::Impl
 {
     std::shared_ptr<Runtime::Impl> runtimeState;
+    CompileOptions jobOptions;
     StaticCompileResult checked;
     ModuleBundle bundle;
     std::string sourceName;
@@ -171,6 +174,7 @@ struct Instance::Impl
     NeoScript::InstanceHandle instance;
     std::unique_ptr<HostInstance> host;
     BackendInstanceContext backendContext;
+    std::unique_ptr<InstanceJobs> jobs;
     std::shared_ptr<int> debugLifetime;
     std::uint64_t id = 0;
     void* userData = nullptr;
@@ -245,6 +249,7 @@ std::unique_ptr<Runtime> Runtime::CreateImpl(const HostBindings* bindings, Error
     error = Error();
     if (bindings && !bindings->Validate(error.message)) return std::unique_ptr<Runtime>();
     std::shared_ptr<Impl> state(new Impl());
+    state->jobExecutor = options.jobExecutor;
     state->httpTransport = options.httpTransport;
     NeoScript::RuntimeDesc desc;
     desc.httpTransport = options.httpTransport;
@@ -411,7 +416,7 @@ std::unique_ptr<Program> ConsoleCompileAccess::Check(const std::string& source, 
     return program;
 }
 
-std::unique_ptr<Program> Program::CompileImpl(const std::string& source, Error& error,
+std::shared_ptr<Program::Impl> Program::PrepareSource(const std::string& source, Error& error,
     const std::string& sourceName, bool debug, const std::shared_ptr<Runtime::Impl>& runtime, const CompileOptions& options,
     const std::string* privateEntrySource, std::vector<CompileDiagnostic>* unusedWarnings)
 {
@@ -433,7 +438,7 @@ std::unique_ptr<Program> Program::CompileImpl(const std::string& source, Error& 
     }
     if (!BundleModules(source, sourceName, options.moduleLoader, impl->bundle, error, externalNames, &options.defines,
         options.diagnosticLimit, privateEntrySource))
-        return std::unique_ptr<Program>();
+        return {};
     const auto implementationSource = [&](int line) {
         return options.scriptHost && options.scriptHost->allowsSource && line > 0 &&
             static_cast<std::size_t>(line) <= impl->bundle.lines.size() &&
@@ -454,8 +459,34 @@ std::unique_ptr<Program> Program::CompileImpl(const std::string& source, Error& 
             CompileDiagnostic original; original.message = translated.message; original.sourceName = translated.sourceName;
             original.line = translated.line; original.column = translated.column; error.diagnostics.push_back(original);
         }
-        return std::unique_ptr<Program>();
+        return {};
     }
+    if (impl->checked.types.LookupNamed("JobPool") != InvalidType)
+    {
+        impl->jobOptions.moduleLoader = options.moduleLoader;
+        impl->jobOptions.defines = options.defines;
+        impl->jobOptions.jobExecutor = runtime->jobExecutor;
+    }
+    return impl;
+}
+
+bool Program::CompileImage(const std::string& source, std::vector<std::uint8_t>& image, Error& error,
+    const std::string& sourceName, bool debug, const CompileOptions& options)
+{
+    image.clear();
+    auto runtime = Runtime::Create(error);
+    if (!runtime) return false;
+    auto checked = PrepareSource(source, error, sourceName, debug, runtime->impl_, options, nullptr, nullptr);
+    if (!checked) return false;
+    return Program(std::move(checked)).SaveImage(image, error);
+}
+
+std::unique_ptr<Program> Program::CompileImpl(const std::string& source, Error& error,
+    const std::string& sourceName, bool debug, const std::shared_ptr<Runtime::Impl>& runtime, const CompileOptions& options,
+    const std::string* privateEntrySource, std::vector<CompileDiagnostic>* unusedWarnings)
+{
+    auto impl = PrepareSource(source, error, sourceName, debug, runtime, options, privateEntrySource, unusedWarnings);
+    if (!impl) return {};
     NeoScript::CompileDesc desc;
     desc.source = impl->checked.loweredSource;
     desc.coreIntrinsicPrefix = impl->checked.backendIntrinsicPrefix;
@@ -544,7 +575,7 @@ std::unique_ptr<Program> Program::LoadImage(const std::vector<std::uint8_t>& ima
 }
 
 std::unique_ptr<Program> Program::LoadImageImpl(const std::vector<std::uint8_t>& image,
-    Error& error, const std::shared_ptr<Runtime::Impl>& runtime, const CompileOptions&)
+    Error& error, const std::shared_ptr<Runtime::Impl>& runtime, const CompileOptions& options)
 {
     error = Error();
     Image::Data data;
@@ -556,6 +587,12 @@ std::unique_ptr<Program> Program::LoadImageImpl(const std::vector<std::uint8_t>&
     impl->runtime = runtime->runtime;
     impl->host = runtime->host;
     impl->checked = std::move(data.checked);
+    if (impl->checked.types.LookupNamed("JobPool") != InvalidType)
+    {
+        impl->jobOptions.moduleLoader = options.moduleLoader;
+        impl->jobOptions.defines = options.defines;
+        impl->jobOptions.jobExecutor = runtime->jobExecutor;
+    }
     impl->bundle = std::move(data.bundle);
     impl->sourceName = std::move(data.sourceName);
     impl->includeDebugInfo = data.debug;
@@ -593,9 +630,11 @@ std::unique_ptr<Instance> Program::CreateInstance(Error& error)
     result->impl_->backendContext.owner = result.get();
     result->impl_->backendContext.host = result->impl_->host ? result->impl_->host->UserData() : nullptr;
     desc.userData = &result->impl_->backendContext;
+    if (impl_->jobOptions.moduleLoader)
+        result->impl_->jobs.reset(new InstanceJobs(impl_->jobOptions, impl_->sourceName));
     result->impl_->instance = impl_->runtime->CreateInstance(impl_->program, desc);
     if (!result->impl_->instance ||
-        !NeoCoreBackend::EnableCooperativeSleep(*impl_->runtime, result->impl_->instance))
+        !NeoCoreBackend::ConfigureInstance(*impl_->runtime, result->impl_->instance, result->impl_->jobs.get()))
     {
         error = result->impl_->BackendError("could not create NeoCore instance");
         return std::unique_ptr<Instance>();
@@ -664,8 +703,9 @@ bool Instance::Reset(Error& error)
     if (impl_->module->runtimeState->debugger) impl_->module->runtimeState->debugger->Detach(*this);
     impl_->debugLifetime.reset(new int(0));
     impl_->pending = NeoScript::Invocation();
+    if (impl_->jobs) impl_->jobs->Close();
     if (!impl_->runtime->ResetInstance(impl_->instance)) { error = impl_->BackendError("could not reset instance"); return false; }
-    if (!NeoCoreBackend::EnableCooperativeSleep(*impl_->runtime, impl_->instance))
+    if (!NeoCoreBackend::ConfigureInstance(*impl_->runtime, impl_->instance, impl_->jobs.get()))
     { error = impl_->BackendError("could not reset cooperative execution"); return false; }
     impl_->initialized = impl_->initializing = impl_->suspended = false;
     impl_->initialization = Result();

@@ -48,7 +48,7 @@ std::string Argument(const NeoCore::TypeRegistry& types, NeoCore::TypeId type)
 
 std::string Prefix()
 {
-    return "import math;import system;int integer=1;string text=\"abc\";"
+    return "import jobs;import math;import system;JobPool pool=null;int integer=1;string text=\"abc\";"
         "TimeSpan span=system.time_span_ms(1);Stopwatch watch=system.stopwatch();"
         "AsyncRequest request=system.async_create();"
         "list<int> ints=[1];array<int> nums=array<int>(1);array32<int> small=array32<int>(1);"
@@ -78,12 +78,14 @@ std::string Call(const NeoCore::TypeRegistry& types, const NeoCore::ApiDeclarati
 void Signatures()
 {
     NeoCore::TypeRegistry types;
+    types.DeclareJobTypes();
     const Receiver receivers[] = {
         {"string", "text", types.String()}, {"list", "ints", types.ListOf(types.Int())},
         {"array", "nums", types.ArrayOf(types.Int())}, {"array", "small", types.Array32Of(types.Int())},
         {"map", "table", types.MapOf(types.String(), types.Int())}, {"set", "unique", types.SetOf(types.Int())},
         {"TimeSpan", "span", types.LookupNamed("TimeSpan")}, {"Stopwatch", "watch", types.LookupNamed("Stopwatch")},
         {"AsyncRequest", "request", types.LookupNamed("AsyncRequest")},
+        {"jobs", "jobs", NeoCore::InvalidType}, {"JobPool", "pool", types.LookupNamed("JobPool")},
         {"math", "math", NeoCore::InvalidType}, {"system", "system", NeoCore::InvalidType}
     };
     std::size_t covered = 0;

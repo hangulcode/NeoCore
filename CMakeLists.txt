@@ -71,6 +71,7 @@ set(NEOCORE_BACKEND_SOURCES
     NeoSource/NeoRegex.cpp
     NeoSource/NeoRegexVendor.c
     NeoSource/NeoLib.cpp
+    NeoSource/NeoJobLibrary.cpp
     NeoSource/NeoTime.cpp
     NeoSource/NeoParser.cpp
     NeoSource/NeoScriptShim.cpp
@@ -98,7 +99,7 @@ target_include_directories(neocore_type_model PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}
 target_compile_features(neocore_type_model PUBLIC cxx_std_11)
 add_library(neocore_frontend STATIC NeoSource/NeoCoreCompiler.cpp)
 target_link_libraries(neocore_frontend PUBLIC neocore_type_model)
-add_library(neocore_runtime STATIC NeoSource/NeoCore.cpp NeoSource/NeoCoreHost.cpp NeoSource/NeoCoreHostSchemaIO.cpp NeoSource/NeoCoreModules.cpp NeoSource/NeoCoreImage.cpp NeoSource/NeoCoreConsoleAccess.h)
+add_library(neocore_runtime STATIC NeoSource/NeoCore.cpp NeoSource/NeoCoreJobs.cpp NeoSource/NeoCoreHost.cpp NeoSource/NeoCoreHostSchemaIO.cpp NeoSource/NeoCoreModules.cpp NeoSource/NeoCoreImage.cpp NeoSource/NeoCoreConsoleAccess.h)
 target_link_libraries(neocore_runtime PUBLIC neocore_frontend PRIVATE neocore_backend Threads::Threads)
 target_link_libraries(neocore_backend PUBLIC neocore_type_model)
 add_library(NeoCore::Runtime ALIAS neocore_runtime)
@@ -128,7 +129,7 @@ if(NEOCORE_BUILD_TESTS)
     find_package(Threads REQUIRED)
 
     add_executable(neocore_types Tests/neocore_types.cpp)
-    foreach(library_test math builtin_contracts json_script constants default_arguments conditionals unused error_locations host_schema_io diagnostics time)
+    foreach(library_test math builtin_contracts json_script jobs constants default_arguments conditionals unused error_locations host_schema_io diagnostics time)
         add_executable(neocore_${library_test} Tests/neocore_${library_test}.cpp)
         target_link_libraries(neocore_${library_test} PRIVATE NeoCore::Runtime)
         add_test(NAME neocore_${library_test} COMMAND neocore_${library_test})

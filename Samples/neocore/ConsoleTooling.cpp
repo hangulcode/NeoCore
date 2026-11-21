@@ -1436,7 +1436,7 @@ public:
 		{
 			static const char* keywords[] = {
 				"int", "float", "bool", "string", "void", "struct", "fn", "list", "map", "array", "array32", "set", "Vector2", "Vector3", "Vector4", "Quaternion",
-                "TimeSpan", "Stopwatch", "AsyncRequest", "export", "if", "else", "switch", "case", "default", "while", "for", "foreach", "in", "continue", "break", "return",
+                "TimeSpan", "Stopwatch", "AsyncRequest", "JobPool", "JobResult", "export", "if", "else", "switch", "case", "default", "while", "for", "foreach", "in", "continue", "break", "return",
 				"true", "false", "null", "import", "public", "const", "yield", "sleep"
 			};
 			for (const char* keyword : keywords)
@@ -1453,7 +1453,7 @@ public:
 					if (LspStartsWith(info.name, prefix))
 						AppendLspCompletionItem(os, first, emitted, info.name, 3, BuildLspFunctionDetail(info));
 				}
-				else if (info.module == "math" || info.module == "system" || info.module == "coroutine")
+				else if (NeoCore::IsCoreApiModule(info.module))
 					modules.insert(info.module);
 			}
 			for (const std::string& builtinModule : modules)

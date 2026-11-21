@@ -122,6 +122,7 @@ public:
     TypeId DeclareStruct(const std::string& qualifiedName);
     TypeId DeclareNative(const std::string& qualifiedName);
     TypeId DeclareBuiltinObject(const std::string& qualifiedName);
+    bool DeclareJobTypes();
     bool DefineStructFields(TypeId structure, const std::vector<StructField>& fields, std::string* error = nullptr);
     // 성공한 정의의 필드 주소·순서는 레지스트리 수명 동안 유지된다. 실패한 조회는 인덱스도 무효화한다.
     const StructField* FindStructField(TypeId structure, const std::string& name, std::size_t* index = nullptr) const;

@@ -8,6 +8,9 @@
     <Filter Include="Core">
       <UniqueIdentifier>{ac37a11f-4a6a-47f5-83cb-053d76b078da}</UniqueIdentifier>
     </Filter>
+    <Filter Include="SampleScriptFolder">
+      <UniqueIdentifier>{2dc1d3d4-1bff-4fa8-ba67-1d1cbbf7f1af}</UniqueIdentifier>
+    </Filter>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="..\NeoSource\NeoCoreModules.cpp">
@@ -38,6 +41,9 @@
       <Filter>NeoCore</Filter>
     </ClCompile>
     <ClCompile Include="..\NeoSource\NeoCore.cpp">
+      <Filter>NeoCore</Filter>
+    </ClCompile>
+    <ClCompile Include="..\NeoSource\NeoCoreJobs.cpp">
       <Filter>NeoCore</Filter>
     </ClCompile>
     <ClCompile Include="..\NeoSource\NeoCoreCompiler.cpp">
@@ -74,6 +80,9 @@
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="..\NeoSource\NeoTime.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="..\NeoSource\NeoJobLibrary.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="..\NeoSource\NeoParser.cpp">
@@ -121,6 +130,9 @@
       <Filter>NeoCore</Filter>
     </None>
     <ClInclude Include="..\NeoSource\NeoCore.h">
+      <Filter>NeoCore</Filter>
+    </ClInclude>
+    <ClInclude Include="..\NeoSource\NeoCoreJobs.h">
       <Filter>NeoCore</Filter>
     </ClInclude>
     <ClInclude Include="..\NeoSource\NeoCoreCompiler.h">
@@ -178,6 +190,9 @@
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="..\NeoSource\NeoTime.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="..\NeoSource\NeoJobLibrary.h">
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="..\NeoSource\NeoHttp.h">
@@ -277,6 +292,15 @@
     </None>
     <None Include="..\NeoSource\NeoVMWorker_Var.inl">
       <Filter>Implementation</Filter>
+    </None>
+    <None Include="..\Samples\neocore\scripts\jobs.nc">
+      <Filter>SampleScriptFolder</Filter>
+    </None>
+    <None Include="..\Lib\jobs_worker.nc">
+      <Filter>SampleScriptFolder</Filter>
+    </None>
+    <None Include="..\Samples\neocore\scripts\hello.nc">
+      <Filter>SampleScriptFolder</Filter>
     </None>
   </ItemGroup>
 </Project>

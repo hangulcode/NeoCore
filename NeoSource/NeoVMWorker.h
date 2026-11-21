@@ -15,6 +15,8 @@
 
 
 
+namespace NeoCoreBackend { class JobFactory; }
+
 namespace NeoScript
 {
 
@@ -544,6 +546,7 @@ private:
 	bool EnsureStackRange(int base, int lastOffset);
 public:
 	NEOS_FORCEINLINE CNeoVM* GetVM() { return _pVM;  }
+	NeoCoreBackend::JobFactory* jobFactory = nullptr;
 	void EnableCooperativeSleep() { m_bCooperativeSleep = true; }
 	bool IsNativeScriptCallActive() const { return m_iNativeScriptCallDepth > 0; }
 	bool IsSynchronousExecutionLimited() const {

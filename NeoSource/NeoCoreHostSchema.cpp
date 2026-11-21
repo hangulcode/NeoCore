@@ -43,7 +43,7 @@ bool HostSchema::IsNameAllowed(const std::string& name) const
         "break", "continue", "import", "public", "export", "const", "struct", "class",
         "switch", "case", "default", "print", "tostring", "toint", "tofloat", "tosize",
         "sleep", "yield", "list", "map", "array", "array32", "set",
-        "math", "system"
+        "math", "system", "jobs", "JobPool", "JobResult"
     };
     for (const char* value : reserved)
         if (name == value) return false;

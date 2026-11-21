@@ -23,6 +23,7 @@
 #include "NeoStringLimits.h"
 #include "NeoNumberFormat.h"
 #include "NeoTime.h"
+#include "NeoJobLibrary.h"
 #include "NeoCoreApi.h"
 #include "UTFString.h"
 #include <chrono>

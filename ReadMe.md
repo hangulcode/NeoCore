@@ -239,6 +239,7 @@ variable snapshots. Details: [Embedding](docs/Embedding.md),
 | [Script authoring](docs/ScriptAuthoring.md), [API](docs/API.md) | `.nc` syntax, checked library surface, and examples |
 | [Embedding](docs/Embedding.md), [Unity](docs/Unity.md) | C++ hosting, typed C ABI, and Unity integration |
 | [Unity package](Unity/NeoCore/README.md) | Managed values, schemas/callbacks, images, module and HTTP adapters |
+| [Visual Studio grammar installer](Tools/visual-studio/install-grammar.ps1) | Run `pwsh -File Tools/visual-studio/install-grammar.ps1` from the repository root, then reopen any `.nc` tabs for syntax highlighting. |
 | [VS Code extension](Tools/vscode-neocore/README.md) | `.nc` highlighting, completion, diagnostics, and DAP debugging |
 
 The inherited [NeoScript engine demo](https://www.youtube.com/watch?v=Wi3EgWx38Vs)

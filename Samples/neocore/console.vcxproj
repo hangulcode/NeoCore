@@ -94,6 +94,8 @@
     <None Include="scripts\divide_by_zero.nc" />
     <None Include="scripts\fibonacci.nc" />
     <None Include="scripts\hello.nc" />
+    <None Include="scripts\jobs.nc" />
+    <None Include="..\..\Lib\jobs_worker.nc" />
     <None Include="scripts\http.nc" />
     <None Include="scripts\https.nc" />
     <None Include="scripts\list.nc" />

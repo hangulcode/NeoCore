@@ -62,7 +62,7 @@ neocore --run hello --sample-dir "path/to/scripts"
 | --- | --- | --- |
 | `--list` | `list` | Display sample numbers, names, and commands without running samples |
 | `--run <name-or-number>` | Sample name or number | Run one typed sample and its host checks |
-| `--run-all` or `--smoke` | `all` or `smoke` | Run the 26 offline functional samples; skip `performance` and live `https` |
+| `--run-all` or `--smoke` | `all` or `smoke` | Run the offline functional samples; skip `performance` and live `https` |
 | `--debug-smoke` | `debug-smoke` | Run the functional samples with debug information and verify a runtime error's source file and line |
 | `--compiler-error-regression` | `compiler-errors` | Compile 24 typed acceptance/rejection cases without executing their programs |
 | `--bench-check` | `bench-check` | Check the nine console workloads with 54 reduced, untimed calls |

@@ -2396,12 +2396,14 @@ bool ValidateImageFunctions(NeoScript::IRuntime& runtime, NeoScript::ProgramHand
     return true;
 }
 
-bool EnableCooperativeSleep(NeoScript::IRuntime& runtime, NeoScript::InstanceHandle instance)
+bool ConfigureInstance(NeoScript::IRuntime& runtime, NeoScript::InstanceHandle instance, JobFactory* jobs)
 {
     NeoScript::RuntimeImpl& impl = static_cast<NeoScript::RuntimeImpl&>(runtime);
     NeoScript::InstanceRec* record = impl.resolveInstance(instance);
     if (record == nullptr || record->worker == nullptr || record->worker->IsInterpreterRunning()) return false;
-    static_cast<NeoScript::CNeoVMWorker*>(record->worker)->EnableCooperativeSleep();
+    auto* worker = static_cast<NeoScript::CNeoVMWorker*>(record->worker);
+    worker->EnableCooperativeSleep();
+    worker->jobFactory = jobs;
     return true;
 }
 

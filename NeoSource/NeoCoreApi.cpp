@@ -121,7 +121,7 @@ struct Registry
                 else if (name == "V") kind = ApiTypeKind::Value;
                 else if (name == "void" || name == "int" || name == "float" || name == "bool" || name == "string" ||
                     name == "Vector2" || name == "Vector3" || name == "Vector4" || name == "Quaternion" ||
-                    name == "TimeSpan" || name == "Stopwatch" || name == "AsyncRequest") kind = ApiTypeKind::Named;
+                    name == "TimeSpan" || name == "Stopwatch" || name == "AsyncRequest" || name == "JobPool" || name == "JobResult") kind = ApiTypeKind::Named;
             }
             else if (arguments.size() == 1 && name == "list") kind = ApiTypeKind::List;
             else if (arguments.size() == 1 && name == "array") kind = ApiTypeKind::Array;
@@ -274,7 +274,7 @@ int FindCoreApiIndex(const std::string& key)
 
 bool IsCoreApiModule(const std::string& owner)
 {
-    return owner == "math" || owner == "system" || owner == "coroutine";
+    return owner == "math" || owner == "system" || owner == "coroutine" || owner == "jobs";
 }
 
 std::string CoreApiOwner(const TypeRegistry& types, TypeId receiver)

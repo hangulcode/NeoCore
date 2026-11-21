@@ -168,6 +168,8 @@ public:
         Error& error, const std::string& sourceName = "<source>", bool debug = false,
         const CompileOptions& options = CompileOptions());
     // 이미지에는 바이트코드와 정적 타입 계약이 함께 들어간다. 호스트 연결과 객체 ID는 저장하지 않는다.
+    static bool CompileImage(const std::string& source, std::vector<std::uint8_t>& image, Error& error,
+        const std::string& sourceName = "<source>", bool debug = false, const CompileOptions& options = CompileOptions());
     bool SaveImage(std::vector<std::uint8_t>& image, Error& error) const;
     static std::unique_ptr<Program> LoadImage(const std::vector<std::uint8_t>& image,
         Error& error, const CompileOptions& options = CompileOptions());
@@ -213,6 +215,9 @@ private:
     friend struct DebugAccess;
     friend struct ConsoleCompileAccess;
     struct Impl;
+    static std::shared_ptr<Impl> PrepareSource(const std::string& source, Error& error,
+        const std::string& sourceName, bool debug, const std::shared_ptr<Runtime::Impl>& runtime, const CompileOptions& options,
+        const std::string* privateEntrySource, std::vector<CompileDiagnostic>* unusedWarnings);
     static std::unique_ptr<Program> CompileImpl(const std::string& source, Error& error,
         const std::string& sourceName, bool debug, const std::shared_ptr<Runtime::Impl>& runtime, const CompileOptions& options,
         const std::string* privateEntrySource = nullptr, std::vector<CompileDiagnostic>* unusedWarnings = nullptr);

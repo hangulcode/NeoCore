@@ -89,7 +89,8 @@ bool RemapSourceLines(NeoScript::IRuntime& runtime, NeoScript::ProgramHandle pro
 bool ValidateImageFunctions(NeoScript::IRuntime& runtime, NeoScript::ProgramHandle program,
     const std::vector<std::pair<std::string, std::size_t>>& signatures, std::string& error);
 // NeoCore 인스턴스의 sleep을 실행 제한과 무관하게 협력적 대기로 설정한다.
-bool EnableCooperativeSleep(NeoScript::IRuntime& runtime, NeoScript::InstanceHandle instance);
+class JobFactory;
+bool ConfigureInstance(NeoScript::IRuntime& runtime, NeoScript::InstanceHandle instance, JobFactory* jobs);
 // 전역 초기화처럼 Invocation이 없는 실행에서도 이미 저장된 오류 위치를 읽는다. 오류를 소비하지 않는다.
 bool ReadLastCallError(NeoScript::IRuntime& runtime, NeoScript::InstanceHandle instance, NeoScript::Error& error);
 bool ConfigureProfile(NeoScript::IRuntime& runtime, NeoScript::InstanceHandle instance, bool enabled, bool reset);

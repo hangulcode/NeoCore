@@ -13,6 +13,8 @@
     <None Include="scripts\divide_by_zero.nc"><Filter>Scripts</Filter></None>
     <None Include="scripts\fibonacci.nc"><Filter>Scripts</Filter></None>
     <None Include="scripts\hello.nc"><Filter>Scripts</Filter></None>
+    <None Include="scripts\jobs.nc"><Filter>Scripts</Filter></None>
+    <None Include="..\..\Lib\jobs_worker.nc"><Filter>Scripts</Filter></None>
     <None Include="scripts\http.nc"><Filter>Scripts</Filter></None>
     <None Include="scripts\https.nc"><Filter>Scripts</Filter></None>
     <None Include="scripts\list.nc"><Filter>Scripts</Filter></None>

@@ -21,7 +21,7 @@
     },
     {
       "name": "storage.type.neocore",
-      "match": "\\b(void|int|float|bool|string|list|map|set|array|array32|fn|coroutine|Vector2|Vector3|Vector4|Quaternion|TimeSpan|Stopwatch|AsyncRequest)\\b"
+      "match": "\\b(void|int|float|bool|string|list|map|set|array|array32|fn|coroutine|Vector2|Vector3|Vector4|Quaternion|TimeSpan|Stopwatch|AsyncRequest|JobPool|JobResult)\\b"
     },
     {
       "name": "keyword.control.neocore",

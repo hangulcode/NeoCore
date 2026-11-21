@@ -406,8 +406,8 @@ static std::string DefineLiteral(const CompileDefine& define)
         "var", "fun", "int", "float", "bool", "string", "void", "int32", "float32", "any", "null", "true", "false",
         "if", "else", "while", "for", "foreach", "in", "return", "break", "continue", "import", "public", "export", "const",
         "struct", "class", "switch", "case", "default", "print", "tostring", "toint", "tofloat", "tosize", "sleep",
-        "yield", "list", "map", "array", "array32", "set", "fn", "coroutine", "math", "system",
-        "Vector2", "Vector3", "Vector4", "Quaternion", "TimeSpan", "Stopwatch", "AsyncRequest"
+        "yield", "list", "map", "array", "array32", "set", "fn", "coroutine", "math", "system", "jobs",
+        "Vector2", "Vector3", "Vector4", "Quaternion", "TimeSpan", "Stopwatch", "AsyncRequest", "JobPool", "JobResult"
     };
     if (names.size() != 2 || names[0].kind != TokenKind::Identifier || names[0].text != define.name)
         Fail(at, "compile define name must be one identifier");
@@ -674,8 +674,15 @@ public:
         // 이름을 먼저 등록하여 뒤에서 정의된 구조체도 필드·함수 서명에서 찾는다.
         int braces = 0;
         std::set<std::string> declarations;
+        bool jobTypesDeclared = false;
         for (std::size_t i = 0; i + 1 < tokens_.size(); ++i)
         {
+            // jobs를 가져올 때 등록해 기존 스키마와 이미지의 타입 번호를 보존한다.
+            if (!braces && !jobTypesDeclared && tokens_[i].text == "import" && tokens_[i + 1].text == "jobs")
+            {
+                if (!types_.DeclareJobTypes()) Fail(tokens_[i + 1], "jobs requires the built-in types JobPool and JobResult");
+                jobTypesDeclared = true;
+            }
             if (braces == 0 && tokens_[i].text == "struct")
             {
                 const Token& name = tokens_[i + 1];
@@ -951,7 +958,7 @@ private:
             if (!topLevel) Fail(at, "import is only allowed at file scope");
             std::unique_ptr<Statement> s(new Statement(StatementKind::Import, at));
             s->name = Name();
-            if (s->name.text != "math" && s->name.text != "system" && s->name.text != "coroutine") Fail(s->name, "user modules are not supported by this compiler stage");
+            if (!IsCoreApiModule(s->name.text)) Fail(s->name, "user modules are not supported by this compiler stage");
             Expect(";");
             return s;
         }
@@ -1357,6 +1364,9 @@ public:
                 scopes_[0].insert(std::make_pair(global.name, &symbol));
             }
         }
+        const TypeId jobPool = types_.LookupNamed("JobPool");
+        if (types_.Get(jobPool).kind == TypeKind::BuiltinObject)
+            structures_.push_back(types_.LookupNamed("JobResult"));
         for (const auto& node : program)
         {
             try
@@ -2345,7 +2355,7 @@ private:
             return;
         }
         if (callee.kind == ExprKind::Member && !(callee.children[0]->kind == ExprKind::Name
-            && (callee.children[0]->op == "math" || callee.children[0]->op == "system" || callee.children[0]->op == "coroutine")))
+            && IsCoreApiModule(callee.children[0]->op)))
         {
             CheckMethod(expression);
             return;
@@ -4641,7 +4651,7 @@ void CollectStaticDeclarations(const std::string& source, std::vector<StaticDecl
     try { tokens = Lexer(source, texts).Read(); }
     catch (const Diagnostic&) { return; }
     std::set<std::string> types = {"void", "int", "float", "bool", "string", "Vector2", "Vector3", "Vector4",
-        "Quaternion", "TimeSpan", "Stopwatch", "AsyncRequest", "list", "map", "set", "array", "array32", "fn", "coroutine"};
+        "Quaternion", "TimeSpan", "Stopwatch", "AsyncRequest", "JobPool", "JobResult", "list", "map", "set", "array", "array32", "fn", "coroutine"};
     for (std::size_t i = 0; i + 1 < tokens.size(); ++i)
         if (tokens[i].text == "struct" && tokens[i + 1].kind == TokenKind::Identifier) types.insert(tokens[i + 1].text);
     const auto readType = [&](std::size_t first, std::size_t& last) -> std::string
