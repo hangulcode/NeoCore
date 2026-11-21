@@ -2354,8 +2354,9 @@ private:
             expression.type = signature.returnType;
             return;
         }
+        // 같은 이름의 변수가 보이면 내장 모듈이 아니라 그 값의 메서드 호출이다(jobs 는 흔한 변수 이름이다).
         if (callee.kind == ExprKind::Member && !(callee.children[0]->kind == ExprKind::Name
-            && IsCoreApiModule(callee.children[0]->op)))
+            && IsCoreApiModule(callee.children[0]->op) && !Lookup(callee.children[0]->op)))
         {
             CheckMethod(expression);
             return;

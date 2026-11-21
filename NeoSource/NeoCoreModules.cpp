@@ -215,11 +215,28 @@ struct Unit
     // 줄 찾기의 시작 위치. 한 모듈의 내보내기는 앞에서 뒤로 가므로 직전 줄부터 찾는다.
     mutable std::size_t lineCursor = 0;
     bool visiting = false, visited = false, emitted = false;
+    // jobs 를 가져오지 않고 그 이름을 값 자리에 쓰는 모듈. 이 모듈에서 jobs 는 보통 식별자다.
+    bool jobsName = false;
+    std::size_t jobsToken = 0;
 };
 
 static bool At(const std::vector<Token>& tokens, std::size_t index, const char* value)
 {
     return index < tokens.size() && tokens[index].Is(value);
+}
+
+// jobs 는 변수 이름으로 흔하다. 모듈이 jobs 를 가져오지 않았고 그 이름이 뒤에 '.' 없이 나오면(선언·인자·대입)
+// 사용자 이름으로 본다. 가져오기를 빠뜨린 jobs.open(...) 은 모든 자리에 '.'이 따르므로 오류로 남는다.
+// 그 자리의 토큰 번호를 돌려준다(없으면 토큰 수).
+static std::size_t FindJobsName(const Unit& unit)
+{
+    for (const Import& import : unit.imports)
+        if (import.builtin && import.name == "jobs") return unit.tokens.size();
+    for (std::size_t i = 0; i < unit.tokens.size(); ++i)
+        if (unit.tokens[i].identifier && unit.tokens[i].Is("jobs") && !unit.fieldNames.count(i) &&
+            !(i && At(unit.tokens, i - 1, ".")) && !At(unit.tokens, i + 1, "."))
+            return i;
+    return unit.tokens.size();
 }
 
 // 타입의 모양만 건너뛰며 지원 여부는 합친 소스의 타입 검사에서 결정한다.
@@ -565,6 +582,19 @@ public:
         std::size_t total = 0;
         for (std::size_t i = 0; i < units_.size(); ++i) total += units_[i]->input.source.size();
         for (std::size_t i = 1; i < units_.size(); ++i) units_[i]->prefix = prefix + std::to_string(i) + "_";
+        bool jobsImported = false;
+        for (std::size_t i = 0; i < units_.size(); ++i)
+        {
+            units_[i]->jobsToken = FindJobsName(*units_[i]);
+            units_[i]->jobsName = units_[i]->jobsToken < units_[i]->tokens.size();
+            for (const Import& import : units_[i]->imports)
+                if (import.builtin && import.name == "jobs") jobsImported = true;
+        }
+        // 진입 파일의 이름은 접두사를 받지 않아 합친 소스에서 다른 모듈이 가져온 내장 모듈과 같은 글자가 된다.
+        // 타입 검사가 내는 "모듈을 가릴 수 없다"보다 원인을 알 수 있는 오류를 여기서 낸다.
+        if (jobsImported && units_[0]->jobsName)
+            Fail(sourceName, units_[0]->tokens[units_[0]->jobsToken],
+                "jobs names a built-in module imported by another module; rename it in the entry file");
         for (std::size_t i = 0; i < units_.size(); ++i)
         {
             // 식별자가 접두사를 받는지는 글자만으로 정해진다. 모듈 안에서 같은 이름은 한 번만 판정하고, 원래 이름
@@ -588,7 +618,7 @@ public:
                 if (known != renamed.end()) rename = known->second;
                 else
                 {
-                    rename = preserved_.count(key) == 0;
+                    rename = preserved_.count(key) == 0 || (unit.jobsName && token.Is("jobs"));
                     renamed.insert(std::make_pair(key, rename));
                     if (rename)
                     {
@@ -734,7 +764,8 @@ private:
                 i += 2;
                 continue;
             }
-            if ((token.Is("math") || token.Is("system") || token.Is("coroutine") || token.Is("jobs")) && At(unit.tokens, i + 1, "."))
+            if ((token.Is("math") || token.Is("system") || token.Is("coroutine") || (token.Is("jobs") && !unit.jobsName)) &&
+                At(unit.tokens, i + 1, "."))
                 Fail(unit.input.sourceName, token, token.Text() + " must be imported before use");
             // 나머지 식별자는 Build가 적어 둔 대로다: 보존 이름이 아니면 모듈 접두사를 받는다.
             if (index && unit.strippedExports.count(i)) unit.actions[i] = DropToken;

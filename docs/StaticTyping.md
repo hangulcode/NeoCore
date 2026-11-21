@@ -1114,7 +1114,7 @@ shape is a runtime error. This built-in syntax does not add user-defined generic
 functions. Host callbacks can use `HostCall::ReturnJson` to decode against their
 declared return type in the calling program; see [JSON.md](JSON.md).
 
-After `import jobs;`, `jobs.open` returns a nullable `JobPool`. Its methods use typed numeric arrays to exchange data with separate worker runtimes. `pool.run` returns `list<JobResult>` in input order. Each result has `ok`, `error`, `floats` and `ints` fields. Worker exports are resolved by name at execution. See [parallel jobs](Jobs.md).
+After `import jobs;`, `jobs.open` returns a nullable `JobPool`. Its methods use typed numeric arrays to exchange data with separate worker runtimes. `pool.run` returns `list<JobResult>` in input order. Each result has `ok`, `error`, `floats` and `ints` fields. Worker exports are resolved by name at execution. A file that does not import `jobs` can use `jobs` as an ordinary variable or parameter name. The entry file cannot use that name when another module of the program imports `jobs`. See [parallel jobs](Jobs.md).
 
 After `import coroutine;`, `coroutine<fn(int)->void>` describes a coroutine whose
 entry takes an int and returns void. `coroutine.create(function)` fixes that

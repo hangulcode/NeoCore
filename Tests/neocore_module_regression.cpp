@@ -93,6 +93,20 @@ void CheckExecution(bool debug)
     modules["trig"] = "import math;public int Read(){return toint(math.cos(0));}";
     ExpectInt(modules, "import math;import trig;export int Probe(){return trig.Read()+toint(math.cos(0));}",
         2, "builtins imported independently by each file", debug);
+    // jobs 를 가져오지 않은 파일에서는 그 이름이 보통 식별자다.
+    ExpectInt(modules, "list<int> jobs=[];export int Probe(){jobs.append(3);jobs.append(4);return jobs.len();}",
+        2, "global variable named jobs", debug);
+    ExpectInt(modules, "export int Probe(){list<int> jobs=[];jobs.append(1);return jobs.len();}",
+        1, "local variable named jobs", debug);
+    modules["queuea"] = "public list<int> jobs=[];public int Add(int v){jobs.append(v);return jobs.len();}";
+    modules["queueb"] = "public list<int> jobs=[];public int Add(int v){jobs.append(v);return jobs.len();}";
+    ExpectInt(modules, "import queuea;import queueb;list<int> jobs=[];"
+        "export int Probe(){jobs.append(1);queuea.Add(1);queuea.Add(2);queueb.Add(5);return jobs.len()*100+queuea.jobs.len()*10+queueb.jobs.len();}",
+        121, "module globals named jobs stay separate", debug);
+    modules["pooluser"] = "import jobs;import queuea;public int Workers(JobPool pool){return pool.workers();}"
+        "public int Queued(){queuea.Add(7);return queuea.jobs.len();}";
+    ExpectInt(modules, "import pooluser;export int Probe(){return pooluser.Queued();}",
+        1, "module variable named jobs beside a module that imports jobs", debug);
 
     modules["shape"] = "public struct Target{int id;float x;};struct Hidden{int v;};"
         "public Target Make(int id,float x){return Target(id,x);}public list<Target> targets=[];public Hidden MakeHidden(){return Hidden(1);}";
@@ -140,6 +154,11 @@ void CheckRejections()
     Reject(modules, "import a;", "cyclic", "indirect cycle");
     modules["a"] = "public int Read(){return toint(math.cos(0));}";
     Reject(modules, "import math;import a;", "must be imported", "builtin imports do not leak between modules");
+    Reject(modules, "export int Probe(){return jobs.open(\"w\",1).workers();}", "must be imported", "jobs module requires its import");
+    modules["a"] = "import jobs;public int Read(){return 1;}";
+    Reject(modules, "import a;list<int> jobs=[];", "built-in module imported by another module", "entry global cannot hide an imported jobs module");
+    Reject(modules, "import a;int F(){list<int> jobs=[];return jobs.len();}", "built-in module imported by another module",
+        "entry local cannot hide an imported jobs module");
     modules["a"] = "export const int value=1;";
     Reject(modules, "import a;", "export const", "export stripping cannot accept invalid const declaration");
     Reject(modules, "if(true) import a;", "file scope", "unbraced conditional import is rejected");
