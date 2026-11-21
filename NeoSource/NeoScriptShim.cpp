@@ -399,6 +399,7 @@ static RunStatus mapExecStatus(int st)
     {
     case NEOEXEC_COMPLETED: return RunStatus::Completed;
     case NEOEXEC_SUSPENDED: return RunStatus::Suspended;
+    case NEOEXEC_CANCELLED: return RunStatus::Cancelled;
     default:                return RunStatus::Failed;
     }
 }
@@ -1922,6 +1923,8 @@ RunStatus Invocation::invoke()
         if (!nested) w->GC();
         inst->callStatus = RunStatus::Completed;
     }
+    else if (execStatus == NEOEXEC_CANCELLED)
+        inst->callStatus = RunStatus::Cancelled;
     else
     {
         inst->callStatus = RunStatus::Failed;
@@ -2396,7 +2399,8 @@ bool ValidateImageFunctions(NeoScript::IRuntime& runtime, NeoScript::ProgramHand
     return true;
 }
 
-bool ConfigureInstance(NeoScript::IRuntime& runtime, NeoScript::InstanceHandle instance, JobFactory* jobs)
+bool ConfigureInstance(NeoScript::IRuntime& runtime, NeoScript::InstanceHandle instance, JobFactory* jobs,
+    const std::atomic<bool>* jobStop)
 {
     NeoScript::RuntimeImpl& impl = static_cast<NeoScript::RuntimeImpl&>(runtime);
     NeoScript::InstanceRec* record = impl.resolveInstance(instance);
@@ -2404,6 +2408,7 @@ bool ConfigureInstance(NeoScript::IRuntime& runtime, NeoScript::InstanceHandle i
     auto* worker = static_cast<NeoScript::CNeoVMWorker*>(record->worker);
     worker->EnableCooperativeSleep();
     worker->jobFactory = jobs;
+    worker->jobStop = jobStop;
     return true;
 }
 

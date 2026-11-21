@@ -1,5 +1,6 @@
 ﻿#pragma once
 
+#include <chrono>
 #include <cstdint>
 #include <memory>
 #include <string>
@@ -24,7 +25,8 @@ public:
     virtual int Workers() const = 0;
     virtual void Broadcast(std::string name, std::vector<double> args) = 0;
     virtual std::int64_t Post(std::string name, std::vector<double> args, bool compact) = 0;
-    virtual std::vector<JobResult> Run(const std::string& name, std::vector<std::vector<double>> inputs) = 0;
+    virtual std::vector<JobResult> Run(const std::string& name, std::vector<std::vector<double>> inputs,
+        std::chrono::steady_clock::time_point deadline) = 0;
     // 버퍼가 작으면 결과를 보관해 같은 ID를 다시 꺼낼 수 있다. 소비자는 인스턴스 스레드 하나다.
     virtual const JobResult* Peek(bool compact) = 0;
     virtual void Consume(bool compact) = 0;

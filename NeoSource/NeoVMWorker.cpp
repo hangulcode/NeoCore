@@ -705,6 +705,8 @@ const char* g_sNeoRuntimeErrors[RTE_COUNT] =
 
 void CNeoVMWorker::SetError(const char* pErrMsg)
 {
+	// 중첩 콜백이 취소되면 네이티브 호출도 실패를 돌려준다. 이를 스크립트 오류로 기록하지 않는다.
+	if (m_jobCancelled) { SetCodePtr(0); return; }
 	RememberErrorLocation();
 	SetCodePtr(0); // Jump To Error
 	GetVM()->SetError(std::string(pErrMsg));
@@ -1225,7 +1227,7 @@ int CNeoVMWorker::RunSettle(bool retainCompletedResult)
 	if (ok == false)
 	{
 		ReleaseExecution(true);
-		status = NEOEXEC_ERROR;
+		status = m_jobCancelled ? NEOEXEC_CANCELLED : NEOEXEC_ERROR;
 	}
 	// 정지(retain) 조건: sleep, debugger pause, 또는 시간 제한 슬라이스.
 	else if (IsSuspended())
@@ -1385,7 +1387,7 @@ void CNeoVMWorker::EndHostCall(NeoHostCallBegin begin)
 		return;
 	// An error can also be reported as a debugger pause.  It is inspect-only:
 	// never retain the failed execution context for a later F5/F10/F11 resume.
-	if (m_bDebugFaulted)
+	if (m_bDebugFaulted || m_jobCancelled)
 	{
 		ReleaseExecution(true);
 	}
@@ -1551,7 +1553,7 @@ int CNeoVMWorker::RunHostCall(int iFunctionID, std::vector<BoundaryValue>& _args
 		}
 		GetVM()->PublishAllocStats();
 		if (ok == false)
-			return NEOEXEC_ERROR;
+			return m_jobCancelled ? NEOEXEC_CANCELLED : NEOEXEC_ERROR;
 		return suspended ? NEOEXEC_SUSPENDED : NEOEXEC_COMPLETED;
 	}
 	catch (const std::bad_alloc&)
@@ -2232,8 +2234,8 @@ bool	CNeoVMWorker::Run()
 		const bool profileEnabled = IsProfilingEnabled();
 		// 실행 본문은 아래 세 벌만 만든다. 세 기능의 ON/OFF 조합을 템플릿 인자로 늘리지 않는다.
 		// 1. Fast: 모두 OFF. 명령별 디버그·시간 제한 검사와 직접 호출·반환의 프로파일 검사를 제거한다.
-		// 2. Controlled: 디버그 OFF이며 프로파일 또는 시간 제한이 ON. 두 기능은 같은 본문을 쓰지만
-		//    독립 설정이다. 시간 제한만 켰다고 프로파일을 수집하거나 그 반대 기능을 강제로 켜지 않는다.
+		// 2. Controlled: 디버그 OFF이며 프로파일·시간 제한·작업 풀 종료 신호 중 하나를 사용한다. 각각
+		//    독립 설정이다. 워커는 타임슬라이스 정지 없이 같은 주기 검사에서 종료 신호만 읽을 수 있다.
 		// 3. Debug: 디버그 ON. 중단점·스텝을 검사하며 프로파일·시간 제한은 전달받은 설정에만 따른다.
 		// 공용 루프에서는 필요한 조건 분기를 감수하여 큰 opcode switch의 중복을 줄인다. 설정은
 		// 진입마다 한 번 읽으며 중첩 호출·재개도 이 선택을 거친다. 중첩 호출의 예산 규칙도 유지한다.
@@ -2241,7 +2243,7 @@ bool	CNeoVMWorker::Run()
 		// enabled를 읽는다. 수집기가 오류로 스스로 꺼질 수 있어 ProfileRefresh/Entered의 내부 검사는 유지한다.
 		if (debugActive)
 			b = RunInternal<RunMode::Debug>(breakingCallStack, timeLimited, profileEnabled);
-		else if (timeLimited || profileEnabled)
+		else if (timeLimited || profileEnabled || jobStop)
 			b = RunInternal<RunMode::Controlled>(breakingCallStack, timeLimited, profileEnabled);
 		else
 			b = RunInternal<RunMode::Fast>(breakingCallStack);
@@ -2408,6 +2410,12 @@ bool	CNeoVMWorker::RunInternal(int iBreakingCallStack, bool timeLimited, bool pr
 {
 	if (false == _isInitialized)
 		return false;
+	const std::atomic<bool>* const stop = MODE != RunMode::Fast ? jobStop : nullptr;
+	if (stop && stop->load(std::memory_order_relaxed))
+	{
+		m_jobCancelled = true;
+		return false;
+	}
 
 	m_bCooperativeSleepPending = false;
 	if (_iRemainSleep > 0)
@@ -2443,7 +2451,7 @@ bool	CNeoVMWorker::RunInternal(int iBreakingCallStack, bool timeLimited, bool pr
 
 	while (true)
 	{
-		if (checkLimits)
+		if (checkLimits || stop)
 		{
 			// 마지막 허용 명령이 실패해도 오류 처리를 다음 슬라이스로 미루지 않는다.
 			if (countInstructions && remainingInstructions == 0 && !IsErrorTrap())
@@ -2453,10 +2461,15 @@ bool	CNeoVMWorker::RunInternal(int iBreakingCallStack, bool timeLimited, bool pr
 			}
 			// 디버거 정지로 반환하면 이 지역 계수는 버려지므로 여기서 미리 줄여도 결과가 같다.
 			if (countInstructions && remainingInstructions != 0) --remainingInstructions;
-			if (m_iTimeout >= 0 && --m_op_process <= 0)
+			if ((m_iTimeout >= 0 || stop) && --m_op_process <= 0)
 			{
 				m_op_process = m_iCheckOpCount;
-//				if (isTimeout)
+				if (stop && stop->load(std::memory_order_relaxed))
+				{
+					m_jobCancelled = true;
+					return false;
+				}
+				if (m_iTimeout >= 0)
 				{
 					auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
 						std::chrono::steady_clock::now() - _preClock).count();

@@ -41,6 +41,7 @@ enum NeoExecStatus
 	NEOEXEC_COMPLETED = 0,   // 실행이 끝까지 완료됨 → 컨텍스트 반납됨
 	NEOEXEC_SUSPENDED = 1,   // sleep/yield/브레이크/슬라이스 제한으로 정지 → 컨텍스트 retain(반납 안 됨), Resume 필요
 	NEOEXEC_ERROR     = 2,   // 에러 → 컨텍스트 반납됨
+	NEOEXEC_CANCELLED = 3,   // 작업 풀 종료 요청을 워커가 처리함
 };
 
 // 워커의 현재 실행 상태. 별도 플래그를 저장하지 않고 워커의 실제 컨텍스트/정지 상태에서 계산한다.

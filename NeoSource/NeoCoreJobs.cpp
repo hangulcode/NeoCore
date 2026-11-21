@@ -93,14 +93,24 @@ using Setup = std::vector<std::shared_ptr<const Initializer>>;
 // 배치 결과는 입력 인덱스에 직접 넣고 마지막 항목이 완료되면 호출자를 깨운다.
 struct Batch
 {
-    explicit Batch(size_t count) : results(count), remaining(count) {}
+    using Clock = std::chrono::steady_clock;
+    Batch(size_t count, Clock::time_point until) : results(count), remaining(count), deadline(until)
+    {
+        // 완료된 항목만 덮어쓴다. 마감 때 미완료 입력도 원래 위치에 바로 반환할 수 있다.
+        if (deadline != Clock::time_point::max())
+            for (auto& result : results) result.error = "job timed out";
+    }
+    bool DeadlineReached() const { return deadline != Clock::time_point::max() && Clock::now() >= deadline; }
     void Finish(size_t index, JobResult result)
     {
+        if (expired) return;
         results[index] = std::move(result);
         if (--remaining == 0) ready.notify_one();
     }
     std::vector<JobResult> results;
     size_t remaining;
+    const Clock::time_point deadline;
+    bool expired = false;
     std::condition_variable ready;
 };
 struct Task : InvocationData
@@ -114,6 +124,9 @@ struct Task : InvocationData
 };
 struct Worker
 {
+    // 슬롯은 주소가 고정된다. 풀 잠금 밖에서 VM이 읽는 것은 이 워커의 종료 신호 하나다.
+    std::atomic<bool> stop{false};
+    Batch* batch = nullptr;
     std::unique_ptr<Program> program;
     std::uint64_t serial = 0;
 };
@@ -202,12 +215,14 @@ public:
         return id_;
     }
 
-    std::vector<JobResult> Run(const std::string& name, std::vector<std::vector<double>> inputs) override
+    std::vector<JobResult> Run(const std::string& name, std::vector<std::vector<double>> inputs,
+        Batch::Clock::time_point deadline) override
     {
         std::unique_lock<std::mutex> lock(mutex_);
         RequireOpen();
         if (inputs.empty()) return {};
-        auto batch = std::make_shared<Batch>(inputs.size());
+        auto batch = std::make_shared<Batch>(inputs.size(), deadline);
+        if (batch->DeadlineReached()) return std::move(batch->results);
         const size_t previous = queue_.size();
         try
         {
@@ -230,7 +245,11 @@ public:
             while (queue_.size() > previous) queue_.pop_back();
             throw;
         }
-        batch->ready.wait(lock, [&batch] { return batch->remaining == 0; });
+        const auto done = [&batch] { return batch->remaining == 0 || batch->expired; };
+        if (deadline == Batch::Clock::time_point::max())
+            batch->ready.wait(lock, done);
+        else if (!batch->ready.wait_until(lock, deadline, done))
+            Expire(*batch);
         return std::move(batch->results);
     }
 
@@ -262,9 +281,11 @@ public:
     {
         std::unique_lock<std::mutex> lock(mutex_);
         closed_ = true;
+        for (auto& worker : workers_) worker.stop.store(true, std::memory_order_relaxed);
         Discard();
         finished_.wait(lock, [this] { return active_ == 0; });
         idle_.clear();
+        workers_.clear();
         setup_.reset();
     }
 
@@ -274,7 +295,14 @@ private:
         std::weak_ptr<Pool> weak = shared_from_this();
         while (scheduled_ < limit_ && static_cast<size_t>(scheduled_) < active_ + queue_.size())
         {
-            executor_->Post([weak] { if (auto pool = weak.lock()) pool->Drain(); });
+            if (idle_.empty())
+            {
+                workers_.emplace_back();
+                idle_.push_back(workers_.size() - 1);
+            }
+            const size_t slot = idle_.back();
+            executor_->Post([weak, slot] { if (auto pool = weak.lock()) pool->Drain(slot); });
+            idle_.pop_back();
             ++scheduled_;
         }
     }
@@ -282,6 +310,17 @@ private:
     void RequireOpen() const
     {
         if (closed_) throw std::runtime_error("job pool is closed");
+    }
+    void Expire(Batch& batch)
+    {
+        if (batch.expired) return;
+        batch.expired = true;
+        for (auto& worker : workers_)
+            if (worker.batch == &batch) worker.stop.store(true, std::memory_order_relaxed);
+        queue_.erase(std::remove_if(queue_.begin(), queue_.end(), [&batch](const Task& task) {
+            return task.batch.get() == &batch;
+        }), queue_.end());
+        batch.ready.notify_one();
     }
     void Discard()
     {
@@ -304,7 +343,7 @@ private:
         if (!worker.program)
         {
             Error error;
-            worker.program = Program::LoadImage(image_, error);
+            worker.program = InstanceJobs::LoadWorker(image_, worker.stop, error);
             if (!worker.program) throw std::runtime_error(Describe(error));
             Complete(worker.program->Run());
         }
@@ -318,15 +357,16 @@ private:
         Invoke(*worker.program, task, &result, task.compact);
     }
 
-    void Drain()
+    void Drain(size_t slot)
     {
         std::unique_lock<std::mutex> lock(mutex_);
-        Worker worker;
-        if (!idle_.empty()) { worker = std::move(idle_.back()); idle_.pop_back(); }
         while (!queue_.empty())
         {
             Task task = std::move(queue_.front());
             queue_.pop_front();
+            if (task.batch && task.batch->DeadlineReached()) { Expire(*task.batch); continue; }
+            Worker& worker = workers_[slot];
+            worker.batch = task.batch.get();
             ++active_;
             lock.unlock();
             JobResult result;
@@ -337,14 +377,29 @@ private:
                 result = JobResult();
                 result.id = task.id;
                 result.error = task.name + ": " + error.what();
-                worker = Worker();
+                worker.program.reset();
+                worker.serial = 0;
             }
             lock.lock();
-            if (task.batch) task.batch->Finish(task.index, std::move(result));
+            if (task.batch)
+            {
+                if (task.batch->DeadlineReached()) Expire(*task.batch);
+                task.batch->Finish(task.index, std::move(result));
+            }
             else if (epoch_ == task.epoch) results_[task.compact].push_back(std::move(result));
+            worker.batch = nullptr;
+            if (worker.stop.load(std::memory_order_relaxed))
+            {
+                // 중간에 끊긴 전역 상태를 다음 작업에 넘기지 않는다. 반환자는 VM 폐기를 기다리지 않는다.
+                lock.unlock();
+                worker.program.reset();
+                worker.serial = 0;
+                lock.lock();
+                worker.stop.store(false, std::memory_order_relaxed);
+            }
             --active_;
         }
-        if (!closed_ && worker.program) idle_.push_back(std::move(worker));
+        if (!closed_) idle_.push_back(slot);
         --scheduled_;
         finished_.notify_all();
     }
@@ -355,14 +410,15 @@ private:
     std::condition_variable finished_;
     std::deque<Task> queue_;
     std::deque<JobResult> results_[2];
-    std::vector<Worker> idle_;
+    bool closed_ = false;
+    std::deque<Worker> workers_;
+    std::vector<size_t> idle_;
     std::shared_ptr<const Setup> setup_;
     std::string lastError_;
     std::int64_t id_ = 0;
     std::uint64_t serial_ = 0, epoch_ = 0;
     size_t active_ = 0;
     int scheduled_ = 0;
-    bool closed_ = false;
 };
 }
 

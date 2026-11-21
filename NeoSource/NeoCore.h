@@ -214,6 +214,7 @@ private:
     friend class Debugger;
     friend struct DebugAccess;
     friend struct ConsoleCompileAccess;
+    friend class InstanceJobs;
     struct Impl;
     static std::shared_ptr<Impl> PrepareSource(const std::string& source, Error& error,
         const std::string& sourceName, bool debug, const std::shared_ptr<Runtime::Impl>& runtime, const CompileOptions& options,
@@ -263,6 +264,7 @@ private:
     friend class Debugger;
     friend struct DebugAccess;
     friend struct BoundaryAccess;
+    friend class InstanceJobs;
     struct Impl;
     explicit Instance(std::unique_ptr<Impl> impl);
     Result Invoke(const std::string& name, const Scalar* function, const std::vector<Scalar>& arguments,

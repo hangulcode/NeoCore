@@ -208,7 +208,7 @@ NEOCORE_API("coroutine", "void close(coroutine<F> task)", ApiCustom, &neo_libs::
 NEOCORE_API("jobs", "JobPool open(string module, int maxWorkers = 0)", ApiNone, &JobLibrary::Open)
 NEOCORE_API("JobPool", "int workers()", ApiNone, &JobLibrary::Workers)
 NEOCORE_API("JobPool", "void broadcast(string function, array<float> args)", ApiNone, &JobLibrary::Broadcast)
-NEOCORE_API("JobPool", "list<JobResult> run(string function, list<array<float>> inputs)", ApiNone, &JobLibrary::Run)
+NEOCORE_API("JobPool", "list<JobResult> run(string function, list<array<float>> inputs, float timeoutSeconds = -1.0)", ApiNone, &JobLibrary::Run)
 NEOCORE_API("JobPool", "int post(string function, array<float> args)", ApiNone, &JobLibrary::Post)
 NEOCORE_API("JobPool", "int post32(string function, array<float> args)", ApiNone, &JobLibrary::Post32)
 NEOCORE_API("JobPool", "int take(array<float> floats, array<int> ints, array<int> info)", ApiNone, &JobLibrary::Take)

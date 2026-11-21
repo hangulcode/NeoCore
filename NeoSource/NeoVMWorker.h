@@ -1,5 +1,6 @@
 ﻿#pragma once
 
+#include <atomic>
 #include <cassert>
 
 #include <chrono>
@@ -104,6 +105,7 @@ private:
 	bool m_bCooperativeSleepPending = false;
 	int m_iCheckOpCount = NEO_DEFAULT_CHECKOP;
 	int m_op_process = 0;
+	bool m_jobCancelled = false; // 워커 스레드가 종료를 관찰하면 중첩 호출도 같은 상태로 복귀한다.
 	uint64_t m_instructionBudget = 0;
 	bool m_budgetRestrictsNested = true;
 	bool m_bSliceExpired = false; // 시간 제한으로 다음 ResumeTop까지 보류됨
@@ -547,6 +549,7 @@ private:
 public:
 	NEOS_FORCEINLINE CNeoVM* GetVM() { return _pVM;  }
 	NeoCoreBackend::JobFactory* jobFactory = nullptr;
+	const std::atomic<bool>* jobStop = nullptr; // 워커 전용. 풀은 VM 정리가 끝날 때까지 살아 있다.
 	void EnableCooperativeSleep() { m_bCooperativeSleep = true; }
 	bool IsNativeScriptCallActive() const { return m_iNativeScriptCallDepth > 0; }
 	bool IsSynchronousExecutionLimited() const {

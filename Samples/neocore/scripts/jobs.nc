@@ -15,7 +15,7 @@ bool RunJobs()
         inputs.append(item);
     }
 
-    list<JobResult> results = pool.run("Compute", inputs);
+    list<JobResult> results = pool.run("Compute", inputs, 10);
     pool.close();
     if (results.len() != inputs.len()) return false;
     for (int i in 0, results.len())

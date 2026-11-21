@@ -659,6 +659,7 @@ NEOS_FORCEINLINE bool handle_NONE(const SVMOperation& OP) {
 }
 
 NEOS_NOINLINE bool handle_ERROR(const SVMOperation& OP) {
+    if (m_jobCancelled) return true;
     const int actualIndex = _isErrorOPIndex;
     const int idx = m_iLastErrorSourceOPIndex >= 0 ? m_iLastErrorSourceOPIndex : actualIndex;
     bool blDebugInfo = IsDebugInfo();

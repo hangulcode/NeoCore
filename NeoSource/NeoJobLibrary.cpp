@@ -1,6 +1,7 @@
 ﻿#include "NeoJobLibrary.h"
 #include "NeoVMWorker.h"
 #include <algorithm>
+#include <cmath>
 #include <stdexcept>
 
 namespace NeoScript
@@ -134,18 +135,33 @@ bool Open(CNeoVMWorker* w, ValueRef, short)
 }
 bool Workers(CNeoVMWorker* w, ValueRef r, short) { return Checked(w, [&] { w->ReturnValue(NS_INT(Pool(r).Workers())); }); }
 bool Broadcast(CNeoVMWorker* w, ValueRef r, short) { return SubmitJob(w, r, Submit::Init); }
-bool Run(CNeoVMWorker* w, ValueRef r, short)
+// 호출 전체가 한 마감 시각을 사용한다. 오래된 이미지의 두 인자 호출도 무한 대기로 처리한다.
+static std::chrono::steady_clock::time_point BatchDeadline(double seconds)
+{
+    using Clock = std::chrono::steady_clock;
+    if (seconds == -1.0) return Clock::time_point::max();
+    if (!std::isfinite(seconds) || seconds < 0.0)
+        throw std::runtime_error("JobPool.run timeoutSeconds must be -1 or a finite nonnegative number");
+    const auto now = Clock::now();
+    const auto span = std::chrono::duration<double>(seconds);
+    if (span >= std::chrono::duration<double>(Clock::time_point::max() - now))
+        return Clock::time_point::max();
+    return now + std::chrono::duration_cast<Clock::duration>(span);
+}
+
+bool Run(CNeoVMWorker* w, ValueRef r, short argc)
 {
     return Checked(w, [&] {
         auto& pool = Pool(r);
         const auto& name = Name(w->GetStack(1));
+        const auto deadline = BatchDeadline(argc == 2 ? -1.0 : w->GetStack(3)->_float);
         auto input = w->GetStack(2);
         if (input.GetType() == VAR_NONE) throw std::runtime_error("job input list must not be null");
         std::vector<std::vector<double>> batch;
         batch.reserve(input->_lst->GetCount());
         for (int i = 0; i < input->_lst->GetCount(); ++i)
             batch.push_back(CopyInput(input->_lst->GetValue(i)));
-        ReturnBatch(w, pool.Run(name, std::move(batch)));
+        ReturnBatch(w, pool.Run(name, std::move(batch), deadline));
     });
 }
 bool Post(CNeoVMWorker* w, ValueRef r, short) { return SubmitJob(w, r, Submit::Normal); }

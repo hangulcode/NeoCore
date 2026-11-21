@@ -645,6 +645,20 @@ std::unique_ptr<Instance> Program::CreateInstance(Error& error)
     impl_->runtimeState->instances.emplace(result->impl_->id, result.get());
     return result;
 }
+std::unique_ptr<Program> InstanceJobs::LoadWorker(const std::vector<std::uint8_t>& image,
+    const std::atomic<bool>& stop, Error& error)
+{
+    auto program = Program::LoadImage(image, error);
+    if (!program) return program;
+    auto& state = *program->defaultInstance_->impl_;
+    if (!NeoCoreBackend::ConfigureInstance(*state.runtime, state.instance, nullptr, &stop))
+    {
+        error.message = "could not configure job worker";
+        return nullptr;
+    }
+    return program;
+}
+
 Result Program::Run() { return defaultInstance_->Run(); }
 Result Program::Call(const std::string& name, const std::vector<Scalar>& arguments, const ExecutionLimits& limits)
 {
