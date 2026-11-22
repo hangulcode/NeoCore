@@ -56,7 +56,7 @@ void* ConsoleHost::Resolve(void* context, NeoCore::TypeId type, NeoCore::ObjectH
 }
 
 ConsoleHost::ConsoleHost(const NeoCore::HostSchemaDocument& document, const std::string& implementationSource,
-    const std::string& resourceRoot) : schema_(document.schema), resourceRoot_(resourceRoot)
+    const std::string& resourceRoot, const std::string& outputRoot) : schema_(document.schema), resourceRoot_(resourceRoot)
 {
     using namespace NeoCore;
     const std::vector<HostBinding> members = schema_.Bindings();
@@ -67,6 +67,7 @@ ConsoleHost::ConsoleHost(const NeoCore::HostSchemaDocument& document, const std:
     std::map<HostBindingId,HostFunction> functions;
     if (!implementationSource.empty())
     {
+        if (!outputRoot.empty()) outputRoot_.reset(new ConsoleOutputRoot(outputRoot));
         Require(!schema_.FindGlobal("Headless") && schema_.Types().LookupNamed("Headless")==InvalidType,
             "host schema already contains the console implementation API name 'Headless'");
         const TypeId api = schema_.AddObject("HeadlessApi"); Require(api!=InvalidType,schema_.LastError());
@@ -118,6 +119,16 @@ ConsoleHost::ConsoleHost(const NeoCore::HostSchemaDocument& document, const std:
             if(path.empty() || path[0]=='/' || path.find(':')!=std::string::npos){fileError_="resource path must be relative: "+path;call.ReturnNull();return true;}
             const std::string full=resourceRoot_+(resourceRoot_.empty() || resourceRoot_.back()=='/'?"":"/")+path;
             std::string text; if(!TextFile::Read(full,text,fileError_)){call.ReturnNull();return true;}call.ReturnString(text);return true;
+        };
+        const TypeId stringType = schema_.Types().String();
+        const HostBindingId write = schema_.AddMethod(api, "WriteText", schema_.Types().Bool(), {stringType, stringType});
+        Require(write != 0, schema_.LastError());
+        functions[write] = [this](HostCall& call) {
+            if (!outputRoot_) fileError_ = "Headless.WriteText requires --output-root";
+            else if (call.IsNull(0) || call.IsNull(1)) fileError_ = "output path and text must be non-null";
+            else { call.ReturnBool(outputRoot_->WriteText(call.String(0), call.String(1), fileError_)); return true; }
+            call.ReturnBool(false);
+            return true;
         };
         const HostBindingId lastError=schema_.AddMethod(api,"LastError",schema_.Types().String(),{}); Require(lastError!=0,schema_.LastError());
         functions[lastError]=[this](HostCall& call){call.ReturnString(fileError_);return true;};

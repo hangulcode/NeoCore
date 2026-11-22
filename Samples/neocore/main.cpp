@@ -248,7 +248,7 @@ struct ConsoleSettings
     bool profile = false;
     bool entryPrivateAccess = false;
     bool warnUnused = false;
-    std::string hostSchema, hostImplementation, resourceRoot;
+    std::string hostSchema, hostImplementation, resourceRoot, outputRoot;
     std::size_t diagnosticLimit = 100;
     ConsoleSettings() : debug(false), emitAsm(false), stats(false) {}
 };
@@ -297,7 +297,8 @@ static int Execute(const std::string& mode, const std::string& argument,
         options.defines = document.defines;
         const std::string implementation = settings.hostImplementation.empty() ? "" : Canonical(settings.hostImplementation);
         try { consoleHost.reset(new ConsoleHost(document, implementation,
-            settings.resourceRoot.empty() ? Directory(path) : Canonical(settings.resourceRoot))); }
+            settings.resourceRoot.empty() ? Directory(path) : Canonical(settings.resourceRoot),
+            (mode == "--file" || mode == "--run") ? settings.outputRoot : "")); }
         catch (const std::exception& failure) { std::fprintf(stderr, "%s\n", failure.what()); return 1; }
         options.scriptHost = consoleHost->Config();
         if (!implementation.empty())
@@ -473,6 +474,7 @@ static int Usage(int status = 2)
     std::puts("         --entry-private-access (only --file/--check; private module access for the entry source)");
     std::puts("         --warn-unused (only --check; unused file constants, globals and functions)");
     std::puts("         --host <schema.json> --host-impl <implementation.nc> --resource-root <directory>");
+    std::puts("         --output-root <existing directory> (enable Headless.WriteText for the host implementation)");
     std::puts("         --max-errors <count> (default 100); host implementations are console-only");
     std::puts("       neocore --dap | --lsp                    Typed editor protocols (stdio)");
     std::puts("Not yet ported: --v2smoke, untyped --globals.");
@@ -532,13 +534,19 @@ static int ConsoleMain(const std::vector<std::string>& arguments)
             { std::fprintf(stderr, "--sample-dir needs a directory\n"); return 2; }
             sampleDirectory = arguments[++i];
         }
-        else if (argument == "--host" || argument == "--host-impl" || argument == "--resource-root" || argument == "--max-errors")
+        else if (argument == "--host" || argument == "--host-impl" || argument == "--resource-root" || argument == "--output-root" || argument == "--max-errors")
         {
             if (i + 1 == arguments.size()) { std::fprintf(stderr, "%s needs a value\n", argument.c_str()); return 2; }
             const std::string value = arguments[++i];
             if (argument == "--host") settings.hostSchema = value;
             else if (argument == "--host-impl") settings.hostImplementation = value;
             else if (argument == "--resource-root") settings.resourceRoot = value;
+            else if (argument == "--output-root")
+            {
+                if (value.empty() || value.compare(0, 2, "--") == 0)
+                { std::fprintf(stderr, "--output-root needs a directory\n"); return 2; }
+                settings.outputRoot = value;
+            }
             else
             {
                 char* end = nullptr; const unsigned long long count = std::strtoull(value.c_str(), &end, 10);
@@ -553,6 +561,8 @@ static int ConsoleMain(const std::vector<std::string>& arguments)
     }
     if (!settings.hostImplementation.empty() && settings.hostSchema.empty())
     { std::fprintf(stderr, "--host-impl requires --host\n"); return 2; }
+    if (!settings.outputRoot.empty() && settings.hostImplementation.empty())
+    { std::fprintf(stderr, "--output-root requires --host-impl\n"); return 2; }
     if (settings.profile && (positional.size() != 2 || (positional[0] != "--file" && positional[0] != "--run")))
     { std::fprintf(stderr, "--profile requires --file <file.nc> or --run <sample>\n"); return 2; }
     if (settings.entryPrivateAccess && (positional.size() != 2 ||

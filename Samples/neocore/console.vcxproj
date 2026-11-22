@@ -52,6 +52,7 @@
     </ClCompile>
     <Link>
       <SubSystem>Console</SubSystem>
+      <AdditionalDependencies>ntdll.lib;%(AdditionalDependencies)</AdditionalDependencies>
       <GenerateDebugInformation>true</GenerateDebugInformation>
     </Link>
   </ItemDefinitionGroup>
@@ -79,6 +80,8 @@
     <ClCompile Include="main.cpp" />
     <ClCompile Include="ConsoleTooling.cpp" />
     <ClCompile Include="ConsoleHost.cpp" />
+    <ClCompile Include="ConsoleOutputRoot.cpp" />
+    <ClInclude Include="ConsoleOutputRoot.h" />
     <ClInclude Include="ConsoleTooling.h" />
     <ClInclude Include="ConsoleHost.h" />
     <ClInclude Include="SampleHost.h" />

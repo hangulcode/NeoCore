@@ -1,5 +1,7 @@
 ﻿import json
+import os
 import pathlib
+import stat
 import subprocess
 import sys
 import tempfile
@@ -154,6 +156,100 @@ with tempfile.TemporaryDirectory(prefix="neocore-host-") as temporary:
             (root / "resume").touch()
             child.wait(timeout=10)
     require(child.returncode == 0 and log.read_bytes().splitlines() == [b"ready", b"done"], "flush preserves redirected output")
+
+    writer = root / "writer.nc"
+    writer.write_text('public bool Save(string p,string s){return Headless.WriteText(p,s);}\n'
+                      'public string ErrorText(){return Headless.LastError();}', encoding="utf-8")
+    output_dir = root / "output"
+    output_dir.mkdir()
+    (output_dir / "nested").mkdir()
+    target = output_dir / "nested" / "state.json"
+    script = root / "save.nc"
+    write_args = ["--host", schema, "--host-impl", writer, "--resource-root", root]
+
+    def save_source(body):
+        script.write_text("import writer;\n" + body, encoding="utf-8")
+
+    def save_call(path, text):
+        return "print(writer.Save(" + json.dumps(path, ensure_ascii=False) + "," + json.dumps(text, ensure_ascii=False) + "));print(writer.ErrorText());\n"
+
+    sample = "첫 줄\nsecond line\n"
+    save_source(save_call("nested/state.json", sample))
+    result = run(*write_args, "--file", script)
+    require(result.returncode == 0 and result.stdout.startswith("false\n") and "--output-root" in result.stdout
+            and not target.exists(), "writes require an explicit output root: " + result.stdout)
+    result = run(*write_args, "--file", script, "--output-root", root / "missing-root")
+    require(result.returncode != 0 and "--output-root" in result.stderr and not (root / "missing-root").exists(),
+            "the output root must already exist")
+    write_args += ["--output-root", output_dir]
+    result = run(*write_args, "--check", script)
+    require(result.returncode == 0 and not target.exists(), "checking WriteText never creates files")
+    for contents in (sample, "", sample):
+        save_source(save_call("nested/state.json", contents))
+        result = run(*write_args, "--file", script)
+        require(result.returncode == 0 and result.stdout == "true\n\n" and target.read_bytes() == contents.encode("utf-8"),
+                "create or replace complete UTF-8 file: " + result.stdout + result.stderr)
+
+    save_source(save_call(r"nested\정상..이름.txt", "ok"))
+    result = run(*write_args, "--file", script)
+    valid_file = target.parent / "정상..이름.txt"
+    require(result.returncode == 0 and valid_file.read_bytes() == b"ok", "accept ordinary dotted names and backslash separators")
+
+    outside = root / "outside"
+    outside.mkdir()
+    sentinel = outside / "keep"
+    sentinel.write_bytes(b"original")
+    junction = output_dir / "link"
+    if os.name == "nt":
+        import _winapi
+        _winapi.CreateJunction(str(outside), str(junction))
+    else:
+        junction.symlink_to(outside, target_is_directory=True)
+    rejected = ["../outside/keep", "nested/../../outside/keep", "nested/../nested/state.json",
+                "./abc/", "./nested/state.json", "nested/./state.json", r"nested\..\nested\state.json",
+                r".\nested\state.json", "/absolute", r"C:\absolute", r"\\server\share\x",
+                "nested/state.json:stream", "nested//x", "nested/", "", None, "missing/x",
+                str(sentinel.resolve()), "link", "link/keep", "link/new", "nested"]
+    if os.name != "nt":
+        (output_dir / "leaf-link").symlink_to(sentinel)
+        rejected.append("leaf-link")
+    save_source("".join(save_call(name, "bad") for name in rejected) + save_call("nested/state.json", None)
+                + save_call("후속.txt", "ok"))
+    result = run(*write_args, "--file", script)
+    lines = result.stdout.splitlines()
+    require(result.returncode == 0 and lines[::2] == ["false"] * (len(rejected) + 1) + ["true"]
+            and all(lines[1:-1:2]) and lines[-1] == "", "invalid paths fail with LastError; success clears it: " + result.stdout + result.stderr)
+    require(target.read_bytes() == sample.encode("utf-8") and sentinel.read_bytes() == b"original"
+            and not (outside / "new").exists() and (output_dir / "후속.txt").read_bytes() == b"ok", "writes confined to output root")
+
+    linked_file = output_dir / "checkpoint-link.json"
+    os.link(sentinel, linked_file)
+    save_source(save_call(linked_file.name, "replacement"))
+    result = run(*write_args, "--file", script)
+    require(result.returncode == 0 and result.stdout == "true\n\n" and linked_file.read_bytes() == b"replacement"
+            and sentinel.read_bytes() == b"original", "replacing a hard link changes only the in-root directory entry")
+
+    save_source(save_call("nested/state.json", "X" * 8192))
+    if os.name == "nt":
+        target.chmod(stat.S_IREAD)
+        try:
+            result = run(*write_args, "--file", script)
+        finally:
+            target.chmod(stat.S_IWRITE)
+    else:
+        import resource
+        import signal
+        def limit_output():
+            signal.signal(signal.SIGXFSZ, signal.SIG_IGN)
+            resource.setrlimit(resource.RLIMIT_FSIZE, (4096, 4096))
+        result = subprocess.run([console, *write_args, "--file", script], capture_output=True, text=True,
+                                encoding="utf-8", preexec_fn=limit_output, timeout=20)
+    require(result.returncode == 0 and result.stdout.startswith("false\n") and target.read_bytes() == sample.encode("utf-8")
+            and set(target.parent.iterdir()) == {target, valid_file}, "failed save preserves old file and cleans temporary file: " + result.stdout + result.stderr)
+    save_source('Headless.WriteText("forbidden","data");')
+    result = run(*write_args, "--check", script)
+    require(result.returncode == 1 and "only available in the implementation module" in result.stderr,
+            "application cannot write directly: " + result.stderr)
     # 호스트 속성 setter에 넘긴 Vector3·string은 호출이 끝나면 해제되어야 한다. 끝난 뒤 남은 개수가 0이어야 한다.
     leak = root / "setter_leak.nc"
     leak.write_text('for(int i in 0,1000){Vector3 p=this.Position;p.x+=1.0;this.Position=p;this.Name="n"..tostring(i);}'

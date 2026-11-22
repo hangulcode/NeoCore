@@ -204,10 +204,44 @@ an aliased API object. Ordinary application modules cannot call its methods.
 the default root is the application file's directory. A leading UTF-8 BOM is
 removed, while newlines are preserved. An empty file returns an empty string;
 an unreadable file or an absolute path returns null.
-`Headless.LastError()` provides the most recent read error and is empty after a
-successful read. Resource-root resolution is not a filesystem sandbox.
+Resource-root resolution is not a filesystem sandbox.
 Implement a schema's `Resource.LoadText` by returning `Headless.ReadText(path)`;
 large JSON data files need not become source-code literals.
+
+## Write checkpoint text
+
+`bool Headless.WriteText(string relativePath, string text)` writes UTF-8 bytes,
+preserving newlines. It is available inside the host implementation module.
+An empty string creates an empty file. To enable writes,
+pass an existing directory explicitly. For example, with `out` already created:
+
+```sh
+neocore --host host.json --host-impl fake_host.nc --output-root out --file simulate.nc
+```
+
+Inside the host implementation:
+
+```nc
+if (!Headless.WriteText("checkpoint.json", json)) print(Headless.LastError());
+```
+
+- The output root is independent of `--resource-root`. Omitting `--output-root`
+  disables writes. Compile checks and LSP diagnostics can type-check the call
+  without enabling file access.
+- Use a relative filename or a path through existing subdirectories. Both slash
+  styles separate components. Empty components, `.` and `..` are rejected before
+  normalization, including `./abc/file` and `a/../b`. Absolute, drive-qualified
+  and UNC paths are rejected. Names ending in a dot or space, names beginning
+  with `.neocore-tmp-`, control characters and `:<>"|?*` are also rejected.
+  The writer does not follow symbolic links or
+  Windows junctions below the root. The destination must be a regular file or
+  a new filename.
+- Each save writes and flushes a separate temporary file in the destination
+  directory, then atomically renames it over the destination. A failed save
+  returns `false` and preserves the previous file. After a save returns
+  `true`, readers can use the same directory as their `--resource-root`.
+- `Headless.LastError()` reports the latest file-operation error and is empty
+  after a successful read or write. A null write path or text returns `false`.
 
 ## Multiple compile diagnostics
 
