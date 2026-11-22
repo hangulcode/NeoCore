@@ -3,6 +3,7 @@ import pathlib
 import subprocess
 import sys
 import tempfile
+import time
 
 
 console = pathlib.Path(sys.argv[1]).resolve()
@@ -138,6 +139,21 @@ with tempfile.TemporaryDirectory(prefix="neocore-host-") as temporary:
     for debug in ([], ["--debug"]):
         result = run(*base, *debug, "--file", app)
         require(result.returncode == 0 and "HEADLESS_OK" in result.stdout, "run typed script host: " + result.stdout + result.stderr)
+
+    progress = root / "progress.nc"
+    progress.write_text('print("ready"); while (Services.Resource.LoadText("resume") == null) sleep(10); print("done");', encoding="utf-8")
+    log = root / "progress.log"
+    with log.open("wb") as output, subprocess.Popen([console, *base, "--file", progress, "--flush"], stdout=output) as child:
+        try:
+            deadline = time.monotonic() + 10
+            while log.read_bytes().splitlines() != [b"ready"]:
+                if child.poll() is not None or time.monotonic() >= deadline:
+                    raise AssertionError("redirected print did not arrive before resume")
+                time.sleep(0.01)
+        finally:
+            (root / "resume").touch()
+            child.wait(timeout=10)
+    require(child.returncode == 0 and log.read_bytes().splitlines() == [b"ready", b"done"], "flush preserves redirected output")
     # 호스트 속성 setter에 넘긴 Vector3·string은 호출이 끝나면 해제되어야 한다. 끝난 뒤 남은 개수가 0이어야 한다.
     leak = root / "setter_leak.nc"
     leak.write_text('for(int i in 0,1000){Vector3 p=this.Position;p.x+=1.0;this.Position=p;this.Name="n"..tostring(i);}'

@@ -88,16 +88,19 @@ forced, delayed, and incremental reclamation. It does not measure trimming time 
 run the manual mode's idle-call timing loop. Both untimed check modes also accept
 `--debug`.
 
-The `--debug`, `--asm`, and `--stats` options may appear before or after a command.
+The `--debug`, `--asm`, `--stats`, and `--flush` options may appear before or after a command.
 For example:
 
 ```powershell
 neocore --file Samples/neocore/scripts/fibonacci.nc --debug --asm --stats
+neocore --flush --file simulation.nc > progress.log
 neocore --debug --compiler-error-regression
 neocore --bench-check
 neocore --pooltrim-check
 ```
 
+`--flush` makes script `print` output visible immediately in a redirected file or pipe.
+By default the console uses normal stream buffering.
 `--asm` prints the compiled bytecode diagnostics. `--stats` prints process-global
 allocation and pool counters after the individual program and sample host are
 destroyed; they are not per-instance counters, and retained pool capacity is not

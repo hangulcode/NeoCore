@@ -244,6 +244,7 @@ struct ConsoleSettings
     bool debug;
     bool emitAsm;
     bool stats;
+    bool flush = false;
     bool profile = false;
     bool entryPrivateAccess = false;
     bool warnUnused = false;
@@ -369,6 +370,7 @@ static int Execute(const std::string& mode, const std::string& argument,
     else program = NeoCore::Program::Compile(source, error, path, settings.debug, options);
     if (!program) { PrintError(error); return 1; }
     if (mode == "--check") { std::puts("Type check and backend compilation passed."); return 0; }
+    if (settings.flush) std::cout.setf(std::ios::unitbuf);
     if (settings.profile && !program->SetProfiling(true, error)) { PrintError(error); return 1; }
     struct ProfileOnExit {
         NeoCore::Program* program;
@@ -463,7 +465,8 @@ static int Usage(int status = 2)
     std::puts("       neocore --pooltrim                      Memory-pool diagnostics");
     std::puts("       neocore --pooltrim-check                Untimed memory-pool checks");
     std::puts("       neocore --file|--check|--emit-backend <file.nc>");
-    std::puts("Options: --debug, --asm, --stats, --profile (before or after the command)");
+    std::puts("Options: --debug, --asm, --stats, --profile, --flush (before or after the command)");
+    std::puts("  --flush: flush script print output immediately, including when redirected to a file or pipe");
     std::puts("  --profile: function/host calls, self/inclusive time and self %, sorted by self time");
     std::puts("  Add --debug for private function names and source locations; profiling adds overhead.");
     std::puts("         --sample-dir <directory> (named samples and menu; relative to working directory)");
@@ -520,6 +523,7 @@ static int ConsoleMain(const std::vector<std::string>& arguments)
         else if (argument == "--profile") settings.profile = true;
         else if (argument == "--asm") settings.emitAsm = true;
         else if (argument == "--stats") settings.stats = true;
+        else if (argument == "--flush") settings.flush = true;
         else if (argument == "--entry-private-access") settings.entryPrivateAccess = true;
         else if (argument == "--warn-unused") settings.warnUnused = true;
         else if (argument == "--sample-dir")

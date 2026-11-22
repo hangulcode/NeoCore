@@ -787,6 +787,13 @@ private:
         return Take();
     }
 
+    Token VariableName()
+    {
+        if (At("fn") || At("any"))
+            Fail(Peek(), "'" + Peek().text + "' is reserved and cannot be used as a variable name");
+        return Name();
+    }
+
     TypeId FindType(const std::string& name) const
     {
         const TypeId builtin = types_.LookupBuiltin(name);
@@ -982,7 +989,7 @@ private:
         if (Accept("for"))
         {
             std::unique_ptr<Statement> s(new Statement(StatementKind::For, at));
-            Expect("("); s->declared = ParseType(); s->name = Name(); Expect("in");
+            Expect("("); s->declared = ParseType(); s->name = VariableName(); Expect("in");
             s->expressions.push_back(ParseExpression()); Expect(","); s->expressions.push_back(ParseExpression());
             if (Accept(",")) s->expressions.push_back(ParseExpression());
             Expect(")"); s->children.push_back(ReadStatement(false));
@@ -1000,7 +1007,7 @@ private:
         {
             std::unique_ptr<Statement> s(new Statement(StatementKind::Foreach, at));
             Expect("(");
-            do { Parameter p; p.type = ParseType(); p.name = Name(); s->parameters.push_back(p); } while (Accept(","));
+            do { Parameter p; p.type = ParseType(); p.name = VariableName(); s->parameters.push_back(p); } while (Accept(","));
             if (s->parameters.size() > 2) Fail(at, "foreach accepts one value or a key and value");
             Expect("in"); s->expressions.push_back(ParseExpression()); Expect(")");
             s->children.push_back(ReadStatement(false));
@@ -1044,7 +1051,7 @@ private:
             if (At("var") || At("fun") || At("int32") || At("float32") || At("any"))
                 Fail(Peek(), "declarations require a supported explicit type");
             s->declared = ParseType();
-            s->name = Name();
+            s->name = Peek(1).text == "(" ? Name() : VariableName();
             if (Accept("("))
             {
                 if (!topLevel) Fail(s->name, "named functions are only allowed at file scope");
@@ -1056,7 +1063,7 @@ private:
                     {
                         Parameter parameter;
                         parameter.type = ParseType();
-                        parameter.name = Name();
+                        parameter.name = VariableName();
                         if (Accept("=")) parameter.initializer = std::shared_ptr<Expr>(ParseExpression().release());
                         else if (!s->parameters.empty() && s->parameters.back().initializer)
                             Fail(parameter.name, "required parameters cannot follow default parameters");
@@ -1180,7 +1187,7 @@ private:
             result->MutableRare().lambda.reset(new Statement(StatementKind::Function, token));
             Statement& function = *result->Rare().lambda;
             Expect("(");
-            if (!At(")")) do { Parameter p; p.type = ParseType(); p.name = Name(); function.parameters.push_back(p); } while (Accept(","));
+            if (!At(")")) do { Parameter p; p.type = ParseType(); p.name = VariableName(); function.parameters.push_back(p); } while (Accept(","));
             Expect(")"); Expect("->"); function.declared = ParseType();
             if (!At("{")) Fail(Peek(), "an anonymous function requires a body");
             function.children.push_back(ReadStatement(false));

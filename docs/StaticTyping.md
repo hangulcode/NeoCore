@@ -361,6 +361,8 @@ source compilation also supplies filenames. The dedicated op path preserves this
 
 Every variable, parameter, and function return type is explicit. There is no `var`
 declaration, no `fun` declaration keyword, and no inferred function return type.
+The names `fn` and `any` are reserved for variable declarations, including
+parameters and loop variables. Use `fn` to introduce a function type or lambda.
 
 ```cpp
 int count = 0;

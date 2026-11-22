@@ -39,6 +39,18 @@ def main():
         assert "self.nc:1:" in result.stderr, result.stderr
         checks += 1
 
+        entry = write("names.nc", "import declarations;")
+        for name in ("fn", "any"):
+            for line in ("public int @ = 1;", "const int @ = 1;", "void F(){ int @; }",
+                         "void F(int @){}", "for (int @ in 0, 2) {}",
+                         "foreach (int @ in [1]) {}", "fn(int)->int f = fn(int @)->int { return 0; };"):
+                column = line.index("@") + 1
+                write("declarations.nc", "\n" + line.replace("@", name))
+                result = run(entry, mode="--check")
+                expected = f"declarations.nc:2:{column}: '{name}' is reserved and cannot be used as a variable name"
+                assert result.returncode == 1 and expected in result.stderr, result.stderr
+                checks += 1
+
         write("wrong.nc", "// module diagnostic\npublic int Read(){return \"wrong\";}")
         diagnostic_root = write("diagnostic.nc", "import wrong;print(wrong.Read());")
         result = run(diagnostic_root)
