@@ -2373,18 +2373,11 @@ private:
         else if (callee.kind == ExprKind::Member && callee.children[0]->kind == ExprKind::Name)
             name = callee.children[0]->op + "." + callee.op;
         else Fail(callee.token, "indirect calls are not supported by this compiler stage");
-        const bool mathConstructor = name == "math.Vector2" || name == "math.Vector3" ||
-            name == "math.Vector4" || name == "math.Quaternion";
-        if (mathConstructor)
-        {
-            if (!imports_.count("math")) Fail(callee.token, "math must be imported before use");
-            name = name.substr(5);
-        }
         expression.callName = name;
         if (Lookup(name)) Fail(callee.token, "this value is not callable");
         // 내장 모듈의 함수는 등록부의 서명으로 검사한다. 서명만으로 정해지지 않는 선언(Custom)은 아래의 전용 규칙을 쓴다.
         const ApiDeclaration* moduleApi = nullptr;
-        if (callee.kind == ExprKind::Member && !mathConstructor)
+        if (callee.kind == ExprKind::Member)
         {
             const int index = FindCoreApiIndex(name);
             if (index >= 0) moduleApi = &CoreApi()[static_cast<std::size_t>(index)];
@@ -2482,9 +2475,8 @@ private:
         if (IsVector(structure))
         {
             const std::size_t components = static_cast<std::size_t>(VectorSize(structure));
-            if ((mathConstructor && count != components) || (count != 0 && count != components))
-                Fail(callee.token, mathConstructor ? "math vector constructor requires exactly its component count"
-                    : "vector constructor requires no arguments or exactly its component count");
+            if (count != 0 && count != components)
+                Fail(callee.token, "vector constructor requires no arguments or exactly its component count");
             for (std::size_t i = 1; i < expression.children.size(); ++i) Convert(*expression.children[i], types_.Float());
             expression.callName = VectorConstructor(structure, callee.token.line);
             expression.vectorConstructor = true;

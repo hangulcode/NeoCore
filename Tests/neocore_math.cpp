@@ -86,11 +86,11 @@ const FloatCase floatCases[] = {
 const char* otherCases = R"nc(
 export bool Vectors()
 {
-    Vector2 v2 = math.Vector2(1, 2);
-    Vector3 a = math.Vector3(0, 0, 0);
+    Vector2 v2 = Vector2(1, 2);
+    Vector3 a = Vector3(0, 0, 0);
     Vector3 b = Vector3(2, 4, 6);
-    Vector4 v4 = math.Vector4(1, 2, 3, 4);
-    Quaternion q = math.Quaternion(1, 0, 0, 0);
+    Vector4 v4 = Vector4(1, 2, 3, 4);
+    Quaternion q = Quaternion(1, 0, 0, 0);
     Vector3 middle = math.Lerp3(a, b, 0.5);
     Vector3 unit = math.Normalize3(Vector3(0, 3, 4), Vector3(1, 0, 0));
     Vector3 fallback = math.Normalize3(a, Vector3(1, 0, 0));
@@ -145,7 +145,7 @@ export bool Fixed()
         && math.fixed(3.5, 0) == "4" && math.fixed(0.125, 2) == "0.12"
         && math.fixed(123456.789, 1) == "123456.8" && math.fixed(1.0/3.0, FIXED_PLACES) == "0.333"
         && math.fixed(0.0000001, 2) == "0.00" && math.fixed(1.0e20, 1) == "100000000000000000000.0"
-        && math.fixed(42, 2) == "42.00" && math.fixed(math.Vector2(0.1, 0.0).x, 3) == "0.100"
+        && math.fixed(42, 2) == "42.00" && math.fixed(Vector2(0.1, 0.0).x, 3) == "0.100"
         && math.fixed(0.0000000005, 9) == "0.000000001"
         && math.fixed(math.sqrt(-1), 2) == tostring(math.sqrt(-1))
         && math.fixed(math.pow(10, 400), 2) == tostring(math.pow(10, 400))
@@ -162,7 +162,7 @@ float Next() { cursor += 1; return cursor; }
 export bool EvaluationOrder()
 {
     cursor = 0;
-    Vector3 v = math.Vector3(Next(), Next(), Next());
+    Vector3 v = Vector3(Next(), Next(), Next());
     return v.x == 1 && v.y == 2 && v.z == 3 && cursor == 3;
 }
 )nc";
@@ -243,8 +243,11 @@ void Rejected()
         "import math; Vector3 x = math.Normalize3(Vector3());",
         "import math; Quaternion x = math.quat_slerp(Vector4(), Quaternion(), 0.5);",
         "import math; Vector3? value = null; float x = math.Length3(value);",
-        "import math; Vector3 x = math.Vector3(1, 2);",
-        "Vector3 x = math.Vector3(1, 2, 3);",
+        "Vector3 x = Vector3(1, 2);",
+        "import math; Vector2 x = math.Vector2(1, 2);",
+        "import math; Vector3 x = math.Vector3(1, 2, 3);",
+        "import math; Vector4 x = math.Vector4(1, 2, 3, 4);",
+        "import math; Quaternion x = math.Quaternion(1, 0, 0, 0);",
         "import math;string s=math.fixed(1.0,2.0);",
         "import math;string s=math.fixed(\"1\",2);",
         "import math;int n=math.fixed(1.0,2);",

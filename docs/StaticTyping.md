@@ -775,7 +775,8 @@ Quaternion rotation = Quaternion(1, 0, 0, 0);
 float real = rotation.w;
 ```
 
-Constructors accept either no arguments or exactly the type's component count.
+Call these constructors by type name without an import. They accept either no
+arguments or exactly the type's component count.
 Vector constructor order is `x, y, z, w` up to its dimension. Quaternion order is
 **`w, x, y, z`**, matching the inherited host API; `.w` selects the first stored
 component and `.x` selects the second. Default vectors are zero; a default

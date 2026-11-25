@@ -80,7 +80,7 @@ void Matrix(bool debug)
         NeoCore::Scalar::Int(7), debug);
     Value("const string EMPTY=null;export int Probe(){if(EMPTY==null)return 1;return 0;}",
         NeoCore::Scalar::Int(1), debug);
-    Value("import math;struct S{Vector3 v=math.Vector3(3.4028235e38,0,0);Quaternion q=Quaternion();};"
+    Value("struct S{Vector3 v=Vector3(3.4028235e38,0,0);Quaternion q=Quaternion();};"
         "export float Probe(){S s;if(s.q.w!=1)return 0.0;return s.v.x;}",
         NeoCore::Scalar::Float((std::numeric_limits<float>::max)()), debug);
     Value("import system;const int N=1<<5;struct S{int n=N;float ratio=1.0/2;};"

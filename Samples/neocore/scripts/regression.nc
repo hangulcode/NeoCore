@@ -24,7 +24,7 @@ Check(math.fixed(2.5, 0) == "2" && math.fixed(-2.5, 0) == "-2");
 Check(math.fixed(3.5, 0) == "4" && math.fixed(0.125, 2) == "0.12");
 Check(math.fixed(123456.789, 1) == "123456.8" && math.fixed(1.0 / 3.0, 3) == "0.333");
 Check(math.fixed(0.0000001, 2) == "0.00" && math.fixed(1.0e20, 1) == "100000000000000000000.0");
-Check(math.fixed(42, 2) == "42.00" && math.fixed(math.Vector2(0.1, 0.0).x, 3) == "0.100");
+Check(math.fixed(42, 2) == "42.00" && math.fixed(Vector2(0.1, 0.0).x, 3) == "0.100");
 int sum = 0;
 for (int i in 10, 0, -1)
 {

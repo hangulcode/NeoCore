@@ -129,9 +129,10 @@ stack storage and allocates no temporary heap buffer; the runtime owns the final
 string. This does not change `tostring` or `math.tostr`.
 
 `Vector2`, `Vector3`, `Vector4` and `Quaternion` are explicit value types.
-Vector constructors accept either no arguments or their exact component count.
-The `math.Vector2`, `math.Vector3`, `math.Vector4` and `math.Quaternion` aliases
-require the full component count and use the same typed construction instructions.
+Call their constructors directly, for example `Vector3(1, 2, 3)` or `Quaternion()`.
+They accept either no arguments or their exact component count. When migrating
+older scripts, remove the `math.` prefix from these four constructors. Keep
+`import math;` if the script calls a module function such as `math.Normalize3`.
 Vector components use `x,y,z,w`; quaternion components and constructors use
 `w,x,y,z`. Scalar component reads produce binary64 values; writes narrow to the
 defined float32 representation. Quaternion defaults are the identity rotation.
