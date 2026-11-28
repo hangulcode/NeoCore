@@ -85,8 +85,8 @@ Checked expressions lower through a typed intermediate representation that keeps
 resolved types and source locations. Numeric operations, scalar writes, script calls
 and returns become dedicated typed instructions, values live in eight-byte untagged
 slots whose storage the compiler decides, and the loader further specializes
-instructions at load time. Declarations, control flow, host/builtin calls and some
-aggregate operations still use ordered transitional paths, so the typed VM is not
+instructions at load time. Declarations, control flow, calls with special lowering
+and some aggregate operations still use ordered transitional paths, so the typed VM is not
 finished; see the [status and roadmap](docs/StaticTyping.md) and
 [typed storage](docs/TypedStorage.md).
 

@@ -250,21 +250,20 @@ void CheckShape(IRuntime& runtime, const char* source, const std::vector<Operati
     }
 }
 
-// 메서드형 API 는 전용 명령이 아니라 등록부의 서명으로 검사한 API 호출로 내려간다. 내린 소스에 등록부 번호의
-// 호출 표기가 있고, 이미지가 연결 이름으로 로드되는지 확인한다.
+// IR이 가리키는 등록 항목과 이미지의 메서드 호출 명령을 모두 확인한다.
 void CheckApiShape(IRuntime& runtime, const char* source, const std::vector<const char*>& keys, bool debug, const char* label)
 {
     std::vector<uint8_t> bytes;
     NeoCore::StaticCompileResult checked;
     if (!CompileImage(runtime, source, debug, bytes, checked)) return;
-    // 값을 쓰는 호출은 IR 잎의 원문에, 호출문은 내린 소스에 표기가 남는다.
-    std::string lowered = checked.loweredSource;
-    for (const NeoCore::IRNode& node : checked.typedIR.nodes) lowered += " " + node.legacySource;
     for (const char* key : keys)
     {
         const int index = NeoCore::FindCoreApiIndex(key);
         Check(index >= 0, std::string(label) + " uses a registered API: " + key);
-        Check(lowered.find("__api" + std::to_string(index) + "(") != std::string::npos,
+        bool found = false;
+        for (const auto& node : checked.typedIR.nodes)
+            if (node.op == NeoCore::IROp::BuiltinCall && node.functionIndex == static_cast<std::size_t>(index)) found = true;
+        Check(found,
             std::string(label) + " lowers " + key + " to an API call");
     }
     bool called = false;

@@ -282,6 +282,7 @@ static int Execute(const std::string& mode, const std::string& argument,
     NeoCore::Error error;
     NeoCore::CompileOptions options;
     options.moduleLoader = LoadModuleSource;
+    options.moduleCacheKey = ConsoleModuleCacheKey;
     options.emitAsm = settings.emitAsm;
 #ifdef NEOCORE_CONSOLE_HTTP
     options.httpTransport = CreateConsoleHttpTransport();
@@ -328,7 +329,7 @@ static int Execute(const std::string& mode, const std::string& argument,
             for (const auto& global : consoleHost->Schema().Globals()) external.push_back(global.name);
             for (const auto& type : consoleHost->Schema().Types().NamedTypes()) external.push_back(type.first);
         }
-        if (!NeoCore::BundleModules(source, path, options.moduleLoader, bundle, error, external, &options.defines, options.diagnosticLimit)) { PrintError(error); return 1; }
+        if (!NeoCore::BundleModules(source, path, options.moduleLoader, bundle, error, external, &options.defines, options.diagnosticLimit, nullptr, options.moduleCacheKey)) { PrintError(error); return 1; }
         NeoCore::StaticCompileResult result;
         const auto implementationSource = [&](int line) {
             return options.scriptHost && line > 0 && static_cast<std::size_t>(line) <= bundle.lines.size() &&

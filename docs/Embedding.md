@@ -129,7 +129,8 @@ replace identifier tokens before module resolution and static checking; comments
 and string contents are untouched. An identifier replacement is expanded once,
 not recursively. Signed numeric definitions remain one expression. Duplicate or
 reserved names, invalid literals and out-of-range int64 literals are rejected even
-when unused. Diagnostics retain the original use location.
+when unused. Each source compilation prepares the definition table once and shares
+it with its imported modules. Diagnostics retain the original use location.
 String definitions must be representable as source literals; embedded NUL,
 `\0`, `\u0000` and unpaired Unicode surrogates are rejected. Runtime host strings
 remain separate length-aware values.
@@ -149,6 +150,13 @@ definitions and explicitly rebuild their programs.
 Hosts can supply a module loader for script worker pools and share their thread scheduler through `CompileOptions::jobExecutor`. See [parallel jobs](Jobs.md#embedding-and-migration).
 
 `CompileOptions.moduleLoader` supplies `.nc` module source and canonical names.
+To read a shared dependency only once per compilation, also supply `moduleCacheKey(name, importer)`.
+Equal nonempty keys must resolve to the same source and canonical name within that compilation.
+A loader with a single, stable search root can return `name`. Relative or virtual loaders
+must include the resolution context or return an empty key to invoke the loader for that import.
+The console uses the importing directory and module name. Each new compilation reads current
+sources again. Without a key, the loader is called on every import as before.
+
 `CompileOptions.httpTransport` supplies the cancellable HTTP/HTTPS implementation
 when creating the runtime. The isolated `Program::Compile`/`LoadImage` helpers
 forward that option to their private runtime.

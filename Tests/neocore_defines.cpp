@@ -69,6 +69,9 @@ void Defines(bool debug)
     std::unique_ptr<Program> loaded = Program::LoadImage(image, error, changed);
     Check(loaded != nullptr, "load resolved define image: " + error.message);
     if (loaded) { result = loaded->Call("Value"); Check(result.ok() && result.value.asInt() == 98, "image retains compiled define values"); }
+    program = Program::Compile(source, error, "changed.nc", debug, changed);
+    Check(program && program->Call("Value").value.asInt() == 214,
+        "a new compilation uses its own define table in both entry and imported sources");
     StaticCompileResult staticResult;
     Check(CompileStaticSource("export int Read(){return COUNT-NEG;}", staticResult, nullptr, &options.defines), "direct frontend accepts defines");
     Check(staticResult.loweredSource.find("COUNT") == std::string::npos && staticResult.loweredSource.find("NEG") == std::string::npos, "direct frontend lowers resolved defines");

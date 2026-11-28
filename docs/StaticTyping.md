@@ -138,8 +138,9 @@ text. The emitter validates the graph and emits instructions directly from its n
 The compile descriptor borrows the IR only until compilation returns; compiled
 programs and saved images do not retain pointers to the graph.
 
-Host/builtin calls, container/host writes, and selectors that have not migrated to IR use typed
-`LegacyExpression` leaves. Each leaf is compiled when traversal reaches its original
+Operations that still use typed `LegacyExpression` leaves include calls with special
+lowering, some container or host writes, and unmigrated selectors. Each leaf is
+compiled when traversal reaches its original
 evaluation position, with the current lexical scope and original source coordinates.
 The synchronous fragment parser borrows its parent constant scope instead of copying
 the entire table per leaf. The parent outlives the fragment; imports remain isolated,
@@ -188,6 +189,28 @@ A discarded assignment from a named script call writes directly to the variable
 on normal return, without allocating a return temporary. Errors, suspension and
 cancellation do not perform that write. Debug-info compilation retains the return
 temporary and following assignment so return/assignment stepping remains unchanged.
+
+Equality and inequality retain their checked operands in IR, including reference and null
+comparisons. List literals retain ordered element nodes and their conversions. The emitter
+fills a fresh list from left to right before assigning it to the destination, so element
+expressions can still read the previous destination value.
+
+Storage references carry a one-based index into the checked declaration table. The
+backend binds ordinary variables and parameters to slots at declaration time and
+restores the enclosing bindings at block exit. Anonymous functions resolve captures
+through the parent frames. These compile-time indices do not enter the bytecode image.
+
+The checked frontend lists named script functions and generated helpers in declaration
+order. The backend reserves their IDs and parameter layouts before emitting any bodies,
+so forward calls and recursion do not require a second token scan. Anonymous closures
+receive IDs when their bodies are emitted.
+
+Ordinary registered built-in calls and native host methods, property getters and globals
+use their checked signatures and ordered operands directly. The image still refers to
+the same registered link names. Calls with output parameters, custom lowering and
+script-implemented host bindings retain their existing calling conventions.
+A left-associated string concatenation chain is one ordered IR node. Each join finishes
+before the next operand is evaluated; a parenthesized right-hand chain evaluates as a unit.
 
 Named script calls carry resolved function signatures and ordered argument nodes.
 Arguments finish left to right before being moved to the shared call window.

@@ -69,8 +69,23 @@ struct SJumpValue
 };
 
 
+struct SFunctionInfo;
+struct IRSlotBinding
+{
+    SFunctionInfo* function = nullptr;
+    int slot = -1;
+};
+
 struct SLocalVar
 {
+    // 중첩 선언이 끝나면 바깥 슬롯을 다시 보이게 한다. 컴파일 오류로 블록을 정리할 때도 같다.
+    std::vector<std::pair<IRSlotBinding*, IRSlotBinding>> bindings;
+    ~SLocalVar()
+    {
+        for (auto it = bindings.rbegin(); it != bindings.rend(); ++it)
+            *it->first = it->second;
+    }
+
 	std::map<std::string, int> _localVars;
 
 	int FindVar(const std::string& name)
@@ -110,12 +125,19 @@ inline SlotType CoreStorageType(const NeoCore::TypeRegistry& types, NeoCore::Typ
     return storage;
 }
 
-struct SFunctionInfo;
-
 struct SLayerVar
 {
 	// 이 lexical scope를 소유한 함수. 다단계 캡처에서 각 중간 익명 함수에
 	// 부모 프레임 기준의 숨은 슬롯을 만들 때 사용한다.
+    IRSlotBinding* irSlots = nullptr;
+    void BindIRSlot(std::size_t id, int slot)
+    {
+        if (!id || !irSlots) return;
+        IRSlotBinding& binding = irSlots[id];
+        _varsLayer.back()->bindings.emplace_back(&binding, binding);
+        binding.function = _function;
+        binding.slot = slot;
+    }
 	SFunctionInfo*	_function = nullptr;
 	std::vector<SLocalVar*>	_varsLayer;
 	// 상위 함수의 지역 변수를 읽는 익명 함수는 이름을 자기 숨은 로컬 슬롯으로
@@ -180,6 +202,8 @@ struct SLayerVar
 struct SFunctionLayer;
 struct SVars
 {
+    // 선언 처리 전에 한 번 크기를 정한다. 각 블록이 가리키는 항목의 주소는 파싱 동안 고정된다.
+    std::vector<IRSlotBinding> irSlots;
 	std::vector<SLayerVar*>	_varsFunction;
 	std::vector<std::string> _varsExport;
 	// 모듈 변수의 이름만 분리한다. 실행 시에는 기존 전역 슬롯을 그대로 쓴다.
@@ -291,6 +315,8 @@ struct SFunctionInfo
 	FUNCTION_TYPE				_funType = FUNT_NORMAL;
 	bool _blPublic = false;   // public: 다른 모듈이 별칭으로 부를 수 있다. export(호스트)와 별개다.
 	bool _bodyParsed = false;
+    // 전방 호출은 본문을 읽기 전에 등록된 서명으로 인자 수를 확인한다.
+    std::size_t ArgumentCount() const { return !_bodyParsed && _args.empty() ? _parameterStorage.size() : _args.size(); }
 	std::string					_moduleName;
 	std::map<int, std::string>	_debugVarNames;
 	std::vector<SClosureCapture>	_captures;
@@ -945,15 +971,14 @@ struct SFunctionInfo
 		*((short*)((u8*)_code->GetData() + sJmp._iCodePosOffset)) = CompileShort("jump distance", (destOffset - sJmp._iBaseJmpOffset) / (int)sizeof(SVMOperation));
 		_jumpTargetOffsets.insert(destOffset);
 	}
-	void	Push_ListAlloc(CArchiveRdWC& ar, int r)
+	void	Push_ListAlloc(CArchiveRdWC& ar, int r, int count = 0, int sourceLine = -1)
 	{
-		AddDebugData(ar);
+		AddDebugData(ar, sourceLine);
 		_iLastOPOffset = _code->GetBufferOffset();
 
 		OpType optype = PrimaryOperation(NOP_LIST_ALLOC);
 		_code->Write(&optype, sizeof(optype));
-		//_code->Write(&r, sizeof(r));
-		Push_NoFlag(r, 0, 0);
+		Push_NoFlag(r, count);
 	}
 	void	Push_TableAlloc(CArchiveRdWC& ar, int r)
 	{
@@ -1009,11 +1034,11 @@ struct SFunctionInfo
 
 		Push_Flag(OperationSubCode(op), nTable, nArray, nValue);
 	}
-	void	Push_ToType(CArchiveRdWC& ar, OperationCode op, int r, int s)
+	void	Push_ToType(CArchiveRdWC& ar, OperationCode op, int r, int s, int line = -1)
 	{
 		OperandTemps temps(*this);
 		s = ReadOperand(ar, s);
-		AddDebugData(ar);
+		AddDebugData(ar, line);
 		_iLastOPOffset = _code->GetBufferOffset();
 
 		OpType optype = PrimaryOperation(op);
@@ -1061,13 +1086,20 @@ struct SRangeJumpCompile
 	int		_ownerFunction = -1;
 };
 
+struct DeclaredStorage
+{
+    SlotType type;
+    std::size_t symbolId;
+    DeclaredStorage(SlotType storage = SlotType(), std::size_t id = 0) : type(storage), symbolId(id) {}
+};
+
 struct SFunctions
 {
-    const NeoCore::TypedIR* _typedIR = nullptr;
 	std::set<std::string> _exportNames;
-    std::unordered_map<std::string, SlotType> _declaredStorage;
+    const NeoCore::TypedIR* _typedIR = nullptr;
+    std::unordered_map<std::string, DeclaredStorage> _declaredStorage;
     std::map<std::string, std::map<std::string, SlotType>> _helperStorage;
-    SlotType FindDeclaredStorage(const std::string& name) const
+    DeclaredStorage FindDeclaredStorage(const std::string& name) const
     {
         const auto function = _helperStorage.find(_cur->GetFullName());
         if (function != _helperStorage.end())
@@ -1076,7 +1108,7 @@ struct SFunctions
             if (local != function->second.end()) return local->second;
         }
         const auto value = _declaredStorage.find(name);
-        return value != _declaredStorage.end() ? value->second : SlotType();
+        return value != _declaredStorage.end() ? value->second : DeclaredStorage();
     }
 	std::vector<SFunctionLayer*>			_funLayers;
 	std::map<int, SFunctionInfo*>			_funIDs;
@@ -1173,15 +1205,6 @@ struct SFunctions
 		p = new SFunctionInfo();
 		p->Clear();
 		p->_name = name;
-        if (_typedIR)
-            for (const NeoCore::IRFunction& signature : _typedIR->functions)
-                if (signature.backendName == name)
-                {
-                    p->_returnStorage = CoreStorageType(_typedIR->types, signature.returnType);
-                    for (NeoCore::TypeId type : signature.parameterTypes)
-                        p->_parameterStorage.push_back(CoreStorageType(_typedIR->types, type));
-                    break;
-                }
 
 		p->_code = code;
 		p->_pDebugData = pDebugData;

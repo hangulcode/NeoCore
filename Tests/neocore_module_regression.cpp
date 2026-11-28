@@ -189,6 +189,56 @@ void CheckRejections()
     Reject(shapes, "import shape;list<shape.Hidden> items=[];", "module member is not public: Hidden", "private struct type in a generic argument");
 }
 
+void CheckImportCache()
+{
+    Sources modules;
+    modules["left"] = "import shared;public int Read(){return shared.n;}";
+    modules["right"] = modules["left"];
+    modules["shared"] = "public int n=1;";
+    const std::string source = "import left;import right;export int Probe(){return left.Read()+right.Read();}";
+    int reads = 0;
+    NeoCore::CompileOptions options;
+    options.moduleLoader = [&](const std::string& name, const std::string& importer, NeoCore::ModuleSource& out, NeoCore::Error& error)
+    {
+        if (name == "shared") ++reads;
+        return Loader(modules)(name, importer, out, error);
+    };
+    NeoCore::Error error;
+    for (int pass = 0; pass < 3; ++pass)
+    {
+        if (pass == 1) options.moduleCacheKey = [](const std::string& name, const std::string&) { return name; };
+        if (pass == 2) modules["shared"] = "public int n=2;";
+        reads = 0;
+        auto program = NeoCore::Program::Compile(source, error, "root.nc", false, options);
+        Check(program != nullptr, "diamond compile: " + error.message);
+        if (program)
+        {
+            const auto result = program->Call("Probe");
+            Check(result.ok() && result.value.asInt() == (pass == 2 ? 4 : 2), "diamond import uses current source");
+        }
+        Check(reads == (pass == 0 ? 2 : 1), "shared module reads per compilation");
+    }
+    modules["shared"] = "import left;public int n=1;";
+    Check(!NeoCore::Program::Compile(source, error, "root.nc", false, options) &&
+        error.message.find("cyclic") != std::string::npos && error.sourceName == "shared.nc", "cached back edge reports cycle at importer");
+
+    options.moduleCacheKey = [](const std::string& name, const std::string& importer) { return importer + "/" + name; };
+    options.moduleLoader = [&](const std::string& name, const std::string& importer, NeoCore::ModuleSource& out, NeoCore::Error& error)
+    {
+        if (name != "shared") return Loader(modules)(name, importer, out, error);
+        out.sourceName = importer + "/shared.nc";
+        out.source = importer == "left.nc" ? "public int n=7;" : "public int n=11;";
+        return true;
+    };
+    auto program = NeoCore::Program::Compile(source, error, "root.nc", false, options);
+    Check(program != nullptr, "importer-specific compile: " + error.message);
+    if (program)
+    {
+        const auto result = program->Call("Probe");
+        Check(result.ok() && result.value.asInt() == 18, "importer-specific resolutions stay distinct");
+    }
+}
+
 void CheckLocations()
 {
     Sources modules;
@@ -306,6 +356,7 @@ int main()
     CheckExecution(false);
     CheckExecution(true);
     CheckRejections();
+    CheckImportCache();
     CheckLocations();
     CheckNativeModuleNames();
     CheckConsoleAccess(false);

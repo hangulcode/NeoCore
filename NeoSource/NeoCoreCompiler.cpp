@@ -1296,6 +1296,7 @@ struct Symbol
     bool fileGlobal = false;
     std::size_t hostGlobalIndex = 0;
     Token name;
+    std::size_t storageId = 0;
     std::string backendName;
     Statement* declaration = nullptr;
     std::size_t functionBody = 0;
@@ -1315,7 +1316,6 @@ public:
           scriptHost_(scriptHost), implementationSource_(implementationSource)
     {
         scopes_.push_back(std::map<std::string, Symbol*>());
-        result_.typedIR.nodes.reserve(source_.size() / 24 + 64);
         result_.backendIntrinsicPrefix = internalPrefix_ + "op_";
         result_.typedIR.prefix = internalPrefix_ + "ir_";
         result_.typedIR.returnPrefix = internalPrefix_ + "return_";
@@ -1440,6 +1440,8 @@ public:
         currentFunction_.clear();
         CheckGlobalInitializationCalls();
         FinishStorage();
+        // 주석·문자열의 길이 대신 검사한 식 수로 예약한다. 변환 등에서 더 생기는 노드는 벡터가 수용한다.
+        result_.typedIR.nodes.reserve(checkedExpressionCount_);
         for (const StaticDefineReplacement& replacement : replacements)
             edits_.push_back(Edit(replacement.begin, replacement.end, replacement.text));
         for (Expr* expression : roots_)
@@ -1539,6 +1541,7 @@ private:
     std::vector<std::pair<Token, std::string>> globalCalls_;
     std::vector<std::map<std::string, Symbol*>> scopes_;
     std::deque<Symbol> symbols_;
+    std::size_t checkedExpressionCount_ = 0;
     std::vector<Expr*> roots_;
     std::vector<TypeId> structures_;
     std::set<std::string> imports_;
@@ -1557,7 +1560,6 @@ private:
     std::vector<Expr*> activeLambdas_;
     std::vector<Expr*> lambdas_;
     mutable std::map<TypeId, bool> defaultable_;
-    mutable std::map<const Symbol*, std::size_t> irSymbols_;
     struct HostWrite
     {
         std::string name;
@@ -1917,6 +1919,7 @@ private:
         {
             if (!symbol.constant)
             {
+                symbol.storageId = result_.typedIR.storageSymbols.size() + 1;
                 IRStorageSymbol storage;
                 storage.backendName = symbol.backendName;
                 storage.type = symbol.boxed ? types_.ListOf(symbol.type) : symbol.type;
@@ -2646,6 +2649,7 @@ private:
 
     void CheckExpr(Expr& expression, bool allowMinMagnitude = false)
     {
+        ++checkedExpressionCount_;
         // 표식을 받아들이는 것은 서명에 Out 매개변수가 있는 API 호출뿐이다(CheckOutArgument). 여기까지 남았다면
         // 사용자 함수·함수값·생성자 호출이거나 Out 이 아닌 자리다.
         if (expression.outArgument)
@@ -3483,8 +3487,7 @@ private:
         {
             storage->kind = cell ? IRStorageKind::Cell : IRStorageKind::Variable;
             storage->backendName = symbol->backendName;
-            const auto inserted = irSymbols_.insert(std::make_pair(symbol, irSymbols_.size() + 1));
-            storage->symbolId = inserted.first->second;
+            storage->symbolId = symbol->storageId;
             storage->fields.assign(fields.rbegin(), fields.rend());
         }
         return true;
@@ -3528,8 +3531,13 @@ private:
         return true;
     }
 
-    bool NumericIROp(const Expr& expression, IROp& operation) const
+    bool ScalarIROp(const Expr& expression, IROp& operation) const
     {
+        if (expression.kind == ExprKind::Binary && (expression.op == "==" || expression.op == "!="))
+        {
+            operation = expression.op == "==" ? IROp::Equal : IROp::NotEqual;
+            return true;
+        }
         if (expression.kind == ExprKind::Binary && types_.IsNumeric(expression.children[0]->type)
             && types_.IsNumeric(expression.children[1]->type))
         {
@@ -3543,8 +3551,6 @@ private:
             else if (expression.op == "^") operation = IROp::BitXor;
             else if (expression.op == "<<") operation = IROp::ShiftLeft;
             else if (expression.op == ">>") operation = IROp::ShiftRight;
-            else if (expression.op == "==") operation = IROp::Equal;
-            else if (expression.op == "!=") operation = IROp::NotEqual;
             else if (expression.op == "<") operation = IROp::Less;
             else if (expression.op == "<=") operation = IROp::LessEqual;
             else if (expression.op == ">") operation = IROp::Greater;
@@ -3571,7 +3577,7 @@ private:
         return false;
     }
 
-    std::size_t AppendIR(IRNode node) const
+    std::size_t AppendIR(IRNode&& node) const
     {
         result_.typedIR.nodes.push_back(std::move(node));
         return result_.typedIR.nodes.size() - 1;
@@ -3610,6 +3616,23 @@ private:
         return owner == TypeKind::List || owner == TypeKind::Map || owner == TypeKind::Array || owner == TypeKind::Array32;
     }
 
+    bool DirectBuiltinCall(const Expr& expression) const
+    {
+        // 특수 서명과 Out 복사본은 각자의 호출 규약을 유지한다.
+        return expression.kind == ExprKind::Call && expression.api != NoApi && !expression.outCall &&
+            !CoreApi()[expression.api].Is(ApiCustom);
+    }
+
+    bool DirectHostCall(const Expr& expression) const
+    {
+        if (expression.kind == ExprKind::Name) return expression.symbol && expression.symbol->hostGlobal;
+        if (expression.kind == ExprKind::Member)
+            return expression.hostProperty && !expression.writeTarget && !expression.assignmentTarget &&
+                !scriptImplementations_.count(expression.hostProperty->getter);
+        return expression.kind == ExprKind::Call && expression.hostBinding && !expression.outCall &&
+            !expression.scriptHostRegistration && !scriptImplementations_.count(expression.hostBinding);
+    }
+
     std::size_t BuildValueIR(const Expr& expression) const
     {
         IRNode node;
@@ -3644,6 +3667,80 @@ private:
                 ValueStorage(argument, &output.storage);
                 if (IsStruct(argument.type)) output.cloneHelper = Helper("clone", argument.type);
                 node.outputs.push_back(output);
+            }
+        }
+        else if (DirectHostCall(expression))
+        {
+            node.op = IROp::HostCall;
+            if (expression.kind == ExprKind::Name)
+                node.functionIndex = hostSchema_->Bindings().size() + expression.symbol->hostGlobalIndex;
+            else
+            {
+                const bool method = expression.kind == ExprKind::Call;
+                const HostBindingId binding = method ? expression.hostBinding : expression.hostProperty->getter;
+                node.functionIndex = binding - 1;
+                const Expr& receiver = method ? *expression.children[0]->children[0] : *expression.children[0];
+                node.inputs.push_back(BuildValueIR(receiver));
+                const auto& signature = result_.typedIR.nativeCalls[node.functionIndex];
+                for (std::size_t i = 1; i < expression.children.size(); ++i)
+                {
+                    const auto input = BuildValueIR(*expression.children[i]);
+                    const IRSourceSpan origin = result_.typedIR.nodes[input].source;
+                    node.inputs.push_back(ConvertIR(input, signature.parameterTypes[i], origin));
+                }
+            }
+        }
+        else if (DirectBuiltinCall(expression))
+        {
+            node.op = IROp::BuiltinCall;
+            node.functionIndex = expression.api;
+            const auto& api = CoreApi()[expression.api];
+            TypeId receiver = InvalidType;
+            if (!IsCoreApiModule(api.owner) && !api.owner.empty())
+            {
+                const Expr& object = *expression.children.front()->children.front();
+                receiver = object.type;
+                node.inputs.push_back(BuildValueIR(object));
+            }
+            for (std::size_t i = 1; i < expression.children.size(); ++i)
+            {
+                const auto input = BuildValueIR(*expression.children[i]);
+                const IRSourceSpan origin = result_.typedIR.nodes[input].source;
+                node.inputs.push_back(ConvertIR(input, ResolveApiType(types_, api.parameters[i - 1].type, receiver), origin));
+            }
+        }
+        else if (expression.kind == ExprKind::Call && expression.callName == "tostring")
+        {
+            node.op = IROp::ToString;
+            node.inputs.push_back(BuildValueIR(*expression.children[1]));
+        }
+        else if (expression.kind == ExprKind::Binary && expression.op == "..")
+        {
+            node.op = IROp::Concat;
+            // 왼쪽 결합 사슬은 평평하게 보관한다. 긴 연결도 백엔드 재귀 깊이를 쓰지 않는다.
+            std::vector<const Expr*> parts;
+            const Expr* link = &expression;
+            for (;;)
+            {
+                parts.push_back(link->children[1].get());
+                const Expr& left = *link->children[0];
+                if (!ChainLink(*link, left)) { parts.push_back(&left); break; }
+                link = &left;
+            }
+            node.inputs.reserve(parts.size());
+            for (auto it = parts.rbegin(); it != parts.rend(); ++it)
+                node.inputs.push_back(BuildValueIR(**it));
+        }
+        else if (expression.kind == ExprKind::List)
+        {
+            node.op = IROp::ListLiteral;
+            const TypeId element = types_.Get(expression.type).element;
+            node.inputs.reserve(expression.children.size());
+            for (const auto& child : expression.children)
+            {
+                const std::size_t input = BuildValueIR(*child);
+                const IRSourceSpan origin = result_.typedIR.nodes[input].source;
+                node.inputs.push_back(ConvertIR(input, element, origin));
             }
         }
         else if (expression.kind == ExprKind::Conditional)
@@ -3707,7 +3804,7 @@ private:
             node.inputs.push_back(BuildValueIR(*expression.children[0]));
             node.inputs.push_back(BuildValueIR(*expression.children[1]));
         }
-        else if (NumericIROp(expression, node.op))
+        else if (ScalarIROp(expression, node.op))
         {
             const std::size_t first = expression.kind == ExprKind::Call ? 1 : 0;
             for (std::size_t i = first; i < expression.children.size(); ++i)
@@ -3720,6 +3817,8 @@ private:
                     node.inputs[i] = WidenIR(node.inputs[i], origin);
                 }
         }
+        else if (expression.kind == ExprKind::Literal && expression.type == types_.Null())
+            node.op = IROp::NullLiteral;
         else if (expression.kind == ExprKind::Literal &&
             (node.type == IRValueType::Int || node.type == IRValueType::Float || node.type == IRValueType::Bool))
         {
@@ -3759,8 +3858,7 @@ private:
             !expression.symbol->hostGlobal && !expression.symbol->boxed)
         {
             node.op = IROp::Symbol;
-            const auto inserted = irSymbols_.insert(std::make_pair(expression.symbol, irSymbols_.size() + 1));
-            node.symbolId = inserted.first->second;
+            node.symbolId = expression.symbol->storageId;
             node.backendName = expression.symbol->backendName;
         }
         else if (ValueStorage(expression, &node.storage))
@@ -3799,53 +3897,13 @@ private:
         return result;
     }
 
-    // 왼쪽 자식도 같은 타입의 .. 식이면 "a .. b .. c" 사슬의 고리다. 고리는 IR 참조 대신 부모 조각 안에
-    // 그대로 펼친다. 자식마다 IR 참조를 두면 조각 파싱이 항마다 중첩되어 긴 사슬이 파서 깊이 한도를 넘는다.
-    // 왼쪽 결합은 그대로이므로 평가 순서와 결과는 바뀌지 않는다. 숫자 연산은 IR 로 내려가므로 대상이 아니다.
+    // 별도 변환이나 복사가 필요 없는 왼쪽 연결만 부모 IR의 피연산자로 펼친다.
     bool ChainLink(const Expr& parent, const Expr& child) const
     {
         return parent.op == ".." && child.kind == ExprKind::Binary && child.op == parent.op && child.type == parent.type &&
             child.callName.empty() && !child.evaluatedConstant && !child.constantInitializer &&
             !child.widen && !child.box && !child.clone && !child.branchCondition &&
             !child.writeTarget && !child.assignmentTarget;
-    }
-
-    // .. 에서 허용한 스칼라만 기존 변환 경로에 연결한다. 원래 타입과 평가 순서는 유지한다.
-    std::string RenderConcatOperand(const Expr& expression) const
-    {
-        const std::string text = RenderExpr(expression);
-        return expression.type == types_.String() ? text : "tostring(" + text + ")";
-    }
-
-    // 긴 왼쪽 사슬은 조각만 평탄화해도 RenderExpr의 큰 Debug 프레임이 항마다 쌓인다.
-    // 고리를 반복문으로 수집하고 왼쪽부터 방출해 결합·평가 순서와 줄 간격을 그대로 유지한다.
-    std::string RenderConcatChain(const Expr& expression, bool bare) const
-    {
-        std::vector<const Expr*> links;
-        const Expr* current = &expression;
-        std::string text = bare ? "" : "(";
-        for (;;)
-        {
-            links.push_back(current);
-            const Expr& left = *current->children[0];
-            text += Lines(current->begin, left.begin);
-            if (!ChainLink(*current, left))
-            {
-                text += RenderConcatOperand(left);
-                break;
-            }
-            current = &left;
-        }
-        for (auto it = links.rbegin(); it != links.rend(); ++it)
-        {
-            const Expr& link = **it;
-            const Expr& left = *link.children[0];
-            const Expr& right = *link.children[1];
-            text += Lines(left.end, link.token.begin) + " " + link.op + " "
-                + Lines(link.token.end, right.begin) + RenderConcatOperand(right) + Lines(right.end, link.end);
-        }
-        if (!bare) text += ")";
-        return text;
     }
 
     // 분기 문맥(if/while 조건)의 논리식 아래에 있는 논리식 자식을 괄호 없이 이어 써도 되는가. `||` 아래의 `||`·`&&`와
@@ -3859,22 +3917,20 @@ private:
             !child.clone && !child.writeTarget && !child.assignmentTarget;
     }
 
-    // chainLink: 이 식이 사슬의 고리다. IR 참조와 바깥 괄호 없이 부모 조각에 이어 붙는다.
     // bareLogical: 분기 문맥 논리식의 자식 논리식이다(BareLogicalChild). 괄호와 IR 참조 없이 부모 조건에 이어 붙어
     //              파서가 조건 전체를 한 단락 평가 사슬로 보고 분기 점프만 낸다.
-    std::string RenderExpr(const Expr& expression, bool allowIR = true, bool applyWrappers = true, bool chainLink = false,
+    std::string RenderExpr(const Expr& expression, bool allowIR = true, bool applyWrappers = true,
         bool bareLogical = false) const
     {
         if (expression.evaluatedConstant)
             return ConstantLiteral(*expression.evaluatedConstant) + Lines(expression.begin, expression.end);
         std::string text;
         IROp operation;
-        if (allowIR && !chainLink && !bareLogical && !expression.constantInitializer &&
-            (NumericIROp(expression, operation) || ScalarMutationIROp(expression, operation) || ScalarCollectionIR(expression)
+        if (allowIR && !bareLogical && !expression.constantInitializer &&
+            (ScalarIROp(expression, operation) || ScalarMutationIROp(expression, operation) || ScalarCollectionIR(expression)
                 || (!expression.writeTarget && !expression.assignmentTarget && !expression.branchCondition &&
                     expression.type != InvalidType && types_.Get(expression.type).kind != TypeKind::Void && expression.kind != ExprKind::Name && expression.kind != ExprKind::Literal)
-                || (expression.kind == ExprKind::Name && expression.symbol && expression.symbol->hostGlobal)
-                || expression.kind == ExprKind::Conditional || expression.outCall
+                || expression.kind == ExprKind::Conditional || expression.outCall || DirectBuiltinCall(expression) || DirectHostCall(expression)
                 || expression.functionIndex != static_cast<std::size_t>(-1)
                 || (expression.widen && !expression.constantWiden)))
         {
@@ -3946,17 +4002,16 @@ private:
             // 같은 결합으로 이어지는 자식 논리식도 괄호 없이 이어 쓴다(BareLogicalChild). 그 밖의 자식 괄호는 그대로
             // 두어 중첩 논리식의 결합 순서와 단락 평가를 보존한다.
             const bool directCondition = (expression.branchCondition || bareLogical) && (expression.op == "&&" || expression.op == "||");
-            const bool bare = directCondition || chainLink;
             if (expression.op == "..")
             {
-                text = RenderConcatChain(expression, bare);
+                text = result_.typedIR.prefix + std::to_string(BuildValueIR(expression)) + "()" + Lines(expression.begin, expression.end);
                 break;
             }
             const bool leftBare = directCondition && BareLogicalChild(expression, left);
             const bool rightBare = directCondition && BareLogicalChild(expression, right);
-            text = (bare ? "" : "(") + Lines(expression.begin, left.begin) + RenderExpr(left, !leftBare, true, false, leftBare)
+            text = (directCondition ? "" : "(") + Lines(expression.begin, left.begin) + RenderExpr(left, !leftBare, true, leftBare)
                 + Lines(left.end, expression.token.begin) + " " + expression.op + " " + Lines(expression.token.end, right.begin)
-                + RenderExpr(right, !rightBare, true, false, rightBare) + Lines(right.end, expression.end) + (bare ? "" : ")");
+                + RenderExpr(right, !rightBare, true, rightBare) + Lines(right.end, expression.end) + (directCondition ? "" : ")");
             break;
         }
         case ExprKind::Conditional:
@@ -4542,30 +4597,38 @@ bool HostSchema::SetMethodDefaults(HostBindingId method, const std::vector<std::
     return true;
 }
 
-bool ExpandStaticDefines(const std::string& source, const std::vector<CompileDefine>& defines,
-    std::vector<StaticDefineReplacement>& replacements, std::string& error, int& line, int& column)
+bool StaticDefineTable::Prepare(const std::vector<CompileDefine>& defines, std::string& error, int& line, int& column)
 {
-    replacements.clear(); error.clear(); line = column = 1;
+    error.clear(); line = column = 1;
     try
     {
-        std::map<std::string, std::string> literals;
+        StaticDefineTable table;
         for (const CompileDefine& define : defines)
         {
             const std::string literal = DefineLiteral(define);
-            if (!literals.insert(std::make_pair(define.name, literal)).second)
+            if (!table.literals_.emplace(define.name, literal).second)
                 Fail(Token(), "duplicate compile define: " + define.name);
+            table.firstCharacters_[static_cast<unsigned char>(define.name.front())] = true;
+            table.shortest_ = (std::min)(table.shortest_, define.name.size());
+            table.longest_ = (std::max)(table.longest_, define.name.size());
         }
-        if (literals.empty()) return true;
-        // 치환 자리만 찾으므로 토큰 배열과 글자 표를 만들지 않고 흘려 읽는다. define 이름과 길이·첫 글자가 맞을 수
-        // 없는 식별자는 문자열을 만들지 않고 넘긴다. 어휘 오류는 전체를 읽을 때와 같은 자리에서 난다.
-        bool firstCharacters[256] = {};
-        std::size_t shortest = static_cast<std::size_t>(-1), longest = 0;
-        for (const auto& literal : literals)
-        {
-            if (!literal.first.empty()) firstCharacters[static_cast<unsigned char>(literal.first[0])] = true;
-            shortest = (std::min)(shortest, literal.first.size());
-            longest = (std::max)(longest, literal.first.size());
-        }
+        *this = std::move(table);
+        return true;
+    }
+    catch (const Diagnostic& diagnostic)
+    {
+        error = diagnostic.message; line = diagnostic.token.line; column = diagnostic.token.column;
+        return false;
+    }
+}
+
+bool StaticDefineTable::Expand(const std::string& source, std::vector<StaticDefineReplacement>& replacements,
+    std::string& error, int& line, int& column) const
+{
+    replacements.clear(); error.clear(); line = column = 1;
+    if (Empty()) return true;
+    try
+    {
         TokenTexts texts;
         Lexer lexer(source, texts);
         Token token;
@@ -4573,9 +4636,9 @@ bool ExpandStaticDefines(const std::string& source, const std::vector<CompileDef
         {
             if (token.kind != TokenKind::Identifier) continue;
             const std::size_t length = token.end - token.begin;
-            if (length < shortest || length > longest || !firstCharacters[static_cast<unsigned char>(source[token.begin])]) continue;
-            const std::map<std::string, std::string>::const_iterator found = literals.find(source.substr(token.begin, length));
-            if (found == literals.end()) continue;
+            if (length < shortest_ || length > longest_ || !firstCharacters_[static_cast<unsigned char>(source[token.begin])]) continue;
+            const auto found = literals_.find(source.substr(token.begin, length));
+            if (found == literals_.end()) continue;
             StaticDefineReplacement replacement;
             replacement.begin = token.begin; replacement.end = token.end; replacement.text = found->second;
             replacements.push_back(replacement);
@@ -4588,6 +4651,14 @@ bool ExpandStaticDefines(const std::string& source, const std::vector<CompileDef
         line = diagnostic.token.line; column = diagnostic.token.column;
         return false;
     }
+}
+
+bool ExpandStaticDefines(const std::string& source, const std::vector<CompileDefine>& defines,
+    std::vector<StaticDefineReplacement>& replacements, std::string& error, int& line, int& column)
+{
+    replacements.clear();
+    StaticDefineTable table;
+    return table.Prepare(defines, error, line, column) && table.Expand(source, replacements, error, line, column);
 }
 
 bool CompileStaticSource(const std::string& source, StaticCompileResult& result, const HostSchema* hostSchema,

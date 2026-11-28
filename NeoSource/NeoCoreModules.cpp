@@ -275,16 +275,20 @@ static bool SkipType(const std::vector<Token>& tokens, std::size_t& index, unsig
     return true;
 }
 
-static void Analyze(Unit& unit, const std::vector<CompileDefine>* defines)
+static void TokenizeUnit(Unit& unit)
 {
     // 토큰 수는 소스 크기로 어림해 미리 잡는다. 늘리면서 옮기는 일과 그동안의 두 벌 메모리를 피한다.
     unit.tokens.reserve(unit.input.source.size() / 4 + 16);
     Tokenize(unit.input.source, unit.input.sourceName, unit.tokens);
-    if (defines)
+}
+
+static void Analyze(Unit& unit, const StaticDefineTable& defines)
+{
+    if (!defines.Empty())
     {
         std::string error;
         Token at;
-        if (!ExpandStaticDefines(unit.input.source, *defines, unit.defineValues, error, at.line, at.column))
+        if (!defines.Expand(unit.input.source, unit.defineValues, error, at.line, at.column))
             Fail(unit.input.sourceName, at, error);
         // 치환할 자리가 없으면 토큰은 그대로다.
         if (!unit.defineValues.empty())
@@ -528,9 +532,9 @@ private:
 class Bundler
 {
 public:
-    Bundler(const ModuleLoader& loader, const std::vector<std::string>& externalNames, const std::vector<CompileDefine>* defines,
-        std::size_t diagnosticLimit, const std::string* privateEntrySource)
-        : loader_(loader), defines_(defines), diagnosticLimit_(std::max<std::size_t>(1, diagnosticLimit)),
+    Bundler(const ModuleLoader& loader, const std::vector<std::string>& externalNames,
+        std::size_t diagnosticLimit, const std::string* privateEntrySource, const ModuleCacheKey& cacheKey)
+        : loader_(loader), cacheKey_(cacheKey), diagnosticLimit_(std::max<std::size_t>(1, diagnosticLimit)),
           privateEntrySource_(privateEntrySource ? *privateEntrySource : std::string())
     {
         static const char* const words[] = {
@@ -551,11 +555,18 @@ public:
         }
     }
 
-    void Build(const std::string& source, const std::string& sourceName, ModuleBundle& output)
+    void Build(const std::string& source, const std::string& sourceName, ModuleBundle& output, const std::vector<CompileDefine>* defines)
     {
         std::unique_ptr<Unit> root(new Unit);
         root->input.source = source;
         root->input.sourceName = sourceName;
+        TokenizeUnit(*root);
+        if (defines && !defines->empty())
+        {
+            Token at;
+            std::string error;
+            if (!defines_.Prepare(*defines, error, at.line, at.column)) Fail(sourceName, at, error);
+        }
         Analyze(*root, defines_);
         identities_[sourceName] = 0;
         units_.push_back(std::move(root));
@@ -647,7 +658,9 @@ public:
 
 private:
     const ModuleLoader& loader_;
-    const std::vector<CompileDefine>* defines_;
+    const ModuleCacheKey& cacheKey_;
+    std::unordered_map<std::string, std::size_t> resolvedImports_;
+    StaticDefineTable defines_;
     std::vector<std::unique_ptr<Unit>> units_;
     std::map<std::string, std::size_t> identities_;
     std::vector<std::string> preservedNames_;
@@ -676,6 +689,18 @@ private:
             {
                 const Token& token = unit.tokens[import.first];
                 if (!loader_) Fail(unit.input.sourceName, token, "user module imports require a ModuleLoader");
+                const std::string key = cacheKey_ ? cacheKey_(import.name, unit.input.sourceName) : std::string();
+                if (!key.empty())
+                {
+                    const auto cached = resolvedImports_.find(key);
+                    if (cached != resolvedImports_.end())
+                    {
+                        import.target = cached->second;
+                        const Unit& target = *units_[import.target];
+                        if (target.visiting) Fail(unit.input.sourceName, token, "cyclic module import: " + target.input.sourceName);
+                        continue;
+                    }
+                }
                 ModuleSource input;
                 Error error;
                 if (!loader_(import.name, unit.input.sourceName, input, error))
@@ -692,17 +717,20 @@ private:
                     if (units_[import.target]->visiting) Fail(unit.input.sourceName, token, "cyclic module import: " + input.sourceName);
                     if (units_[import.target]->input.source != input.source)
                         Fail(unit.input.sourceName, token, "module loader returned inconsistent source: " + input.sourceName);
+                    if (!key.empty()) resolvedImports_.emplace(key, import.target);
                     continue;
                 }
                 if (units_.size() >= 1024) Fail(unit.input.sourceName, token, "module count exceeds compiler limit");
                 std::unique_ptr<Unit> loaded(new Unit);
                 loaded->diagnosticName = import.name;
                 loaded->input = std::move(input);
+                TokenizeUnit(*loaded);
                 Analyze(*loaded, defines_);
                 if (!loaded->tokens.empty() && !loaded->tokens.back().Is(";") && !loaded->tokens.back().Is("}"))
                     Fail(loaded->input.sourceName, loaded->tokens.back(), "incomplete statement at end of module source");
                 import.target = units_.size();
                 identities_[loaded->input.sourceName] = import.target;
+                if (!key.empty()) resolvedImports_.emplace(key, import.target);
                 units_.push_back(std::move(loaded));
                 Visit(import.target, depth + 1);
             }
@@ -898,14 +926,14 @@ void ModuleBundle::Translate(Error& error) const
 bool BundleModules(const std::string& source, const std::string& sourceName,
     const ModuleLoader& loader, ModuleBundle& result, Error& error,
     const std::vector<std::string>& externalNames, const std::vector<CompileDefine>* defines, std::size_t diagnosticLimit,
-    const std::string* privateEntrySource)
+    const std::string* privateEntrySource, const ModuleCacheKey& cacheKey)
 {
     result = ModuleBundle();
     error = Error();
     try
     {
-        Bundler bundler(loader, externalNames, defines, diagnosticLimit, privateEntrySource);
-        bundler.Build(source, sourceName, result);
+        Bundler bundler(loader, externalNames, diagnosticLimit, privateEntrySource, cacheKey);
+        bundler.Build(source, sourceName, result, defines);
         return true;
     }
     catch (const Diagnostic& failure)

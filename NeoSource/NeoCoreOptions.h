@@ -16,6 +16,7 @@ struct ModuleSource
     std::string sourceName;
 };
 typedef std::function<bool(const std::string&, const std::string&, ModuleSource&, Error&)> ModuleLoader;
+typedef std::function<std::string(const std::string& name, const std::string& importer)> ModuleCacheKey;
 
 typedef NeoScript::HttpRequest HttpRequest;
 typedef NeoScript::HttpResponse HttpResponse;
@@ -50,6 +51,8 @@ struct CompileOptions
     std::vector<CompileDefine> defines;
     std::size_t diagnosticLimit = 100;
     std::shared_ptr<const ScriptHostCompileConfig> scriptHost;
+    // 한 번의 컴파일에서 같은 키는 같은 모듈을 뜻한다. 빈 키는 매번 로더로 확인한다.
+    ModuleCacheKey moduleCacheKey;
 };
 
 struct ExecutionLimits

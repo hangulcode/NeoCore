@@ -562,6 +562,7 @@ public:
         std::string source;
         if (!ReadSource(fullPath, source)) { err = "cannot open program: " + fullPath; return false; }
         NeoCore::CompileOptions options;
+        options.moduleCacheKey = ConsoleModuleCacheKey;
         options.moduleLoader = [this](const std::string& name, const std::string& importer,
             NeoCore::ModuleSource& result, NeoCore::Error& error)
         { return LoadModule(name, importer, libraryPath, result, error); };
@@ -1349,7 +1350,7 @@ public:
             };
             bundleSource="import __console_host_impl;\nimport __console_host_app;\n";
         }
-        if (error.ok() && NeoCore::BundleModules(bundleSource, bundlePath, loader, bundle, error,external,&defines,diagnosticLimit))
+        if (error.ok() && NeoCore::BundleModules(bundleSource, bundlePath, loader, bundle, error,external,&defines,diagnosticLimit,nullptr,ConsoleModuleCacheKey))
         {
             NeoCore::StaticCompileResult checked;
             const auto config=host?host->Config():std::shared_ptr<const NeoCore::ScriptHostCompileConfig>();
@@ -1606,6 +1607,15 @@ int RunLanguageServerImpl(const std::string& hostSchema,const std::string& hostI
 }
 
 }
+std::string ConsoleModuleCacheKey(const std::string& name, const std::string& importer)
+{
+    // 가상 진입점은 같은 폴더의 실제 파일과 다른 모듈을 제공할 수 있다.
+    static const char launcherSuffix[] = "#console-host";
+    const std::size_t length = sizeof(launcherSuffix) - 1;
+    if (importer.size() >= length && importer.compare(importer.size() - length, length, launcherSuffix) == 0) return {};
+    return Directory(importer) + "/" + name;
+}
+
 int RunNeoCoreDebugAdapter() { return RunDebugAdapterImpl(); }
 int RunNeoCoreLanguageServer(const std::string& hostSchema,const std::string& hostImplementation,const std::string& resourceRoot,std::size_t diagnosticLimit)
 {

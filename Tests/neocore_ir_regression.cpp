@@ -216,6 +216,86 @@ void RejectIR(IRuntime& runtime, const NeoCore::StaticCompileResult& checked,
     Check(!error.ok() && bytes.empty(), label + " image compiler rejects malformed IR");
 }
 
+void EqualityAndListLiterals(IRuntime& runtime, bool debug)
+{
+    const char* source =
+        "struct Pair{int n;};"
+        "string current=\"a\";string Change(){current=\"b\";return current;}"
+        "int counter=0;int Next(){return ++counter;}"
+        "export int Probe(){"
+        "if(current==Change())return -1;"
+        "list<float> a=[Next(),Next()];"
+        "a=[a[1],a[0]];"
+        "list<list<string>> names=[[null,\"ok\"],[]];"
+        "if(names[0][0]!=null || names[0][1]!=\"ok\" || names[1].len()!=0)return -2;"
+        "if((a[0]==2)!=true || null!=null || a[1]!=1)return -3;"
+        "Pair p=Pair(3);list<Pair> copies=[p,p];p.n=9;"
+        "if(copies[0].n!=3 || copies[1].n!=3)return -4;"
+        "return counter;}";
+    for (bool image : {false, true})
+    {
+        const auto value = Run(runtime, source, debug, image, "equality and list literal semantics");
+        Check(value.status == RunStatus::Completed && value.integer == 2, "snapshot operands and initialize list elements in order");
+    }
+
+    NeoCore::StaticCompileResult checked;
+    Check(NeoCore::CompileStaticSource("export bool Probe(string s){list<string> a=[s,null];return s==null;}", checked),
+        "equality and list literal structure");
+    if (!checked.success) return;
+    auto& ir = checked.typedIR;
+    const auto list = FindOp(ir, NeoCore::IROp::ListLiteral);
+    const auto equal = FindOp(ir, NeoCore::IROp::Equal);
+    const auto nil = FindOp(ir, NeoCore::IROp::NullLiteral);
+    Check(list < ir.nodes.size() && equal < ir.nodes.size() && nil < ir.nodes.size(), "list, equality and null have direct IR");
+    Check(FindOp(ir, NeoCore::IROp::LegacyExpression) == ir.nodes.size(), "simple list and equality carry no expression source");
+    if (list < ir.nodes.size() && equal < ir.nodes.size() && nil < ir.nodes.size())
+    {
+        ir.nodes[list].inputs.push_back(equal);
+        RejectIR(runtime, checked, debug, "wrong list element type");
+        ir.nodes[list].inputs.pop_back();
+        ir.nodes[equal].inputs[1] = list;
+        RejectIR(runtime, checked, debug, "incompatible equality operands");
+    }
+}
+
+void DirectCallsAndConcat(IRuntime& runtime, bool debug)
+{
+    const char* source =
+        "import math;list<int> active;int Replace(){active=[8];return 4;}"
+        "export string Probe(){list<int> original=[3];active=original;active.append(Replace());"
+        "return tostring(original.len())..\":\"..original[1]..\":\"..math.abs(-2)..\":\"..active[0];}";
+    for (bool image : {false, true})
+    {
+        const Value value = Run(runtime, source, debug, image, "typed API receivers and concatenation");
+        Check(value.status == RunStatus::Completed && value.text == "2:4:2:8", "receiver evaluated before rebinding argument");
+    }
+    NeoCore::StaticCompileResult checked;
+    Check(NeoCore::CompileStaticSource(source, checked), "typed calls and concat structure");
+    if (!checked.success) return;
+    auto& ir = checked.typedIR;
+    const auto concat = FindOp(ir, NeoCore::IROp::Concat);
+    const auto call = FindOp(ir, NeoCore::IROp::BuiltinCall);
+    Check(concat < ir.nodes.size() && ir.nodes[concat].inputs.size() == 7, "long concat is one ordered IR node");
+    Check(call < ir.nodes.size() && FindOp(ir, NeoCore::IROp::ToString) < ir.nodes.size(), "builtin and conversion use checked operands");
+    if (call < ir.nodes.size())
+    {
+        ir.nodes[call].functionIndex = static_cast<std::size_t>(-1);
+        RejectIR(runtime, checked, debug, "invalid builtin registration");
+    }
+
+    NeoCore::StaticCompileResult declarations;
+    Check(NeoCore::CompileStaticSource("export int Probe(){return Later(7);}int Later(int n){return n;}", declarations),
+        "forward declaration metadata");
+    if (!declarations.success) return;
+    declarations.typedIR.functions.back().backendName = "Missing";
+    RejectIR(runtime, declarations, debug, "missing or mismatched forward declaration");
+    declarations.typedIR.functions.back().backendName = "Later";
+    auto orphan = declarations.typedIR.functions.back();
+    orphan.backendName = "Orphan";
+    declarations.typedIR.functions.push_back(orphan);
+    RejectIR(runtime, declarations, debug, "declaration without a body");
+}
+
 void InternalNameBoundary(IRuntime& runtime, bool debug)
 {
     const char* sources[] = {"var $neocore_user=1;", "fun $neocore_test(){}"};
@@ -308,6 +388,13 @@ void InvalidMetadata(IRuntime& runtime, bool debug)
     const std::size_t symbol = FindOp(valid.typedIR, NeoCore::IROp::Symbol);
     Check(symbol < valid.typedIR.nodes.size() && !valid.typedIR.functions.empty(), "internal identifier metadata fixture");
     if (symbol == valid.typedIR.nodes.size() || valid.typedIR.functions.empty()) return;
+    for (std::size_t wrongId : {std::size_t(0), valid.typedIR.storageSymbols.size() + 1,
+        valid.typedIR.nodes[symbol].symbolId == 1 ? std::size_t(2) : std::size_t(1)})
+    {
+        NeoCore::StaticCompileResult altered = valid;
+        altered.typedIR.nodes[symbol].symbolId = wrongId;
+        RejectIR(runtime, altered, debug, "invalid storage declaration ID on symbol read");
+    }
     const char* invalidNames[] = {"$other", "$neocore_bad/name", "$neocore_"};
     for (const char* name : invalidNames)
         for (int field = 0; field < 4; ++field)
@@ -424,6 +511,9 @@ void InvalidStorageMetadata(IRuntime& runtime, bool debug)
         }
         RejectIR(runtime, altered, debug, "bad storage metadata variant " + std::to_string(change));
     }
+    NeoCore::StaticCompileResult invalidId = valid;
+    invalidId.typedIR.nodes[write].storage.symbolId = valid.typedIR.storageSymbols.size() + 1;
+    RejectIR(runtime, invalidId, debug, "invalid storage declaration ID on write");
     for (const char* name : {"$other", "$neocore_bad/name"})
     {
         NeoCore::StaticCompileResult altered = valid;
@@ -450,6 +540,9 @@ void EvaluationOrder(IRuntime& runtime, bool debug)
             "global value snapshot precedes nested mutation"},
         {"export int Probe(){int x=2;int total=x+3;{float x=1.5;total+=int(x*4.0);}return total+x;}", 13,
             "shadowed symbols keep distinct numeric types and storage"},
+        {"int x=2;int Global(){return x+1;}export int Probe(){int x=4;fn()->int f=fn()->int{return x+1;};"
+         "{int x=8;x+=Global();}return 100*Global()+10*f()+x;}", 354,
+            "global slots, closure captures and shadowed local slots remain distinct"},
         {"export int Probe(){int x=1;int y=2;return (x+=3)+(y*=4);}", 12,
             "compound assignments execute once in left to right order"},
         {"int trace=0;int A(){trace=trace*10+1;return 3;}int B(){trace=trace*10+2;return 2;}"
@@ -1156,6 +1249,8 @@ int main()
     for (bool debug : {false, true})
     {
         InternalNameBoundary(*runtime, debug);
+        DirectCallsAndConcat(*runtime, debug);
+        EqualityAndListLiterals(*runtime, debug);
         MutationAndLifetime(*runtime, debug);
         InvalidMetadata(*runtime, debug);
         ConditionalMetadata(*runtime, debug);

@@ -437,7 +437,7 @@ std::shared_ptr<Program::Impl> Program::PrepareSource(const std::string& source,
             if (schema.Types().Get(type.second).kind == TypeKind::Native || schema.Types().Get(type.second).kind == TypeKind::Struct) externalNames.push_back(type.first);
     }
     if (!BundleModules(source, sourceName, options.moduleLoader, impl->bundle, error, externalNames, &options.defines,
-        options.diagnosticLimit, privateEntrySource))
+        options.diagnosticLimit, privateEntrySource, options.moduleCacheKey))
         return {};
     const auto implementationSource = [&](int line) {
         return options.scriptHost && options.scriptHost->allowsSource && line > 0 &&
@@ -464,6 +464,7 @@ std::shared_ptr<Program::Impl> Program::PrepareSource(const std::string& source,
     if (impl->checked.types.LookupNamed("JobPool") != InvalidType)
     {
         impl->jobOptions.moduleLoader = options.moduleLoader;
+        impl->jobOptions.moduleCacheKey = options.moduleCacheKey;
         impl->jobOptions.defines = options.defines;
         impl->jobOptions.jobExecutor = runtime->jobExecutor;
     }
@@ -590,6 +591,7 @@ std::unique_ptr<Program> Program::LoadImageImpl(const std::vector<std::uint8_t>&
     if (impl->checked.types.LookupNamed("JobPool") != InvalidType)
     {
         impl->jobOptions.moduleLoader = options.moduleLoader;
+        impl->jobOptions.moduleCacheKey = options.moduleCacheKey;
         impl->jobOptions.defines = options.defines;
         impl->jobOptions.jobExecutor = runtime->jobExecutor;
     }

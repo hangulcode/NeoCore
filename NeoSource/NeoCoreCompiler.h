@@ -5,6 +5,7 @@
 #include "NeoCoreDiagnostics.h"
 #include <string>
 #include <functional>
+#include <map>
 #include <utility>
 #include <vector>
 
@@ -78,6 +79,20 @@ struct StaticDefineReplacement
 {
     std::size_t begin = 0, end = 0;
     std::string text;
+};
+// 컴파일 한 번에서 공유하는 호스트 define 표. 치환 위치와 오류 좌표는 소스별로 만든다.
+class StaticDefineTable
+{
+public:
+    bool Prepare(const std::vector<CompileDefine>& defines, std::string& error, int& line, int& column);
+    bool Expand(const std::string& source, std::vector<StaticDefineReplacement>& replacements,
+        std::string& error, int& line, int& column) const;
+    bool Empty() const { return literals_.empty(); }
+
+private:
+    std::map<std::string, std::string> literals_;
+    bool firstCharacters_[256] = {};
+    std::size_t shortest_ = static_cast<std::size_t>(-1), longest_ = 0;
 };
 bool ExpandStaticDefines(const std::string& source, const std::vector<CompileDefine>& defines,
     std::vector<StaticDefineReplacement>& replacements, std::string& error, int& line, int& column);

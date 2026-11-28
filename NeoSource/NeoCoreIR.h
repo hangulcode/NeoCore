@@ -24,7 +24,7 @@ enum class IROp
     PreIncrement, PreDecrement, PostIncrement, PostDecrement,
     ScriptCall, NullableConvert, CopyStruct, MapRead, StringLiteral, Conditional, CollectionRead, CollectionWrite,
     // Out 인자가 있는 API 호출. 호출은 legacySource 의 표기로 컴파일하고, 끝난 뒤 outputs 의 대상에 값을 되돌려 쓴다.
-    ApiCall
+    ApiCall, NullLiteral, ListLiteral, BuiltinCall, ToString, Concat, HostCall
 };
 
 enum class IRStorageKind { Invalid, Variable, Cell };
@@ -71,6 +71,7 @@ struct IRNode
     std::string legacySource;
     IRStorageTarget storage;
     std::vector<IROutput> outputs;
+    // 호출 종류에 따라 스크립트 서명, 내장 API 등록부, 호스트 바인딩 서명의 색인이다.
     std::size_t functionIndex = static_cast<std::size_t>(-1);
     // 문장 위치의 대입·증감은 결과를 쓰지 않는다. 백엔드가 임시 슬롯 없이 변수에 바로 저장할 수 있다.
     bool discardResult = false;

@@ -1357,7 +1357,9 @@ int  AddLocalVarName(CArchiveRdWC& ar, SFunctions& funs, SVars& vars, bool blExp
 		iLocalVar = funs._cur->AllocLocalVar(); // 0 번은 리턴 저장용
 	SLayerVar* pCurLayer = vars.GetCurrentLayer();
 	pCurLayer->AddLocalVar(vars.DeclarationName(name), iLocalVar);
-	const SlotType storage = funs.FindDeclaredStorage(name);
+	const DeclaredStorage declared = funs.FindDeclaredStorage(name);
+	pCurLayer->BindIRSlot(declared.symbolId, iLocalVar);
+	const SlotType storage = declared.type;
 	if (storage.kind != SlotKind::Boxed)
 	{
 		if (iLocalVar < 0) vars._globalStorage[iLocalVar] = storage;
@@ -1457,6 +1459,15 @@ static int FindReadableVar(SFunctions& funs, SVars& vars, const std::string& nam
 		if (storage.kind != SlotKind::Boxed) function->_storage[slot] = storage;
 	}
 	return slot;
+}
+
+static int FindIRSlot(SFunctions& funs, SVars& vars, std::size_t symbolId, const std::string& name)
+{
+    const IRSlotBinding& binding = vars.irSlots[symbolId];
+    // 람다는 생성 도우미의 인자와 바깥 프레임을 거쳐 자체 캡처 슬롯을 만든다.
+    if (funs._cur->_funType != FUNT_ANONYMOUS && (binding.function == funs._cur || binding.slot <= COMPILE_GLOBAL_VAR_BEGIN))
+        return binding.slot;
+    return FindReadableVar(funs, vars, name);
 }
 
 int  AddLocalVar(CArchiveRdWC& ar, SFunctions& funs, SVars& vars)
@@ -1712,8 +1723,10 @@ bool ParseFunctionArg(CArchiveRdWC& ar, SFunctions& funs, SLayerVar* pCurLayer)
 				int iArg = 1 + (int)funs._cur->_args.size();
 				CheckCompileRange("function arguments", iArg, 0, COMPILE_MAX_ARGUMENTS);
 				pCurLayer->AddLocalVar(tk2, iArg);
+				const DeclaredStorage declared = funs.FindDeclaredStorage(tk2);
+                pCurLayer->BindIRSlot(declared.symbolId, iArg);
 				const SlotType storage = static_cast<size_t>(iArg) <= funs._cur->_parameterStorage.size()
-                    ? funs._cur->_parameterStorage[iArg - 1] : funs.FindDeclaredStorage(tk2);
+                    ? funs._cur->_parameterStorage[iArg - 1] : declared.type;
 				if (storage.kind != SlotKind::Boxed) funs._cur->_storage[iArg] = storage;
 				funs._cur->_debugVarNames[iArg] = tk2;
 				funs._cur->_args.insert(tk2);
@@ -1854,6 +1867,7 @@ void DelLocalVar(SLayerVar* pCurLayer)
 SLayerVar* AddVarsFunction(SVars& vars)
 {
 	SLayerVar* pCurLayer = new SLayerVar();
+    pCurLayer->irSlots = vars.irSlots.data();
 	vars._varsFunction.push_back(pCurLayer);
 
 	SLocalVar* pCurLocal = new SLocalVar();
@@ -2195,9 +2209,9 @@ bool ParseFunCall(SOperand& iResultStack, TK_TYPE tkTypePre, SFunctionInfo* pFun
 			}
 			else
 			{
-				if ((int)pFun->_args.size() != iParamCount)
+				if ((int)pFun->ArgumentCount() != iParamCount)
 				{
-					SetParserCompileError(ar, PCE_ARGUMENT_COUNT_MISMATCH, (int)pFun->_args.size(), iParamCount);
+					SetParserCompileError(ar, PCE_ARGUMENT_COUNT_MISMATCH, (int)pFun->ArgumentCount(), iParamCount);
 					return false;
 				}
 
@@ -3029,6 +3043,7 @@ class CoreIRValidator
 {
     CArchiveRdWC& ar_;
     const NeoCore::TypedIR& ir_;
+    std::unique_ptr<NeoCore::TypeRegistry> apiTypes_;
     std::vector<unsigned char> states_;
     std::vector<int> heights_;
     std::vector<unsigned char>& effects_;
@@ -3037,6 +3052,11 @@ class CoreIRValidator
     {
         SetCompileError(ar_, "invalid typed IR node %llu: %s", static_cast<unsigned long long>(index), message);
         return false;
+    }
+    bool ValidSymbol(std::size_t id, const std::string& name) const
+    {
+        return id > 0 && id <= ir_.storageSymbols.size() && ir_.storageSymbols[id - 1].backendName == name
+            && AbleBackendName(ar_, name);
     }
     bool ValidSpan(const NeoCore::IRSourceSpan& source) const
     { return source.line >= 1 && source.column >= 1 && source.begin <= source.end; }
@@ -3094,13 +3114,26 @@ class CoreIRValidator
             arity = ir_.functions[node.functionIndex].parameterTypes.size(); break;
         case IROp::NullableConvert: case IROp::CopyStruct: arity = 1; break;
         case IROp::MapRead: arity = 2; break;
-        case IROp::StringLiteral: arity = 0; break;
+        case IROp::StringLiteral: case IROp::NullLiteral: arity = 0; break;
+        case IROp::ToString: arity = 1; break;
+        case IROp::Concat:
+            if (node.inputs.size() < 2) return Fail(index, "concatenation requires two operands");
+            arity = node.inputs.size(); break;
+        case IROp::HostCall:
+            if (node.functionIndex >= ir_.nativeCalls.size()) return Fail(index, "invalid host call index");
+            arity = ir_.nativeCalls[node.functionIndex].parameterTypes.size(); break;
+        case IROp::BuiltinCall:
+            if (node.functionIndex >= NeoCore::CoreApi().size()) return Fail(index, "invalid builtin index");
+            arity = node.inputs.size(); break;
+        case IROp::ListLiteral:
+            if (node.inputs.size() > INT_MAX) return Fail(index, "list literal exceeds size limit");
+            arity = node.inputs.size(); break;
         case IROp::Conditional: arity = 3; break;
         case IROp::CollectionRead: arity = 2; break;
         case IROp::CollectionWrite: arity = 3; break;
         default: return Fail(index, "unknown operation");
         }
-        if (node.op != IROp::ScriptCall && node.functionIndex != static_cast<std::size_t>(-1))
+        if (node.op != IROp::ScriptCall && node.op != IROp::BuiltinCall && node.op != IROp::HostCall && node.functionIndex != static_cast<std::size_t>(-1))
             return Fail(index, "operation does not accept function metadata");
         if (node.inputs.size() != arity) return Fail(index, "incorrect operand count");
         int height = 1;
@@ -3109,7 +3142,7 @@ class CoreIRValidator
         {
             const NeoCore::IRStorageTarget& target = node.storage;
             if ((target.kind != NeoCore::IRStorageKind::Variable && target.kind != NeoCore::IRStorageKind::Cell) ||
-                !AbleBackendName(ar_, target.backendName) || target.symbolId == 0)
+                !ValidSymbol(target.symbolId, target.backendName))
                 return Fail(index, "invalid storage target");
             if ((target.kind == NeoCore::IRStorageKind::Cell && !target.fields.empty()) || target.fields.size() > 128)
                 return Fail(index, "invalid storage field path");
@@ -3127,14 +3160,14 @@ class CoreIRValidator
         {
             const NeoCore::IRStorageTarget& target = output.storage;
             if ((target.kind != NeoCore::IRStorageKind::Variable && target.kind != NeoCore::IRStorageKind::Cell) ||
-                !target.fields.empty() || target.symbolId == 0 || !AbleBackendName(ar_, target.backendName) ||
+                !target.fields.empty() || !ValidSymbol(target.symbolId, target.backendName) ||
                 output.parameter >= 32u || !ir_.types.IsStorable(output.typeId) ||
                 (!output.cloneHelper.empty() && !AbleBackendName(ar_, output.cloneHelper)) ||
                 (ir_.types.Get(output.typeId).kind == NeoCore::TypeKind::Struct) == output.cloneHelper.empty())
                 return Fail(index, "invalid output argument");
         }
         unsigned char effects = node.op == IROp::LegacyExpression || node.op == IROp::ApiCall ? EXPR_EFFECT_ALL
-            : node.op == IROp::ScriptCall || node.op == IROp::CopyStruct ? EXPR_EFFECT_CALL
+            : node.op == IROp::ScriptCall || node.op == IROp::CopyStruct || node.op == IROp::BuiltinCall || node.op == IROp::HostCall ? EXPR_EFFECT_CALL
             : (storage && node.op != IROp::LoadStorage) || node.op == IROp::CollectionWrite ? EXPR_EFFECT_ASSIGN : 0;
         for (std::size_t input : node.inputs)
         {
@@ -3145,9 +3178,7 @@ class CoreIRValidator
         const IRValueType input = arity ? ir_.nodes[node.inputs[0]].type : IRValueType::Invalid;
         const NeoCore::TypeId inputType = arity ? ir_.nodes[node.inputs[0]].typeId : NeoCore::InvalidType;
         const bool numeric = input == IRValueType::Int || input == IRValueType::Float;
-        if (arity == 2 && node.op != IROp::ScriptCall && node.op != IROp::MapRead && node.op != IROp::CollectionRead &&
-            inputType != ir_.nodes[node.inputs[1]].typeId)
-            return Fail(index, "operand types differ");
+        const bool sameOperands = arity == 2 && inputType == ir_.nodes[node.inputs[1]].typeId;
         bool valid = false;
         switch (node.op)
         {
@@ -3155,19 +3186,27 @@ class CoreIRValidator
         case IROp::FloatLiteral: valid = node.type == IRValueType::Float; break;
         case IROp::BoolLiteral: valid = node.type == IRValueType::Bool; break;
         case IROp::Symbol:
-            valid = AbleBackendName(ar_, node.backendName) && node.type != IRValueType::Void; break;
+            valid = ValidSymbol(node.symbolId, node.backendName) && node.type != IRValueType::Void; break;
         case IROp::LegacyExpression:
             valid = !node.legacySource.empty() && node.type != IRValueType::Void; break;
         case IROp::ApiCall:
             valid = !node.legacySource.empty() && !node.outputs.empty(); break;
         case IROp::Add: case IROp::Subtract: case IROp::Multiply: case IROp::Divide:
-            valid = numeric && node.typeId == inputType; break;
+            valid = sameOperands && numeric && node.typeId == inputType; break;
         case IROp::Remainder: case IROp::BitAnd: case IROp::BitOr: case IROp::BitXor:
         case IROp::ShiftLeft: case IROp::ShiftRight:
-            valid = input == IRValueType::Int && node.type == IRValueType::Int; break;
-        case IROp::Equal: case IROp::NotEqual: case IROp::Less: case IROp::LessEqual:
-        case IROp::Greater: case IROp::GreaterEqual:
-            valid = numeric && node.type == IRValueType::Bool; break;
+            valid = sameOperands && input == IRValueType::Int && node.type == IRValueType::Int; break;
+        case IROp::Equal: case IROp::NotEqual:
+        {
+            const NeoCore::TypeId rhs = ir_.nodes[node.inputs[1]].typeId;
+            valid = node.type == IRValueType::Bool && ((inputType == rhs &&
+                (numeric || input == IRValueType::Bool || ir_.types.AllowsNull(inputType))) ||
+                (inputType == ir_.types.Null() && ir_.types.AllowsNull(rhs)) ||
+                (rhs == ir_.types.Null() && ir_.types.AllowsNull(inputType)));
+            break;
+        }
+        case IROp::Less: case IROp::LessEqual: case IROp::Greater: case IROp::GreaterEqual:
+            valid = sameOperands && numeric && node.type == IRValueType::Bool; break;
         case IROp::Negate: valid = numeric && node.typeId == inputType; break;
         case IROp::BitNot: valid = input == IRValueType::Int && node.type == IRValueType::Int; break;
         case IROp::LogicalNot: valid = input == IRValueType::Bool && node.type == IRValueType::Bool; break;
@@ -3206,6 +3245,51 @@ class CoreIRValidator
                 map.key == ir_.nodes[node.inputs[1]].typeId;
             break;
         }
+        case IROp::ListLiteral:
+        {
+            const NeoCore::TypeDesc& list = ir_.types.Get(node.typeId);
+            valid = list.kind == NeoCore::TypeKind::List;
+            for (auto child : node.inputs)
+                if (ir_.nodes[child].typeId != list.element) { valid = false; break; }
+            break;
+        }
+        case IROp::ToString:
+            valid = node.type == IRValueType::String && (numeric || input == IRValueType::Bool ||
+                input == IRValueType::String || inputType == ir_.types.Null());
+            break;
+        case IROp::Concat:
+            valid = node.type == IRValueType::String;
+            for (auto child : node.inputs)
+            {
+                const auto type = ir_.nodes[child].type;
+                if (type != IRValueType::String && type != IRValueType::Int &&
+                    type != IRValueType::Float && type != IRValueType::Bool) valid = false;
+            }
+            valid = valid && (input == IRValueType::String || ir_.nodes[node.inputs[1]].type == IRValueType::String);
+            break;
+        case IROp::HostCall:
+        {
+            const auto& signature = ir_.nativeCalls[node.functionIndex];
+            valid = signature.returnType == node.typeId && AbleBackendName(ar_, signature.backendName);
+            for (std::size_t i = 0; valid && i < arity; ++i)
+                valid = signature.parameterTypes[i] == ir_.nodes[node.inputs[i]].typeId;
+            break;
+        }
+        case IROp::BuiltinCall:
+        {
+            const auto& api = NeoCore::CoreApi()[node.functionIndex];
+            const std::size_t first = !api.owner.empty() && !NeoCore::IsCoreApiModule(api.owner) ? 1 : 0;
+            const auto receiver = first ? inputType : NeoCore::InvalidType;
+            // 합성 타입 해석은 인터닝을 할 수 있으므로, 첫 내장 호출에서만 검사 전용 타입 표를 만든다.
+            if (!apiTypes_) apiTypes_.reset(new NeoCore::TypeRegistry(ir_.types));
+            valid = !api.Is(NeoCore::ApiCustom) && !api.outMask && arity >= first + api.minimum &&
+                arity <= first + api.parameters.size() && (!first || NeoCore::CoreApiOwner(ir_.types, receiver) == api.owner) &&
+                NeoCore::ResolveApiType(*apiTypes_, api.result, receiver) == node.typeId;
+            for (std::size_t i = first; valid && i < arity; ++i)
+                valid = NeoCore::ResolveApiType(*apiTypes_, api.parameters[i - first].type, receiver) == ir_.nodes[node.inputs[i]].typeId;
+            break;
+        }
+        case IROp::NullLiteral: valid = node.typeId == ir_.types.Null(); break;
         case IROp::StringLiteral:
             valid = node.type == IRValueType::String && node.text.find('\0') == std::string::npos; break;
         case IROp::Conditional:
@@ -3345,7 +3429,7 @@ static SOperand SnapshotCoreIRValue(SOperand value, CArchiveRdWC& ar, SFunctions
 static bool ResolveCoreIRStorage(const NeoCore::IRStorageTarget& storage, int line, SOperand& target,
     CArchiveRdWC& ar, SFunctions& funs, SVars& vars)
 {
-    target = SOperand(FindReadableVar(funs, vars, storage.backendName));
+    target = SOperand(FindIRSlot(funs, vars, storage.symbolId, storage.backendName));
     if (target.IsInvalidValue() || target.IsNone() || IsTempVar(target._iVar) || IsCompileConstant(target._iVar))
     {
         SetCompileError(ar, "unresolved or readonly typed IR storage '%s'", storage.backendName.c_str());
@@ -3415,46 +3499,32 @@ static bool EmitCoreIRMapInputs(const NeoCore::IRNode& node, SOperand (&argument
 }
 
 // 호출 인자는 순서대로 평가한 뒤 한꺼번에 인자 창으로 옮긴다. 중첩 호출이 같은 창을 재사용한다.
-static bool EmitCoreIRCall(const NeoCore::IRNode& node, const std::string& name, SOperand& result,
-    CArchiveRdWC& ar, SFunctions& funs, SVars& vars, int destination = INVALID_ERROR_PARSEJOB)
+static bool EmitCoreCallArguments(const NeoCore::IRNode& node, std::size_t first, SFunctionInfo* function,
+    CArchiveRdWC& ar, SFunctions& funs, SVars& vars)
 {
-    if (funs.GetCurFunName() == GLOBAL_INIT_FUN_NAME && !ar._allowGlobalInitLogic)
-    { SetParserCompileError(ar, PCE_GLOBAL_CALL_NOT_ALLOWED); return false; }
-    SFunctionInfo* function = funs.FindFun(name);
-    if (!function || function->_funType == FUNT_BUILT_IN || function->_args.size() != node.inputs.size())
-    { SetCompileError(ar, "unresolved or inconsistent typed IR function '%s'", name.c_str()); return false; }
-    const std::size_t count = node.inputs.size();
+    const std::size_t count = node.inputs.size() - first;
     CheckCompileRange("call arguments", static_cast<int64_t>(count), 0, COMPILE_MAX_ARGUMENTS);
     // 뒤쪽 인자에 호출이 없으면(EXPR_EFFECT_CALL 없음) 그 인자들은 임시를 거치지 않고 창 슬롯에 바로 만든다. 앞쪽
     // 인자는 중첩 호출이 같은 창을 다시 쓰므로 임시에 두었다가 계획을 고른 뒤 옮긴다. 평가 순서는 앞 인자 전부 → 뒤
     // 인자 순서 그대로이고, 뒤 인자는 값이 생기는 즉시 창에 놓이므로 더 뒤의 인자가 바꾸는 변수도 따로 복사하지 않는다.
     std::size_t directBegin = count;
-    while (directBegin > 0 && ((*ar.m_coreIREffects)[node.inputs[directBegin - 1]] & EXPR_EFFECT_CALL) == 0) --directBegin;
+    while (directBegin > 0 && ((*ar.m_coreIREffects)[node.inputs[first + directBegin - 1]] & EXPR_EFFECT_CALL) == 0) --directBegin;
     std::vector<SOperand> arguments;
+    arguments.reserve(directBegin);
     std::vector<int> laterEffects(count, 0);
     int effects = 0;
     for (std::size_t i = count; i > 0; --i)
     {
         laterEffects[i - 1] = effects;
-        effects |= (*ar.m_coreIREffects)[node.inputs[i - 1]];
+        effects |= (*ar.m_coreIREffects)[node.inputs[first + i - 1]];
     }
     for (std::size_t i = 0; i < directBegin; ++i)
     {
         SOperand value;
-        if (!EmitCoreIRNode(node.inputs[i], value, ar, funs, vars)) return false;
+        if (!EmitCoreIRNode(node.inputs[first + i], value, ar, funs, vars)) return false;
         MaterializeValue(value, ar, funs);
         if (NeedsSnapshot(value, laterEffects[i])) value = SnapshotCoreIRValue(value, ar, funs, node.source.line);
         arguments.push_back(value);
-
-    }
-    // 몸통이 전역 RETURN 하나인 함수의 인자 없는 호출은 호출 창 없이 그 전역을 복사한다.
-    if (function->_globalGetterSlot != 0 && count == 0)
-    {
-        const bool directCopy = !ar._debug && destination != INVALID_ERROR_PARSEJOB &&
-            ((destination > 0 && destination < COMPILE_LOCALTMP_VAR_BEGIN) || destination <= COMPILE_GLOBAL_VAR_BEGIN);
-        result = SOperand(directCopy ? destination : funs._cur->AllocLocalTempVar(CoreStorageType(ar.m_coreTypedIR->types, node.typeId)));
-        funs._cur->Push_OP2(ar, NOP_MOV, result._iVar, function->_globalGetterSlot, false, node.source.line);
-        return true;
     }
     // 창에 바로 만드는 인자의 원본은 없다(-1). 저장소 추론은 피호출자 서명으로 그 창 슬롯의 종류를 정한다.
     std::vector<int> callSources(count, -1);
@@ -3470,7 +3540,7 @@ static bool EmitCoreIRCall(const NeoCore::IRNode& node, const std::string& name,
     {
         const int slot = COMPILE_CALLARG_VAR_BEGIN + 1 + static_cast<int>(i);
         SOperand value;
-        if (!EmitCoreIRNode(node.inputs[i], value, ar, funs, vars, slot)) return false;
+        if (!EmitCoreIRNode(node.inputs[first + i], value, ar, funs, vars, slot)) return false;
         // 숫자 연산과 컨테이너 읽기는 창 슬롯을 목적지로 받아 바로 썼다. 나머지는 값을 옮긴다.
         if (!value.IsArray() && value._iVar == slot) continue;
         MaterializeValue(value, ar, funs);
@@ -3478,6 +3548,28 @@ static bool EmitCoreIRCall(const NeoCore::IRNode& node, const std::string& name,
         if (!TryPushImmediate(ar, funs, slot, value, node.source.line))
             funs._cur->Push_OP2(ar, NOP_MOV, slot, value._iVar, value.IsShort(), node.source.line);
     }
+    return true;
+}
+
+static bool EmitCoreIRCall(const NeoCore::IRNode& node, const std::string& name, SOperand& result,
+    CArchiveRdWC& ar, SFunctions& funs, SVars& vars, int destination = INVALID_ERROR_PARSEJOB)
+{
+    if (funs.GetCurFunName() == GLOBAL_INIT_FUN_NAME && !ar._allowGlobalInitLogic)
+    { SetParserCompileError(ar, PCE_GLOBAL_CALL_NOT_ALLOWED); return false; }
+    SFunctionInfo* function = funs.FindFun(name);
+    if (!function || function->_funType == FUNT_BUILT_IN || function->ArgumentCount() != node.inputs.size())
+    { SetCompileError(ar, "unresolved or inconsistent typed IR function '%s'", name.c_str()); return false; }
+    const std::size_t count = node.inputs.size();
+    // 몸통이 전역 RETURN 하나인 함수의 인자 없는 호출은 호출 창 없이 그 전역을 복사한다.
+    if (function->_globalGetterSlot != 0 && count == 0)
+    {
+        const bool directCopy = !ar._debug && destination != INVALID_ERROR_PARSEJOB &&
+            ((destination > 0 && destination < COMPILE_LOCALTMP_VAR_BEGIN) || destination <= COMPILE_GLOBAL_VAR_BEGIN);
+        result = SOperand(directCopy ? destination : funs._cur->AllocLocalTempVar(CoreStorageType(ar.m_coreTypedIR->types, node.typeId)));
+        funs._cur->Push_OP2(ar, NOP_MOV, result._iVar, function->_globalGetterSlot, false, node.source.line);
+        return true;
+    }
+    if (!EmitCoreCallArguments(node, 0, function, ar, funs, vars)) return false;
     // 일반 변수의 최종 대입만 직접 반환한다. 디버그에서는 복귀와 대입 사이의 중단 위치를 유지한다.
     const bool direct = !ar._debug && destination != INVALID_ERROR_PARSEJOB &&
         ((destination > 0 && destination < COMPILE_LOCALTMP_VAR_BEGIN) || destination <= COMPILE_GLOBAL_VAR_BEGIN);
@@ -3748,6 +3840,24 @@ static bool EmitCoreLegacySource(const NeoCore::IRNode& node, SOperand& result,
     return valid;
 }
 
+// bool 상수와의 비교는 원래 값 또는 NOT으로 접어서 뒤따르는 조건 점프의 융합을 유지한다.
+static bool FoldBoolEquality(OperationCode op, SOperand& left, SOperand& right, SOperand& result,
+    CArchiveRdWC& ar, SFunctions& funs, int line = -1)
+{
+    bool value = false;
+    const SOperand* other;
+    if (StaticBoolOperand(funs, right, value)) other = &left;
+    else if (StaticBoolOperand(funs, left, value)) other = &right;
+    else return false;
+    if ((op == OP_EQUAL2) == value) result = *other;
+    else
+    {
+        result = SOperand(funs._cur->AllocLocalTempVar(CoreNumericStorage(NeoCore::IRValueType::Bool)));
+        funs._cur->Push_OP2(ar, NOP_LOG_NOT, result._iVar, other->_iVar, false, line);
+    }
+    return true;
+}
+
 static bool EmitCoreIRNodeImpl(std::size_t index, SOperand& result,
     CArchiveRdWC& ar, SFunctions& funs, SVars& vars, int destination)
 {
@@ -3765,7 +3875,7 @@ static bool EmitCoreIRNodeImpl(std::size_t index, SOperand& result,
     case IROp::BoolLiteral:
         result = SOperand(funs.AddStaticBool(node.boolean)); return true;
     case IROp::Symbol:
-        result = SOperand(FindReadableVar(funs, vars, node.backendName));
+        result = SOperand(FindIRSlot(funs, vars, node.symbolId, node.backendName));
         if (!result.IsInvalidValue() && !result.IsNone()) return true;
         SetCompileError(ar, "unresolved typed IR symbol '%s'", node.backendName.c_str()); return false;
     case IROp::LegacyExpression:
@@ -3802,7 +3912,7 @@ static bool EmitCoreIRNodeImpl(std::size_t index, SOperand& result,
             {
                 // 구조체는 값이다. 컬렉션이 가진 객체를 변수와 공유하지 않도록 복제해서 대입한다.
                 SFunctionInfo* clone = funs.FindFun(output.cloneHelper);
-                if (!clone || clone->_args.size() != 1)
+                if (!clone || clone->ArgumentCount() != 1)
                 { SetCompileError(ar, "unresolved struct copy for an out argument"); return false; }
                 std::vector<int> sources(1, values[i]);
                 funs._cur->PrepareCall(ar, sources, node.source.line, SFunctionInfo::CallWindowNeedsPrepare(clone, 1));
@@ -3836,6 +3946,90 @@ static bool EmitCoreIRNodeImpl(std::size_t index, SOperand& result,
         result = EmitCoreAggregate(stringKey ? "msread" : "miread", arguments, 0, ar, funs, node.source.line);
         return true;
     }
+    case IROp::HostCall:
+    {
+        const auto& ir = *ar.m_coreTypedIR;
+        const auto& signature = ir.nativeCalls[node.functionIndex];
+        SOperand target(FindReadableVar(funs, vars, signature.backendName));
+        if (target.IsInvalidValue() || target.IsNone())
+        { SetCompileError(ar, "unresolved typed host binding '%s'", signature.backendName.c_str()); return false; }
+        if (!EmitCoreCallArguments(node, 0, nullptr, ar, funs, vars)) return false;
+        // 바인딩 객체는 바뀌지 않는다. 사용자 수신 객체는 첫 인자로 이미 순서대로 평가했다.
+        funs._cur->Push_CallPtr(ar, target._iVar, funs.AddStaticString("call"), static_cast<int>(node.inputs.size()), false, node.source.line);
+        result = SOperand(funs._cur->AllocLocalTempVar(CoreStorageType(ir.types, node.typeId)));
+        funs._cur->Push_OP2(ar, NOP_MOV, result._iVar, STACK_POS_RETURN, false, node.source.line);
+        return true;
+    }
+    case IROp::BuiltinCall:
+    {
+        const auto& api = NeoCore::CoreApi()[node.functionIndex];
+        const bool method = !api.owner.empty() && !NeoCore::IsCoreApiModule(api.owner);
+        SOperand receiver;
+        if (method)
+        {
+            if (!EmitCoreIRNode(node.inputs.front(), receiver, ar, funs, vars)) return false;
+            MaterializeValue(receiver, ar, funs);
+            int effects = 0;
+            for (std::size_t i = 1; i < node.inputs.size(); ++i) effects |= (*ar.m_coreIREffects)[node.inputs[i]];
+            if (NeedsSnapshot(receiver, effects)) SnapshotValue(receiver, ar, funs);
+        }
+        if (!EmitCoreCallArguments(node, method ? 1 : 0, nullptr, ar, funs, vars)) return false;
+        const int key = funs.AddStaticString(api.key);
+        result = SOperand(funs._cur->AllocLocalTempVar(CoreStorageType(ar.m_coreTypedIR->types, node.typeId)));
+        if (method)
+        {
+            funs._cur->Push_CallPtr(ar, receiver._iVar, key, static_cast<int>(node.inputs.size() - 1), false, node.source.line);
+            funs._cur->Push_OP2(ar, NOP_MOV, result._iVar, STACK_POS_RETURN, false, node.source.line);
+        }
+        else funs._cur->Push_CallPtr2(ar, key, static_cast<int>(node.inputs.size()), result._iVar, node.source.line);
+        return true;
+    }
+    case IROp::Concat:
+    case IROp::ToString:
+    {
+        const auto& ir = *ar.m_coreTypedIR;
+        // 앞의 연결을 끝낸 뒤 다음 항을 평가한다. 뒤 항의 호출·대입이 앞 문자열을 바꾸어도 처음 값을 쓴다.
+        for (std::size_t i = 0; i < node.inputs.size(); ++i)
+        {
+            const std::size_t child = node.inputs[i];
+            if (i && NeedsSnapshot(result, (*ar.m_coreIREffects)[child])) SnapshotValue(result, ar, funs);
+            SOperand value;
+            if (!EmitCoreIRNode(child, value, ar, funs, vars)) return false;
+            MaterializeValue(value, ar, funs);
+            if (node.op == IROp::ToString || ir.nodes[child].type != NeoCore::IRValueType::String)
+            {
+                const int slot = funs._cur->AllocLocalTempVar(CoreStorageType(ir.types, ir.types.String()));
+                funs._cur->Push_ToType(ar, NOP_TOSTRING, slot, value._iVar, ir.nodes[child].source.line);
+                value = SOperand(slot);
+            }
+            if (!i) { result = value; continue; }
+            ElideImmediateSnapshot(result, ar, funs);
+            ElideConcatConversion(result, value, ar, funs);
+            const int slot = funs._cur->AllocLocalTempVar(CoreStorageType(ir.types, ir.types.String()));
+            funs._cur->Push_OP(ar, NOP_STR_ADD, slot, result._iVar, value._iVar, ir.nodes[child].source.line);
+            result = SOperand(slot);
+        }
+        return true;
+    }
+    case IROp::ListLiteral:
+    {
+        // 원소 식이 대입 목적지를 다시 읽을 수 있다. 별도 목록에 왼쪽부터 저장한 뒤 결과를 넘긴다.
+        result = SOperand(funs._cur->AllocLocalTempVar(CoreStorageType(ar.m_coreTypedIR->types, node.typeId)));
+        funs._cur->Push_ListAlloc(ar, result._iVar, static_cast<int>(node.inputs.size()), node.source.line);
+        for (std::size_t i = 0; i < node.inputs.size(); ++i)
+        {
+            SFunctionInfo::OperandTemps elementTemps(*funs._cur);
+            SOperand value;
+            if (!EmitCoreIRNode(node.inputs[i], value, ar, funs, vars)) return false;
+            MaterializeValue(value, ar, funs);
+            funs._cur->Push_Table_MASMDP(ar, NOP_CLT_MOV, result._iVar, funs.AddStaticInt(i), value._iVar, false, false, value.IsShort());
+        }
+        return true;
+    }
+    case IROp::NullLiteral:
+        result = SOperand(funs._cur->AllocLocalTempVar());
+        funs._cur->Push_OP1(ar, NOP_VAR_CLEAR, result._iVar);
+        return true;
     case IROp::StringLiteral:
         result = SOperand(funs.AddStaticString(node.text)); return true;
     case IROp::Conditional:
@@ -3957,7 +4151,18 @@ static bool EmitCoreIRNodeImpl(std::size_t index, SOperand& result,
         funs._cur->Push_OP2(ar, NOP_LOG_NOT, result._iVar, operands[0]._iVar, false, node.source.line);
         return true;
     }
-    const OperationCode op = CoreIRNumberOp(node.op, ar.m_coreTypedIR->nodes[node.inputs[0]].type);
+    const auto inputType = ar.m_coreTypedIR->nodes[node.inputs[0]].type;
+    if ((node.op == IROp::Equal || node.op == IROp::NotEqual) &&
+        inputType != NeoCore::IRValueType::Int && inputType != NeoCore::IRValueType::Float)
+    {
+        const OperationCode op = node.op == IROp::Equal ? OP_EQUAL2 : OP_NEQUAL;
+        if (inputType == NeoCore::IRValueType::Bool &&
+            FoldBoolEquality(op, operands[0], operands[1], result, ar, funs, node.source.line)) return true;
+        result = SOperand(destination != INVALID_ERROR_PARSEJOB ? destination : funs._cur->AllocLocalTempVar(CoreNumericStorage(node.type)));
+        funs._cur->Push_OP(ar, op, result._iVar, operands[0]._iVar, operands[1]._iVar, node.source.line);
+        return true;
+    }
+    const OperationCode op = CoreIRNumberOp(node.op, inputType);
     if (node.op == IROp::ToFloat && operands[0].IsIntLiteral())
     { const NS_FLOAT value = static_cast<NS_FLOAT>(operands[0]._intLiteral); result.SetFloatLiteral(funs.AddStaticNum(value), value); return true; }
     if (node.op == IROp::ToInt && operands[0].IsFloatLiteral())
@@ -4693,27 +4898,12 @@ TK_TYPE ParseJob(bool bReqReturn, SOperand& sResultStack, std::vector<SJumpValue
 			MaterializeValue(b, ar, funs);
 			ElideImmediateSnapshot(a, ar, funs);
 			if (op == NOP_STR_ADD) ElideConcatConversion(a, b, ar, funs);
-			// `x == true`, `x != false` 는 x 자체이고 `x == false`, `x != true` 는 !x 다. 정적 타입이 양쪽을 bool로
-			// 보증하므로 태그를 읽는 범용 비교를 내지 않는다. 뒤따르는 조건 점프는 NOT 을 반대 점프로 접는다.
-			if (op == OP_EQUAL2 || op == OP_NEQUAL)
+			SOperand folded;
+			if ((op == OP_EQUAL2 || op == OP_NEQUAL) && FoldBoolEquality(op, a, b, folded, ar, funs))
 			{
-				bool constant = false;
-				SOperand* other = nullptr;
-				if (StaticBoolOperand(funs, b, constant)) other = &a;
-				else if (StaticBoolOperand(funs, a, constant)) other = &b;
-				if (other != nullptr)
-				{
-					if ((op == OP_EQUAL2) == constant)
-						operands[iFindOffset] = SOperand(*other);
-					else
-					{
-						const int negated = funs._cur->AllocLocalTempVar();
-						funs._cur->Push_OP2(ar, NOP_LOG_NOT, negated, other->_iVar, false);
-						operands[iFindOffset] = negated;
-					}
-					RemoveAt<SOperand>(operands, iFindOffset + 1);
-					continue;
-				}
+				operands[iFindOffset] = folded;
+				RemoveAt<SOperand>(operands, iFindOffset + 1);
+				continue;
 			}
 			const int iTempOffset2 = funs._cur->AllocLocalTempVar();
 			funs._cur->Push_OP(ar, op, iTempOffset2, a._iVar, b._iVar, a.IsShort(), b.IsShort());
@@ -7644,6 +7834,8 @@ bool ParseFunction(CArchiveRdWC& ar, SFunctions& funs, SVars& vars, std::string&
 	SFunctionInfo* pF = funs.FindFun(fname);
 	if(pF == nullptr)
 	{
+        if (ar.m_coreTypedIR && funType != FUNT_ANONYMOUS)
+        { SetCompileError(ar, "missing typed function declaration for '%s'", fname.c_str()); return false; }
 		int funID = funs.GetFunCountAll();
 		CheckCompileRange("function id", funID, 0, SHRT_MAX);
 
@@ -7691,6 +7883,8 @@ bool ParseFunction(CArchiveRdWC& ar, SFunctions& funs, SVars& vars, std::string&
 	pCurLayer->_function = pF;
 	if (false == ParseFunctionArg(ar, funs, pCurLayer))
 		return false;
+    if (ar.m_coreTypedIR && funType != FUNT_ANONYMOUS && pF->_args.size() != pF->_parameterStorage.size())
+    { SetCompileError(ar, "argument count differs from typed signature for '%s'", fname.c_str()); return false; }
 
 	tkType1 = GetToken(ar, tk1);
 	if (tkType1 != TK_L_MIDDLE)
@@ -7771,8 +7965,11 @@ bool Parse(CArchiveRdWC& ar, CNArchive&arw, bool putASM)
             SlotType native; native.kind = SlotKind::Native;
             funs._declaredStorage.emplace(name, native);
         }
-		for (const NeoCore::IRStorageSymbol& symbol : ar.m_coreTypedIR->storageSymbols)
-		{
+        const auto& symbols = ar.m_coreTypedIR->storageSymbols;
+        vars.irSlots.resize(symbols.size() + 1);
+        for (std::size_t i = 0; i < symbols.size(); ++i)
+        {
+            const auto& symbol = symbols[i];
 			SlotType storage;
 			storage.typeId = symbol.type;
 			switch (ar.m_coreTypedIR->types.Get(symbol.type).kind)
@@ -7797,7 +7994,7 @@ bool Parse(CArchiveRdWC& ar, CNArchive&arw, bool putASM)
 			default: break;
 			}
 			if (symbol.boxed) storage.kind = symbol.parameter ? SlotKind::Boxed : SlotKind::List;
-			if (symbol.ownerFunction.empty()) funs._declaredStorage.emplace(symbol.backendName, storage);
+			if (symbol.ownerFunction.empty()) funs._declaredStorage.emplace(symbol.backendName, DeclaredStorage(storage, i + 1));
 			else funs._helperStorage[symbol.ownerFunction].emplace(symbol.backendName, storage);
 		}
 	}
@@ -7829,7 +8026,7 @@ bool Parse(CArchiveRdWC& ar, CNArchive&arw, bool putASM)
 			if (sym.name == nullptr || sym.name[0] == 0)
 				continue;
             // 이 테이블의 선언은 런타임에 등록한 네이티브 호출 객체다.
-            if (funs.FindDeclaredStorage(sym.name).kind == SlotKind::Boxed)
+            if (funs.FindDeclaredStorage(sym.name).type.kind == SlotKind::Boxed)
             {
                 SlotType native; native.kind = SlotKind::Native;
                 funs._declaredStorage.emplace(sym.name, native);
@@ -7840,7 +8037,31 @@ bool Parse(CArchiveRdWC& ar, CNArchive&arw, bool putASM)
 		}
 	}
 
-	bool r = CollectFunctionDeclarations(ar, funs) && ParseFunctionBody(ar, funs, vars);
+    bool r = true;
+    if (ar.m_coreTypedIR)
+    {
+        // 사용자 함수와 생성 도우미는 낮춘 소스와 같은 순서다. 익명 함수는 본문에서 번호를 받는다.
+        const auto& ir = *ar.m_coreTypedIR;
+        for (const auto& signature : ir.functions)
+        {
+            const int id = funs.GetFunCountAll();
+            CheckCompileRange("function id", id, 0, SHRT_MAX);
+            auto* info = funs.NewFun(signature.backendName, funs._cur->_code, funs._cur->_pDebugData);
+            if (!info) { SetParserCompileError(ar, PCE_DUPLICATE_FUNCTION, signature.backendName.c_str()); return false; }
+            info->_funID = id;
+            info->_moduleName = ar.m_sModuleName;
+            info->_returnStorage = CoreStorageType(ir.types, signature.returnType);
+            for (auto type : signature.parameterTypes)
+                info->_parameterStorage.push_back(CoreStorageType(ir.types, type));
+            funs._funIDs[id] = info;
+        }
+    }
+    else r = CollectFunctionDeclarations(ar, funs);
+    r = r && ParseFunctionBody(ar, funs, vars);
+    if (r && ar.m_coreTypedIR)
+        for (const auto& signature : ar.m_coreTypedIR->functions)
+            if (!funs.FindFun(signature.backendName)->_bodyParsed)
+            { SetCompileError(ar, "missing body for typed function '%s'", signature.backendName.c_str()); return false; }
 	if (true == r)
 	{
 		funs._cur->_iCode_Size = funs._cur->_code->GetBufferOffset();
