@@ -1,8 +1,10 @@
 ﻿#pragma once
 
 #include "NeoCore.h"
+#include <cstdint>
 #include <functional>
 #include <map>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -16,17 +18,40 @@ struct ModuleSourceColumn
     bool fixed = false;
 };
 
+// 줄 표의 원본 파일 이름. 같은 파일의 줄들이 문자열 하나를 나눠 가진다(줄마다 복사하지 않는다).
+// 값처럼 복사할 수 있고 const std::string& 로 읽는다.
+class ModuleSourceName
+{
+public:
+    ModuleSourceName() {}
+    ModuleSourceName(const std::string& text) : text_(std::make_shared<const std::string>(text)) {}
+    operator const std::string&() const { return str(); }
+    const std::string& str() const { return text_ ? *text_ : Empty(); }
+    bool empty() const { return str().empty(); }
+
+private:
+    std::shared_ptr<const std::string> text_;
+    static const std::string& Empty() { static const std::string empty; return empty; }
+};
+inline bool operator==(const ModuleSourceName& a, const std::string& b) { return a.str() == b; }
+inline bool operator==(const std::string& a, const ModuleSourceName& b) { return a == b.str(); }
+inline bool operator!=(const ModuleSourceName& a, const std::string& b) { return a.str() != b; }
+inline bool operator!=(const std::string& a, const ModuleSourceName& b) { return a != b.str(); }
+
 struct ModuleSourceLine
 {
-    std::string sourceName;
+    ModuleSourceName sourceName;
     int line = 1;
-    std::vector<ModuleSourceColumn> columns;
+    // 이 줄의 열 대응은 ModuleBundle::columns 의 [firstColumn, firstColumn + columnCount) 구간이다.
+    std::uint32_t firstColumn = 0, columnCount = 0;
 };
 
 struct ModuleBundle
 {
     std::string source;
     std::vector<ModuleSourceLine> lines;
+    // 모든 줄의 열 대응을 줄 순서대로 이어 둔다. 줄마다 따로 할당하지 않는다.
+    std::vector<ModuleSourceColumn> columns;
     std::map<std::string, std::string> symbolNames;
     // 이름 치환으로 길이가 달라진 토큰도 원래 파일·줄·열로 되돌린다.
     void Translate(Error& error) const;

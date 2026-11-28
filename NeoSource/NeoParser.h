@@ -1099,17 +1099,27 @@ struct SFunctions
     const NeoCore::TypedIR* _typedIR = nullptr;
     std::unordered_map<std::string, DeclaredStorage> _declaredStorage;
     std::map<std::string, std::map<std::string, SlotType>> _helperStorage;
+    // 생성 도우미의 지역 표는 함수마다 한 번만 찾는다. 함수 정보는 컴파일이 끝날 때까지 주소가 바뀌지 않는다.
+    mutable const SFunctionInfo* _helperOwner = nullptr;
+    mutable const std::map<std::string, SlotType>* _helperLocals = nullptr;
     DeclaredStorage FindDeclaredStorage(const std::string& name) const
     {
-        const auto function = _helperStorage.find(_cur->GetFullName());
-        if (function != _helperStorage.end())
+        if (_helperOwner != _cur)
         {
-            const auto local = function->second.find(name);
-            if (local != function->second.end()) return local->second;
+            const auto function = _helperStorage.find(_cur->GetFullName());
+            _helperLocals = function != _helperStorage.end() ? &function->second : nullptr;
+            _helperOwner = _cur;
+        }
+        if (_helperLocals)
+        {
+            const auto local = _helperLocals->find(name);
+            if (local != _helperLocals->end()) return local->second;
         }
         const auto value = _declaredStorage.find(name);
         return value != _declaredStorage.end() ? value->second : DeclaredStorage();
     }
+    // 검사한 서명(TypedIR::functions)과 같은 순서의 함수 정보. 스크립트 호출이 이름 대신 번호로 찾는다.
+    std::vector<SFunctionInfo*> _irFunctions;
 	std::vector<SFunctionLayer*>			_funLayers;
 	std::map<int, SFunctionInfo*>			_funIDs;
 	std::list<SFunctionInfo*>				_funSequence;
@@ -1287,6 +1297,11 @@ struct SFunctions
 			auto it = _intConstants.find(v._int);
 			if (it != _intConstants.end() && it->second == (int)_staticVars.size() - 1) _intConstants.erase(it);
 		}
+		else if (v.GetType() == VAR_BOOL)
+		{
+			int& cached = _boolConstants[v._bl ? 1 : 0];
+			if (cached == (int)_staticVars.size() - 1) cached = -1;
+		}
 		_staticVars.pop_back();
 	}
 	bool TryPopStatic(int compileIndex)
@@ -1384,23 +1399,19 @@ struct SFunctions
 		_stringConstants.emplace(str, idx);
 		return idx;
 	}
+	// true·false 상수는 하나씩만 생긴다. 상수 표 전체를 뒤에서부터 훑지 않도록 자리를 기억한다.
+	int _boolConstants[2] = { -1, -1 };
 	int	AddStaticBool(bool b)
 	{
-		for (int i = (int)_staticVars.size() - 1; i >= 0; i--)
-		{
-			BoundaryValue& v2 = _staticVars[i];
-			if (VAR_BOOL == v2.GetType())
-			{
-				if (b == v2._bl)
-					return StaticCompileIndex(i);
-			}
-		}
+		int& cached = _boolConstants[b ? 1 : 0];
+		if (cached >= 0) return StaticCompileIndex(cached);
 		const int idx = NextStaticIndex();
 		BoundaryValue v;
 		v.SetType(VAR_BOOL);
 		v._bl = b;
 
 		_staticVars.push_back(v);
+		cached = (int)_staticVars.size() - 1;
 		return idx;
 	}
 	int	AddStaticFunction(int iIndex)

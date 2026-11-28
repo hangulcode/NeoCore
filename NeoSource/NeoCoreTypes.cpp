@@ -26,7 +26,10 @@ TypeRegistry::TypeRegistry()
         type.name = names[i];
         types_.push_back(type);
         if (type.kind != TypeKind::Invalid && type.kind != TypeKind::Null)
+        {
             names_.insert(std::make_pair(type.name, i));
+            nameIndex_.insert(std::make_pair(type.name, i));
+        }
     }
     DeclareBuiltinObject("TimeSpan");
     DeclareBuiltinObject("Stopwatch");
@@ -41,8 +44,8 @@ TypeId TypeRegistry::LookupBuiltin(const std::string& name) const
 
 TypeId TypeRegistry::LookupNamed(const std::string& qualifiedName) const
 {
-    const auto found = names_.find(qualifiedName);
-    return found == names_.end() ? InvalidType : found->second;
+    const auto found = nameIndex_.find(qualifiedName);
+    return found == nameIndex_.end() ? InvalidType : found->second;
 }
 
 bool TypeRegistry::IsNumeric(TypeId id) const
@@ -213,7 +216,10 @@ TypeId TypeRegistry::DeclareNominal(TypeKind kind, const std::string& qualifiedN
         return Get(previous).kind == kind ? previous : InvalidType;
     const TypeId id = Intern(kind, std::vector<TypeId>(), qualifiedName);
     if (id != InvalidType)
+    {
         names_.insert(std::make_pair(qualifiedName, id));
+        nameIndex_.insert(std::make_pair(qualifiedName, id));
+    }
     return id;
 }
 

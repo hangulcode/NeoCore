@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <string>
 #include <utility>
+#include <vector>
 
 namespace NeoScript
 {
@@ -119,6 +120,24 @@ struct SToken
 	std::string		_tk;
 };
 
+// 되돌려 둔 토큰. 마지막에 넣은 것이 먼저 나온다(앞에 넣는 큐). 토큰마다 리스트 노드를 만들지 않도록
+// 벡터의 끝을 큐의 앞으로 쓴다. 순회는 큐의 앞에서 뒤로 간다.
+class STokenQueue
+{
+public:
+	bool empty() const { return items_.empty(); }
+	std::size_t size() const { return items_.size(); }
+	SToken& front() { return items_.back(); }
+	const SToken& front() const { return items_.back(); }
+	void push_front(SToken&& token) { items_.push_back(std::move(token)); }
+	void pop_front() { items_.pop_back(); }
+	void clear() { items_.clear(); }
+	std::vector<SToken>::const_reverse_iterator begin() const { return items_.rbegin(); }
+	std::vector<SToken>::const_reverse_iterator end() const { return items_.rend(); }
+private:
+	std::vector<SToken> items_;
+};
+
 class CArchiveRdWC
 {
 private:
@@ -137,7 +156,7 @@ public:
 	int		_iTableDeep = 0;
 	int _parserDepth = 0;
 
-	std::list<SToken> m_sTokenQueue;
+	STokenQueue m_sTokenQueue;
 	std::string m_sErrorString;
 	std::string m_sSourceName;
 	std::string m_coreIntrinsicPrefix; // 현재 소스에만 허용하며 import로 전파하지 않는다.
@@ -168,6 +187,8 @@ public:
 	{
 		for (const CArchiveRdWC* scope = this; scope; scope = scope->m_pScriptDefineParent)
 		{
+			// 조각 파서처럼 define 이 없는 범위는 이름을 해시하지 않고 지나간다.
+			if (scope->m_sScriptDefines.values.empty()) continue;
 			const auto it = scope->m_sScriptDefines.values.find(name);
 			if (it != scope->m_sScriptDefines.values.end()) return &it->second;
 		}
@@ -236,7 +257,7 @@ public:
     struct Cursor
     {
         int offset, line, column;
-        std::list<SToken> tokens;
+        STokenQueue tokens;
         std::string error;
         NeoCompileDiagnostic location;
     };
@@ -253,7 +274,7 @@ public:
 		SToken st;
 		st._type = tk;
 		st._tk = str;
-		m_sTokenQueue.push_front(st);
+		m_sTokenQueue.push_front(std::move(st));
 	}
 	void CopyErrorFrom(const CArchiveRdWC& other)
 	{

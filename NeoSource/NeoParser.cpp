@@ -8,6 +8,7 @@
 #include <cstring>
 #include <limits>
 #include <limits.h>
+#include <unordered_map>
 
 namespace NeoScript
 {
@@ -618,7 +619,11 @@ struct STokenValue
 };
 
 std::vector<STokenValue> g_sTokenToString;
-std::map<std::string, TK_TYPE> g_sStringToToken;
+// 식별자마다 찾는 예약어 표. 순서가 필요 없으므로 해시로 둔다.
+std::unordered_map<std::string, TK_TYPE> g_sStringToToken;
+// 예약어 표를 찾기 전에 거르는 조건: 예약어의 첫 글자와 가장 긴 길이. 표와 함께 한 번 만든다.
+static bool g_keywordFirst[256];
+static std::size_t g_keywordLongest = 0;
 
 #define TOKEN_STR1(key, str) g_sTokenToString[key] = STokenValue(str, 20, NOP_NONE)
 #define TOKEN_STR2(key, str) g_sTokenToString[key] = STokenValue(str, 20, NOP_NONE); g_sStringToToken[str] = key
@@ -742,6 +747,14 @@ int InitDefaultTokenString()
 
 	/////////////////////////////////////////////////////
 
+	for (bool& first : g_keywordFirst) first = false;
+	g_keywordLongest = 0;
+	for (const auto& keyword : g_sStringToToken)
+	{
+		if (keyword.first.empty()) continue;
+		g_keywordFirst[static_cast<unsigned char>(keyword.first[0])] = true;
+		if (keyword.first.size() > g_keywordLongest) g_keywordLongest = keyword.first.size();
+	}
 	return 1;
 }
 static bool g_bInitVM = false;
@@ -806,6 +819,9 @@ TK_TYPE CalcStringToken(std::string& tk)
 	if (true == tk.empty())
 		return TK_NONE;
 
+	// 생성된 이름($...)과 긴 식별자는 예약어일 수 없다.
+	if (tk.size() > g_keywordLongest || !g_keywordFirst[static_cast<unsigned char>(tk[0])])
+		return TK_STRING;
 	auto it = g_sStringToToken.find(tk);
 	if (it != g_sStringToToken.end())
 	{
@@ -1176,10 +1192,12 @@ TK_TYPE GetToken(CArchiveRdWC& ar, std::string& tk)
 {
 	if (false == ar.m_sTokenQueue.empty())
 	{
-		SToken d = *ar.m_sTokenQueue.begin();
+		// 글자는 옮겨 받는다. 큐의 칸은 다음에 다시 쓴다.
+		SToken& d = ar.m_sTokenQueue.front();
+		tk.swap(d._tk);
+		const TK_TYPE type = d._type;
 		ar.m_sTokenQueue.pop_front();
-		tk = d._tk;
-		return d._type;
+		return type;
 	}
 
 	if (ar.IsEOF())
@@ -1423,6 +1441,17 @@ static bool AtFileTopLevel(SFunctions& funs, SVars& vars)
 
 static int FindReadableVar(SFunctions& funs, SVars& vars, const std::string& name)
 {
+    // 검사기가 번호를 준 변수는 선언 때 묶어 둔 슬롯을 바로 쓴다(이름은 심볼마다 유일하다). 묶이지 않았거나
+    // 다른 함수의 지역이면 아래의 이름 조회가 결과를 정한다. 익명 함수는 캡처 슬롯을 만들어야 하므로 제외한다.
+    if (!vars.irSlots.empty() && funs._cur != nullptr && funs._cur->_funType != FUNT_ANONYMOUS)
+    {
+        const std::size_t id = funs.FindDeclaredStorage(name).symbolId;
+        if (id != 0)
+        {
+            const IRSlotBinding& binding = vars.irSlots[id];
+            if (binding.function == funs._cur || binding.slot <= COMPILE_GLOBAL_VAR_BEGIN) return binding.slot;
+        }
+    }
 	SLayerVar* owner = nullptr;
 	int slot = vars.FindVar(name, &owner);
 	if (slot == -1)
@@ -3552,11 +3581,12 @@ static bool EmitCoreCallArguments(const NeoCore::IRNode& node, std::size_t first
 }
 
 static bool EmitCoreIRCall(const NeoCore::IRNode& node, const std::string& name, SOperand& result,
-    CArchiveRdWC& ar, SFunctions& funs, SVars& vars, int destination = INVALID_ERROR_PARSEJOB)
+    CArchiveRdWC& ar, SFunctions& funs, SVars& vars, int destination = INVALID_ERROR_PARSEJOB,
+    SFunctionInfo* known = nullptr)
 {
     if (funs.GetCurFunName() == GLOBAL_INIT_FUN_NAME && !ar._allowGlobalInitLogic)
     { SetParserCompileError(ar, PCE_GLOBAL_CALL_NOT_ALLOWED); return false; }
-    SFunctionInfo* function = funs.FindFun(name);
+    SFunctionInfo* function = known ? known : funs.FindFun(name);
     if (!function || function->_funType == FUNT_BUILT_IN || function->ArgumentCount() != node.inputs.size())
     { SetCompileError(ar, "unresolved or inconsistent typed IR function '%s'", name.c_str()); return false; }
     const std::size_t count = node.inputs.size();
@@ -3933,7 +3963,8 @@ static bool EmitCoreIRNodeImpl(std::size_t index, SOperand& result,
         return true;
     }
     case IROp::ScriptCall:
-        return EmitCoreIRCall(node, ar.m_coreTypedIR->functions[node.functionIndex].backendName, result, ar, funs, vars, destination);
+        return EmitCoreIRCall(node, ar.m_coreTypedIR->functions[node.functionIndex].backendName, result, ar, funs, vars, destination,
+            node.functionIndex < funs._irFunctions.size() ? funs._irFunctions[node.functionIndex] : nullptr);
     case IROp::NullableConvert:
         return EmitCoreIRNode(node.inputs[0], result, ar, funs, vars);
     case IROp::CopyStruct:
@@ -4249,10 +4280,19 @@ bool ParseString(SOperand& operand, TK_TYPE tkTypePre, CArchiveRdWC& ar, SFuncti
 		return false;
 	}
 
-	const int lexicalSlot = FindReadableVar(funs, vars, tk1);
+	// 타입 IR·내장 식 표식은 아래에서 변수 조회 결과와 무관하게 표식으로 처리된다. 표식마다 모든 스코프와
+	// 모듈 표를 찾지 않도록 먼저 가려낸다.
+	const bool coreMarker =
+		(ar.m_coreTypedIR && ((!ar.m_coreTypedIR->prefix.empty() &&
+			tk1.compare(0, ar.m_coreTypedIR->prefix.size(), ar.m_coreTypedIR->prefix) == 0) ||
+			(!ar.m_coreTypedIR->returnPrefix.empty() &&
+			tk1.compare(0, ar.m_coreTypedIR->returnPrefix.size(), ar.m_coreTypedIR->returnPrefix) == 0))) ||
+		(!ar.m_coreIntrinsicPrefix.empty() &&
+			tk1.compare(0, ar.m_coreIntrinsicPrefix.size(), ar.m_coreIntrinsicPrefix) == 0);
+	const int lexicalSlot = coreMarker ? -1 : FindReadableVar(funs, vars, tk1);
 	SFunctionLayer* pOtherModule = nullptr;
 	std::string moduleName;
-	auto it = funs._curModule->_defModules.find(tk1);
+	auto it = coreMarker ? funs._curModule->_defModules.end() : funs._curModule->_defModules.find(tk1);
 	if (lexicalSlot == -1 && it != funs._curModule->_defModules.end())
 	{
 		moduleName = tk1;
@@ -8054,6 +8094,7 @@ bool Parse(CArchiveRdWC& ar, CNArchive&arw, bool putASM)
             for (auto type : signature.parameterTypes)
                 info->_parameterStorage.push_back(CoreStorageType(ir.types, type));
             funs._funIDs[id] = info;
+            funs._irFunctions.push_back(info);
         }
     }
     else r = CollectFunctionDeclarations(ar, funs);

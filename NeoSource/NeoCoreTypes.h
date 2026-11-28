@@ -5,6 +5,7 @@
 #include <deque>
 #include <map>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 namespace NeoCore
@@ -141,6 +142,8 @@ private:
     std::deque<TypeDesc> types_;
     std::map<Key, TypeId> interned_;
     std::map<std::string, TypeId> names_;
+    // names_ 와 같은 내용의 조회용 표. 이름 조회가 식별자마다 일어나므로 해시로 찾는다.
+    std::unordered_map<std::string, TypeId> nameIndex_;
     std::map<std::string, std::string> diagnosticNames_;
 
     std::string FormatName(TypeId id, bool diagnostic) const;

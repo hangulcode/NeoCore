@@ -17,6 +17,7 @@
 #include <set>
 #include <stdexcept>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <sstream>
 #include <locale>
@@ -549,6 +550,57 @@ struct ConstantValue
     }
 };
 static const std::uint32_t NoApi = static_cast<std::uint32_t>(-1);
+
+// 구문 트리 노드(식·문장)를 한 번의 컴파일 동안 큰 덩어리에서 나눠 준다. 노드마다 힙을 할당·해제하지 않는다.
+// 덩어리의 메모리는 이 객체가 사라질 때 한꺼번에 놓으므로, 그 전에 덩어리에서 만든 노드가 모두 소멸해야 한다.
+class NodeArena
+{
+public:
+    NodeArena() {}
+    ~NodeArena() { for (char* block : blocks_) ::operator delete(block); }
+    void* Allocate(std::size_t size)
+    {
+        size = (size + Alignment - 1) & ~static_cast<std::size_t>(Alignment - 1);
+        if (size > left_)
+        {
+            const std::size_t bytes = size > BlockSize ? size : static_cast<std::size_t>(BlockSize);
+            blocks_.reserve(blocks_.size() + 1);
+            blocks_.push_back(static_cast<char*>(::operator new(bytes)));
+            next_ = blocks_.back();
+            left_ = bytes;
+        }
+        void* const result = next_;
+        next_ += size;
+        left_ -= size;
+        return result;
+    }
+    // 노드 앞의 머리 크기. 노드의 정렬(최대 8바이트)과 덩어리 안의 정렬을 함께 지킨다.
+    enum : std::size_t { Alignment = 16 };
+
+private:
+    enum : std::size_t { BlockSize = 256 * 1024 };
+    std::vector<char*> blocks_;
+    char* next_ = nullptr;
+    std::size_t left_ = 0;
+    NodeArena(const NodeArena&) = delete;
+    NodeArena& operator=(const NodeArena&) = delete;
+};
+
+// 노드 머리에 출처를 적는다(0: 힙, 1: 덩어리). 힙 노드와 덩어리 노드가 한 트리에 섞여도 delete 가 바르게 처리한다.
+inline void* AllocateNode(std::size_t size, NodeArena* arena)
+{
+    const std::size_t header = NodeArena::Alignment;
+    char* const base = static_cast<char*>(arena ? arena->Allocate(size + header) : ::operator new(size + header));
+    *reinterpret_cast<std::size_t*>(base) = arena ? 1 : 0;
+    return base + header;
+}
+inline void ReleaseNode(void* pointer)
+{
+    if (!pointer) return;
+    char* const base = static_cast<char*>(pointer) - NodeArena::Alignment;
+    if (*reinterpret_cast<const std::size_t*>(base) == 0) ::operator delete(base);
+}
+
 enum class ExprKind { Literal, Name, Unary, Binary, Assignment, Call, Member, Index, List, Map, Lambda, Conditional, DefaultArgument };
 // 드물게 쓰는 식 정보: 람다의 본문·캡처·매개변수와 호스트·타입 지정 쓰기의 헬퍼 이름. 대부분의 식 노드에는 없으므로
 // 필요한 노드만 따로 가진다. 생성자·소멸자는 Statement 정의 뒤에 둔다(본문 소유).
@@ -608,6 +660,10 @@ struct Expr
     // 문장 위치의 대입·증감. 결과가 소비되지 않으므로 IR 에 그대로 전달한다.
     bool discardResult = false;
     Expr(ExprKind k, const Token& at) : kind(k), token(at), begin(at.begin), end(at.end), op(at.text) {}
+    static void* operator new(std::size_t size) { return AllocateNode(size, nullptr); }
+    static void* operator new(std::size_t size, NodeArena* arena) { return AllocateNode(size, arena); }
+    static void operator delete(void* pointer) { ReleaseNode(pointer); }
+    static void operator delete(void* pointer, NodeArena*) { ReleaseNode(pointer); }
     // 드문 정보를 읽는다. 없는 노드는 빈 값을 본다(만들지 않는다).
     const ExprExtra& Rare() const { return rare_ ? *rare_ : EmptyRare(); }
     // 드문 정보를 쓴다. 처음 쓸 때 만든다.
@@ -650,6 +706,10 @@ struct Statement
     std::vector<std::unique_ptr<Expr>> expressions;
     std::vector<std::unique_ptr<Statement>> children;
     Statement(StatementKind k, const Token& at) : kind(k), token(at) {}
+    static void* operator new(std::size_t size) { return AllocateNode(size, nullptr); }
+    static void* operator new(std::size_t size, NodeArena* arena) { return AllocateNode(size, arena); }
+    static void operator delete(void* pointer) { ReleaseNode(pointer); }
+    static void operator delete(void* pointer, NodeArena*) { ReleaseNode(pointer); }
 };
 inline ExprExtra::ExprExtra() {}
 inline ExprExtra::~ExprExtra() {}
@@ -660,7 +720,9 @@ class Parser
 public:
     // 토큰 배열을 넘겨받는다. 파서가 `>>`를 둘로 나누며 배열을 고치므로 자기 것이어야 하고, 호출한 쪽은 파싱 뒤에
     // 배열을 쓰지 않으므로 복사하지 않고 옮긴다.
-    Parser(std::vector<Token> tokens, TypeRegistry& types, Recovery* recovery = nullptr) : tokens_(std::move(tokens)), types_(types), recovery_(recovery) {}
+    // arena 가 있으면 노드를 거기서 받는다. 노드는 arena 보다 먼저 소멸해야 한다.
+    Parser(std::vector<Token> tokens, TypeRegistry& types, Recovery* recovery = nullptr, NodeArena* arena = nullptr)
+        : tokens_(std::move(tokens)), types_(types), recovery_(recovery), arena_(arena) {}
 
     std::unique_ptr<Expr> ReadDefault()
     {
@@ -708,6 +770,7 @@ private:
     std::size_t position_ = 0;
     int depth_ = 0;
     Recovery* recovery_;
+    NodeArena* arena_;
 
     // 실패한 문장은 균형이 맞는 문장 끝 또는 블록 끝까지 버린다. 중간 AST는 실행에 사용하지 않는다.
     std::unique_ptr<Statement> ReadStatement(bool topLevel)
@@ -738,7 +801,7 @@ private:
             }
             position_ = next;
             if (topLevel && position_ == first && Peek().kind != TokenKind::End) ++position_;
-            std::unique_ptr<Statement> empty(new Statement(StatementKind::Empty, tokens_[first]));
+            std::unique_ptr<Statement> empty(new (arena_) Statement(StatementKind::Empty, tokens_[first]));
             empty->invalid = true; empty->end = Peek().begin; return empty;
         }
     }
@@ -777,8 +840,9 @@ private:
     static bool IsReserved(const std::string& name)
     {
         static const char* const names[] = { "var", "fun", "int", "float", "bool", "string", "void", "int32", "float32", "any", "null", "true", "false", "if", "else", "while", "for", "foreach", "in", "return", "break", "continue", "import", "public", "export", "const", "struct", "class", "switch", "case", "default", "print", "tostring", "toint", "tofloat", "tosize", "sleep", "yield", "list", "map", "array", "array32" };
-        for (const char* value : names) if (name == value) return true;
-        return false;
+        // 이름 토큰마다 목록 전체와 비교하지 않도록 한 번 만든 집합에서 찾는다.
+        static const std::unordered_set<std::string> reserved(names, names + sizeof(names) / sizeof(names[0]));
+        return reserved.count(name) != 0;
     }
 
     Token Name()
@@ -796,8 +860,8 @@ private:
 
     TypeId FindType(const std::string& name) const
     {
-        const TypeId builtin = types_.LookupBuiltin(name);
-        return builtin != InvalidType ? builtin : types_.LookupNamed(name);
+        // 내장 타입도 같은 이름표에 있다. 한 번만 찾는다.
+        return types_.LookupNamed(name);
     }
 
     TypeSyntax ParseType()
@@ -887,7 +951,7 @@ private:
     std::unique_ptr<Statement> ParseStruct(const Token& at, bool topLevel, bool isPublic)
     {
         if (!topLevel) Fail(at, "structures are only allowed at file scope");
-        std::unique_ptr<Statement> s(new Statement(StatementKind::Struct, at));
+        std::unique_ptr<Statement> s(new (arena_) Statement(StatementKind::Struct, at));
         s->isPublic = isPublic;
         s->name = Name();
         s->declared.type = types_.LookupNamed(s->name.text);
@@ -914,10 +978,10 @@ private:
     {
         Depth guard(depth_, Peek());
         const Token at = Peek();
-        if (Accept(";")) { std::unique_ptr<Statement> s(new Statement(StatementKind::Empty, at)); s->end = at.end; return s; }
+        if (Accept(";")) { std::unique_ptr<Statement> s(new (arena_) Statement(StatementKind::Empty, at)); s->end = at.end; return s; }
         if (Accept("{"))
         {
-            std::unique_ptr<Statement> s(new Statement(StatementKind::Block, at));
+            std::unique_ptr<Statement> s(new (arena_) Statement(StatementKind::Block, at));
             while (!At("}"))
             {
                 if (Peek().kind == TokenKind::End) Fail(Peek(), "expected '}'");
@@ -934,14 +998,14 @@ private:
         if (Accept("switch"))
         {
             // 레거시 switch 와 같은 문법이다. 절 본문은 다음 case/default/'}' 까지이며 fallthrough 는 없다.
-            std::unique_ptr<Statement> s(new Statement(StatementKind::Switch, at));
+            std::unique_ptr<Statement> s(new (arena_) Statement(StatementKind::Switch, at));
             Expect("("); s->expressions.push_back(ParseExpression()); Expect(")");
             Expect("{");
             while (!At("}"))
             {
                 const Token label = Peek();
                 if (label.kind == TokenKind::End) Fail(label, "expected '}'");
-                std::unique_ptr<Statement> clause(new Statement(StatementKind::Case, label));
+                std::unique_ptr<Statement> clause(new (arena_) Statement(StatementKind::Case, label));
                 if (Accept("case"))
                 {
                     do clause->expressions.push_back(ParseExpression()); while (Accept(","));
@@ -963,7 +1027,7 @@ private:
         if (Accept("import"))
         {
             if (!topLevel) Fail(at, "import is only allowed at file scope");
-            std::unique_ptr<Statement> s(new Statement(StatementKind::Import, at));
+            std::unique_ptr<Statement> s(new (arena_) Statement(StatementKind::Import, at));
             s->name = Name();
             if (!IsCoreApiModule(s->name.text)) Fail(s->name, "user modules are not supported by this compiler stage");
             Expect(";");
@@ -971,7 +1035,7 @@ private:
         }
         if (Accept("if"))
         {
-            std::unique_ptr<Statement> s(new Statement(StatementKind::If, at));
+            std::unique_ptr<Statement> s(new (arena_) Statement(StatementKind::If, at));
             Expect("("); s->expressions.push_back(ParseExpression()); Expect(")");
             s->children.push_back(ReadStatement(false));
             if (Accept("else")) s->children.push_back(ReadStatement(false));
@@ -980,7 +1044,7 @@ private:
         }
         if (Accept("while"))
         {
-            std::unique_ptr<Statement> s(new Statement(StatementKind::While, at));
+            std::unique_ptr<Statement> s(new (arena_) Statement(StatementKind::While, at));
             Expect("("); s->expressions.push_back(ParseExpression()); Expect(")");
             s->children.push_back(ReadStatement(false));
             s->end = s->children.back()->end;
@@ -988,7 +1052,7 @@ private:
         }
         if (Accept("for"))
         {
-            std::unique_ptr<Statement> s(new Statement(StatementKind::For, at));
+            std::unique_ptr<Statement> s(new (arena_) Statement(StatementKind::For, at));
             Expect("("); s->declared = ParseType(); s->name = VariableName(); Expect("in");
             s->expressions.push_back(ParseExpression()); Expect(","); s->expressions.push_back(ParseExpression());
             if (Accept(",")) s->expressions.push_back(ParseExpression());
@@ -998,14 +1062,14 @@ private:
         }
         if (Accept("return"))
         {
-            std::unique_ptr<Statement> s(new Statement(StatementKind::Return, at));
+            std::unique_ptr<Statement> s(new (arena_) Statement(StatementKind::Return, at));
             if (!At(";")) s->expressions.push_back(ParseExpression());
             s->end = Expect(";").end;
             return s;
         }
         if (Accept("foreach"))
         {
-            std::unique_ptr<Statement> s(new Statement(StatementKind::Foreach, at));
+            std::unique_ptr<Statement> s(new (arena_) Statement(StatementKind::Foreach, at));
             Expect("(");
             do { Parameter p; p.type = ParseType(); p.name = VariableName(); s->parameters.push_back(p); } while (Accept(","));
             if (s->parameters.size() > 2) Fail(at, "foreach accepts one value or a key and value");
@@ -1016,7 +1080,7 @@ private:
         }
         if (Accept("yield"))
         {
-            std::unique_ptr<Statement> s(new Statement(StatementKind::Yield, at));
+            std::unique_ptr<Statement> s(new (arena_) Statement(StatementKind::Yield, at));
             s->end = Expect(";").end;
             return s;
         }
@@ -1024,14 +1088,14 @@ private:
         {
             const StatementKind kind = At("break") ? StatementKind::Break : StatementKind::Continue;
             Take();
-            std::unique_ptr<Statement> s(new Statement(kind, at));
+            std::unique_ptr<Statement> s(new (arena_) Statement(kind, at));
             s->end = Expect(";").end;
             return s;
         }
         const bool arrayConstructor = (At("array") || At("array32") || At("set")) && Peek(1).text == "<" && Peek(3).text == ">" && Peek(4).text == "(";
         if (At("public") || At("export") || At("const") || At("fn") || At("list") || At("map") || (At("coroutine") && Peek(1).text == "<") || ((At("array") || At("array32") || At("set")) && !arrayConstructor) || (FindType(Peek().text) != InvalidType && (Peek(1).kind == TokenKind::Identifier || Peek(1).text == "?" || Peek(1).text == "&")))
         {
-            std::unique_ptr<Statement> s(new Statement(StatementKind::Declaration, at));
+            std::unique_ptr<Statement> s(new (arena_) Statement(StatementKind::Declaration, at));
             while (At("public") || At("export") || At("const"))
             {
                 const Token modifier = Take();
@@ -1081,7 +1145,7 @@ private:
             }
             return s;
         }
-        std::unique_ptr<Statement> s(new Statement(StatementKind::Expression, at));
+        std::unique_ptr<Statement> s(new (arena_) Statement(StatementKind::Expression, at));
         s->expressions.push_back(ParseExpression());
         s->end = Expect(";").end;
         return s;
@@ -1120,8 +1184,10 @@ private:
             // 삼항식은 논리 OR보다 약하고 대입보다 강하다. 거짓 가지는 오른쪽으로 결합한다.
             if (At("?") && minimum <= 2)
             {
-                std::unique_ptr<Expr> node(new Expr(ExprKind::Conditional, Take()));
+                std::unique_ptr<Expr> node(new (arena_) Expr(ExprKind::Conditional, Take()));
                 node->begin = left->begin;
+                // 자식 수가 정해진 노드는 한 번에 잡는다. 늘리면서 옮기고 해제하는 일을 노드마다 하지 않는다.
+                node->children.reserve(3);
                 node->children.push_back(std::move(left));
                 node->children.push_back(ParseExpression());
                 Expect(":");
@@ -1134,8 +1200,9 @@ private:
             const int precedence = Precedence(Peek().text);
             if (precedence < minimum) return left;
             const Token op = Take();
-            std::unique_ptr<Expr> node(new Expr(precedence == 1 ? ExprKind::Assignment : ExprKind::Binary, op));
+            std::unique_ptr<Expr> node(new (arena_) Expr(precedence == 1 ? ExprKind::Assignment : ExprKind::Binary, op));
             node->begin = left->begin;
+            node->children.reserve(2);
             node->children.push_back(std::move(left));
             node->children.push_back(ParseExpression(precedence + (precedence == 1 ? 0 : 1)));
             node->end = node->children[1]->end;
@@ -1150,7 +1217,7 @@ private:
         if (At("+") || At("-") || At("!") || At("~") || At("++") || At("--"))
         {
             const Token op = Take();
-            std::unique_ptr<Expr> node(new Expr(ExprKind::Unary, op));
+            std::unique_ptr<Expr> node(new (arena_) Expr(ExprKind::Unary, op));
             node->children.push_back(ParseUnary());
             node->end = node->children[0]->end;
             CheckTreeDepth(*node);
@@ -1166,14 +1233,14 @@ private:
         }
         else if (Accept("["))
         {
-            result.reset(new Expr(ExprKind::List, token));
+            result.reset(new (arena_) Expr(ExprKind::List, token));
             if (!At("]")) do { result->children.push_back(ParseExpression()); } while (Accept(","));
             result->end = Expect("]").end;
             CheckTreeDepth(*result);
         }
         else if (Accept("{"))
         {
-            result.reset(new Expr(ExprKind::Map, token));
+            result.reset(new (arena_) Expr(ExprKind::Map, token));
             if (!At("}")) do {
                 result->children.push_back(ParseExpression()); Expect(":");
                 result->children.push_back(ParseExpression());
@@ -1183,8 +1250,8 @@ private:
         }
         else if (Accept("fn"))
         {
-            result.reset(new Expr(ExprKind::Lambda, token));
-            result->MutableRare().lambda.reset(new Statement(StatementKind::Function, token));
+            result.reset(new (arena_) Expr(ExprKind::Lambda, token));
+            result->MutableRare().lambda.reset(new (arena_) Statement(StatementKind::Function, token));
             Statement& function = *result->Rare().lambda;
             Expect("(");
             if (!At(")")) do { Parameter p; p.type = ParseType(); p.name = VariableName(); function.parameters.push_back(p); } while (Accept(","));
@@ -1196,19 +1263,19 @@ private:
         }
         else if (token.kind == TokenKind::Integer || token.kind == TokenKind::Float || token.kind == TokenKind::String || At("true") || At("false") || At("null"))
         {
-            Take(); result.reset(new Expr(ExprKind::Literal, token));
+            Take(); result.reset(new (arena_) Expr(ExprKind::Literal, token));
         }
         else if (At("array") || At("array32") || At("set"))
         {
             const TypeSyntax type = ParseType();
             if (!At("(")) Fail(token, "a collection constructor requires arguments in parentheses");
-            result.reset(new Expr(ExprKind::Name, token));
+            result.reset(new (arena_) Expr(ExprKind::Name, token));
             result->constructorType = type.type;
             result->end = type.end;
         }
         else if (token.kind == TokenKind::Identifier)
         {
-            Take(); result.reset(new Expr(ExprKind::Name, token));
+            Take(); result.reset(new (arena_) Expr(ExprKind::Name, token));
         }
         else Fail(token, "expected an expression");
         for (;;)
@@ -1225,8 +1292,9 @@ private:
             else if (At("["))
             {
                 const Token index = Take();
-                std::unique_ptr<Expr> access(new Expr(ExprKind::Index, index));
+                std::unique_ptr<Expr> access(new (arena_) Expr(ExprKind::Index, index));
                 access->begin = result->begin;
+                access->children.reserve(2);
                 access->children.push_back(std::move(result));
                 access->children.push_back(ParseExpression());
                 access->end = Expect("]").end;
@@ -1236,7 +1304,7 @@ private:
             else if (Accept("."))
             {
                 const Token member = Name();
-                std::unique_ptr<Expr> access(new Expr(ExprKind::Member, member));
+                std::unique_ptr<Expr> access(new (arena_) Expr(ExprKind::Member, member));
                 access->begin = result->begin;
                 access->children.push_back(std::move(result));
                 CheckTreeDepth(*access);
@@ -1244,8 +1312,10 @@ private:
             }
             else if (Accept("("))
             {
-                std::unique_ptr<Expr> call(new Expr(ExprKind::Call, result->token));
+                std::unique_ptr<Expr> call(new (arena_) Expr(ExprKind::Call, result->token));
                 call->begin = result->begin;
+                // 호출 대상과 인자 세 개까지는 한 번에 담는다.
+                call->children.reserve(4);
                 call->children.push_back(std::move(result));
                 if (!At(")"))
                 {
@@ -1265,7 +1335,7 @@ private:
             else if (At("++") || At("--"))
             {
                 const Token op = Take();
-                std::unique_ptr<Expr> unary(new Expr(ExprKind::Unary, op));
+                std::unique_ptr<Expr> unary(new (arena_) Expr(ExprKind::Unary, op));
                 static const std::string postIncrement("post++"), postDecrement("post--");
                 unary->op = InternedText::Borrow(op.text == "++" ? postIncrement : postDecrement);
                 unary->begin = result->begin;
@@ -1307,6 +1377,58 @@ struct Symbol
 
 ConstantValue EvaluateApiDefault(const TypeRegistry& types, TypeId type, const std::string& text);
 
+// 이름으로 보이는 심볼의 표. 스코프마다 트리를 두고 안쪽부터 훑는 대신, 이름마다 지금 보이는 심볼 하나를 두고
+// 스코프가 끝날 때 가려졌던 심볼로 되돌린다. 조회는 중첩 깊이와 무관하게 해시 한 번이다.
+class ScopeTable
+{
+public:
+    void Push() { marks_.push_back(undo_.size()); }
+    void Pop()
+    {
+        const std::size_t mark = marks_.back();
+        while (undo_.size() > mark)
+        {
+            *undo_.back().slot = undo_.back().previous;
+            undo_.pop_back();
+        }
+        marks_.pop_back();
+    }
+    void Resize(std::size_t depth)
+    {
+        while (marks_.size() > depth) Pop();
+        while (marks_.size() < depth) Push();
+    }
+    std::size_t size() const { return marks_.size(); }
+    Symbol* Find(const std::string& name) const
+    {
+        const auto found = visible_.find(name);
+        return found == visible_.end() ? nullptr : found->second.symbol;
+    }
+    bool DeclaredInCurrent(const std::string& name) const
+    {
+        const auto found = visible_.find(name);
+        return found != visible_.end() && found->second.symbol && found->second.depth == marks_.size();
+    }
+    // 같은 스코프에 이미 있으면 처음 것을 둔다(std::map::insert 와 같다).
+    void Insert(const std::string& name, Symbol* symbol)
+    {
+        Slot& slot = visible_[name];
+        if (slot.symbol && slot.depth == marks_.size()) return;
+        Undo undo; undo.slot = &slot; undo.previous = slot;
+        undo_.push_back(undo);
+        slot.symbol = symbol;
+        slot.depth = marks_.size();
+    }
+
+private:
+    struct Slot { Symbol* symbol = nullptr; std::size_t depth = 0; };
+    struct Undo { Slot* slot; Slot previous; };
+    // 원소 주소는 재해시해도 바뀌지 않는다. 끝난 스코프의 이름도 지우지 않고 빈 칸으로 남겨 다시 쓴다.
+    std::unordered_map<std::string, Slot> visible_;
+    std::vector<Undo> undo_;
+    std::vector<std::size_t> marks_;
+};
+
 class Checker
 {
 public:
@@ -1315,7 +1437,7 @@ public:
         : source_(source), result_(result), types_(result.types), hostSchema_(hostSchema), recovery_(recovery),
           scriptHost_(scriptHost), implementationSource_(implementationSource)
     {
-        scopes_.push_back(std::map<std::string, Symbol*>());
+        scopes_.Push();
         result_.backendIntrinsicPrefix = internalPrefix_ + "op_";
         result_.typedIR.prefix = internalPrefix_ + "ir_";
         result_.typedIR.returnPrefix = internalPrefix_ + "return_";
@@ -1368,7 +1490,7 @@ public:
                 symbol.backendName = global.name;
                 symbol.hostGlobal = true;
                 symbol.hostGlobalIndex = i;
-                scopes_[0].insert(std::make_pair(global.name, &symbol));
+                scopes_.Insert(global.name, &symbol);
             }
         }
         const TypeId jobPool = types_.LookupNamed("JobPool");
@@ -1434,10 +1556,10 @@ public:
         {
             const auto implementation = scriptImplementations_.find(use.binding);
             if (implementation == scriptImplementations_.end()) continue;
-            currentFunction_ = use.caller;
+            currentFunction_ = &use.caller;
             RecordScriptCall(use.token, implementation->second);
         }
-        currentFunction_.clear();
+        currentFunction_ = &noFunction_;
         CheckGlobalInitializationCalls();
         FinishStorage();
         // 주석·문자열의 길이 대신 검사한 식 수로 예약한다. 변환 등에서 더 생기는 노드는 벡터가 수용한다.
@@ -1530,16 +1652,22 @@ private:
     std::vector<HostUse> hostUses_;
     void RecordHostUse(const Token& token, HostBindingId binding)
     {
-        if (scriptHost_ && binding) hostUses_.push_back(HostUse{token,binding,currentFunction_});
+        if (scriptHost_ && binding) hostUses_.push_back(HostUse{token,binding,*currentFunction_});
     }
-    std::map<std::string, StaticFunctionSignature> functions_;
-    std::map<std::string, std::size_t> irFunctions_;
+    // 이름으로 찾기만 하는 표는 해시로 둔다. 차례로 도는 곳(초기화 순서 전파)은 결과가 순서와 무관하다.
+    std::unordered_map<std::string, StaticFunctionSignature> functions_;
+    std::unordered_map<std::string, std::size_t> irFunctions_;
     std::vector<std::pair<const Statement*, std::size_t>> returns_;
-    std::string currentFunction_;
-    std::map<std::string, std::size_t> requiredGlobalEnd_;
-    std::map<std::string, std::vector<std::string>> functionCallers_;
+    // 지금 검사하는 함수의 이름. 가리키는 문자열(토큰 글자·람다 식·호스트 사용 기록)은 검사 동안 살아 있다.
+    const std::string noFunction_;
+    const std::string* currentFunction_ = &noFunction_;
+    std::unordered_map<std::string, std::size_t> requiredGlobalEnd_;
+    // 현재 함수의 requiredGlobalEnd_ 칸. 전역을 읽을 때마다 함수 이름으로 다시 찾지 않는다.
+    const std::string* requiredOwner_ = nullptr;
+    std::size_t* requiredSlot_ = nullptr;
+    std::unordered_map<std::string, std::vector<std::string>> functionCallers_;
     std::vector<std::pair<Token, std::string>> globalCalls_;
-    std::vector<std::map<std::string, Symbol*>> scopes_;
+    ScopeTable scopes_;
     std::deque<Symbol> symbols_;
     std::size_t checkedExpressionCount_ = 0;
     std::vector<Expr*> roots_;
@@ -1572,8 +1700,8 @@ private:
     std::vector<HostWrite> hostWrites_;
     void RecordScriptCall(const Token& call, const std::string& callee)
     {
-        if (currentFunction_.empty()) globalCalls_.push_back(std::make_pair(call, callee));
-        else functionCallers_[callee].push_back(currentFunction_);
+        if (currentFunction_->empty()) globalCalls_.push_back(std::make_pair(call, callee));
+        else functionCallers_[callee].push_back(*currentFunction_);
     }
 
     void CheckGlobalInitializationCalls()
@@ -1872,15 +2000,7 @@ private:
         return "";
     }
 
-    Symbol* Lookup(const std::string& name) const
-    {
-        for (auto it = scopes_.rbegin(); it != scopes_.rend(); ++it)
-        {
-            const auto found = it->find(name);
-            if (found != it->end()) return found->second;
-        }
-        return nullptr;
-    }
+    Symbol* Lookup(const std::string& name) const { return scopes_.Find(name); }
 
 
 
@@ -1901,14 +2021,14 @@ private:
         if (functions_.count(name.text)) Fail(name, "a variable cannot hide a function");
         if (imports_.count(name.text)) Fail(name, "a variable cannot hide an imported module");
         if (types_.LookupNamed(name.text) != InvalidType) Fail(name, "a variable cannot have the same name as a declared type");
-        if (scopes_.back().count(name.text)) Fail(name, "duplicate variable '" + name.text + "'");
+        if (scopes_.DeclaredInCurrent(name.text)) Fail(name, "duplicate variable '" + name.text + "'");
         symbols_.push_back(Symbol(type, constant, name));
         Symbol& symbol = symbols_.back();
         symbol.fileGlobal = scopes_.size() == 1 && !parameter;
         symbol.backendName = scopes_.size() == 1 ? name.text : internalPrefix_ + std::to_string(symbols_.size());
         symbol.parameter = parameter;
         symbol.functionDepth = functionDepth_;
-        scopes_.back().insert(std::make_pair(name.text, &symbol));
+        scopes_.Insert(name.text, &symbol);
         return symbol;
     }
 
@@ -2693,8 +2813,15 @@ private:
                         std::find(lambda->Rare().captures.begin(), lambda->Rare().captures.end(), symbol) == lambda->Rare().captures.end())
                         lambda->MutableRare().captures.push_back(symbol);
                 }
-            if (symbol->fileGlobal && !currentFunction_.empty())
-                requiredGlobalEnd_[currentFunction_] = std::max(requiredGlobalEnd_[currentFunction_], symbol->declaration->end);
+            if (symbol->fileGlobal && !currentFunction_->empty())
+            {
+                if (requiredOwner_ != currentFunction_)
+                {
+                    requiredSlot_ = &requiredGlobalEnd_[*currentFunction_];
+                    requiredOwner_ = currentFunction_;
+                }
+                *requiredSlot_ = std::max(*requiredSlot_, symbol->declaration->end);
+            }
             return;
         }
         case ExprKind::Lambda:
@@ -2709,10 +2836,10 @@ private:
             lambdas_.push_back(&expression);
             RecordScriptCall(expression.token, expression.callName);
             const TypeId savedReturn = returnType_;
-            const std::string savedFunction = currentFunction_;
+            const std::string* const savedFunction = currentFunction_;
             const int savedLoop = loopDepth_;
             const int savedSwitch = switchDepth_;
-            currentFunction_ = expression.callName;
+            currentFunction_ = &expression.callName;
             returnType_ = function.declared.type;
             loopDepth_ = 0;
             switchDepth_ = 0;
@@ -2720,7 +2847,7 @@ private:
             ++functionDepth_;
             expression.fieldIndex = static_cast<std::size_t>(functionDepth_);
             activeLambdas_.push_back(&expression);
-            scopes_.push_back(std::map<std::string, Symbol*>());
+            scopes_.Push();
             for (const Parameter& parameter : function.parameters)
             {
                 Symbol& symbol = Define(parameter.name, parameter.type.type, false, true);
@@ -2729,7 +2856,7 @@ private:
             }
             const int flow = CheckStatement(*function.children[0]);
             if (returnType_ != types_.Void() && (flow & FallsThrough)) Fail(expression.token, "not all anonymous function paths return a value");
-            scopes_.pop_back();
+            scopes_.Pop();
             activeLambdas_.pop_back();
             --functionDepth_;
             returnType_ = savedReturn;
@@ -3161,14 +3288,14 @@ private:
             checkingConstant_ = savedConstant;
             // fallthrough 가 없어 빈 본문은 조용히 아무 일도 하지 않는 함정이 된다. 의도를 명시하게 한다.
             if (clause.children.empty()) Fail(clause.token, "a switch clause needs a body; combine labels as 'case a, b:' or write ';' for no action");
-            scopes_.push_back(std::map<std::string, Symbol*>());
+            scopes_.Push();
             int body = FallsThrough;
             for (const auto& inner : clause.children)
             {
                 const int next = CheckStatement(*inner);
                 if (body & FallsThrough) body = (body & ~FallsThrough) | next;
             }
-            scopes_.pop_back();
+            scopes_.Pop();
             // 절의 끝과 break 는 모두 switch 다음으로 이어진다.
             if (body & (FallsThrough | Breaks)) flow |= FallsThrough;
             flow |= body & (Returns | Continues);
@@ -3180,9 +3307,9 @@ private:
 
     int ScopedStatement(Statement& statement)
     {
-        scopes_.push_back(std::map<std::string, Symbol*>());
+        scopes_.Push();
         const int result = CheckStatement(statement);
-        scopes_.pop_back();
+        scopes_.Pop();
         return result;
     }
 
@@ -3192,11 +3319,11 @@ private:
         const TypeId resultType = returnType_;
         const int loops = loopDepth_, switches = switchDepth_, functions = functionDepth_;
         const bool constant = checkingConstant_;
-        const std::string function = currentFunction_;
+        const std::string* const function = currentFunction_;
         try { return CheckStatement(statement); }
         catch (const Diagnostic& error) { if (!recovery_) throw; recovery_->Add(error); }
         catch (const DependentDiagnostic&) { if (!recovery_) throw; }
-        scopes_.resize(scopes); activeLambdas_.resize(lambdas);
+        scopes_.Resize(scopes); activeLambdas_.resize(lambdas);
         returnType_ = resultType; loopDepth_ = loops; switchDepth_ = switches; functionDepth_ = functions;
         checkingConstant_ = constant; currentFunction_ = function;
         if (statement.kind == StatementKind::Declaration && !Lookup(statement.name.text) && types_.IsStorable(statement.declared.type))
@@ -3217,14 +3344,14 @@ private:
             return FallsThrough;
         case StatementKind::Block:
         {
-            scopes_.push_back(std::map<std::string, Symbol*>());
+            scopes_.Push();
             int flow = FallsThrough;
             for (const auto& child : statement.children)
             {
                 const int next = RecoverStatement(*child);
                 if (flow & FallsThrough) flow = (flow & ~FallsThrough) | next;
             }
-            scopes_.pop_back();
+            scopes_.Pop();
             return flow;
         }
         case StatementKind::Declaration:
@@ -3271,11 +3398,11 @@ private:
             ReplaceType(statement.declared, "fun");
             ReplaceModifiers(statement);
             const TypeId previousReturn = returnType_;
-            const std::string previousFunction = currentFunction_;
+            const std::string* const previousFunction = currentFunction_;
             returnType_ = statement.declared.type;
-            currentFunction_ = statement.name.text;
+            currentFunction_ = &statement.name.text.str();
             ++functionDepth_;
-            scopes_.push_back(std::map<std::string, Symbol*>());
+            scopes_.Push();
             for (const Parameter& parameter : statement.parameters)
             {
                 Symbol& symbol = Define(parameter.name, parameter.type.type, false, true);
@@ -3284,7 +3411,7 @@ private:
             }
             const std::size_t errorsBeforeBody = result_.diagnostics.size();
             const int flow = CheckStatement(*statement.children[0]);
-            scopes_.pop_back();
+            scopes_.Pop();
             --functionDepth_;
             if (result_.diagnostics.size() == errorsBeforeBody && returnType_ != types_.Void() && (flow & FallsThrough))
                 Fail(statement.name, "not all paths return a value");
@@ -3326,13 +3453,13 @@ private:
             {
                 CheckExpr(*expression); Require(*expression, types_.Int(), "range bound or step");
             }
-            scopes_.push_back(std::map<std::string, Symbol*>());
+            scopes_.Push();
             Define(statement.name, types_.Int(), false);
             ReplaceType(statement.declared, "var");
             ++loopDepth_;
             const int body = CheckStatement(*statement.children[0]);
             --loopDepth_;
-            scopes_.pop_back();
+            scopes_.Pop();
             return FallsThrough | (body & Returns);
         }
         case StatementKind::Return:
@@ -3347,7 +3474,7 @@ private:
                 Contextualize(*statement.expressions[0], returnType_);
                 CheckExpr(*statement.expressions[0]); Convert(*statement.expressions[0], returnType_);
             }
-            if (activeLambdas_.empty()) returns_.push_back(std::make_pair(&statement, irFunctions_.at(currentFunction_)));
+            if (activeLambdas_.empty()) returns_.push_back(std::make_pair(&statement, irFunctions_.at(*currentFunction_)));
             else if (!statement.expressions.empty()) roots_.push_back(statement.expressions[0].get());
             return Returns;
         case StatementKind::Foreach:
@@ -3368,7 +3495,7 @@ private:
                 else if (collection.kind == TypeKind::List || collection.kind == TypeKind::Array || collection.kind == TypeKind::Array32 || collection.kind == TypeKind::Set) expected.push_back(collection.element);
                 else Fail(statement.token, "foreach requires a string or collection");
             }
-            scopes_.push_back(std::map<std::string, Symbol*>());
+            scopes_.Push();
             std::vector<Symbol*> variables;
             for (std::size_t i = 0; i < expected.size(); ++i)
             {
@@ -3394,7 +3521,7 @@ private:
                 edits_.push_back(Edit(statement.children[0]->token.begin, statement.children[0]->token.begin, "{" + initialization));
                 edits_.push_back(Edit(statement.children[0]->end, statement.children[0]->end, "}"));
             }
-            scopes_.pop_back();
+            scopes_.Pop();
             return FallsThrough | (body & Returns);
         }
         case StatementKind::Yield:
@@ -4622,6 +4749,13 @@ bool StaticDefineTable::Prepare(const std::vector<CompileDefine>& defines, std::
     }
 }
 
+const std::string* StaticDefineTable::Find(const char* text, std::size_t size) const
+{
+    if (size < shortest_ || size > longest_ || !firstCharacters_[static_cast<unsigned char>(text[0])]) return nullptr;
+    const auto found = literals_.find(std::string(text, size));
+    return found == literals_.end() ? nullptr : &found->second;
+}
+
 bool StaticDefineTable::Expand(const std::string& source, std::vector<StaticDefineReplacement>& replacements,
     std::string& error, int& line, int& column) const
 {
@@ -4671,6 +4805,8 @@ bool CompileStaticSource(const std::string& source, StaticCompileResult& result,
     Recovery recovery(result, diagnosticLimit);
     // 토큰과 AST가 가리키는 글자의 표. 오류를 던진 토큰을 처리하는 동안에도 살아 있어야 하므로 try 밖에 둔다.
     TokenTexts texts;
+    // 구문 트리 노드의 덩어리. 트리(program)와 검사기보다 오래 살도록 try 밖에 둔다.
+    NodeArena nodes;
     try
     {
         if (hostSchema)
@@ -4684,7 +4820,7 @@ bool CompileStaticSource(const std::string& source, StaticCompileResult& result,
             return false;
         std::vector<Token> tokens = Lexer(source, texts).Read();
         ApplyDefineTokens(tokens, replacements, texts);
-        std::vector<std::unique_ptr<Statement>> program = Parser(std::move(tokens), result.types, &recovery).Read();
+        std::vector<std::unique_ptr<Statement>> program = Parser(std::move(tokens), result.types, &recovery, &nodes).Read();
         Checker checker(source, result, hostSchema, &recovery, scriptHost, implementationSource);
         checker.Check(program, replacements);
         result.success = result.diagnostics.empty();

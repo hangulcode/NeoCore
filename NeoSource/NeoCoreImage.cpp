@@ -387,9 +387,10 @@ void WriteMetadata(Writer& writer, const Data& data)
     {
         writer.Text(line.sourceName);
         writer.U32(static_cast<std::uint32_t>(line.line));
-        writer.Count(line.columns.size());
-        for (const ModuleSourceColumn& column : line.columns)
+        writer.Count(line.columnCount);
+        for (std::uint32_t i = 0; i < line.columnCount; ++i)
         {
+            const ModuleSourceColumn& column = data.bundle.columns.at(static_cast<std::size_t>(line.firstColumn) + i);
             writer.U32(static_cast<std::uint32_t>(column.generatedColumn));
             writer.U32(static_cast<std::uint32_t>(column.sourceColumn));
             writer.U32(column.fixed ? 1 : 0);
@@ -457,16 +458,21 @@ void ReadMetadata(Reader& reader, Data& data)
     for (std::uint32_t i = 0; i < lines; ++i)
     {
         ModuleSourceLine line;
-        line.sourceName = reader.Text();
+        // 같은 파일의 이어진 줄은 이름을 나눠 가진다.
+        const std::string name = reader.Text();
+        if (!data.bundle.lines.empty() && data.bundle.lines.back().sourceName == name) line.sourceName = data.bundle.lines.back().sourceName;
+        else line.sourceName = ModuleSourceName(name);
         line.line = reader.Positive();
         const std::uint32_t columns = reader.Count(12);
+        line.firstColumn = static_cast<std::uint32_t>(data.bundle.columns.size());
+        line.columnCount = columns;
         for (std::uint32_t j = 0; j < columns; ++j)
         {
             ModuleSourceColumn column;
             column.generatedColumn = reader.Positive();
             column.sourceColumn = reader.Positive();
             column.fixed = reader.Flag();
-            line.columns.push_back(column);
+            data.bundle.columns.push_back(column);
         }
         data.bundle.lines.push_back(line);
     }

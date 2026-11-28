@@ -87,6 +87,8 @@ public:
     bool Prepare(const std::vector<CompileDefine>& defines, std::string& error, int& line, int& column);
     bool Expand(const std::string& source, std::vector<StaticDefineReplacement>& replacements,
         std::string& error, int& line, int& column) const;
+    // 식별자 글자가 define 이름이면 치환할 리터럴을, 아니면 nullptr 를 돌려준다. 이미 토큰을 가진 호출자가 쓴다.
+    const std::string* Find(const char* text, std::size_t size) const;
     bool Empty() const { return literals_.empty(); }
 
 private:

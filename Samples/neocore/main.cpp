@@ -124,26 +124,17 @@ static bool Read(const std::string& path, std::string& source)
     return ok;
 }
 
+#ifdef _WIN32
+static std::string CanonicalFromFile(FILE* file, const std::string& path);
+#endif
+
 static std::string Canonical(const std::string& path)
 {
 #ifdef _WIN32
     FILE* file = Open(path);
     if (!file) return path;
-    const HANDLE handle = reinterpret_cast<HANDLE>(_get_osfhandle(_fileno(file)));
-    const DWORD size = GetFinalPathNameByHandleW(handle, nullptr, 0, FILE_NAME_NORMALIZED);
-    std::vector<wchar_t> wide(static_cast<std::size_t>(size) + 1);
-    const DWORD count = size ? GetFinalPathNameByHandleW(handle, wide.data(), size + 1, FILE_NAME_NORMALIZED) : 0;
+    const std::string result = CanonicalFromFile(file, path);
     std::fclose(file);
-    if (!count || count > size) return path;
-    const int bytes = WideCharToMultiByte(CP_UTF8, 0, wide.data(), static_cast<int>(count), nullptr, 0, nullptr, nullptr);
-    if (bytes <= 0) return path;
-    std::string result(static_cast<std::size_t>(bytes), '\0');
-    WideCharToMultiByte(CP_UTF8, 0, wide.data(), static_cast<int>(count), &result[0], bytes, nullptr, nullptr);
-    for (char& ch : result) if (ch == '\\') ch = '/';
-    if (result.compare(0, 8, "//?/UNC/") == 0) result = "//" + result.substr(8);
-    else if (result.compare(0, 4, "//?/") == 0) result.erase(0, 4);
-    // 같은 파일을 대소문자만 달리 import해도 초기화는 한 번만 수행한다.
-    for (char& ch : result) if (ch >= 'A' && ch <= 'Z') ch = static_cast<char>(ch - 'A' + 'a');
     return result;
 #else
     char* resolved = realpath(path.c_str(), nullptr);
@@ -154,6 +145,60 @@ static std::string Canonical(const std::string& path)
 #endif
 }
 
+#ifdef _WIN32
+// 열린 파일의 정규 경로. 같은 파일을 대소문자만 달리 import해도 초기화는 한 번만 수행하도록 소문자로 맞춘다.
+static std::string CanonicalFromFile(FILE* file, const std::string& path)
+{
+    const HANDLE handle = reinterpret_cast<HANDLE>(_get_osfhandle(_fileno(file)));
+    const DWORD size = GetFinalPathNameByHandleW(handle, nullptr, 0, FILE_NAME_NORMALIZED);
+    std::vector<wchar_t> wide(static_cast<std::size_t>(size) + 1);
+    const DWORD count = size ? GetFinalPathNameByHandleW(handle, wide.data(), size + 1, FILE_NAME_NORMALIZED) : 0;
+    if (!count || count > size) return path;
+    const int bytes = WideCharToMultiByte(CP_UTF8, 0, wide.data(), static_cast<int>(count), nullptr, 0, nullptr, nullptr);
+    if (bytes <= 0) return path;
+    std::string result(static_cast<std::size_t>(bytes), '\0');
+    WideCharToMultiByte(CP_UTF8, 0, wide.data(), static_cast<int>(count), &result[0], bytes, nullptr, nullptr);
+    for (char& ch : result) if (ch == '\\') ch = '/';
+    if (result.compare(0, 8, "//?/UNC/") == 0) result = "//" + result.substr(8);
+    else if (result.compare(0, 4, "//?/") == 0) result.erase(0, 4);
+    for (char& ch : result) if (ch >= 'A' && ch <= 'Z') ch = static_cast<char>(ch - 'A' + 'a');
+    return result;
+}
+#endif
+
+// 모듈 소스를 읽고 정규 이름을 정한다. 파일을 한 번만 열고, 크기를 알면 한 번에 읽는다.
+static bool ReadModuleFile(const std::string& path, std::string& source, std::string& canonical)
+{
+    FILE* file = Open(path);
+    if (!file) return false;
+    source.clear();
+    bool ok = true;
+    if (std::fseek(file, 0, SEEK_END) == 0)
+    {
+        const long size = std::ftell(file);
+        if (size > 0 && std::fseek(file, 0, SEEK_SET) == 0)
+        {
+            source.resize(static_cast<std::size_t>(size));
+            source.resize(std::fread(&source[0], 1, source.size(), file));
+        }
+        else std::rewind(file);
+    }
+    else std::rewind(file);
+    // 크기를 모르거나 읽는 동안 늘어난 파일은 끝까지 이어 읽는다.
+    char buffer[4096];
+    std::size_t count;
+    while ((count = std::fread(buffer, 1, sizeof(buffer), file)) != 0) source.append(buffer, count);
+    ok = std::ferror(file) == 0;
+#ifdef _WIN32
+    if (ok) canonical = CanonicalFromFile(file, path);
+    std::fclose(file);
+#else
+    std::fclose(file);
+    if (ok) canonical = Canonical(path);
+#endif
+    return ok;
+}
+
 static bool LoadModuleSource(const std::string& name, const std::string& importer,
     NeoCore::ModuleSource& result, NeoCore::Error& error)
 {
@@ -162,7 +207,7 @@ static bool LoadModuleSource(const std::string& name, const std::string& importe
     {
         const std::string candidates[] = {directory + "/" + name + ".nc", directory + "/Lib/" + name + ".nc"};
         for (const std::string& path : candidates)
-            if (Read(path, result.source)) { result.sourceName = Canonical(path); return true; }
+            if (ReadModuleFile(path, result.source, result.sourceName)) return true;
         const std::string parent = Directory(directory);
         if (parent == directory) break;
         directory = parent;

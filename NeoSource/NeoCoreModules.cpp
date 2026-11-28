@@ -32,6 +32,9 @@ struct Token
 
     bool Is(const char* word) const
     {
+        // 대부분의 비교는 첫 글자에서 갈린다. 길이는 첫 글자가 같을 때만 잰다.
+        if (!size) return word[0] == '\0';
+        if (text[0] != word[0]) return false;
         const std::size_t length = std::strlen(word);
         return length == size && std::memcmp(text, word, length) == 0;
     }
@@ -98,31 +101,44 @@ struct NameEqual
     bool operator()(const NameRef& a, const NameRef& b) const { return a.size == b.size && std::memcmp(a.data, b.data, a.size) == 0; }
 };
 
+// ASCII 는 바로 가리고, 그 밖의 바이트는 C 라이브러리의 판정을 그대로 따른다.
+static bool SpaceCharacter(unsigned char c)
+{
+    return c < 0x80 ? (c == ' ' || (c >= '\t' && c <= '\r')) : std::isspace(c) != 0;
+}
+
 // 문자열·주석을 그대로 두고 식별자 경계만 읽는다. 문법과 타입 판정은 정적 컴파일러의 일이다.
 static void Tokenize(const std::string& source, const std::string& name, std::vector<Token>& tokens)
 {
     std::size_t at = source.compare(0, 3, "\xef\xbb\xbf") == 0 ? 3 : 0;
     int line = 1, column = 1;
+    const std::size_t size = source.size();
     const auto advance = [&]()
     {
         if (source[at++] == '\n') { ++line; column = 1; }
         else ++column;
     };
-    while (at < source.size())
+    // 두 글자 표식은 글자를 직접 본다(문자열 비교 호출을 글자마다 하지 않는다).
+    const auto pairAt = [&](char a, char b) { return at + 1 < size && source[at] == a && source[at + 1] == b; };
+    while (at < size)
     {
-        if (std::isspace(static_cast<unsigned char>(source[at]))) { advance(); continue; }
-        if (source.compare(at, 2, "//") == 0)
+        if (SpaceCharacter(static_cast<unsigned char>(source[at]))) { advance(); continue; }
+        if (pairAt('/', '/'))
         {
-            while (at < source.size() && source[at] != '\n') advance();
+            // 주석 안에는 줄바꿈이 없다. 끝을 찾은 뒤 열을 한 번에 옮긴다.
+            const char* const newline = static_cast<const char*>(std::memchr(source.data() + at, '\n', size - at));
+            const std::size_t end = newline ? static_cast<std::size_t>(newline - source.data()) : size;
+            column += static_cast<int>(end - at);
+            at = end;
             continue;
         }
         Token token;
         token.begin = at; token.line = line; token.column = column;
-        if (source.compare(at, 2, "/*") == 0)
+        if (pairAt('/', '*'))
         {
             advance(); advance();
-            while (at < source.size() && source.compare(at, 2, "*/") != 0) advance();
-            if (at == source.size()) Fail(name, token, "unterminated block comment");
+            while (at < size && !pairAt('*', '/')) advance();
+            if (at == size) Fail(name, token, "unterminated block comment");
             advance(); advance();
             continue;
         }
@@ -130,7 +146,11 @@ static void Tokenize(const std::string& source, const std::string& name, std::ve
         if (IdentifierStart(first))
         {
             token.identifier = true;
-            do { advance(); } while (at < source.size() && IdentifierPart(static_cast<unsigned char>(source[at])));
+            // 식별자에는 줄바꿈이 없다.
+            std::size_t end = at + 1;
+            while (end < size && IdentifierPart(static_cast<unsigned char>(source[end]))) ++end;
+            column += static_cast<int>(end - at);
+            at = end;
         }
         else if (first == '\'' || first == '"')
         {
@@ -212,6 +232,8 @@ struct Unit
     std::vector<unsigned char> actions;
     std::map<std::size_t, std::string> memberNames;
     std::string prefix, diagnosticName;
+    // 줄 표에 넣는 이 모듈의 이름. 내보낼 때 한 번 만들고 줄마다 나눠 쓴다.
+    ModuleSourceName lineName;
     // 줄 찾기의 시작 위치. 한 모듈의 내보내기는 앞에서 뒤로 가므로 직전 줄부터 찾는다.
     mutable std::size_t lineCursor = 0;
     bool visiting = false, visited = false, emitted = false;
@@ -233,7 +255,7 @@ static std::size_t FindJobsName(const Unit& unit)
     for (const Import& import : unit.imports)
         if (import.builtin && import.name == "jobs") return unit.tokens.size();
     for (std::size_t i = 0; i < unit.tokens.size(); ++i)
-        if (unit.tokens[i].identifier && unit.tokens[i].Is("jobs") && !unit.fieldNames.count(i) &&
+        if (unit.tokens[i].identifier && unit.tokens[i].size == 4 && unit.tokens[i].Is("jobs") && !unit.fieldNames.count(i) &&
             !(i && At(unit.tokens, i - 1, ".")) && !At(unit.tokens, i + 1, "."))
             return i;
     return unit.tokens.size();
@@ -286,10 +308,17 @@ static void Analyze(Unit& unit, const StaticDefineTable& defines)
 {
     if (!defines.Empty())
     {
-        std::string error;
-        Token at;
-        if (!defines.Expand(unit.input.source, unit.defineValues, error, at.line, at.column))
-            Fail(unit.input.sourceName, at, error);
+        // 식별자 경계는 정적 컴파일러의 어휘 분석과 같다. 이미 읽은 토큰에서 치환 자리를 찾고 소스를 다시 읽지 않는다.
+        // 어휘 오류는 define 이 없을 때와 같이 합친 소스의 검사가 원래 위치로 보고한다.
+        for (const Token& token : unit.tokens)
+        {
+            if (!token.identifier) continue;
+            const std::string* const literal = defines.Find(token.text, token.size);
+            if (!literal) continue;
+            StaticDefineReplacement replacement;
+            replacement.begin = token.begin; replacement.end = token.end; replacement.text = *literal;
+            unit.defineValues.push_back(std::move(replacement));
+        }
         // 치환할 자리가 없으면 토큰은 그대로다.
         if (!unit.defineValues.empty())
         {
@@ -459,22 +488,24 @@ public:
         {
             if (newLine_)
             {
-                FlushColumns();
                 output_.lines.push_back(ModuleSourceLine());
                 ModuleSourceLine& line = output_.lines.back();
-                line.sourceName = unit.input.sourceName;
+                line.sourceName = unit.lineName;
                 line.line = static_cast<int>(sourceLine);
+                line.firstColumn = static_cast<std::uint32_t>(output_.columns.size());
                 newLine_ = false;
                 column_ = 1;
                 mapping = true;
             }
             if (mapping)
             {
+                // 열 대응은 언제나 마지막 줄의 것이다. 줄 표의 공용 배열 끝에 붙인다.
                 ModuleSourceColumn location;
                 location.generatedColumn = column_;
                 location.sourceColumn = sourceColumn;
                 location.fixed = fixed;
-                columns_.push_back(location);
+                output_.columns.push_back(location);
+                ++output_.lines.back().columnCount;
                 mapping = false;
             }
             // 줄 끝까지를 한 번에 붙인다.
@@ -502,31 +533,23 @@ public:
 
     void Finish(const Unit& unit)
     {
-        FlushColumns();
         if (!newLine_) return;
         ModuleSourceLine line;
-        line.sourceName = unit.input.sourceName;
+        line.sourceName = unit.lineName;
         line.line = static_cast<int>(unit.lineStarts.size());
         ModuleSourceColumn column;
         column.sourceColumn = static_cast<int>(unit.input.source.size() - unit.lineStarts.back()) + 1;
         column.fixed = true;
-        line.columns.push_back(column);
+        line.firstColumn = static_cast<std::uint32_t>(output_.columns.size());
+        line.columnCount = 1;
+        output_.columns.push_back(column);
         output_.lines.push_back(line);
     }
 
 private:
     ModuleBundle& output_;
-    // 지금 쓰는 줄의 열 대응. 줄이 끝날 때 꼭 맞는 크기로 한 번에 옮겨, 줄마다 벡터를 여러 번 늘리지 않는다.
-    std::vector<ModuleSourceColumn> columns_;
     bool newLine_ = true;
     int column_ = 1;
-
-    void FlushColumns()
-    {
-        if (columns_.empty()) return;
-        output_.lines.back().columns.assign(columns_.begin(), columns_.end());
-        columns_.clear();
-    }
 };
 
 class Bundler
@@ -651,6 +674,13 @@ public:
         for (std::size_t i = 0; i < units_.size(); ++i) Rewrite(i);
         // 접두사가 붙어 원본보다 길어진다. 넉넉히 잡아 두고 모자라면 늘린다.
         output.source.reserve(total + total / 2 + 64);
+        // 줄 표도 미리 잡는다. 모듈의 줄 수에 import 자리마다 끼우는 구분 줄을 더한 것이 상한에 가깝다.
+        std::size_t lineCount = 16;
+        for (std::size_t i = 0; i < units_.size(); ++i)
+            lineCount += units_[i]->lineStarts.size() + units_[i]->imports.size() * 4 + 4;
+        output.lines.reserve(lineCount);
+        output.columns.reserve(lineCount * 2);
+        for (std::size_t i = 0; i < units_.size(); ++i) units_[i]->lineName = ModuleSourceName(units_[i]->input.sourceName);
         Writer writer(output);
         Emit(0, writer);
         writer.Finish(*units_[0]);
@@ -915,10 +945,13 @@ void ModuleBundle::Translate(Error& error) const
     const ModuleSourceLine& location = lines[static_cast<std::size_t>(error.line - 1)];
     error.sourceName = location.sourceName;
     error.line = location.line;
-    for (std::vector<ModuleSourceColumn>::const_reverse_iterator it = location.columns.rbegin(); it != location.columns.rend(); ++it)
+    for (std::uint32_t i = location.columnCount; i > 0; --i)
     {
-        if (error.column < it->generatedColumn) continue;
-        error.column = it->sourceColumn + (it->fixed ? 0 : error.column - it->generatedColumn);
+        const std::size_t index = static_cast<std::size_t>(location.firstColumn) + i - 1;
+        if (index >= columns.size()) continue;
+        const ModuleSourceColumn& mapping = columns[index];
+        if (error.column < mapping.generatedColumn) continue;
+        error.column = mapping.sourceColumn + (mapping.fixed ? 0 : error.column - mapping.generatedColumn);
         break;
     }
 }
