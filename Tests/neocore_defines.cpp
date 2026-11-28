@@ -72,6 +72,23 @@ void Defines(bool debug)
     program = Program::Compile(source, error, "changed.nc", debug, changed);
     Check(program && program->Call("Value").value.asInt() == 214,
         "a new compilation uses its own define table in both entry and imported sources");
+    CompileOptions digits;
+    digits.defines.emplace_back("VALUE", CompileDefineKind::Int, "10");
+    for (const char* literal : {"0xVALUE", "0XVALUE", "1eVALUE", "1E+VALUE", "1e-VALUE"})
+    {
+        const std::string source = std::string("\nprint(") + literal + ");";
+        program = Program::Compile(source, error, "number.nc", debug, digits);
+        const char* expected = literal[0] == '0' ? "expected hexadecimal digits" : "expected exponent digits";
+        Check(!program && error.sourceName == "number.nc" && error.line == 2 && error.column == 7 &&
+            error.message.find(expected) != std::string::npos, std::string("reject define inside ") + literal);
+    }
+    for (const char* expression : {"0x1VALUE", "1e2VALUE", "VALUE.25"})
+    {
+        program = Program::Compile(std::string("print(") + expression + ");", error, "number.nc", debug, digits);
+        Check(!program && error.sourceName == "number.nc", std::string("preserve token boundaries in ") + expression);
+    }
+    program = Program::Compile("export float Probe(){return 0x10 + 1e+2 + VALUE;}", error, "number.nc", debug, digits);
+    Check(program && program->Call("Probe").value.asFloat() == 126.0, "complete numeric literals and a separate define");
     StaticCompileResult staticResult;
     Check(CompileStaticSource("export int Read(){return COUNT-NEG;}", staticResult, nullptr, &options.defines), "direct frontend accepts defines");
     Check(staticResult.loweredSource.find("COUNT") == std::string::npos && staticResult.loweredSource.find("NEG") == std::string::npos, "direct frontend lowers resolved defines");

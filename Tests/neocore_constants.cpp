@@ -17,11 +17,11 @@ void Check(bool condition, const std::string& label)
     if (!condition) { ++failures; std::fprintf(stderr, "FAIL: %s\n", label.c_str()); }
 }
 
-void Value(const std::string& source, const NeoCore::Scalar& expected, bool debug)
+void Value(const std::string& source, const NeoCore::Scalar& expected, bool debug, const char* label = nullptr)
 {
     NeoCore::Error error;
     auto program = NeoCore::Program::Compile(source, error, "constants.nc", debug);
-    Check(bool(program), "compile: " + error.message + " source: " + source);
+    Check(bool(program), "compile: " + error.message + " source: " + (label ? label : source));
     if (!program) return;
     for (int image = 0; image != 2; ++image)
     {
@@ -32,7 +32,7 @@ void Value(const std::string& source, const NeoCore::Scalar& expected, bool debu
         if (matches && expected.kind() == NeoCore::Scalar::Kind::Float)
             matches = result.value.asFloat() == expected.asFloat() &&
                 (expected.asFloat() != 0 || std::signbit(result.value.asFloat()) == std::signbit(expected.asFloat()));
-        Check(matches, "constant value: " + result.error.message + " source: " + source);
+        Check(matches, "constant value: " + result.error.message + " source: " + (label ? label : source));
         if (image == 0)
         {
             std::vector<std::uint8_t> bytes;
@@ -197,6 +197,18 @@ void ConstantLimit(bool debug)
     NeoCore::Error error;
     Check(!NeoCore::Program::Compile(source(15001), error, "constants.nc", debug), "constant pool overflow rejected");
     Check(error.message.find("constant count limit exceeded") != std::string::npos, "constant pool diagnostic: " + error.message);
+    std::string full = "string s;";
+    for (int i = 0; i < 15000; ++i) full += "s=\"k" + std::to_string(i) + "\";\n";
+    const std::string functions = "float Sum(int x,float y){return x+y;}";
+    const std::string immediates = "int a=7;float b=1.5;a=8;b=2.5;float c=Sum(3+4,1.5);int d=(a=8);";
+    for (bool literalsFirst : {false, true})
+    {
+        const std::string body = literalsFirst ? immediates + full : full + immediates;
+        Value(functions + "export float Probe(){" + body + "return a+b+c+d;}", NeoCore::Scalar::Float(27), debug,
+            literalsFirst ? "immediates before full pool" : "immediates after full pool");
+    }
+    Check(!NeoCore::Program::Compile(full + "float f=0.1;", error, "constants.nc", debug) &&
+        error.message.find("constant count limit exceeded") != std::string::npos, "full pool rejects a non-immediate float");
     std::string strings = "export string Probe(){string s=\"\";";
     for (int i = 0; i < 15001; ++i) strings += "s=\"k" + std::to_string(i) + "\";";
     Check(!NeoCore::Program::Compile(strings + "return s;}", error, "constants.nc", debug) &&

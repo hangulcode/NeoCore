@@ -1129,20 +1129,11 @@ struct SFunctions
 	// 숫자 상수의 중복 제거 색인: NS_FLOAT 비트 / int 값 → 풀 인덱스. 선형 탐색은 리터럴 수의 제곱으로 느려졌다.
 	std::unordered_map<uint64_t, int>	_floatConstants;
 	std::unordered_map<NS_INT, int>		_intConstants;
-	// String slots are never reclaimed by numeric immediate folding. Keep their
-	// lookup separate so large text pools do not require a quadratic scan.
 	std::unordered_map<std::string, int> _stringConstants;
-	// 마지막 상수 슬롯을 '어느 함수의 어느 코드 오프셋에서' 만들었는지.
-	// 리터럴을 즉값 명령으로 대체할 때, 그 뒤로 코드가 방출되지 않았다면
-	// 그 슬롯을 참조하는 명령도 있을 수 없다 — 이 비교 하나로 회수 가능 여부가 정해진다.
-	SFunctionInfo*						_lastStaticFun = nullptr;
 	// 바깥 파서가 이미 훑어 둔 식 부작용 비트. 다음 ParseJob 이 같은 소스 오프셋에서 시작하면 재스캔 없이 쓴다.
 	// (호출 인자·괄호 부분식은 바깥 범위의 부분집합이라 바깥 비트가 보수적 상한이다.)
 	int									_presetExprEffects = -1;
 	int									_presetExprOffset = -1;
-	int									_lastStaticCodeOffset = -1;
-	// 그 오프셋에서 시작된 상수 '묶음'의 첫 인덱스. 접기로 여러 개를 되돌릴 때 하한이 된다.
-	int									_staticRunBegin = 0;
 	// switch 테이블은 _staticVars 처럼 프로그램 전역으로 누적된다(함수별이 아님).
 	// NOP_SWITCH.n1 = 이 배열의 인덱스이고, Export 가 'SWIT' 청크로 써서
 	// 런타임에 CNeoVMProgram::switchTables 가 된다.
@@ -1245,72 +1236,6 @@ struct SFunctions
 		//return FindFun((*it).second);
 	}
 
-	// 방금 만든 상수 슬롯의 출처를 기록한다(회수 판정용).
-	// 마지막 상수를 두 곳 이상에서 받아 갔는가. 같은 리터럴이 아직 방출되지 않은 바깥 피연산자와 지금의 즉값
-	// 인자에 함께 쓰이면(`7 + F(7, 1)`) 되돌릴 수 없다: 바깥 피연산자의 색인이 다음 상수를 가리키게 된다.
-	bool _lastStaticShared = false;
-	void MarkLastStaticOrigin()
-	{
-		_lastStaticShared = false;
-		const int off = (_cur != nullptr && _cur->_code != nullptr)
-			? _cur->_code->GetBufferOffset() : -1;
-		if (_lastStaticFun != _cur || _lastStaticCodeOffset != off)
-		{
-			// 새 지점에서 시작하는 묶음이다(이전 묶음 뒤로 코드가 방출됐다는 뜻).
-			_lastStaticFun = _cur;
-			_lastStaticCodeOffset = off;
-			_staticRunBegin = (int)_staticVars.size() - 1;
-		}
-	}
-	// 리터럴이 만든 상수 슬롯을 되돌릴 수 있는가.
-	//   - 아직 마지막 슬롯이고(뒤에 다른 상수가 생기지 않았고)
-	//   - 그 슬롯을 만든 함수에서, 만든 뒤로 명령이 하나도 방출되지 않았다.
-	// 두 조건이 서면 그 슬롯을 참조하는 코드는 존재할 수 없다.
-	bool CanPopLastStatic(int compileIndex) const
-	{
-		const int idx = StaticPoolIndex(compileIndex);
-		if (idx < 0 || idx != (int)_staticVars.size() - 1)
-			return false;
-		if (idx < _staticRunBegin)
-			return false;   // 이 묶음보다 앞선 상수는 참조하는 코드가 있을 수 있다
-		if (_lastStaticShared)
-			return false;   // 아직 방출되지 않은 다른 피연산자가 같은 상수를 들고 있다
-		if (_cur == nullptr || _cur->_code == nullptr || _lastStaticFun != _cur)
-			return false;
-		return _lastStaticCodeOffset == _cur->_code->GetBufferOffset();
-	}
-	// 마지막 상수를 되돌린다. 색인도 함께 지워야 같은 값이 다시 올 때 새 슬롯을 만든다.
-	void PopLastStatic()
-	{
-		// 되돌린 뒤 마지막이 되는 상수를 누가 들고 있는지는 알 수 없다. 새 상수가 추가될 때까지 되돌리지 않는다.
-		_lastStaticShared = true;
-		const BoundaryValue& v = _staticVars.back();
-		if (v.GetType() == VAR_FLOAT)
-		{
-			uint64_t bits = 0;
-			std::memcpy(&bits, &v._float, sizeof(bits));
-			auto it = _floatConstants.find(bits);
-			if (it != _floatConstants.end() && it->second == (int)_staticVars.size() - 1) _floatConstants.erase(it);
-		}
-		else if (v.GetType() == VAR_INT)
-		{
-			auto it = _intConstants.find(v._int);
-			if (it != _intConstants.end() && it->second == (int)_staticVars.size() - 1) _intConstants.erase(it);
-		}
-		else if (v.GetType() == VAR_BOOL)
-		{
-			int& cached = _boolConstants[v._bl ? 1 : 0];
-			if (cached == (int)_staticVars.size() - 1) cached = -1;
-		}
-		_staticVars.pop_back();
-	}
-	bool TryPopStatic(int compileIndex)
-	{
-		if (CanPopLastStatic(compileIndex) == false)
-			return false;
-		PopLastStatic();
-		return true;
-	}
 	int NextStaticIndex() const
 	{
 		// 상수는 명령 피연산자가 바로 가리킬 수 있는 수까지만 둔다. 넘으면 컴파일 오류다(실행 중 잘못된 코드가 되지 않는다).
@@ -1321,10 +1246,7 @@ struct SFunctions
 	{
 		auto found = _intConstants.find(num);
 		if (found != _intConstants.end())
-		{
-			if (found->second == (int)_staticVars.size() - 1) _lastStaticShared = true;
 			return StaticCompileIndex(found->second);
-		}
 		const int idx = NextStaticIndex();
 		BoundaryValue v;
 		v.SetType(VAR_INT);
@@ -1332,7 +1254,6 @@ struct SFunctions
 
 		_staticVars.push_back(v);
 		_intConstants.emplace(num, (int)_staticVars.size() - 1);
-		MarkLastStaticOrigin();
 		return idx;
 	}
 	bool GetStaticNum(int var, NS_INT* value)
@@ -1367,10 +1288,7 @@ struct SFunctions
 		std::memcpy(&bits, &f, sizeof(bits));
 		auto found = _floatConstants.find(bits);
 		if (found != _floatConstants.end())
-		{
-			if (found->second == (int)_staticVars.size() - 1) _lastStaticShared = true;
 			return StaticCompileIndex(found->second);
-		}
 		const int idx = NextStaticIndex();
 		BoundaryValue v;
 		v.SetType(VAR_FLOAT);
@@ -1378,7 +1296,6 @@ struct SFunctions
 
 		_staticVars.push_back(v);
 		_floatConstants.emplace(bits, (int)_staticVars.size() - 1);
-		MarkLastStaticOrigin();
 		return idx;
 	}
 	int	AddStaticString(const std::string& str)

@@ -146,7 +146,7 @@ enum OperandType
 	Increment_Postfix,
 };
 
-// 리터럴이 어떤 즉값 명령으로 나갈 수 있는지. Literal_None 이면 상수 풀 경유(기존 MOV).
+// 숫자 리터럴은 슬롯과 구분해 저장하고 명령을 낼 때 즉값 사용 여부를 정한다.
 enum LiteralKind
 {
 	Literal_None = 0,
@@ -222,22 +222,24 @@ struct SOperand
 		_floatLiteral = 0;
 		_intLiteral = 0;
 	}
-	void SetIntLiteral(int var, NS_INT value)
+	void SetIntLiteral(NS_INT value)
 	{
 		_storage.typeId = static_cast<u32>(NeoCore::TypeKind::Int);
 		_storage.kind = SlotKind::Int;
-		_iVar = var;
+		_iVar = INVALID_ERROR_PARSEJOB;
+		_readOnly = true;
 		_iArrayIndex = INVALID_ERROR_PARSEJOB;
 		_operandType = Data_NR;
 		_literalKind = Literal_Int;
 		_intLiteral = value;
 		_floatLiteral = 0;
 	}
-	void SetFloatLiteral(int var, NS_FLOAT value)
+	void SetFloatLiteral(NS_FLOAT value)
 	{
 		_storage.typeId = static_cast<u32>(NeoCore::TypeKind::Float);
 		_storage.kind = SlotKind::Float;
-		_iVar = var;
+		_iVar = INVALID_ERROR_PARSEJOB;
+		_readOnly = true;
 		_iArrayIndex = INVALID_ERROR_PARSEJOB;
 		_operandType = Data_NR;
 		_literalKind = Literal_Float;
@@ -245,17 +247,34 @@ struct SOperand
 		_intLiteral = 0;
 	}
 
-	inline bool IsInvalidValue() { return (false == IsHaveShort()) && (_iVar == INVALID_ERROR_PARSEJOB); }
+	bool IsNumericLiteral() const { return _literalKind != Literal_None; }
+	// 즉값 저장이나 상수 접기에는 슬롯이 없다. 명령이 슬롯 피연산자를 요구할 때만 풀에 넣는다.
+	int ReadSlot(SFunctions& funs) const
+	{
+		if (IsIntLiteral()) return funs.AddStaticInt(_intLiteral);
+		if (IsFloatLiteral()) return funs.AddStaticNum(_floatLiteral);
+		return _iVar;
+	}
+	inline bool IsInvalidValue() { return !IsNumericLiteral() && !IsHaveShort() && _iVar == INVALID_ERROR_PARSEJOB; }
 
 	inline bool IsArray() const { return _iArrayIndex != INVALID_ERROR_PARSEJOB; }
-	inline bool IsShort() { return _operandType == Data_NS; }
+	inline bool IsShort() const { return _operandType == Data_NS; }
 	inline bool IsConst() { return _operandType == Data_NS; }
 	inline bool IsNone() { return _operandType == Data_None; }
 	inline bool IsHaveShort() { return (_operandType == Data_NS || _operandType == Data_TS); }
-	inline bool IsFun() { return _operandType == Data_Fun; }
+	inline bool IsFun() const { return _operandType == Data_Fun; }
 	inline bool IsFloatLiteral() const { return _literalKind == Literal_Float; }
 	inline bool IsIntLiteral() const { return _literalKind == Literal_Int; }
 };
+
+// 리터럴이 둘이면 왼쪽부터 상수 표에 등록해 플랫폼마다 같은 슬롯 번호를 낸다.
+static void PushSlotOperands(CArchiveRdWC& ar, SFunctions& funs, OperationCode op, int first,
+    const SOperand& second, const SOperand& third, int line)
+{
+    const int secondSlot = second.ReadSlot(funs);
+    const int thirdSlot = third.ReadSlot(funs);
+    funs._cur->Push_OP(ar, op, first, secondSlot, thirdSlot, line);
+}
 
 // Resolve the container at the consuming operation. Assignment calls this
 // after its RHS, just as a single-level indexed assignment does. R-value
@@ -357,16 +376,10 @@ static void MaterializeValue(SOperand& operand, CArchiveRdWC& ar, SFunctions& fu
 	}
 }
 
-// 숫자 리터럴을 값만 옮기는 자리(대입/인자 전달)에서는 상수 풀을 거치지 않고
-// 즉값 명령으로 낸다. int32 범위는 NOP_MOVI, float32로 정확히 표현되는 실수는 NOP_MOVF.
-//
-// ParseNum 이 만들어 둔 상수 풀 항목은, 아무도 참조하지 않는 것이 확실할 때만 되돌린다.
-// 판정은 CanPopLastStatic 이 O(1) 로 한다 — 명령을 내면 코드 오프셋이 달라지므로
-// 반드시 방출 '전에' 물어봐야 한다.
 static void SnapshotValue(SOperand& operand, CArchiveRdWC& ar, SFunctions& funs)
 {
     MaterializeValue(operand, ar, funs);
-    if (!operand.IsInvalidValue() && !IsTempVar(operand._iVar) && !IsCompileConstant(operand._iVar))
+    if (!operand.IsNumericLiteral() && !operand.IsInvalidValue() && !IsTempVar(operand._iVar) && !IsCompileConstant(operand._iVar))
     {
         const int value = funs._cur->AllocLocalTempVar(operand._storage);
         funs._cur->Push_OP2(ar, NOP_MOV, value, operand._iVar, operand.IsShort());
@@ -444,10 +457,8 @@ static bool TryPushImmediate(CArchiveRdWC& ar, SFunctions& funs, int dest, const
 {
 	if (source.IsArray())
 		return false;
-	if (source.IsIntLiteral() == false && source.IsFloatLiteral() == false)
+	if (!source.IsNumericLiteral())
 		return false;
-
-	const bool canReclaim = funs.CanPopLastStatic(source._iVar);
 
 	if (source.IsIntLiteral())
 	{
@@ -455,19 +466,29 @@ static bool TryPushImmediate(CArchiveRdWC& ar, SFunctions& funs, int dest, const
 		funs._cur->Push_MOVI(ar, dest, (int)source._intLiteral, iDebugLine);
 	}
 	else if (funs._cur->Push_MOVF(ar, dest, source._floatLiteral, iDebugLine) == false)
-		return false;   // float32로 정확히 표현할 수 없는 double은 상수 풀에 남긴다.
+		return false;   // float32로 정확히 표현할 수 없는 double은 상수 슬롯에서 읽는다.
 
-	if (canReclaim)
-	{
-		funs.PopLastStatic();
-		// 되돌린 상수를 호출 계획이 인자 원본으로 가리키면 그 색인은 다음 상수를 가리키게 된다.
-		// 원본을 지우면 저장소 추론은 피호출자 서명으로 종류를 정한다. PREPARE_CALL을 내지 않는 호출은
-		// 상수 뒤에 명령이 없어 되돌리기가 실제로 일어난다.
-		if (dest >= COMPILE_CALLARG_VAR_BEGIN && !funs._cur->_calls.empty())
-			for (int& slot : funs._cur->_calls.back().sources)
-				if (slot == source._iVar) slot = -1;
-	}
 	return true;
+}
+
+// 호출 창에 바로 쓴 리터럴은 원본 슬롯이 없어도 인자 타입을 알고 있다.
+static void StageCallArgument(CArchiveRdWC& ar, SFunctions& funs, const SOperand& value, int index, int line)
+{
+    const int slot = COMPILE_CALLARG_VAR_BEGIN + 1 + index;
+    CompileCallStorage& plan = funs._cur->_calls.back();
+    if (value.IsFun())
+    {
+        plan.types[index].kind = SlotKind::Function;
+        funs._cur->Push_OP2(ar, NOP_FMOV1, slot, value._iVar, false, line);
+    }
+    else if (TryPushImmediate(ar, funs, slot, value, line))
+        plan.types[index] = value._storage;
+    else
+    {
+        const int source = value.ReadSlot(funs);
+        plan.sources[index] = source;
+        funs._cur->Push_OP2(ar, NOP_MOV, slot, source, value.IsShort(), line);
+    }
 }
 
 // 상수 계산은 런타임 명령 번호에 의존하지 않는다.
@@ -516,7 +537,7 @@ static ScalarBinaryOp TypedBinaryOp(OperationCode op)
 
 // 양쪽 숫자 리터럴을 VM과 같은 정수/NS_FLOAT 규칙으로 접는다.
 // 0 나누기와 오버플로는 접지 않아 원래 위치의 런타임 오류를 유지한다.
-static bool TryFoldLiteralBinOp(SOperand& a, ScalarBinaryOp op, const SOperand& b, SFunctions& funs)
+static bool TryFoldLiteralBinOp(SOperand& a, ScalarBinaryOp op, const SOperand& b)
 {
 	if (a.IsArray() || b.IsArray())
 		return false;
@@ -587,19 +608,11 @@ static bool TryFoldLiteralBinOp(SOperand& a, ScalarBinaryOp op, const SOperand& 
 		return false;
 	}
 
-	// [주의] 여기서 피연산자의 상수 슬롯을 회수하면 안 된다.
-	// 같은 리터럴 값이 식 안에 여러 번 나오면 AddStaticInt/AddStaticNum 의 중복 제거로
-	// 여러 SOperand 가 같은 슬롯을 가리킨다. 접기가 그 슬롯을 pop 하고 결과값을 같은
-	// 자리에 새로 만들면, 아직 처리되지 않은 다른 SOperand 의 _iVar 가 엉뚱한 값을
-	// (또는 인덱스가 밀려 전역변수를) 가리키게 된다.
-	//   예) 7 == 7 + 1  ->  EQ [8] == [8]  (7 이 8 로 뒤바뀜)
-	// 접히지 않는 연산자(비교/논리/문자열연결)는 _iVar 를 그대로 쓰므로 실제로 터진다.
-	// 미참조 슬롯이 남는 비용은 값 종류당 최대 하나라 감수한다.
-
+	// 접힌 결과도 리터럴로 넘긴다. 이후 명령이 슬롯을 읽을 때만 상수 표에 넣는다.
 	if (resultIsInt)
-		a.SetIntLiteral(funs.AddStaticInt(ri), ri);
+		a.SetIntLiteral(ri);
 	else
-		a.SetFloatLiteral(funs.AddStaticNum(rf), rf);
+		a.SetFloatLiteral(rf);
 	return true;
 }
 
@@ -2094,17 +2107,6 @@ bool ParseFunCall(SOperand& iResultStack, TK_TYPE tkTypePre, SFunctionInfo* pFun
 		if (argsScanned)
 			while (directBegin > 0 && (argEffects[directBegin - 1] & EXPR_EFFECT_CALL) == 0) --directBegin;
 		bool windowPrepared = false;
-		auto StageArgument = [&](SOperand& arg, int index)
-		{
-			const int slot = COMPILE_CALLARG_VAR_BEGIN + 1 + index;
-			if (arg.IsFun())
-			{
-				funs._cur->_calls.back().types[index].kind = SlotKind::Function;
-				funs._cur->Push_OP2(ar, NOP_FMOV1, slot, arg._iVar, false, iCallLine);
-			}
-			else if (!TryPushImmediate(ar, funs, slot, arg, iCallLine))
-				funs._cur->Push_OP2(ar, NOP_MOV, slot, arg._iVar, arg.IsShort(), iCallLine);
-		};
 		while (true)
 		{
 			tkType2 = GetToken(ar, tk2);
@@ -2133,9 +2135,8 @@ bool ParseFunCall(SOperand& iResultStack, TK_TYPE tkTypePre, SFunctionInfo* pFun
 					// 첫 직접 인자 앞에서 창을 고르고, 임시에 둔 앞 인자들을 옮긴다. 창에 바로 만드는 인자의 원본은
 					// 없으므로(-1) 저장소 추론이 피호출자 서명으로 그 슬롯의 종류를 정한다.
 					std::vector<int> callSources(argEffects.size(), -1);
-					for (std::size_t s = 0; s < argOperands.size(); ++s) callSources[s] = argOperands[s].IsFun() ? -1 : argOperands[s]._iVar;
 					funs._cur->PrepareCall(ar, callSources, iCallLine, CallNeedsPrepare(pFun, argEffects.size()));
-					for (std::size_t s = 0; s < argOperands.size(); ++s) StageArgument(argOperands[s], static_cast<int>(s));
+					for (std::size_t s = 0; s < argOperands.size(); ++s) StageCallArgument(ar, funs, argOperands[s], static_cast<int>(s), iCallLine);
 					windowPrepared = true;
 				}
 				iTempVar.Reset();
@@ -2168,8 +2169,7 @@ bool ParseFunCall(SOperand& iResultStack, TK_TYPE tkTypePre, SFunctionInfo* pFun
 					if (iTempVar.IsArray() || iTempVar._iVar != slot)
 					{
 						MaterializeValue(iTempVar, ar, funs);
-						if (!iTempVar.IsFun()) funs._cur->_calls.back().sources[iParamCount] = iTempVar._iVar;
-						StageArgument(iTempVar, iParamCount);
+						StageCallArgument(ar, funs, iTempVar, iParamCount, iCallLine);
 					}
 					argOperands.push_back(SOperand(slot));
 				}
@@ -2210,10 +2210,9 @@ bool ParseFunCall(SOperand& iResultStack, TK_TYPE tkTypePre, SFunctionInfo* pFun
         // 직접 쓰기가 없었으면 호출 창은 모든 인자 평가가 끝난 뒤에만 선택한다. 다른 호출의 참조와 겹치지 않는다.
         if (!windowPrepared)
         {
-            std::vector<int> callSources;
-            for (SOperand& argument : argOperands) callSources.push_back(argument.IsFun() ? -1 : argument._iVar);
+            std::vector<int> callSources(argOperands.size(), -1);
             funs._cur->PrepareCall(ar, callSources, iCallLine, CallNeedsPrepare(pFun, argOperands.size()));
-            for (int i = 0; i < iParamCount; ++i) StageArgument(argOperands[i], i);
+            for (int i = 0; i < iParamCount; ++i) StageCallArgument(ar, funs, argOperands[i], i, iCallLine);
         }
 		if (pFun != NULL)
 		{
@@ -2310,8 +2309,7 @@ bool ParseNum(SOperand& iResultStack, TK_TYPE tkTypePre, std::string& tk1, CArch
 			double f = num.floatValue;
 			if (tkTypePre == TK_MINUS)
 				f = -f;
-			int staticVar = funs.AddStaticNum(f);
-			iResultStack.SetFloatLiteral(staticVar, (NS_FLOAT)f);
+			iResultStack.SetFloatLiteral((NS_FLOAT)f);
 		}
 		else if (c == '.')  // 정수 토큰 뒤 '.' → float 로 재조합(토크나이저가 "1.5"를 쪼갬)
 		{
@@ -2331,16 +2329,14 @@ bool ParseNum(SOperand& iResultStack, TK_TYPE tkTypePre, std::string& tk1, CArch
 			}
 			if (tkTypePre == TK_MINUS)
 				f = -f;
-			int staticVar = funs.AddStaticNum(f);
-			iResultStack.SetFloatLiteral(staticVar, (NS_FLOAT)f);
+			iResultStack.SetFloatLiteral((NS_FLOAT)f);
 		}
 		else
 		{
 			NS_INT inum = num.intValue;   // 정수 리터럴의 64비트 값을 보존한다.
 			if (tkTypePre == TK_MINUS)
 				inum = NegateParsedInteger(inum);
-			int staticVar = funs.AddStaticInt(inum);
-			iResultStack.SetIntLiteral(staticVar, inum);
+			iResultStack.SetIntLiteral(inum);
 		}
 	}
 	else
@@ -2432,14 +2428,14 @@ TK_TYPE ParseListDef(SOperand& iResultStack, CArchiveRdWC& ar, SFunctions& funs,
 		}
 #if 0
 		if (IsShort(iItemCount))
-			funs._cur->Push_Table_MASMDP(ar, NOP_CLT_MOV, iResultStack._iVar, iItemCount, iTempOffsetValue._iVar, false, true, iTempOffsetValue.IsShort());
+			funs._cur->Push_Table_MASMDP(ar, NOP_CLT_MOV, iResultStack._iVar, iItemCount, iTempOffsetValue.ReadSlot(funs), false, true, iTempOffsetValue.IsShort());
 		else
 #endif
 		{
 			MaterializeValue(iTempOffsetValue, ar, funs);
 
 			int iTempOffsetKey = funs.AddStaticInt(iItemCount);
-			funs._cur->Push_Table_MASMDP(ar, NOP_CLT_MOV, iResultStack._iVar, iTempOffsetKey, iTempOffsetValue._iVar, false, false, iTempOffsetValue.IsShort());
+			funs._cur->Push_Table_MASMDP(ar, NOP_CLT_MOV, iResultStack._iVar, iTempOffsetKey, iTempOffsetValue.ReadSlot(funs), false, false, iTempOffsetValue.IsShort());
 		}
 		iItemCount++;
 
@@ -2536,7 +2532,8 @@ TK_TYPE ParseTableDef(SOperand& iResultStack, CArchiveRdWC& ar, SFunctions& funs
 				return TK_NONE;
 			}
 			MaterializeValue(iTempOffsetValue, ar, funs);
-			funs._cur->Push_Table_MASMDP(ar, NOP_CLT_MOV, iResultStack._iVar, iTempOffsetKey._iVar, iTempOffsetValue._iVar, false, iTempOffsetKey.IsShort(), iTempOffsetValue.IsShort());
+			const int key = iTempOffsetKey.ReadSlot(funs);
+			funs._cur->Push_Table_MASMDP(ar, NOP_CLT_MOV, iResultStack._iVar, key, iTempOffsetValue.ReadSlot(funs), false, iTempOffsetKey.IsShort(), iTempOffsetValue.IsShort());
 			tkType1 = tkType2;
 			iItemCount++;
 		}
@@ -2547,12 +2544,12 @@ TK_TYPE ParseTableDef(SOperand& iResultStack, CArchiveRdWC& ar, SFunctions& funs
 			++iCurArrayOffset;
 #if 0
 			if(IsShort(iCurArrayOffset))
-				funs._cur->Push_Table_MASMDP(ar, NOP_CLT_MOV, iResultStack._iVar, iCurArrayOffset, iTempOffsetValue._iVar, false, true, iTempOffsetValue.IsShort());
+				funs._cur->Push_Table_MASMDP(ar, NOP_CLT_MOV, iResultStack._iVar, iCurArrayOffset, iTempOffsetValue.ReadSlot(funs), false, true, iTempOffsetValue.IsShort());
 			else
 #endif
 			{
 				iTempOffsetKey = funs.AddStaticInt(iCurArrayOffset);
-				funs._cur->Push_Table_MASMDP(ar, NOP_CLT_MOV, iResultStack._iVar, iTempOffsetKey._iVar, iTempOffsetValue._iVar, false, false, iTempOffsetValue.IsShort());
+				funs._cur->Push_Table_MASMDP(ar, NOP_CLT_MOV, iResultStack._iVar, iTempOffsetKey._iVar, iTempOffsetValue.ReadSlot(funs), false, false, iTempOffsetValue.IsShort());
 			}
 			iItemCount++;
 		}
@@ -2686,6 +2683,7 @@ static bool ParsePostfixSelectors(SOperand& operand, CArchiveRdWC& ar, SFunction
         // variable key keeps the documented late lookup at the eventual write.
         if (funs._cur->_code->GetBufferOffset() != keyCodeStart) SnapshotValue(key, ar, funs);
         else MaterializeValue(key, ar, funs);
+        const int keySlot = key.ReadSlot(funs);
         if (operand._assignedResult || (operand.IsArray() && operand._pathKeys.empty()))
         {
             ResolveContainer(operand, ar, funs);
@@ -2698,7 +2696,7 @@ static bool ParsePostfixSelectors(SOperand& operand, CArchiveRdWC& ar, SFunction
                 child._container.loaded = true;
             }
             operand = child;
-            operand._iArrayIndex = key._iVar;
+            operand._iArrayIndex = keySlot;
         }
         else
         {
@@ -2708,9 +2706,9 @@ static bool ParsePostfixSelectors(SOperand& operand, CArchiveRdWC& ar, SFunction
                 operand._pathRoot = operand._iVar;
             }
             else operand._pathOwners.push_back(funs._cur->AllocLocalTempVar());
-            operand._pathKeys.push_back(key._iVar);
+            operand._pathKeys.push_back(keySlot);
             operand._pathResolved = false;
-            operand._iArrayIndex = key._iVar;
+            operand._iArrayIndex = keySlot;
             if (!operand._pathOwners.empty()) operand._iVar = operand._pathOwners.back();
         }
         operand._operandType = key.IsShort() ? Data_TS : Data_TR;
@@ -2751,9 +2749,9 @@ static bool MakeConstOperand(const NeoCompileDefineToken& constant, SOperand& va
 			return false;
 		}
 		if (constant.type == NEO_DEFINE_TOKEN_INT)
-			value.SetIntLiteral(funs.AddStaticInt(number.intValue), number.intValue);
+			value.SetIntLiteral(number.intValue);
 		else
-			value.SetFloatLiteral(funs.AddStaticNum(number.floatValue), (NS_FLOAT)number.floatValue);
+			value.SetFloatLiteral((NS_FLOAT)number.floatValue);
 		break;
 	}
 	case NEO_DEFINE_TOKEN_STRING:
@@ -2816,13 +2814,13 @@ static SOperand EmitCoreAggregate(const AggregateOpInfo& info, const SOperand* a
         // 인자 계산이 모두 끝난 뒤 전용 지역 구간을 확보한다. 네이티브 호출 프레임은 만들지 않는다.
         const int base = funs._cur->AllocTempWindow(info.arity);
         for (int i = 0; i < info.arity; ++i)
-            funs._cur->Push_OP2(ar, NOP_MOV, base + i, arguments[i]._iVar, false, sourceLine);
+            funs._cur->Push_OP2(ar, NOP_MOV, base + i, arguments[i].ReadSlot(funs), false, sourceLine);
         funs._cur->Push_OP(ar, info.op, destination, base, control, sourceLine);
     }
     else if (info.shape == AggregateOpShape::Binary)
-        funs._cur->Push_OP(ar, info.op, destination, arguments[0]._iVar, arguments[1]._iVar, sourceLine);
+        PushSlotOperands(ar, funs, info.op, destination, arguments[0], arguments[1], sourceLine);
     else
-        funs._cur->Push_OP(ar, info.op, destination, arguments[0]._iVar, control, sourceLine);
+        funs._cur->Push_OP(ar, info.op, destination, arguments[0].ReadSlot(funs), control, sourceLine);
     return SOperand(destination);
 }
 
@@ -2842,7 +2840,7 @@ static SOperand EmitCoreNumber(OperationCode op, const SOperand& left, const SOp
     type.typeId = static_cast<u32>(type.kind == SlotKind::Bool ? NeoCore::TypeKind::Bool :
         type.kind == SlotKind::Float ? NeoCore::TypeKind::Float : NeoCore::TypeKind::Int);
     if (destination == INVALID_ERROR_PARSEJOB) destination = funs._cur->AllocLocalTempVar(type);
-    funs._cur->Push_OP(ar, op, destination, left._iVar, right._iVar, sourceLine);
+    PushSlotOperands(ar, funs, op, destination, left, right, sourceLine);
     return SOperand(destination);
 }
 
@@ -2859,7 +2857,7 @@ static SOperand EmitCoreWrite(const std::string& family, bool array, bool field,
         if (field)
         {
             old = SOperand(funs._cur->AllocLocalTempVar());
-            funs._cur->Push_OP(ar, NOP_CLT_READ, arguments[1]._iVar, arguments[2]._iVar, old._iVar, sourceLine);
+            funs._cur->Push_OP(ar, NOP_CLT_READ, arguments[1]._iVar, arguments[2].ReadSlot(funs), old._iVar, sourceLine);
         }
         else old = EmitCoreAggregate(array ? "a" + family + "get" : "cellget", readArguments, 0, ar, funs, sourceLine);
     }
@@ -2894,7 +2892,7 @@ static SOperand EmitCoreWrite(const std::string& family, bool array, bool field,
     SOperand writeArguments[] = { stored, arguments[1], arguments[2] };
     SOperand result = stored;
     if (field)
-        funs._cur->Push_OP(ar, NOP_CLT_MOV, arguments[1]._iVar, arguments[2]._iVar, stored._iVar, sourceLine);
+        PushSlotOperands(ar, funs, NOP_CLT_MOV, arguments[1]._iVar, arguments[2], stored, sourceLine);
     else result = EmitCoreAggregate(array ? "a" + family + "set" : "cellset", writeArguments,
         0, ar, funs, sourceLine);
     if (mode == 5 || mode == 6) return oldValue;
@@ -3025,7 +3023,7 @@ static bool ParseCoreTypedIntrinsic(SOperand& result, const std::string& name,
     if (collectionSet)
     {
         // 뒤 인자가 값을 바꿀 때만 보존했다. 저장 결과도 같은 값이며 원소 포인터는 보관하지 않는다.
-        funs._cur->Push_OP(ar, NOP_CLT_MOV, arguments[1]._iVar, arguments[2]._iVar, arguments[0]._iVar, sourceLine);
+        PushSlotOperands(ar, funs, NOP_CLT_MOV, arguments[1]._iVar, arguments[2], arguments[0], sourceLine);
         result = arguments[0];
         return true;
     }
@@ -3043,16 +3041,16 @@ static bool ParseCoreTypedIntrinsic(SOperand& result, const std::string& name,
     if (info->op == OP_I64_TO_F64 && arguments[0].IsIntLiteral())
     {
         const NS_FLOAT value = static_cast<NS_FLOAT>(arguments[0]._intLiteral);
-        result.SetFloatLiteral(funs.AddStaticNum(value), value);
+        result.SetFloatLiteral(value);
         return true;
     }
     if (info->op == OP_F64_TO_I64 && arguments[0].IsFloatLiteral())
     {
         const NS_INT value = NeoFloatToInt(arguments[0]._floatLiteral);
-        result.SetIntLiteral(funs.AddStaticInt(value), value);
+        result.SetIntLiteral(value);
         return true;
     }
-    if (info->arity == 2 && TryFoldLiteralBinOp(arguments[0], TypedBinaryOp(info->op), arguments[1], funs))
+    if (info->arity == 2 && TryFoldLiteralBinOp(arguments[0], TypedBinaryOp(info->op), arguments[1]))
     {
         result = arguments[0];
         return true;
@@ -3060,9 +3058,9 @@ static bool ParseCoreTypedIntrinsic(SOperand& result, const std::string& name,
     result = SOperand(funs._cur->AllocLocalTempVar());
     if (swapOperands) std::swap(arguments[0], arguments[1]);
     if (info->arity == 1)
-        funs._cur->Push_OP2(ar, info->op, result._iVar, arguments[0]._iVar, false, sourceLine);
+        funs._cur->Push_OP2(ar, info->op, result._iVar, arguments[0].ReadSlot(funs), false, sourceLine);
     else
-        funs._cur->Push_OP(ar, info->op, result._iVar, arguments[0]._iVar, arguments[1]._iVar, sourceLine);
+        PushSlotOperands(ar, funs, info->op, result._iVar, arguments[0], arguments[1], sourceLine);
     if (invert) funs._cur->GetOPPointer(funs._cur->_iLastOPOffset)->argFlag |= NEOS_OP_COMPARE_INVERT;
     return true;
 }
@@ -3446,7 +3444,7 @@ static OperationCode CoreIRWriteOp(NeoCore::IROp operation, NeoCore::IRValueType
 static SOperand SnapshotCoreIRValue(SOperand value, CArchiveRdWC& ar, SFunctions& funs, int line)
 {
     MaterializeValue(value, ar, funs);
-    if (!IsTempVar(value._iVar) && !IsCompileConstant(value._iVar))
+    if (!value.IsNumericLiteral() && !IsTempVar(value._iVar) && !IsCompileConstant(value._iVar))
     {
         const int saved = funs._cur->AllocLocalTempVar(value._storage);
         funs._cur->Push_OP2(ar, NOP_MOV, saved, value._iVar, false, line);
@@ -3557,14 +3555,9 @@ static bool EmitCoreCallArguments(const NeoCore::IRNode& node, std::size_t first
     }
     // 창에 바로 만드는 인자의 원본은 없다(-1). 저장소 추론은 피호출자 서명으로 그 창 슬롯의 종류를 정한다.
     std::vector<int> callSources(count, -1);
-    for (std::size_t i = 0; i < directBegin; ++i) callSources[i] = arguments[i]._iVar;
     funs._cur->PrepareCall(ar, callSources, node.source.line, SFunctionInfo::CallWindowNeedsPrepare(function, count));
     for (std::size_t i = 0; i < directBegin; ++i)
-    {
-        const int slot = COMPILE_CALLARG_VAR_BEGIN + 1 + static_cast<int>(i);
-        if (!TryPushImmediate(ar, funs, slot, arguments[i], node.source.line))
-            funs._cur->Push_OP2(ar, NOP_MOV, slot, arguments[i]._iVar, arguments[i].IsShort(), node.source.line);
-    }
+        StageCallArgument(ar, funs, arguments[i], static_cast<int>(i), node.source.line);
     for (std::size_t i = directBegin; i < count; ++i)
     {
         const int slot = COMPILE_CALLARG_VAR_BEGIN + 1 + static_cast<int>(i);
@@ -3573,9 +3566,7 @@ static bool EmitCoreCallArguments(const NeoCore::IRNode& node, std::size_t first
         // 숫자 연산과 컨테이너 읽기는 창 슬롯을 목적지로 받아 바로 썼다. 나머지는 값을 옮긴다.
         if (!value.IsArray() && value._iVar == slot) continue;
         MaterializeValue(value, ar, funs);
-        funs._cur->_calls.back().sources[i] = value._iVar;
-        if (!TryPushImmediate(ar, funs, slot, value, node.source.line))
-            funs._cur->Push_OP2(ar, NOP_MOV, slot, value._iVar, value.IsShort(), node.source.line);
+        StageCallArgument(ar, funs, value, static_cast<int>(i), node.source.line);
     }
     return true;
 }
@@ -3652,13 +3643,13 @@ static bool EmitCoreIRCollection(const NeoCore::IRNode& node, SOperand& result,
     if (!write)
     {
         const int target = destination != INVALID_ERROR_PARSEJOB ? destination : funs._cur->AllocLocalTempVar(CoreStorageType(ar.m_coreTypedIR->types, node.typeId));
-        funs._cur->Push_OP(ar, read, target, receiver._iVar, key._iVar, node.source.line);
+        funs._cur->Push_OP(ar, read, target, receiver._iVar, key.ReadSlot(funs), node.source.line);
         result = SOperand(target); return true;
     }
     if (node.text != "=")
     {
         const int old = funs._cur->AllocLocalTempVar(CoreStorageType(ar.m_coreTypedIR->types, node.typeId));
-        funs._cur->Push_OP(ar, read, old, receiver._iVar, key._iVar, node.source.line);
+        funs._cur->Push_OP(ar, read, old, receiver._iVar, key.ReadSlot(funs), node.source.line);
         IROp operation = node.text == "+=" ? IROp::Add : node.text == "-=" ? IROp::Subtract :
             node.text == "*=" ? IROp::Multiply : node.text == "/=" ? IROp::Divide : node.text == "%=" ? IROp::Remainder :
             node.text == "&=" ? IROp::BitAnd : node.text == "|=" ? IROp::BitOr : node.text == "^=" ? IROp::BitXor :
@@ -3667,11 +3658,11 @@ static bool EmitCoreIRCollection(const NeoCore::IRNode& node, SOperand& result,
     }
     // 소비되는 대입 결과는 후속 식에서 대상이 바뀌어도 보존한다.
     if (!node.discardResult) value = SnapshotCoreIRValue(value, ar, funs, node.source.line);
-    funs._cur->Push_OP(ar, CoreIRCollectionOp(owner, node.type, true), receiver._iVar, key._iVar, value._iVar, node.source.line);
+    PushSlotOperands(ar, funs, CoreIRCollectionOp(owner, node.type, true), receiver._iVar, key, value, node.source.line);
     if (!node.discardResult && owner.kind == NeoCore::TypeKind::Array32 && node.type == NeoCore::IRValueType::Float)
     {
         const int stored = funs._cur->AllocLocalTempVar(CoreStorageType(ar.m_coreTypedIR->types, node.typeId));
-        funs._cur->Push_OP(ar, read, stored, receiver._iVar, key._iVar, node.source.line);
+        funs._cur->Push_OP(ar, read, stored, receiver._iVar, key.ReadSlot(funs), node.source.line);
         value = SOperand(stored);
     }
     result = value; return true;
@@ -3790,8 +3781,8 @@ static bool EmitCoreIRStorage(const NeoCore::IRNode& node, SOperand& result,
         const OperationCode op = node.type == NeoCore::IRValueType::Int ? NOP_LIST_I64_STORE :
             node.type == NeoCore::IRValueType::Float ? NOP_LIST_F64_STORE :
             node.type == NeoCore::IRValueType::Bool ? NOP_LIST_BOOL_STORE : NOP_CLT_MOV;
-        funs._cur->Push_OP(ar, op, target._iVar,
-            funs.AddStaticInt(static_cast<NS_INT>(node.storage.fields.back())), value._iVar, node.source.line);
+        const int key = funs.AddStaticInt(static_cast<NS_INT>(node.storage.fields.back()));
+        funs._cur->Push_OP(ar, op, target._iVar, key, value.ReadSlot(funs), node.source.line);
     }
     else if (node.storage.kind == NeoCore::IRStorageKind::Cell)
     {
@@ -3803,15 +3794,15 @@ static bool EmitCoreIRStorage(const NeoCore::IRNode& node, SOperand& result,
         // 산술·스크립트 호출은 처음부터 목적지에 쓴다. 나머지 경로만 기존 안전한 저장 규칙을 사용한다.
         if (value._iVar != target._iVar && !TryStoreCallResult(ar, funs, target._iVar, value) &&
             !TryPushImmediate(ar, funs, target._iVar, value, node.source.line))
-            funs._cur->Push_OP2(ar, NOP_MOV, target._iVar, value._iVar, false, node.source.line);
+            funs._cur->Push_OP2(ar, NOP_MOV, target._iVar, value.ReadSlot(funs), false, node.source.line);
         if (node.op == IROp::Assign && plainVariable) FuseConcatChainIntoTarget(funs, target._iVar);
         result = target;
         return true;
     }
-    else
+    else if (!TryPushImmediate(ar, funs, target._iVar, value, node.source.line))
     {
         // 대입식 결과 임시는 이후에도 사용한다. MOV peephole로 생산자의 목적지를 변수로 옮기지 않는다.
-        funs._cur->Push_OP(ar, NOP_MOV, target._iVar, value._iVar, 0, node.source.line);
+        funs._cur->Push_OP(ar, NOP_MOV, target._iVar, value.ReadSlot(funs), 0, node.source.line);
     }
     result = node.op == IROp::PostIncrement || node.op == IROp::PostDecrement ? old : stored;
     return true;
@@ -3899,9 +3890,9 @@ static bool EmitCoreIRNodeImpl(std::size_t index, SOperand& result,
     switch (node.op)
     {
     case IROp::IntLiteral:
-        result.SetIntLiteral(funs.AddStaticInt(node.integer), node.integer); return true;
+        result.SetIntLiteral(node.integer); return true;
     case IROp::FloatLiteral:
-        result.SetFloatLiteral(funs.AddStaticNum(node.number), node.number); return true;
+        result.SetFloatLiteral(node.number); return true;
     case IROp::BoolLiteral:
         result = SOperand(funs.AddStaticBool(node.boolean)); return true;
     case IROp::Symbol:
@@ -4030,14 +4021,14 @@ static bool EmitCoreIRNodeImpl(std::size_t index, SOperand& result,
             if (node.op == IROp::ToString || ir.nodes[child].type != NeoCore::IRValueType::String)
             {
                 const int slot = funs._cur->AllocLocalTempVar(CoreStorageType(ir.types, ir.types.String()));
-                funs._cur->Push_ToType(ar, NOP_TOSTRING, slot, value._iVar, ir.nodes[child].source.line);
+                funs._cur->Push_ToType(ar, NOP_TOSTRING, slot, value.ReadSlot(funs), ir.nodes[child].source.line);
                 value = SOperand(slot);
             }
             if (!i) { result = value; continue; }
             ElideImmediateSnapshot(result, ar, funs);
             ElideConcatConversion(result, value, ar, funs);
             const int slot = funs._cur->AllocLocalTempVar(CoreStorageType(ir.types, ir.types.String()));
-            funs._cur->Push_OP(ar, NOP_STR_ADD, slot, result._iVar, value._iVar, ir.nodes[child].source.line);
+            funs._cur->Push_OP(ar, NOP_STR_ADD, slot, result._iVar, value.ReadSlot(funs), ir.nodes[child].source.line);
             result = SOperand(slot);
         }
         return true;
@@ -4053,7 +4044,8 @@ static bool EmitCoreIRNodeImpl(std::size_t index, SOperand& result,
             SOperand value;
             if (!EmitCoreIRNode(node.inputs[i], value, ar, funs, vars)) return false;
             MaterializeValue(value, ar, funs);
-            funs._cur->Push_Table_MASMDP(ar, NOP_CLT_MOV, result._iVar, funs.AddStaticInt(i), value._iVar, false, false, value.IsShort());
+            const int indexSlot = funs.AddStaticInt(i);
+            funs._cur->Push_Table_MASMDP(ar, NOP_CLT_MOV, result._iVar, indexSlot, value.ReadSlot(funs), false, false, value.IsShort());
         }
         return true;
     }
@@ -4100,7 +4092,7 @@ static bool EmitCoreIRNodeImpl(std::size_t index, SOperand& result,
             MaterializeValue(value, ar, funs);
             // 가지의 값이 목적지 변수 자신이면(`x = c ? y : x`) 옮길 것이 없다.
             if ((value.IsArray() || value._iVar != selected) && !TryPushImmediate(ar, funs, selected, value, node.source.line))
-                funs._cur->Push_OP2(ar, NOP_MOV, selected, value._iVar, value.IsShort(), node.source.line);
+                funs._cur->Push_OP2(ar, NOP_MOV, selected, value.ReadSlot(funs), value.IsShort(), node.source.line);
             // 이 가지에서 결과 임시에 쓰는 마지막 명령. 방금 낸 복사·즉값이거나 목적지가 접힌 생산 명령이다.
             writers[branch - 1] = -1;
             if (funs._cur->_iLastOPOffset >= 0 &&
@@ -4149,18 +4141,18 @@ static bool EmitCoreIRNodeImpl(std::size_t index, SOperand& result,
     if (node.op == IROp::Negate)
     {
         if (operands[0].IsIntLiteral())
-        { const NS_INT value = NeoIntNeg(operands[0]._intLiteral); result.SetIntLiteral(funs.AddStaticInt(value), value); return true; }
+        { const NS_INT value = NeoIntNeg(operands[0]._intLiteral); result.SetIntLiteral(value); return true; }
         if (operands[0].IsFloatLiteral())
-        { const NS_FLOAT value = -operands[0]._floatLiteral; result.SetFloatLiteral(funs.AddStaticNum(value), value); return true; }
+        { const NS_FLOAT value = -operands[0]._floatLiteral; result.SetFloatLiteral(value); return true; }
         result = SOperand(destination != INVALID_ERROR_PARSEJOB ? destination : funs._cur->AllocLocalTempVar(CoreNumericStorage(node.type)));
         funs._cur->Push_OP2(ar, node.type == NeoCore::IRValueType::Int ? OP_I64_NEG : OP_F64_NEG,
-            result._iVar, operands[0]._iVar, false, node.source.line);
+            result._iVar, operands[0].ReadSlot(funs), false, node.source.line);
         return true;
     }
     if (node.op == IROp::BitNot)
     {
         if (operands[0].IsIntLiteral())
-        { const NS_INT value = ~operands[0]._intLiteral; result.SetIntLiteral(funs.AddStaticInt(value), value); return true; }
+        { const NS_INT value = ~operands[0]._intLiteral; result.SetIntLiteral(value); return true; }
         result = EmitCoreNumber(OP_I64_XOR, operands[0], SOperand(funs.AddStaticInt(-1)), ar, funs, node.source.line, destination);
         return true;
     }
@@ -4179,7 +4171,7 @@ static bool EmitCoreIRNodeImpl(std::size_t index, SOperand& result,
             }
         }
         result = SOperand(destination != INVALID_ERROR_PARSEJOB ? destination : funs._cur->AllocLocalTempVar(CoreNumericStorage(node.type)));
-        funs._cur->Push_OP2(ar, NOP_LOG_NOT, result._iVar, operands[0]._iVar, false, node.source.line);
+        funs._cur->Push_OP2(ar, NOP_LOG_NOT, result._iVar, operands[0].ReadSlot(funs), false, node.source.line);
         return true;
     }
     const auto inputType = ar.m_coreTypedIR->nodes[node.inputs[0]].type;
@@ -4190,21 +4182,21 @@ static bool EmitCoreIRNodeImpl(std::size_t index, SOperand& result,
         if (inputType == NeoCore::IRValueType::Bool &&
             FoldBoolEquality(op, operands[0], operands[1], result, ar, funs, node.source.line)) return true;
         result = SOperand(destination != INVALID_ERROR_PARSEJOB ? destination : funs._cur->AllocLocalTempVar(CoreNumericStorage(node.type)));
-        funs._cur->Push_OP(ar, op, result._iVar, operands[0]._iVar, operands[1]._iVar, node.source.line);
+        PushSlotOperands(ar, funs, op, result._iVar, operands[0], operands[1], node.source.line);
         return true;
     }
     const OperationCode op = CoreIRNumberOp(node.op, inputType);
     if (node.op == IROp::ToFloat && operands[0].IsIntLiteral())
-    { const NS_FLOAT value = static_cast<NS_FLOAT>(operands[0]._intLiteral); result.SetFloatLiteral(funs.AddStaticNum(value), value); return true; }
+    { const NS_FLOAT value = static_cast<NS_FLOAT>(operands[0]._intLiteral); result.SetFloatLiteral(value); return true; }
     if (node.op == IROp::ToInt && operands[0].IsFloatLiteral())
-    { const NS_INT value = NeoFloatToInt(operands[0]._floatLiteral); result.SetIntLiteral(funs.AddStaticInt(value), value); return true; }
-    if (node.inputs.size() == 2 && TryFoldLiteralBinOp(operands[0], TypedBinaryOp(op), operands[1], funs))
+    { const NS_INT value = NeoFloatToInt(operands[0]._floatLiteral); result.SetIntLiteral(value); return true; }
+    if (node.inputs.size() == 2 && TryFoldLiteralBinOp(operands[0], TypedBinaryOp(op), operands[1]))
     { result = operands[0]; return true; }
     result = SOperand(destination != INVALID_ERROR_PARSEJOB ? destination : funs._cur->AllocLocalTempVar(CoreNumericStorage(node.type)));
     if (node.inputs.size() == 1)
-        funs._cur->Push_OP2(ar, op, result._iVar, operands[0]._iVar, false, node.source.line);
+        funs._cur->Push_OP2(ar, op, result._iVar, operands[0].ReadSlot(funs), false, node.source.line);
     else
-        funs._cur->Push_OP(ar, op, result._iVar, operands[0]._iVar, operands[1]._iVar, node.source.line);
+        PushSlotOperands(ar, funs, op, result._iVar, operands[0], operands[1], node.source.line);
     return true;
 }
 
@@ -4263,7 +4255,7 @@ static bool ParseCoreIRReturn(const std::string& name, CArchiveRdWC& ar, SFuncti
         SOperand value;
         if (!EmitCoreIRNode(statement.valueIndex, value, ar, funs, vars)) return false;
         MaterializeValue(value, ar, funs);
-        funs._cur->Push_RETURN(ar, value._iVar, value.IsShort(), statement.source.line);
+        funs._cur->Push_RETURN(ar, value.ReadSlot(funs), value.IsShort(), statement.source.line);
     }
     return true;
 }
@@ -4313,7 +4305,7 @@ bool ParseString(SOperand& operand, TK_TYPE tkTypePre, CArchiveRdWC& ar, SFuncti
 			&& !MakeConstOperand(constant->second, value, ar, funs))
 			return false;
 		// public var 는 전역 슬롯 그대로라 뒤의 선택자 · 대입 · 증감이 자기 모듈 변수와 똑같이 붙는다.
-		if (value._iVar == -1)
+		if (value.IsInvalidValue())
 			value._iVar = FindPublicModuleVar(vars, pOtherModule, tk1);
 	}
     if (pOtherModule == nullptr && ar.m_coreTypedIR && !ar.m_coreTypedIR->returnPrefix.empty() &&
@@ -4329,7 +4321,7 @@ bool ParseString(SOperand& operand, TK_TYPE tkTypePre, CArchiveRdWC& ar, SFuncti
 	{
         if (!ParseCoreTypedIntrinsic(value, tk1, ar, funs, vars)) return false;
 	}
-	else if (value._iVar == -1)
+	else if (value.IsInvalidValue())
 	{
 		SFunctionInfo* pFun = pOtherModule == nullptr ? funs.FindFun(tk1) : funs.FindFun(tk1, pOtherModule);
 		// 다른 모듈의 함수는 public 인 것만 보인다(내장 모듈은 전부). export 는 호스트용이라 모듈에는 안 보인다.
@@ -4507,7 +4499,7 @@ static bool ParseUnaryOperand(SOperand& operand, TK_TYPE prefix, CArchiveRdWC& a
         return false;
     }
     else
-        funs._cur->Push_OP2(ar, prefix == TK_MINUS ? RejectLegacyArithmetic(ar) : NOP_LOG_NOT, result, operand._iVar, false);
+        funs._cur->Push_OP2(ar, prefix == TK_MINUS ? RejectLegacyArithmetic(ar) : NOP_LOG_NOT, result, operand.ReadSlot(funs), false);
     operand = SOperand(result);
     return true;
 }
@@ -4537,7 +4529,7 @@ bool ParseToType(int& iResultStack, TK_TYPE tkTypePre, CArchiveRdWC& ar, SFuncti
 
 	int iTempOffset3 = funs._cur->AllocLocalTempVar();
 	int iPriority = 0;
-	funs._cur->Push_ToType(ar, TokenToOP(tkTypePre, iPriority), iTempOffset3, operand._iVar);
+	funs._cur->Push_ToType(ar, TokenToOP(tkTypePre, iPriority), iTempOffset3, operand.ReadSlot(funs));
 	iResultStack = iTempOffset3;
 	return true;
 }
@@ -4892,7 +4884,7 @@ TK_TYPE ParseJob(bool bReqReturn, SOperand& sResultStack, std::vector<SJumpValue
 
 		// 양쪽이 숫자 리터럴이면 여기서 계산해 버린다(런타임 연산이 통째로 사라진다).
 		// 결과 리터럴이 다시 피연산자가 되므로 (2 + 3) * 4 처럼 중첩된 식도 끝까지 접힌다.
-		if (TryFoldLiteralBinOp(a, TokenBinaryOp(operatorToken), b, funs))
+		if (TryFoldLiteralBinOp(a, TokenBinaryOp(operatorToken), b))
 		{
 			operands[iFindOffset] = a;
 			RemoveAt<SOperand>(operands, iFindOffset + 1);
@@ -4926,10 +4918,10 @@ TK_TYPE ParseJob(bool bReqReturn, SOperand& sResultStack, std::vector<SJumpValue
 			{
 				MaterializeValue(b, ar, funs); // complete the RHS before resolving the destination
 				if (a.IsArray())
-					WriteElement(a, op, b._iVar, b.IsShort(), ar, funs);
+					WriteElement(a, op, b.ReadSlot(funs), b.IsShort(), ar, funs);
 				else if (op != NOP_MOV || (!funs._cur->RetargetConditional(a._iVar, b._iVar) &&
 					!TryStoreCallResult(ar, funs, a._iVar, b) && !TryPushImmediate(ar, funs, a._iVar, b)))
-					funs._cur->Push_OP2(ar, op, a._iVar, b._iVar, b.IsShort());
+					funs._cur->Push_OP2(ar, op, a._iVar, b.ReadSlot(funs), b.IsShort());
 			}
 		}
 		else
@@ -4946,7 +4938,8 @@ TK_TYPE ParseJob(bool bReqReturn, SOperand& sResultStack, std::vector<SJumpValue
 				continue;
 			}
 			const int iTempOffset2 = funs._cur->AllocLocalTempVar();
-			funs._cur->Push_OP(ar, op, iTempOffset2, a._iVar, b._iVar, a.IsShort(), b.IsShort());
+			const int leftSlot = a.ReadSlot(funs);
+			funs._cur->Push_OP(ar, op, iTempOffset2, leftSlot, b.ReadSlot(funs), a.IsShort(), b.IsShort());
 			operands[iFindOffset] = iTempOffset2;
 		}
 		RemoveAt<SOperand>(operands, iFindOffset + 1);
@@ -5001,7 +4994,7 @@ TK_TYPE ParseJob(bool bReqReturn, SOperand& sResultStack, std::vector<SJumpValue
 			if(iTempOffset.IsInvalidValue() == false)
 			{
 				MaterializeValue(iTempOffset, ar, funs);
-				funs._cur->Push_RETURN(ar, iTempOffset._iVar, iTempOffset.IsShort());
+				funs._cur->Push_RETURN(ar, iTempOffset.ReadSlot(funs), iTempOffset.IsShort());
 			}
 			else 
 				funs._cur->Push_RETURN(ar, 0, true);
@@ -5135,7 +5128,7 @@ TK_TYPE ParseJob(bool bReqReturn, SOperand& sResultStack, std::vector<SJumpValue
 			r = ParseShortCircuitLogic(true, iTempVar, ar, funs, vars, tkEnd1, tkEnd2, tkEnd3, tkEnd4);
 			if (TK_NONE == r)
 				return TK_NONE;
-			if (iTempVar._iVar == INVALID_ERROR_PARSEJOB)
+			if (iTempVar.IsInvalidValue())
 			{
 				SetParserCompileError(ar, PCE_INVALID_ASSIGNMENT);
 				return TK_NONE;
@@ -5830,7 +5823,7 @@ bool ParseFor(CArchiveRdWC& ar, SFunctions& funs, SVars& vars)
 		return false;
 	}
 	MaterializeValue(iTempOffset, ar, funs);
-	int iStackCheckVar = iTempOffset._iVar;
+	int iStackCheckVar = iTempOffset.ReadSlot(funs);
 	int Pos2 = funs._cur->_code->GetBufferOffset();
 	OperationCode opCheck = funs._cur->GetLastOP();
 	bool isCheckOPOpt = false;
@@ -6046,7 +6039,7 @@ bool ParseFor(CArchiveRdWC& ar, SFunctions& funs, SVars& vars)
 		}
 		if (iTempVar.IsFun()) MaterializeValue(iTempVar, ar, funs);
 		if (iTempVar._iArrayIndex == INVALID_ERROR_PARSEJOB)
-			funs._cur->Push_OP2(ar, NOP_MOV, i_Begin, iTempVar._iVar, false);
+			funs._cur->Push_OP2(ar, NOP_MOV, i_Begin, iTempVar.ReadSlot(funs), false);
 		else
 			ReadElement(iTempVar, i_Begin, ar, funs);
 		PushRangeIntConversion(ar, funs, i_Begin);
@@ -6079,7 +6072,7 @@ bool ParseFor(CArchiveRdWC& ar, SFunctions& funs, SVars& vars)
 		tkEndTerm = r;
 		if (iTempVar.IsFun()) MaterializeValue(iTempVar, ar, funs);
 		if (iTempVar._iArrayIndex == INVALID_ERROR_PARSEJOB)
-			funs._cur->Push_OP2(ar, NOP_MOV, i_End, iTempVar._iVar, false);
+			funs._cur->Push_OP2(ar, NOP_MOV, i_End, iTempVar.ReadSlot(funs), false);
 		else
 			ReadElement(iTempVar, i_End, ar, funs);
 		PushRangeIntConversion(ar, funs, i_End);
@@ -6115,7 +6108,7 @@ bool ParseFor(CArchiveRdWC& ar, SFunctions& funs, SVars& vars)
 			}
 			if (iTempVar.IsFun()) MaterializeValue(iTempVar, ar, funs);
 			if (iTempVar._iArrayIndex == INVALID_ERROR_PARSEJOB)
-				funs._cur->Push_OP2(ar, NOP_MOV, i_Step, iTempVar._iVar, false);
+				funs._cur->Push_OP2(ar, NOP_MOV, i_Step, iTempVar.ReadSlot(funs), false);
 			else
 				ReadElement(iTempVar, i_Step, ar, funs);
 			PushRangeIntConversion(ar, funs, i_Step);
@@ -6420,7 +6413,7 @@ bool ParseWhile(CArchiveRdWC& ar, SFunctions& funs, SVars& vars)
 	// while (bools[i]) 가 한 번도 참이 되지 않는다. 이 명령은 조건 코드 구간
 	// (Pos1~Pos2) 안에 들어가야 루프마다 다시 읽는다.
 	MaterializeValue(iTempOffset, ar, funs);
-	int iStackCheckVar = iTempOffset._iVar;
+	int iStackCheckVar = iTempOffset.ReadSlot(funs);
 	int Pos2 = funs._cur->_code->GetBufferOffset();
 	const std::size_t checkPlansEnd = funs._cur->_calls.size();
 	OperationCode opCheck = funs._cur->GetLastOP();
@@ -6738,7 +6731,7 @@ bool ParseVarDef(CArchiveRdWC& ar, SFunctions& funs, SVars& vars, bool blExport,
         ReadElement(value, slot, ar, funs);
     else if (!funs._cur->RetargetConditional(slot, value._iVar) &&
         !TryStoreCallResult(ar, funs, slot, value) && !TryPushImmediate(ar, funs, slot, value))
-        funs._cur->Push_OP2(ar, NOP_MOV, slot, value._iVar, value.IsShort());
+        funs._cur->Push_OP2(ar, NOP_MOV, slot, value.ReadSlot(funs), value.IsShort());
     return true;
 }
 
@@ -7090,13 +7083,13 @@ bool ParseSleep(CArchiveRdWC& ar, SFunctions& funs, SVars& vars)
 	}
 
 	if (operand.IsShort())
-		funs._cur->Push_OP2(ar, NOP_SLEEP, 0, operand._iVar, true);
+		funs._cur->Push_OP2(ar, NOP_SLEEP, 0, operand.ReadSlot(funs), true);
 	else
 	{
 		// sleep(delays[0]) : 읽은 값을 넘겨야 한다. 컨테이너를 그대로 넘기면 런타임에
 		// invalid sleep value 로 죽는다.
 		MaterializeValue(operand, ar, funs);
-		funs._cur->Push_OP2(ar, NOP_SLEEP, 0, operand._iVar, false);
+		funs._cur->Push_OP2(ar, NOP_SLEEP, 0, operand.ReadSlot(funs), false);
 	}
 	return true;
 }
@@ -7133,7 +7126,7 @@ bool ParseSwitch(CArchiveRdWC& ar, SFunctions& funs, SVars& vars, bool* alwaysRe
 
 	// Resolve selectors and function references once before dispatch.
 	MaterializeValue(cond, ar, funs);
-	const int iKeyVar = cond._iVar;
+	const int iKeyVar = cond.ReadSlot(funs);
 
 	tkType1 = GetToken(ar, tk1);
 	if (tkType1 != TK_L_MIDDLE)

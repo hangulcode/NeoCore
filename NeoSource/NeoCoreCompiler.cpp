@@ -557,16 +557,15 @@ class NodeArena
 {
 public:
     NodeArena() {}
-    ~NodeArena() { for (char* block : blocks_) ::operator delete(block); }
     void* Allocate(std::size_t size)
     {
         size = (size + Alignment - 1) & ~static_cast<std::size_t>(Alignment - 1);
         if (size > left_)
         {
             const std::size_t bytes = size > BlockSize ? size : static_cast<std::size_t>(BlockSize);
-            blocks_.reserve(blocks_.size() + 1);
-            blocks_.push_back(static_cast<char*>(::operator new(bytes)));
-            next_ = blocks_.back();
+            std::unique_ptr<char[]> block(new char[bytes]);
+            blocks_.push_back(std::move(block));
+            next_ = blocks_.back().get();
             left_ = bytes;
         }
         void* const result = next_;
@@ -579,7 +578,7 @@ public:
 
 private:
     enum : std::size_t { BlockSize = 256 * 1024 };
-    std::vector<char*> blocks_;
+    std::vector<std::unique_ptr<char[]>> blocks_;
     char* next_ = nullptr;
     std::size_t left_ = 0;
     NodeArena(const NodeArena&) = delete;

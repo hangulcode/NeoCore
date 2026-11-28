@@ -864,7 +864,12 @@ private:
             }
             switch (unit.actions[i])
             {
-            case KeepToken: writer.Append(token.text, token.size, unit, token.begin, token.expanded); break;
+            case KeepToken:
+                // 치환 전의 토큰 경계를 보존한다. 예를 들어 0xVALUE나 VALUE.25의 두 토큰이 숫자 하나로 붙으면 안 된다.
+                if (token.expanded) writer.Append(" ", 1, unit, token.begin, true);
+                writer.Append(token.text, token.size, unit, token.begin, token.expanded);
+                if (token.expanded) writer.Append(" ", 1, unit, token.begin, true);
+                break;
             case DropToken: break;
             case PrefixToken:
                 renamed.assign(unit.prefix);
