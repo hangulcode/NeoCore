@@ -182,9 +182,30 @@ void Modules(bool debug)
 }
 }
 
+// 상수 표가 넘치면 실행 중 잘못된 코드가 아니라 컴파일 오류가 난다. 한도 안쪽은 이미지 왕복까지 값이 맞다.
+void ConstantLimit(bool debug)
+{
+    const auto source = [](int count) {
+        std::string text = "export int Probe(){int s=0;";
+        // 16비트 즉값에 들어가지 않는 서로 다른 정수라 하나마다 상수 표 칸을 쓴다.
+        for (int i = 0; i < count; ++i) text += "s+=" + std::to_string(100000 + i) + ";";
+        return text + "return s;}";
+    };
+    std::int64_t sum = 0;
+    for (int i = 0; i < 14000; ++i) sum += 100000 + i;
+    Value(source(14000), NeoCore::Scalar::Int(sum), debug);
+    NeoCore::Error error;
+    Check(!NeoCore::Program::Compile(source(15001), error, "constants.nc", debug), "constant pool overflow rejected");
+    Check(error.message.find("constant count limit exceeded") != std::string::npos, "constant pool diagnostic: " + error.message);
+    std::string strings = "export string Probe(){string s=\"\";";
+    for (int i = 0; i < 15001; ++i) strings += "s=\"k" + std::to_string(i) + "\";";
+    Check(!NeoCore::Program::Compile(strings + "return s;}", error, "constants.nc", debug) &&
+        error.message.find("constant count limit exceeded") != std::string::npos, "string constant overflow rejected: " + error.message);
+}
+
 int main()
 {
-    for (bool debug : {false, true}) { Matrix(debug); FragmentConstants(debug); Modules(debug); }
+    for (bool debug : {false, true}) { Matrix(debug); FragmentConstants(debug); Modules(debug); ConstantLimit(debug); }
     Rejections();
     std::printf("NeoCore constants: %d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;

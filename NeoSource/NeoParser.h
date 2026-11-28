@@ -1313,8 +1313,8 @@ struct SFunctions
 	}
 	int NextStaticIndex() const
 	{
-		CheckCompileRange("constant count", (int64_t)_staticVars.size() + 1, 0,
-			(int64_t)INT_MAX - COMPILE_EXTENDED_STATIC_BEGIN + 1);
+		// 상수는 명령 피연산자가 바로 가리킬 수 있는 수까지만 둔다. 넘으면 컴파일 오류다(실행 중 잘못된 코드가 되지 않는다).
+		CheckCompileRange("constant count", (int64_t)_staticVars.size() + 1, 0, COMPILE_STATIC_VAR_CAPACITY);
 		return StaticCompileIndex((int)_staticVars.size());
 	}
 	int	AddStaticInt(NS_INT num)

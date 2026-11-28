@@ -41,6 +41,10 @@ are unchanged. This is an encoding/execution change, not a measured speed claim.
 
 The old per-operand immediate flags are removed. MOVI and MOVF retain their
 opcode-defined immediate payloads, and LOADK retains its constant-pool index.
+A compiled program holds at most 15,000 constant-pool entries (numeric and string
+literals that do not fit an immediate, member and API names) so that every
+constant fits a direct operand. A larger program fails to compile with
+`constant count limit exceeded`.
 Encoding, validation, disassembly and debugger stepping must interpret the
 same opcode/sub-operation pair. When an image is loaded, the numeric families
 (integer and floating-point arithmetic, in-place arithmetic, conversions,
